@@ -40,15 +40,35 @@ real allocation and lifetime management.
 
 ## `syscall`
 
-Still deferred past memory and address-space bring-up. The syscall layer should
-land only after user/kernel memory boundaries are explicit.
+Now owns:
+
+- syscall number typing
+- a small dispatch table
+- explicit return/error encoding
+- the long-term boundary between trap entry and object/capability policy
+
+It still does not own process ABI policy, handle tables, or user-buffer
+marshalling.
 
 ## `interrupts`
 
-Still architecture-backed and intentionally light. Descriptor tables and fault
-paths come after the memory foundation is stable.
+Now owns:
+
+- generic trap classification
+- fault disposition decisions
+- interrupt/syscall accounting
+- the boundary between arch-specific trap entry and generic kernel policy
+
+The x86_64 crate owns descriptor tables, IRQ acknowledgement, and low-level
+entry details. The core crate owns classification and counting.
 
 ## `time`
 
-Still reserved for later timer and deadline work once interrupt delivery is in
-place.
+Now owns:
+
+- monotonic tick accounting
+- timer-source description
+- deadline registration
+- ready-to-wake token queues for later schedulers and IPC waits
+
+It still does not own a scheduler, CPU accounting, or wall-clock policy.

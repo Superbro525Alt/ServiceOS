@@ -11,16 +11,23 @@
 
 ## Phase 2
 
+- x86_64 GDT/TSS/IDT installation
+- exception and fault classification
+- PIC/PIT timer source integration
+- monotonic time and deadline wakeup foundation
+- syscall dispatch groundwork on vector `0x80`
+
+## Phase 3
+
 - reclaim boot-services memory safely
 - install kernel-owned page tables
 - build direct physical-memory mapping
 - flesh out address-space creation APIs
 - begin kernel object allocation strategy beyond the bootstrap heap
 
-## Phase 3
+## Phase 4
 
 - capability spaces
-- syscall entry and dispatch
 - thread and task bring-up
 - first user address-space construction
 

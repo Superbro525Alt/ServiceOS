@@ -1,139 +1,129 @@
-# Foundational Services
+# Foundational Userspace Services
 
-## Why these services exist now
+## Current graph
 
-This stage is about turning the root bootstrap into a real platform layer
-without jumping into storage, networking, GUI, or package policy.
-
-The current foundational set is intentionally small:
-
-- `console-service`
-- `config-service`
-- `log-service`
-- `status-service`
-
-Together they establish:
-
-- stable service contracts
-- explicit capability-based access between services
-- a clean lookup model
-- lifecycle management for always-on system services
-- a pattern future platform services can follow
-
-## Dependency graph
+The current always-on userspace graph is:
 
 ```text
 root-manager
+  -> storage-service
   -> console-service
   -> config-service
+       depends on storage-backed config resource
   -> log-service
        depends on console-service, config-service
   -> status-service
-       depends on log-service, config-service, console-service
+       depends on log-service, config-service
 ```
+
+The important change is that the graph now consumes persisted inputs. The root
+manager loads service manifests from `storage-service`, `config-service` reads a
+real config blob, and `status-service` reads a startup-granted resource blob.
 
 ## Root manager responsibilities
 
-The root manager now owns:
+The root manager is the first real system coordinator in userspace. It owns:
 
-- manifest evaluation
-- startup ordering
+- boot-root bootstrap sequencing
+- starting `storage-service` from the kernel-provided boot-store capability
+- loading the service index and manifests from storage
+- dependency ordering
 - startup capability grants
-- service registration
-- controlled lookup/discovery
-- restart supervision for long-running services
+- service registration and lookup mediation
+- restart supervision
 
-The kernel still only provides process/thread creation, handle spaces, IPC,
-timers, and scheduling mechanisms.
+The kernel still only provides mechanisms: address spaces, threads, channels,
+capabilities, timers, and the executable launch path.
 
-## Capability distribution model
+## Capability distribution
 
-The root manager does not start services with global power.
+The system does not reintroduce ambient authority through storage.
 
-Instead it:
-
-- spawns each child with a private bootstrap control channel
-- duplicates only the specific startup handles declared in the manifest
-- transfers only the declared rights for each handle
-- retains stronger registry handles when a service registers itself
-- mediates later lookups through per-service lookup policy
+- The kernel gives the root manager one read-only boot-store capability.
+- The root manager passes that capability only to `storage-service`.
+- Other services do not get the storage root by default.
+- The root manager opens specific resources through `storage-service` and
+  transfers only those resource/blob capabilities to children that need them.
+- Service-to-service communication remains manager-mediated and rights-reduced.
 
 Current startup grants:
 
-- `log-service` receives:
-  - a send-only handle to `console-service`
-  - a send-only handle to `config-service`
-- `status-service` receives:
-  - a send-only handle to `log-service`
+- `storage-service`
+  - boot-store memory object capability from the kernel/root bootstrap
+- `config-service`
+  - one blob capability for `config/system.cfg`
+- `log-service`
+  - send-only handle to `console-service`
+  - send-only handle to `config-service`
+- `status-service`
+  - send-only handle to `log-service`
+  - one blob capability for `services/status-service/resources/banner.txt`
 
 Current lookup permissions:
 
-- `status-service` may look up:
+- `status-service`
   - `config-service` with send-only rights
   - `console-service` with send-only rights
 
-There is no ambient namespace where every service can connect to every other
-service.
-
 ## Service roles
+
+### `storage-service`
+
+- mounts the immutable boot store handed off from firmware through the kernel
+- exposes an exact-path open contract to the root manager
+- turns persisted files into explicit blob capabilities
+- establishes the storage/resource capability pattern without exposing a global
+  filesystem namespace
 
 ### `console-service`
 
-- owns the immediate route to the kernel debug output sink
-- renders structured records into readable text
-- acts as the first console-adjacent system I/O service
+- owns the userspace route to the kernel debug sink
+- renders structured service and lifecycle events into readable diagnostics
 
 ### `config-service`
 
-- serves small typed configuration values
-- establishes the request/reply pattern for shared system configuration
-- provides a stable capability-gated contract that later storage-backed config
-  can preserve
+- reads typed configuration values from a persisted config blob
+- exposes a stable request/reply contract for shared system configuration
 
 ### `log-service`
 
-- is the durable destination for service log records
-- filters by configured minimum severity
-- tags records by source service and domain
+- is the durable userspace log sink
+- filters records by configured minimum severity
 - forwards readable output through `console-service`
-- receives service-manager lifecycle events as normal structured records
 
 ### `status-service`
 
 - is the first long-running dependent platform service
-- discovers peer services through the manager rather than ambient access
-- reads configuration, logs structured heartbeats, and optionally mirrors
-  periodic status to the console
-- exposes a small snapshot contract for future readers
+- proves both manager-mediated lookup and startup-granted resource access
+- reads config, consumes a resource blob, and emits periodic heartbeats
 
 ## Registry and discovery
 
-The registry is manager-mediated and identity-based.
+The registry remains manager-mediated and identity-based.
 
-- services register themselves under a stable `ServiceId`
-- the manager stores the registered public endpoint handle
-- callers must request a lookup through their control channel
-- the manager checks the manifest lookup policy before granting access
-- replies return a newly duplicated handle with the requested reduced rights
+- services register under a stable `ServiceId`
+- the manager retains the registered public handle
+- lookups go through the caller's bootstrap/control channel
+- lookup policy is derived from the caller's manifest
+- replies carry a newly duplicated rights-reduced handle
 
-This keeps discovery explicit and compatible with future richer namespaces.
+Discovery is explicit. Knowing a service name does not imply access.
 
 ## Supervision
 
-All current foundational services are long-running services. The manager:
+All current platform services are long-running services. The manager:
 
-- waits for registration before considering a service ready
+- waits for registration before marking a service ready
 - monitors task exit status
-- restarts failed services within the manifest restart budget
-- treats exhausted restart budgets as fatal for the current bootstrap graph
+- restarts a service within its manifest restart budget
+- treats exhausted restart budgets as fatal to the current root graph
 
 ## Deferred
 
 This platform layer still does not implement:
 
-- filesystem-backed manifests
+- writable or user-owned storage
+- directory capabilities for general applications
+- package or update policy
 - dynamic service installation
-- persistent configuration storage
-- richer service health probes
-- user fault delivery back into the manager
-- networking, storage, graphics, audio, shell, or package services
+- networking, graphics, audio, shell, or compatibility services

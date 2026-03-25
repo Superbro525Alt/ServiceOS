@@ -8,7 +8,7 @@ It exists now to provide:
 
 - capability-gated access to system settings
 - a typed request/reply protocol
-- a stable contract future storage-backed configuration can preserve
+- a stable contract backed by a persisted config blob
 
 ## Public contract
 
@@ -36,12 +36,11 @@ Reply:
 
 ## Current storage model
 
-The current implementation is a static in-memory table compiled into the
-service. That is intentional for now.
+The current implementation reads `config/system.cfg` through a startup-granted
+blob capability opened by `storage-service`.
 
 ## Deferred
 
-- persistent configuration storage
 - namespaced service configuration trees
 - write/update policy
 - validation and schema migration logic

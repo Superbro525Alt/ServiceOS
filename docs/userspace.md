@@ -2,23 +2,34 @@
 
 ## Current scope
 
-The userspace path now covers three layers:
+The userspace path now covers four layers:
 
 - the kernel can construct and enter isolated user address spaces
 - the kernel can launch a real root userspace service manager
-- the root manager can start a small always-on foundational service graph
+- the root manager can bootstrap storage from a kernel-delivered boot-store
+  capability
+- the root manager can start a small always-on platform graph from persisted
+  manifests
 
 This is still intentionally early, but it is now a real service-composed
 platform substrate rather than a single bootstrap demo.
 
-## Executable format and image catalog
+## Executable format and runtime loading
 
 Userspace binaries are built as freestanding `x86_64-unknown-none` programs and
 packed into a deliberately small flat image format owned by `kernel/core::user`.
 
-The current kernel image does not discover executables from storage. Instead it
-links against a host-built userspace catalog that resolves image IDs to built-in
-flat images.
+The current runtime path is:
+
+1. `xtask` builds userspace programs and bundle data into a boot-store image.
+2. `xtask` stages `bootstore.bin` on the EFI system partition.
+3. the UEFI kernel image reads that boot-store file before
+   `ExitBootServices`.
+4. the kernel resolves executable images from the boot store by `image_id`.
+5. the kernel passes a read-only boot-store capability to the root manager.
+6. the root manager starts `storage-service`.
+7. `storage-service` exposes persisted manifests and resources back to the root
+   manager as explicit blob capabilities.
 
 The flat-image header carries:
 
@@ -30,7 +41,8 @@ The flat-image header carries:
 - a user stack top
 
 This remains flat rather than ELF because the current priority is clean launch
-mechanics and service composition, not storage or relocation policy.
+mechanics, service composition, and storage contracts, not dynamic linking or
+relocation policy.
 
 ## Address-space model
 
@@ -41,8 +53,8 @@ The current user address space is built by:
 - mapping one flat user image region
 - mapping one bootstrap user stack region
 
-The loader still maps the flat image as one contiguous user region. Fine-grained
-segment permissions and user-visible VM policy remain deferred.
+The loader still maps the flat image as one contiguous user region.
+Fine-grained segment permissions and user-visible VM policy remain deferred.
 
 ## Syscall ABI
 
@@ -60,16 +72,18 @@ Current syscall numbers:
 - `7`: receive a channel message
 - `8`: duplicate a handle with rights reduction
 - `9`: close a handle
-- `10`: spawn a built-in service image from the bootstrap root
+- `10`: spawn a boot-store service image from the bootstrap root
 - `11`: query task exit status
+- `12`: read from a kernel memory object
 
-This is enough for a real service manager and foundational services without
+This is enough for a real service manager and storage bootstrap without
 pretending the kernel already exposes a full general-purpose process API.
 
 ## Current service graph
 
 The root manager now brings up:
 
+- `storage-service`
 - `console-service`
 - `config-service`
 - `log-service`
@@ -77,8 +91,10 @@ The root manager now brings up:
 
 That graph proves:
 
+- persisted executable and manifest loading inputs
 - dependency ordering
 - startup capability grants
+- startup-granted resource blobs
 - controlled service discovery
 - long-running service supervision
 - structured logging through userspace services
@@ -89,8 +105,9 @@ The current userspace layer still does not include:
 
 - ELF loading
 - user fault delivery back to the owning task
-- a general executable loader backed by storage services
+- a general process loader that accepts arbitrary user-supplied images
+- writable storage or user-owned files
+- directory capabilities for general applications
 - a richer VM syscall surface
 - kernel-mediated blocking receive completion for userspace threads
-- package-backed manifest loading
 - the broader platform-service graph beyond the current foundations

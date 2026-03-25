@@ -80,8 +80,9 @@ platform and application layers remain deferred.
   with timer waits, channel receives, and future syscall blocking
 - the current user executable format is a kernel-owned flat image because this
   stage is about launch mechanics and service bootstrap, not storage policy
-- service manifests are currently compiled into the root manager because there
-  is not yet a filesystem or package service
+- service manifests, resources, and executable images currently come from a
+  small staged boot store so the platform can prove persisted startup without
+  pulling full filesystem or package policy into the kernel
 - discovery is manager-mediated rather than kernel-global so service composition
   stays capability-oriented
 - the first user syscall ABI stays on interrupt vector `0x80`; the priority is

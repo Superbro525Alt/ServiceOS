@@ -9,6 +9,7 @@ It exists now to prove that a service can:
 - depend on multiple foundational services
 - discover peers through the manager
 - read shared configuration
+- consume a startup-granted persisted resource
 - produce structured logs
 - expose its own small public contract
 
@@ -21,8 +22,9 @@ It exists now to prove that a service can:
 ## Startup and discovery
 
 At startup it receives a send-only logging handle from the root manager. It
-then looks up `config-service` and `console-service` through the manager under
-the manifest lookup policy.
+also receives a blob capability for its banner resource, then looks up
+`config-service` and `console-service` through the manager under the manifest
+lookup policy.
 
 ## Public contract
 
@@ -42,6 +44,7 @@ Reply:
 ## Current behavior
 
 - reads heartbeat period and console mirror period from `config-service`
+- reads a persisted banner resource from the boot store
 - emits structured heartbeat records to `log-service`
 - mirrors every Nth heartbeat to `console-service`
 

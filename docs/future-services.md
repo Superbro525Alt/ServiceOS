@@ -14,7 +14,7 @@ kernel.
 The current system already has:
 
 - a kernel-to-root bootstrap path
-- a built-in service manifest catalog
+- a persisted manifest and resource source in the boot store
 - dependency-aware startup
 - capability-scoped service startup grants
 - manager-mediated service registration and discovery
@@ -116,12 +116,14 @@ The current kernel already supports that direction through:
 - separate tasks and user threads
 - explicit syscall growth rather than ambient host ABI leakage
 - channel-based service boundaries
+- a boot-store based executable bootstrap path that can evolve into richer
+  loaders later
 
 Deferred work:
 
 - richer memory-mapping syscalls
 - fault delivery to user processes
-- executable-loader expansion beyond the built-in flat-image catalog
+- executable-loader expansion beyond the boot-store bootstrap format
 
 ## Desktop shell
 

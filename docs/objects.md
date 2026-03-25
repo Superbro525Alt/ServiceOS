@@ -1,10 +1,10 @@
 # Kernel Objects, Capabilities, and IPC
 
-## Phase 3 scope
+## Scope
 
-Phase 3 establishes the kernel-side composition model for the future
-service-oriented OS. The goal is not to implement services yet. The goal is to
-make explicit authority and communication the default kernel shape.
+The kernel-side object model makes explicit authority and communication the
+default system shape. It is the substrate that the current userspace service
+manager and service graph build on top of.
 
 ## Object taxonomy
 
@@ -23,7 +23,7 @@ every object forever.
 
 The task object is currently the process-equivalent abstraction. It owns:
 
-- the future address-space binding
+- the address-space binding
 - the capability space
 - the set of member threads
 
@@ -37,7 +37,7 @@ Each task owns a `CapabilitySpace`. A handle entry contains:
 - a rights mask
 - an optional badge value
 
-Rights are intentionally small and mechanical in Phase 3:
+Rights are intentionally small and mechanical:
 
 - `READ`
 - `WRITE`
@@ -54,27 +54,25 @@ Important rules:
 
 - a handle may only be duplicated if it carries `DUPLICATE`
 - a handle may only be transferred if it carries `TRANSFER`
-- the duplicated or transferred rights must be a subset of the source rights
+- duplicated or transferred rights must be a subset of the source rights
 - `close` removes the handle entry immediately
-- object lifetime ends when no strong references remain, after which the
-  registry can drop the weak entry during garbage collection
+- object lifetime ends when no strong references remain
 
 ## IPC model
 
-Channels are the first IPC primitive because they compose well into a future
-service graph.
+Channels are the first IPC primitive because they compose well into a
+service-oriented system.
 
 Current semantics:
 
 - a channel pair is two endpoint objects linked to each other
 - `send` requires `SEND` on the local endpoint handle
 - `receive` requires `RECEIVE` on the local endpoint handle
-- a message contains a small word payload plus up to four transferred
-  capabilities
+- a message contains a word payload plus transferred capabilities
 - a sender may attach a rights-reduced handle transfer to a message
 - the receiver gets a fresh handle in its own capability space
 
-Phase 3 intentionally keeps IPC minimal:
+The IPC layer intentionally stays minimal:
 
 - no in-kernel RPC layer
 - no broker or namespace policy
@@ -92,15 +90,12 @@ In practice this means:
 - once handles are closed and temporary strong references are dropped, the
   registry can forget the object on the next garbage-collection pass
 
-The QEMU boot self-check exercises exactly this rule by transferring a memory
-object handle over a channel, closing both sender and receiver handles, and
-verifying that the registry contracts back to the bootstrap root task.
+The kernel tests and runtime bootstrap exercise exactly this rule by
+transferring object handles over channels, closing them, and verifying that the
+registry contracts back to the remaining live roots.
 
-## Deferred to later phases
+## Still deferred
 
-What still remains after Phase 4:
-
-- userspace-visible handle syscalls
-- memory-object mapping into user address spaces
+- userspace-visible memory-object mapping
 - shared-memory IPC policy
-- service discovery, naming, or launch policy
+- richer object inspection and wait primitives

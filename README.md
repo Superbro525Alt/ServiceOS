@@ -1,6 +1,6 @@
 # ServiceOS Kernel Foundation
 
-The repository now covers Phase 5 of the kernel bring-up:
+The repository now covers Phase 6 of the kernel bring-up:
 
 - direct UEFI boot into Rust on `x86_64`
 - real UEFI memory-map capture
@@ -21,6 +21,9 @@ The repository now covers Phase 5 of the kernel bring-up:
 - a minimal flat user image loader
 - ring-3 entry and return on `x86_64`
 - a tiny bootstrap syscall ABI for the first userspace program
+- hardening and validation around the object, IPC, scheduler, and userspace
+  bootstrap substrate
+- host-side unit tests for the core kernel semantics
 
 The system remains intentionally early. It does not attempt real
 service-manager policy, drivers, filesystems, networking, audio, or GUI.
@@ -79,7 +82,7 @@ cargo xtask build --release
 
 ## Current state
 
-Phase 5 boots cleanly under QEMU, exits UEFI boot services, captures the memory
+Phase 6 boots cleanly under QEMU, exits UEFI boot services, captures the memory
 map, initializes the memory substrate, installs an x86_64 GDT/TSS/IDT, enables
 PIC/PIT-driven timer interrupts, and then brings up a kernel object model with:
 
@@ -95,6 +98,9 @@ PIC/PIT-driven timer interrupts, and then brings up a kernel object model with:
   user stack
 - a first userspace thread that enters ring 3, executes on its own stack, uses
   the syscall ABI on vector `0x80`, and exits back to the kernel
+- explicit capability-handle exhaustion checks and bounded IPC queues
+- host-side unit coverage for capabilities, IPC, object lifetime, memory,
+  scheduler transitions, syscalls, and user-image parsing
 
 The current syscall surface is intentionally tiny:
 
@@ -105,7 +111,9 @@ The current syscall surface is intentionally tiny:
 This is enough to prove the kernel can start handing responsibility outward to
 userspace without pretending that the real service graph exists yet.
 
-See [docs/architecture.md](/home/paulh/os-dev/docs/architecture.md),
+See [docs/kernel-summary.md](/home/paulh/os-dev/docs/kernel-summary.md),
+[docs/future-services.md](/home/paulh/os-dev/docs/future-services.md),
+[docs/architecture.md](/home/paulh/os-dev/docs/architecture.md),
 [docs/boot-flow.md](/home/paulh/os-dev/docs/boot-flow.md),
 [docs/control-flow.md](/home/paulh/os-dev/docs/control-flow.md),
 [docs/execution.md](/home/paulh/os-dev/docs/execution.md),

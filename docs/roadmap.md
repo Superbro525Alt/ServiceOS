@@ -42,7 +42,17 @@
 - bootstrap syscall ABI for ABI probe, time read, and thread exit
 - first userspace demo program and return path back into the kernel
 
-## Phase 6
+## Completed in Phase 6
+
+- capability and IPC boundary hardening
+- bounded IPC queue semantics
+- explicit scheduler and capability exhaustion errors
+- host-testable crate boundaries for freestanding targets
+- unit coverage for object, capability, IPC, scheduler, syscall, memory, and
+  userspace parsing invariants
+- architecture summary and future-service readiness documentation
+
+## Next
 
 - user-visible handle and object syscalls
 - channel and capability syscalls for real service composition

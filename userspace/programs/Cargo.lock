@@ -7,7 +7,15 @@ name = "serviceos-abi"
 version = "0.1.0"
 
 [[package]]
-name = "serviceos-echo-service"
+name = "serviceos-config-service"
+version = "0.1.0"
+dependencies = [
+ "serviceos-abi",
+ "serviceos-userspace-runtime",
+]
+
+[[package]]
+name = "serviceos-console-service"
 version = "0.1.0"
 dependencies = [
  "serviceos-abi",
@@ -23,7 +31,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "serviceos-probe-service"
+name = "serviceos-root-service-manager"
 version = "0.1.0"
 dependencies = [
  "serviceos-abi",
@@ -31,7 +39,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "serviceos-root-service-manager"
+name = "serviceos-status-service"
 version = "0.1.0"
 dependencies = [
  "serviceos-abi",

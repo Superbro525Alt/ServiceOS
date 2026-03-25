@@ -3,8 +3,8 @@
 pub type Handle = u32;
 
 pub const INVALID_HANDLE: Handle = 0;
-pub const IPC_MAX_WORDS: usize = 4;
-pub const IPC_MAX_HANDLES: usize = 2;
+pub const IPC_MAX_WORDS: usize = 8;
+pub const IPC_MAX_HANDLES: usize = 4;
 
 pub mod rights {
     pub const NONE: u64 = 0;
@@ -69,6 +69,7 @@ pub struct RawMessage {
     pub flags: u32,
     pub words: [u64; IPC_MAX_WORDS],
     pub handles: [Handle; IPC_MAX_HANDLES],
+    pub handle_rights: [u64; IPC_MAX_HANDLES],
 }
 
 impl RawMessage {
@@ -80,6 +81,7 @@ impl RawMessage {
             flags: 0,
             words: [0; IPC_MAX_WORDS],
             handles: [INVALID_HANDLE; IPC_MAX_HANDLES],
+            handle_rights: [0; IPC_MAX_HANDLES],
         }
     }
 }
@@ -91,8 +93,9 @@ pub const IPC_FLAG_NONBLOCK: u32 = 1 << 0;
 pub enum ServiceImageId {
     RootManager = 1,
     LogService = 2,
-    EchoService = 3,
-    ProbeService = 4,
+    ConfigService = 3,
+    ConsoleService = 4,
+    StatusService = 5,
 }
 
 #[repr(u32)]
@@ -100,8 +103,9 @@ pub enum ServiceImageId {
 pub enum ServiceId {
     RootManager = 1,
     Log = 2,
-    Echo = 3,
-    Probe = 4,
+    Config = 3,
+    Console = 4,
+    Status = 5,
 }
 
 #[repr(u32)]
@@ -112,8 +116,14 @@ pub enum ControlTag {
     LookupRequest = 3,
     LookupReply = 4,
     Lifecycle = 5,
-    EchoRequest = 6,
-    EchoReply = 7,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LookupStatus {
+    Ok = 0,
+    Denied = 1,
+    Unavailable = 2,
 }
 
 #[repr(u32)]
@@ -138,4 +148,82 @@ pub enum TaskStateCode {
 pub struct TaskStatus {
     pub state: TaskStateCode,
     pub exit_code: u64,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub enum LogSeverity {
+    Trace = 1,
+    Debug = 2,
+    Info = 3,
+    Warn = 4,
+    Error = 5,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LogDomain {
+    Bootstrap = 1,
+    ServiceManager = 2,
+    Service = 3,
+    Log = 4,
+    Config = 5,
+    Console = 6,
+    Status = 7,
+    Ipc = 8,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LogEvent {
+    ServiceStarted = 1,
+    ServiceReady = 2,
+    ServiceFailed = 3,
+    ServiceRestarting = 4,
+    ConfigLoaded = 5,
+    ConfigRead = 6,
+    ConsoleWrite = 7,
+    StatusStarted = 8,
+    StatusHeartbeat = 9,
+    LookupGranted = 10,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LogTag {
+    Record = 0x100,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConsoleTag {
+    WriteRecord = 0x200,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConfigTag {
+    ReadRequest = 0x300,
+    ReadReply = 0x301,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StatusTag {
+    SnapshotRequest = 0x400,
+    SnapshotReply = 0x401,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConfigKey {
+    LogMinimumSeverity = 1,
+    StatusHeartbeatTicks = 2,
+    StatusConsoleMirror = 3,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConfigValueKind {
+    Unsigned = 1,
 }

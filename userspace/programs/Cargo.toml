@@ -4,8 +4,9 @@ members = [
     "runtime",
     "root-manager",
     "log-service",
-    "echo-service",
-    "probe-service",
+    "config-service",
+    "console-service",
+    "status-service",
 ]
 
 [profile.dev]

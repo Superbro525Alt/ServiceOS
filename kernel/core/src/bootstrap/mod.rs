@@ -85,49 +85,49 @@ pub struct BootstrapPlan {
 }
 
 impl BootstrapPlan {
-    pub const fn phase0() -> Self {
+    pub const fn architecture_bring_up() -> Self {
         Self {
             current: BootstrapStage::EarlyArchitectureBringUp,
             next: Some(BootstrapStage::MemoryDiscovery),
         }
     }
 
-    pub const fn phase1() -> Self {
+    pub const fn memory_ready() -> Self {
         Self {
             current: BootstrapStage::MemoryDiscovery,
             next: Some(BootstrapStage::ControlFlowFoundation),
         }
     }
 
-    pub const fn phase2() -> Self {
+    pub const fn control_flow_ready() -> Self {
         Self {
             current: BootstrapStage::ControlFlowFoundation,
             next: Some(BootstrapStage::KernelObjectFoundation),
         }
     }
 
-    pub const fn phase3() -> Self {
+    pub const fn object_foundation_ready() -> Self {
         Self {
             current: BootstrapStage::KernelObjectFoundation,
             next: Some(BootstrapStage::RootTaskPreparation),
         }
     }
 
-    pub const fn phase4() -> Self {
+    pub const fn root_task_ready() -> Self {
         Self {
             current: BootstrapStage::RootTaskPreparation,
             next: Some(BootstrapStage::SchedulerFoundation),
         }
     }
 
-    pub const fn phase5() -> Self {
+    pub const fn scheduler_ready() -> Self {
         Self {
             current: BootstrapStage::SchedulerFoundation,
             next: Some(BootstrapStage::UserspaceBootstrap),
         }
     }
 
-    pub const fn phase6() -> Self {
+    pub const fn userspace_bootstrap_ready() -> Self {
         Self {
             current: BootstrapStage::UserspaceBootstrap,
             next: None,

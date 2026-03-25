@@ -315,16 +315,24 @@ fn handle_channel_send(context: &SyscallContext) -> SyscallReturn {
         Ok(message) => message,
         Err(error) => return SyscallReturn::error(map_ipc_error(error)),
     };
-    for handle in raw.handles[..handle_count].iter().copied() {
+    for (index, handle) in raw.handles[..handle_count].iter().copied().enumerate() {
         let Some(descriptor) = task
             .capability_space()
             .resolve_descriptor(CapabilityHandle(handle))
         else {
             return SyscallReturn::error(SyscallError::NotFound);
         };
+        let requested_bits = raw.handle_rights[index];
+        let transfer_rights = if requested_bits == 0 {
+            descriptor
+                .rights
+                .without(CapabilityRights::DUPLICATE.union(CapabilityRights::TRANSFER))
+        } else {
+            CapabilityRights::from_bits(requested_bits)
+        };
         let transfer = match task.capability_space().prepare_transfer(
             CapabilityHandle(handle),
-            descriptor.rights,
+            transfer_rights,
             TransferMode::Copy,
         ) {
             Ok(transfer) => transfer,

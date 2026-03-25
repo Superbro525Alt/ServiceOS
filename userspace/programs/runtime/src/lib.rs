@@ -6,10 +6,12 @@ use core::{
 };
 
 pub use serviceos_abi::{
-    ControlTag, Handle, HandlePair, IPC_FLAG_NONBLOCK, IPC_MAX_HANDLES, IPC_MAX_WORDS,
-    INVALID_HANDLE, LifecycleEvent, RawMessage, ServiceId, ServiceImageId, SyscallErrorCode,
-    SyscallNumber, TaskStateCode, TaskStatus,
+    ConfigKey, ConfigTag, ConfigValueKind, ConsoleTag, ControlTag, Handle, HandlePair,
+    IPC_FLAG_NONBLOCK, IPC_MAX_HANDLES, IPC_MAX_WORDS, INVALID_HANDLE, LifecycleEvent,
+    LogDomain, LogEvent, LogSeverity, LogTag, LookupStatus, RawMessage, ServiceId,
+    ServiceImageId, StatusTag, SyscallErrorCode, SyscallNumber, TaskStateCode, TaskStatus,
 };
+pub use serviceos_abi::rights;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
@@ -161,6 +163,102 @@ pub fn wait_for_exit(task_handle: Handle) -> Result<TaskStatus> {
         }
         yield_current()?;
     }
+}
+
+pub fn register_service(bootstrap: Handle, service_id: ServiceId, public: Handle) -> Result<()> {
+    let mut register = RawMessage::empty(ControlTag::Register as u32);
+    register.word_count = 1;
+    register.words[0] = service_id as u32 as u64;
+    register.handle_count = 1;
+    register.handles[0] = public;
+    register.handle_rights[0] =
+        rights::SEND | rights::RECEIVE | rights::DUPLICATE | rights::TRANSFER;
+    channel_send(bootstrap, &register)
+}
+
+pub fn lookup_service(bootstrap: Handle, service_id: ServiceId) -> Result<Handle> {
+    let mut request = RawMessage::empty(ControlTag::LookupRequest as u32);
+    request.word_count = 1;
+    request.words[0] = service_id as u32 as u64;
+    channel_send(bootstrap, &request)?;
+
+    let mut reply = RawMessage::empty(0);
+    channel_receive_blocking(bootstrap, &mut reply)?;
+    if reply.tag != ControlTag::LookupReply as u32 || reply.word_count < 2 {
+        return Err(Error::InvalidArgument);
+    }
+    match reply.words[1] as u32 {
+        x if x == LookupStatus::Ok as u32 && reply.handle_count > 0 => Ok(reply.handles[0]),
+        x if x == LookupStatus::Denied as u32 => Err(Error::PermissionDenied),
+        x if x == LookupStatus::Unavailable as u32 => Err(Error::NotFound),
+        _ => Err(Error::InvalidArgument),
+    }
+}
+
+pub fn send_log_record(
+    log_handle: Handle,
+    source: ServiceId,
+    severity: LogSeverity,
+    domain: LogDomain,
+    event: LogEvent,
+    arg0: u64,
+    arg1: u64,
+) -> Result<()> {
+    let mut message = RawMessage::empty(LogTag::Record as u32);
+    message.word_count = 6;
+    message.words[0] = source as u32 as u64;
+    message.words[1] = severity as u32 as u64;
+    message.words[2] = domain as u32 as u64;
+    message.words[3] = event as u32 as u64;
+    message.words[4] = arg0;
+    message.words[5] = arg1;
+    channel_send(log_handle, &message)
+}
+
+pub fn console_write_record(
+    console_handle: Handle,
+    source: ServiceId,
+    severity: LogSeverity,
+    domain: LogDomain,
+    event: LogEvent,
+    arg0: u64,
+    arg1: u64,
+    sequence: u64,
+) -> Result<()> {
+    let mut message = RawMessage::empty(ConsoleTag::WriteRecord as u32);
+    message.word_count = 7;
+    message.words[0] = source as u32 as u64;
+    message.words[1] = severity as u32 as u64;
+    message.words[2] = domain as u32 as u64;
+    message.words[3] = event as u32 as u64;
+    message.words[4] = arg0;
+    message.words[5] = arg1;
+    message.words[6] = sequence;
+    channel_send(console_handle, &message)
+}
+
+pub fn config_read(config_handle: Handle, key: ConfigKey) -> Result<(ConfigValueKind, u64)> {
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(ConfigTag::ReadRequest as u32);
+    request.word_count = 1;
+    request.words[0] = key as u32 as u64;
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(config_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != ConfigTag::ReadReply as u32 || response.word_count < 3 {
+        return Err(Error::InvalidArgument);
+    }
+    let kind = match response.words[1] as u32 {
+        x if x == ConfigValueKind::Unsigned as u32 => ConfigValueKind::Unsigned,
+        _ => return Err(Error::InvalidArgument),
+    };
+    Ok((kind, response.words[2]))
 }
 
 pub fn write_log(domain: &str, message: &str) -> Result<()> {

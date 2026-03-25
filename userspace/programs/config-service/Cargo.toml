@@ -1,10 +1,10 @@
 [package]
-name = "serviceos-probe-service"
+name = "serviceos-config-service"
 version = "0.1.0"
 edition = "2024"
 
 [[bin]]
-name = "serviceos-probe-service"
+name = "serviceos-config-service"
 path = "src/main.rs"
 
 [dependencies]

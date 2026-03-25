@@ -24,16 +24,22 @@ const PROGRAMS: &[Program] = &[
         include_name: "LOG_SERVICE_IMAGE",
     },
     Program {
-        package: "serviceos-echo-service",
-        bin_name: "serviceos-echo-service",
+        package: "serviceos-config-service",
+        bin_name: "serviceos-config-service",
         image_id: 3,
-        include_name: "ECHO_SERVICE_IMAGE",
+        include_name: "CONFIG_SERVICE_IMAGE",
     },
     Program {
-        package: "serviceos-probe-service",
-        bin_name: "serviceos-probe-service",
+        package: "serviceos-console-service",
+        bin_name: "serviceos-console-service",
         image_id: 4,
-        include_name: "PROBE_SERVICE_IMAGE",
+        include_name: "CONSOLE_SERVICE_IMAGE",
+    },
+    Program {
+        package: "serviceos-status-service",
+        bin_name: "serviceos-status-service",
+        image_id: 5,
+        include_name: "STATUS_SERVICE_IMAGE",
     },
 ];
 

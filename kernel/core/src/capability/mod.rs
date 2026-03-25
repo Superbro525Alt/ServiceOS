@@ -44,6 +44,10 @@ impl CapabilityRights {
         Self(self.0 & other.0)
     }
 
+    pub const fn without(self, other: Self) -> Self {
+        Self(self.0 & !other.0)
+    }
+
     pub const fn channel_endpoint() -> Self {
         Self::READ
             .union(Self::WRITE)

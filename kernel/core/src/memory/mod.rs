@@ -291,7 +291,7 @@ pub fn initialize(
     }
 
     let mut frame_allocator = EarlyFrameAllocator::from_boot_context(boot_context)?;
-    let virtual_layout = KernelVirtualLayout::phase1_default();
+    let virtual_layout = KernelVirtualLayout::bootstrap_default();
     let heap = heap::initialize_kernel_heap(mapper, &mut frame_allocator, &virtual_layout)?;
     let kernel_address_space = KernelAddressSpace::new(
         AddressSpaceRoot::new(mapper.active_root_frame()),

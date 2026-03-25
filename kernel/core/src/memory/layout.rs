@@ -18,7 +18,7 @@ pub struct KernelVirtualLayout {
 }
 
 impl KernelVirtualLayout {
-    pub const fn phase1_default() -> Self {
+    pub const fn bootstrap_default() -> Self {
         Self {
             user_range: VirtualMemoryRange {
                 start: USER_SPACE_START,

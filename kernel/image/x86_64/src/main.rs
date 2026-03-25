@@ -1,6 +1,9 @@
 #![no_main]
 #![no_std]
 
+extern crate alloc;
+
+use alloc::sync::Arc;
 use core::panic::PanicInfo;
 use serviceos_kernel_arch_x86_64::{
     boot::exit_boot_services_and_capture_context,
@@ -13,21 +16,33 @@ use serviceos_kernel_core::{
     Kernel,
     capability::{CapabilityError, CapabilityRights, TransferMode},
     ipc::{IpcError, MessageTag, OutgoingMessage},
-    task::{ExecutionState, TaskDescriptor, TaskRole, ThreadDescriptor},
+    object::ObjectId,
+    task::{
+        ScheduleDecision, SchedulerError, SchedulingContext, TaskDescriptor, TaskRole,
+        ThreadDescriptor, ThreadId, ThreadMode, ThreadWakeReason,
+    },
+    time::WakeEvent,
 };
 use uefi::{Status, entry};
 
-enum Phase3SelfCheckError {
+enum Phase4DemoError {
     MissingTaskObject,
     MissingThreadObject,
     MissingTransferredCapability,
-    UnexpectedTransferredRights,
-    UnexpectedAck,
+    UnexpectedSchedule {
+        expected: ThreadId,
+        actual: Option<ThreadId>,
+    },
+    UnexpectedWakeToken {
+        expected: u64,
+        actual: u64,
+    },
     Capability(CapabilityError),
     Ipc(IpcError),
+    Scheduler(SchedulerError),
 }
 
-impl core::fmt::Display for Phase3SelfCheckError {
+impl core::fmt::Display for Phase4DemoError {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::MissingTaskObject => formatter.write_str("missing task object"),
@@ -35,39 +50,56 @@ impl core::fmt::Display for Phase3SelfCheckError {
             Self::MissingTransferredCapability => {
                 formatter.write_str("missing transferred capability")
             }
-            Self::UnexpectedTransferredRights => {
-                formatter.write_str("unexpected transferred rights")
-            }
-            Self::UnexpectedAck => formatter.write_str("unexpected ack payload"),
+            Self::UnexpectedSchedule { expected, actual } => write!(
+                formatter,
+                "unexpected schedule outcome: expected thread {} got {:?}",
+                expected.0, actual
+            ),
+            Self::UnexpectedWakeToken { expected, actual } => write!(
+                formatter,
+                "unexpected wake token: expected {expected} got {actual}"
+            ),
             Self::Capability(error) => write!(formatter, "capability error: {error:?}"),
             Self::Ipc(error) => write!(formatter, "ipc error: {error:?}"),
+            Self::Scheduler(error) => write!(formatter, "scheduler error: {error:?}"),
         }
     }
 }
 
-impl From<CapabilityError> for Phase3SelfCheckError {
+impl From<CapabilityError> for Phase4DemoError {
     fn from(error: CapabilityError) -> Self {
         Self::Capability(error)
     }
 }
 
-impl From<IpcError> for Phase3SelfCheckError {
+impl From<IpcError> for Phase4DemoError {
     fn from(error: IpcError) -> Self {
         Self::Ipc(error)
     }
 }
 
+impl From<SchedulerError> for Phase4DemoError {
+    fn from(error: SchedulerError) -> Self {
+        Self::Scheduler(error)
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
-struct Phase3SelfCheckSummary {
-    tracked_objects_after_cleanup: usize,
-    bootstrap_handle_count: usize,
-    service_handle_count_before_cleanup: usize,
+struct Phase4PreparedDemo {
+    service_task: u64,
+    service_thread: ThreadId,
     transferred_object: u64,
-    transferred_rights: u64,
-    service_thread_state: ExecutionState,
-    timer_armed: bool,
-    event_signal_count: u64,
-    ack_word: u64,
+    timer_token: u64,
+    switch_to_service: ScheduleDecision,
+    block_on_receive: ScheduleDecision,
+    switch_after_ipc: ScheduleDecision,
+    block_on_timer: ScheduleDecision,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Phase4Completion {
+    wake_decision: Option<ScheduleDecision>,
+    final_switch: ScheduleDecision,
 }
 
 #[entry]
@@ -117,40 +149,57 @@ fn kernel_main() -> Status {
         descriptor_state.timer_hz,
         descriptor_state.syscall_vector.0,
     ));
-    match run_phase3_self_check(&kernel) {
-        Ok(summary) => {
-            serial::write_args(format_args!(
-                "serviceos: phase3 objects tracked={} bootstrap-handles={} service-handles={} transferred-object={} transferred-rights={:#x}\n",
-                summary.tracked_objects_after_cleanup,
-                summary.bootstrap_handle_count,
-                summary.service_handle_count_before_cleanup,
-                summary.transferred_object,
-                summary.transferred_rights,
-            ));
-            serial::write_args(format_args!(
-                "serviceos: phase3 thread-state={:?} timer-armed={} event-signals={} ack-word={:#x}\n",
-                summary.service_thread_state,
-                summary.timer_armed,
-                summary.event_signal_count,
-                summary.ack_word,
-            ));
-        }
+
+    let prepared = match prepare_phase4_demo(&kernel) {
+        Ok(prepared) => prepared,
         Err(error) => {
-            serial::write_args(format_args!(
-                "serviceos: phase3 self-check failed: {error}\n"
-            ));
+            serial::write_args(format_args!("serviceos: phase4 setup failed: {error}\n"));
             cpu::halt_loop()
         }
-    }
+    };
+    serial::write_args(format_args!(
+        "serviceos: phase4 service-task={} service-thread={} transferred-object={} timer-token={}\n",
+        prepared.service_task,
+        prepared.service_thread.0,
+        prepared.transferred_object,
+        prepared.timer_token,
+    ));
+    serial::write_args(format_args!(
+        "serviceos: phase4 switches boot->svc={:?} recv-block={:?} ipc-resume={:?} timer-block={:?}\n",
+        prepared.switch_to_service.next.map(|thread| thread.0),
+        prepared.block_on_receive.next.map(|thread| thread.0),
+        prepared.switch_after_ipc.next.map(|thread| thread.0),
+        prepared.block_on_timer.next.map(|thread| thread.0),
+    ));
 
-    serial::write_line("serviceos: arming demo wakeup");
-    interrupts::arm_demo_wakeup(5);
     serial::write_line("serviceos: enabling interrupts");
     cpu::enable_interrupts();
-    serial::write_line("serviceos: waiting for wakeup");
+    serial::write_line("serviceos: waiting for scheduled timer wakeup");
 
     loop {
         if let Some(event) = interrupts::poll_wakeup() {
+            let completion = match complete_phase4_demo(&kernel, &prepared, event) {
+                Ok(completion) => completion,
+                Err(error) => {
+                    serial::write_args(format_args!(
+                        "serviceos: phase4 completion failed: {error}\n"
+                    ));
+                    cpu::halt_loop()
+                }
+            };
+            let task_snapshot = kernel.tasks().snapshot();
+            let service_thread_state = kernel
+                .objects()
+                .registry()
+                .lookup(ObjectId(prepared.service_thread.0))
+                .and_then(|object| object.thread().map(|thread| thread.snapshot()))
+                .ok_or(Phase4DemoError::MissingThreadObject)
+                .unwrap_or_else(|error| {
+                    serial::write_args(format_args!(
+                        "serviceos: phase4 snapshot failed: {error}\n"
+                    ));
+                    cpu::halt_loop()
+                });
             let trap_stats = kernel.interrupts().snapshot();
             let syscall_stats = kernel.syscalls().snapshot();
             let time_snapshot = kernel.time().snapshot();
@@ -164,6 +213,24 @@ fn kernel_main() -> Status {
                 time_snapshot.ready_wakeups,
             ));
             serial::write_args(format_args!(
+                "serviceos: phase4 wake-decision={:?} final-switch={:?} current={:?} runnable={} blocked={} switches={}\n",
+                completion
+                    .wake_decision
+                    .and_then(|decision| decision.next.map(|thread| thread.0)),
+                completion.final_switch.next.map(|thread| thread.0),
+                task_snapshot.scheduler.current.map(|thread| thread.0),
+                task_snapshot.scheduler.runnable_threads,
+                task_snapshot.scheduler.blocked_threads,
+                task_snapshot.scheduler.context_switches,
+            ));
+            serial::write_args(format_args!(
+                "serviceos: phase4 thread-state mode={:?} state={:?} wait={:?} wake={:?}\n",
+                service_thread_state.mode,
+                service_thread_state.execution_state,
+                service_thread_state.wait_target,
+                service_thread_state.last_wake_reason,
+            ));
+            serial::write_args(format_args!(
                 "serviceos: trap-stats exceptions={} external={} timer={} syscalls={} dispatcher={} rejected={}\n",
                 trap_stats.exceptions,
                 trap_stats.external_interrupts,
@@ -172,7 +239,9 @@ fn kernel_main() -> Status {
                 syscall_stats.dispatched,
                 syscall_stats.rejected,
             ));
-            serial::write_line("serviceos: phase3 object and IPC foundation initialized; halting");
+            serial::write_line(
+                "serviceos: phase4 scheduler and process foundation initialized; halting",
+            );
             break;
         }
 
@@ -181,22 +250,23 @@ fn kernel_main() -> Status {
 
     cpu::halt_loop()
 }
+
 #[panic_handler]
 fn panic(info: &PanicInfo<'_>) -> ! {
     serial::write_args(format_args!("serviceos: panic: {info}\n"));
     cpu::halt_loop()
 }
 
-fn run_phase3_self_check(
-    kernel: &Kernel<'_>,
-) -> Result<Phase3SelfCheckSummary, Phase3SelfCheckError> {
+fn prepare_phase4_demo(kernel: &Kernel<'_>) -> Result<Phase4PreparedDemo, Phase4DemoError> {
     let objects = kernel.objects();
     let registry = objects.registry();
     let bootstrap_task = objects
         .bootstrap_task()
         .task()
-        .ok_or(Phase3SelfCheckError::MissingTaskObject)?;
+        .ok_or(Phase4DemoError::MissingTaskObject)?;
     let bootstrap_space = bootstrap_task.capability_space();
+    let scheduler = kernel.tasks().scheduler();
+    let bootstrap_thread = kernel.tasks().bootstrap_thread();
 
     let service_task = registry.create_task(TaskDescriptor {
         address_space: None,
@@ -204,21 +274,33 @@ fn run_phase3_self_check(
     });
     let service_task_object = service_task
         .task()
-        .ok_or(Phase3SelfCheckError::MissingTaskObject)?;
+        .ok_or(Phase4DemoError::MissingTaskObject)?;
+    let service_task_id = service_task_object.id().0;
     let service_space = service_task_object.capability_space();
+    let _service_task_handle = bootstrap_space.install(
+        Arc::clone(&service_task),
+        CapabilityRights::task(),
+        Some(0x600),
+    );
 
     let service_thread = registry.create_thread(
         &service_task,
         ThreadDescriptor {
+            mode: ThreadMode::Kernel,
+            scheduling_context: SchedulingContext::round_robin_default(),
             entry_instruction_pointer: Some(0x0040_0000),
             stack_pointer: Some(0x0080_0000),
         },
     );
-    let service_thread_object = service_thread
+    let service_thread_id = service_thread
         .thread()
-        .ok_or(Phase3SelfCheckError::MissingThreadObject)?;
-    service_thread_object.set_execution_state(ExecutionState::Runnable, None);
-    let service_thread_state = service_thread_object.snapshot().execution_state;
+        .ok_or(Phase4DemoError::MissingThreadObject)?
+        .id();
+    scheduler.register_thread(service_thread)?;
+    let _ = scheduler.make_runnable(service_thread_id, ThreadWakeReason::Explicit)?;
+
+    let switch_to_service = scheduler.yield_current()?;
+    ensure_next_thread(&switch_to_service, service_thread_id)?;
 
     let (bootstrap_endpoint, service_endpoint) = kernel.ipc().create_channel_pair(objects);
     let bootstrap_endpoint_handle = bootstrap_space.install(
@@ -244,77 +326,84 @@ fn run_phase3_self_check(
         TransferMode::Copy,
     )?;
 
-    let timer_object = registry.create_timer(Some(kernel.time().now().saturating_add(25)), None);
-    let timer_armed = timer_object.timer().expect("timer object").snapshot().armed;
-    let service_timer_handle =
-        service_space.install(timer_object, CapabilityRights::timer(), Some(0x400));
+    let service_receive_endpoint = kernel.ipc().endpoint_object_id(
+        service_space,
+        service_endpoint_handle,
+        CapabilityRights::RECEIVE,
+    )?;
+    let block_on_receive = scheduler.block_current_on_receive(service_receive_endpoint)?;
+    ensure_next_thread(&block_on_receive, bootstrap_thread)?;
 
-    let event_object = registry.create_event(false);
-    event_object.event().expect("event object").signal();
-    let event_signal_count = event_object
-        .event()
-        .expect("event object")
-        .snapshot()
-        .signal_count;
-    let service_event_handle =
-        service_space.install(event_object, CapabilityRights::event(), Some(0x500));
-
-    let request = OutgoingMessage::new(MessageTag(0x10), &[0xCAFE_BABE, 2])?
+    let request = OutgoingMessage::new(MessageTag(0x20), &[0xDEAD_BEEF, service_task_id])?
         .add_transfer(transferred_memory)?;
-    let receipt = kernel
+    let _ = kernel
         .ipc()
         .send(bootstrap_space, bootstrap_endpoint_handle, request)?;
+
+    let switch_after_ipc = scheduler.yield_current()?;
+    ensure_next_thread(&switch_after_ipc, service_thread_id)?;
+
     let received = kernel
         .ipc()
         .receive(service_space, service_endpoint_handle)?;
     let transferred_handle = *received
         .transferred_capabilities
         .first()
-        .ok_or(Phase3SelfCheckError::MissingTransferredCapability)?;
-    let transferred_view = service_space.resolve(transferred_handle, CapabilityRights::READ)?;
-    if transferred_view.rights.contains(CapabilityRights::WRITE) {
-        return Err(Phase3SelfCheckError::UnexpectedTransferredRights);
-    }
-    let transferred_object = transferred_view.object.id().0;
-    let transferred_rights = transferred_view.rights.bits();
+        .ok_or(Phase4DemoError::MissingTransferredCapability)?;
+    let transferred_object = service_space
+        .resolve(transferred_handle, CapabilityRights::READ)?
+        .object
+        .id()
+        .0;
 
-    let ack = OutgoingMessage::new(MessageTag(0x11), &[receipt.peer.0, transferred_object])?;
-    kernel
-        .ipc()
-        .send(service_space, service_endpoint_handle, ack)?;
-    let reply = kernel
-        .ipc()
-        .receive(bootstrap_space, bootstrap_endpoint_handle)?;
-    let ack_word = *reply
-        .words
-        .get(1)
-        .ok_or(Phase3SelfCheckError::UnexpectedAck)?;
-    if ack_word != transferred_object {
-        return Err(Phase3SelfCheckError::UnexpectedAck);
-    }
+    let deadline = kernel.time().now().saturating_add(5);
+    let (timer_token, block_on_timer) = scheduler.block_current_until(deadline)?;
+    ensure_next_thread(&block_on_timer, bootstrap_thread)?;
 
-    let service_handle_count_before_cleanup = service_space.handle_count();
-    service_space.close(transferred_handle)?;
-    service_space.close(service_event_handle)?;
-    service_space.close(service_timer_handle)?;
-    service_space.close(service_endpoint_handle)?;
-    bootstrap_space.close(bootstrap_memory_handle)?;
-    bootstrap_space.close(bootstrap_endpoint_handle)?;
-    drop(transferred_view);
-
-    drop(service_thread);
-    drop(service_task);
-    registry.collect_garbage();
-
-    Ok(Phase3SelfCheckSummary {
-        tracked_objects_after_cleanup: registry.snapshot().tracked_objects,
-        bootstrap_handle_count: bootstrap_space.handle_count(),
-        service_handle_count_before_cleanup,
+    Ok(Phase4PreparedDemo {
+        service_task: service_task_id,
+        service_thread: service_thread_id,
         transferred_object,
-        transferred_rights,
-        service_thread_state,
-        timer_armed,
-        event_signal_count,
-        ack_word,
+        timer_token: timer_token.0,
+        switch_to_service,
+        block_on_receive,
+        switch_after_ipc,
+        block_on_timer,
     })
+}
+
+fn complete_phase4_demo(
+    kernel: &Kernel<'_>,
+    prepared: &Phase4PreparedDemo,
+    event: WakeEvent,
+) -> Result<Phase4Completion, Phase4DemoError> {
+    if event.token.0 != prepared.timer_token {
+        return Err(Phase4DemoError::UnexpectedWakeToken {
+            expected: prepared.timer_token,
+            actual: event.token.0,
+        });
+    }
+
+    let wake_decision = kernel.tasks().handle_time_wakeup(event);
+    let final_switch = kernel.tasks().scheduler().yield_current()?;
+    ensure_next_thread(&final_switch, prepared.service_thread)?;
+
+    Ok(Phase4Completion {
+        wake_decision,
+        final_switch,
+    })
+}
+
+fn ensure_next_thread(
+    decision: &ScheduleDecision,
+    expected: ThreadId,
+) -> Result<(), Phase4DemoError> {
+    if decision.next == Some(expected) {
+        Ok(())
+    } else {
+        Err(Phase4DemoError::UnexpectedSchedule {
+            expected,
+            actual: decision.next,
+        })
+    }
 }

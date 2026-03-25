@@ -229,6 +229,7 @@ impl IpcKernel {
             reply_endpoint: message.reply_endpoint,
             shared_memory_hint: message.shared_memory_hint,
         });
+        let _ = crate::task::notify_channel_ready(peer.id());
 
         Ok(MessageReceipt {
             peer: peer.id(),
@@ -265,6 +266,20 @@ impl IpcKernel {
             reply_endpoint,
             shared_memory_hint: message.shared_memory_hint,
         })
+    }
+
+    pub fn endpoint_object_id(
+        &self,
+        capability_space: &CapabilitySpace,
+        endpoint_handle: CapabilityHandle,
+        required: CapabilityRights,
+    ) -> Result<ObjectId, IpcError> {
+        let endpoint = capability_space.resolve(endpoint_handle, required)?;
+        if endpoint.object.channel_endpoint().is_none() {
+            return Err(IpcError::ObjectKindMismatch);
+        }
+
+        Ok(endpoint.object.id())
     }
 }
 

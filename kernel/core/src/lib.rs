@@ -18,6 +18,7 @@ use ipc::IpcKernel;
 use memory::{MemoryManager, PageMapper};
 use object::KernelObjectModel;
 use syscall::DispatchTable;
+use task::TaskSystem;
 use time::TimeManager;
 
 /// Architecture-neutral kernel state constructed after early boot handoff
@@ -31,6 +32,7 @@ pub struct Kernel<'boot> {
     time: &'static TimeManager,
     objects: &'static KernelObjectModel,
     ipc: &'static IpcKernel,
+    tasks: &'static TaskSystem,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -65,16 +67,18 @@ impl<'boot> Kernel<'boot> {
         })?;
         let objects = object::initialize();
         let ipc = ipc::initialize();
+        let tasks = task::initialize(objects);
 
         Ok(Self {
             boot_context,
-            bootstrap_plan: BootstrapPlan::phase3(),
+            bootstrap_plan: BootstrapPlan::phase4(),
             memory,
             interrupts,
             syscalls,
             time,
             objects,
             ipc,
+            tasks,
         })
     }
 
@@ -108,5 +112,9 @@ impl<'boot> Kernel<'boot> {
 
     pub fn ipc(&self) -> &'static IpcKernel {
         self.ipc
+    }
+
+    pub fn tasks(&self) -> &'static TaskSystem {
+        self.tasks
     }
 }

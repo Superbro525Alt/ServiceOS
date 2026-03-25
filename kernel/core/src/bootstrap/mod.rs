@@ -74,6 +74,7 @@ pub enum BootstrapStage {
     ControlFlowFoundation,
     KernelObjectFoundation,
     RootTaskPreparation,
+    SchedulerFoundation,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -108,6 +109,13 @@ impl BootstrapPlan {
         Self {
             current: BootstrapStage::KernelObjectFoundation,
             next: Some(BootstrapStage::RootTaskPreparation),
+        }
+    }
+
+    pub const fn phase4() -> Self {
+        Self {
+            current: BootstrapStage::RootTaskPreparation,
+            next: Some(BootstrapStage::SchedulerFoundation),
         }
     }
 }

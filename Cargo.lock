@@ -81,6 +81,7 @@ name = "serviceos-kernel-arch-x86_64"
 version = "0.1.0"
 dependencies = [
  "serviceos-kernel-core",
+ "uefi",
  "x86_64",
 ]
 

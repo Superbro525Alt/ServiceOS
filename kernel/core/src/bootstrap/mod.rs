@@ -18,7 +18,9 @@ impl BootMemoryRegion {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BootMemoryRegionKind {
     Usable,
+    BootServicesReclaimable,
     BootloaderOwned,
+    AcpiReclaimable,
     FirmwareReserved,
     Device,
     Reserved,
@@ -54,6 +56,13 @@ impl<'boot> BootContext<'boot> {
         self.memory_regions
             .iter()
             .filter(|region| matches!(region.kind, BootMemoryRegionKind::Usable))
+            .count()
+    }
+
+    pub fn boot_services_reclaimable_region_count(&self) -> usize {
+        self.memory_regions
+            .iter()
+            .filter(|region| matches!(region.kind, BootMemoryRegionKind::BootServicesReclaimable))
             .count()
     }
 }

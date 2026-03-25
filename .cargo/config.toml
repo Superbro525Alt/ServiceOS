@@ -1,0 +1,5 @@
+[alias]
+xtask = "run --package xtask --"
+kernel-build = "xtask build"
+kernel-run = "xtask qemu"
+

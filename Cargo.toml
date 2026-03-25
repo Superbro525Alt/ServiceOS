@@ -1,0 +1,21 @@
+[workspace]
+resolver = "3"
+members = [
+    "kernel/core",
+    "kernel/arch/x86_64",
+    "kernel/image/x86_64",
+    "support/xtask",
+]
+
+[workspace.package]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+authors = ["Paul H"]
+repository = "https://example.invalid/serviceos"
+rust-version = "1.85"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

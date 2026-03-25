@@ -2,10 +2,9 @@
 
 ## Philosophy
 
-The kernel exists to provide mechanisms that let later userspace services build
-policy.
+The kernel provides mechanisms, not policy.
 
-The long-term operating system model is:
+The intended long-term structure remains:
 
 ```text
 kernel
@@ -15,44 +14,43 @@ kernel
         -> shells, runtimes, applications, compatibility layers
 ```
 
-Phase 0 deliberately implements none of those userspace layers. It only creates
-the kernel foundation that lets them appear later without redesigning the
-repository or boot path.
+Phase 1 still does not implement those service layers. It only establishes the
+low-level boot and memory substrate they will eventually require.
 
-## Kernel responsibilities
+## What the kernel owns now
 
-The kernel will eventually own:
+- firmware handoff normalization
+- physical memory discovery
+- conservative early frame allocation
+- x86_64 page-table mutation for kernel-owned mappings
+- bootstrap heap allocation
+- kernel address-space root tracking
 
-- virtual and physical memory mechanisms
-- task and address-space mechanisms
-- interrupt, exception, and timer control
-- capability and kernel object mediation
-- IPC transport and syscall entry
+## What stays out of the kernel for now
 
-The kernel will explicitly avoid embedding high-level service policy such as:
+- service startup policy
+- driver policy
+- filesystem and storage semantics
+- networking policy
+- application/runtime policy
+- desktop and graphics policy
 
-- filesystem semantics
-- networking stacks
-- device management policy
-- GUI and desktop composition
-- application runtime policy
-- system configuration policy
+## Current architectural choices
 
-## Design direction
+- `x86_64` + UEFI + QEMU is the primary bring-up path
+- generic kernel code owns abstract memory and address-space concepts
+- the x86_64 crate owns UEFI boot parsing and page-table mutation details
+- the active firmware page tables are reused during Phase 1 instead of being
+  replaced immediately
+- the kernel reserves a future high-half layout even though only the heap is
+  actively mapped there today
 
-- Small kernel, higher-level functionality in services
-- Capability-oriented object access instead of ambient authority
-- Strong separation between generic subsystems and architecture code
-- Boot-time code kept narrow so later firmware or loader changes do not reshape
-  the rest of the kernel
-- Repository organized for long-term subsystem ownership, not tutorial-style
-  bring-up
+## Temporary but explicit assumptions
 
-## Phase 0 decisions
+- The early x86_64 bring-up uses the firmware’s flat physical mapping with
+  `physical_memory_offset = 0`
+- Page-table writes are bracketed by temporarily clearing `CR0.WP` because the
+  firmware keeps its active page-table pages read-only
+- Only UEFI `CONVENTIONAL` memory is handed to the early frame allocator
 
-- `x86_64` is the first supported architecture
-- QEMU is the primary development target
-- UEFI is the default firmware path for QEMU bring-up
-- The initial boot path is a direct UEFI application entry so repository
-  structure and subsystem boundaries can settle before a more advanced loader
-  contract is introduced
+These are Phase 1 bring-up constraints, not long-term ABI commitments.

@@ -1,26 +1,28 @@
-# Later Phases
+# Roadmap
 
-## Phase 1
+## Completed in Phase 1
 
-- physical memory manager
-- kernel virtual address layout
-- early page management
-- interrupt and exception table installation
-- basic timer source
+- real UEFI memory-map capture
+- early physical frame allocator
+- initial kernel virtual layout
+- x86_64 page-table mutation for heap mapping
+- bootstrap kernel heap allocator
+- kernel address-space root tracking
 
 ## Phase 2
 
-- kernel object registry
-- capability spaces
-- address spaces and task containers
-- first syscall dispatch layer
+- reclaim boot-services memory safely
+- install kernel-owned page tables
+- build direct physical-memory mapping
+- flesh out address-space creation APIs
+- begin kernel object allocation strategy beyond the bootstrap heap
 
 ## Phase 3
 
-- thread model
-- scheduler scaffolding
-- IPC endpoints and message transfer model
-- root userspace task launch
+- capability spaces
+- syscall entry and dispatch
+- thread and task bring-up
+- first user address-space construction
 
 ## Beyond
 
@@ -29,7 +31,3 @@
 - driver isolation strategy
 - storage, networking, and graphics in services
 - polished desktop stack
-
-Each phase should add mechanisms only after the module boundaries already exist
-to host them cleanly.
-

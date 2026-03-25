@@ -88,4 +88,11 @@ impl BootstrapPlan {
             next: Some(BootstrapStage::MemoryDiscovery),
         }
     }
+
+    pub const fn phase1() -> Self {
+        Self {
+            current: BootstrapStage::MemoryDiscovery,
+            next: Some(BootstrapStage::KernelObjectFoundation),
+        }
+    }
 }

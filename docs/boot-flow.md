@@ -2,11 +2,11 @@
 
 ## Default path
 
-Phase 0 uses:
+Phase 1 uses:
 
-- the `uefi` crate in the kernel image crate for the firmware entry contract
-- the host-side `xtask` tool to stage an EFI system partition directory
-- `QEMU + OVMF` for the default UEFI execution path
+- the `uefi` crate in the kernel image crate for firmware entry
+- the host-side `xtask` tool to stage an EFI system partition
+- `QEMU + OVMF` for the default run target
 
 ## Control flow
 
@@ -16,21 +16,26 @@ QEMU
     -> EFI system partition
       -> kernel/image/x86_64::BOOTX64.EFI
         -> kernel_main()
-          -> arch x86_64 early bring-up
-          -> boot context synthesis
-          -> kernel/core initialization boundary
+          -> early serial init
+          -> capture ACPI RSDP pointer if present
+          -> exit UEFI boot services
+          -> normalize UEFI memory map into BootContext
+          -> create x86_64 active-page-table wrapper
+          -> generic kernel memory initialization
           -> halt loop
 ```
 
-## What Phase 0 does not do
+## What is implemented now
 
-- no memory allocator
-- no page-table manager
-- no scheduler
-- no userspace launch
-- no syscall ABI implementation
-- no real interrupt descriptor setup
-- no full UEFI memory-map normalization yet
+- real UEFI memory-map capture after `ExitBootServices`
+- boot context population with usable, reclaimable, and reserved regions
+- x86_64 active page-table access through the current CR3 root
+- dedicated kernel heap mapping in the upper canonical half
 
-The boot path exists only to define the early control boundary and to prove that
-the repository structure can carry a real kernel later.
+## What is intentionally deferred
+
+- switching to fully kernel-owned page tables
+- reclaiming boot-services memory
+- direct-map installation for all physical memory
+- interrupt table install and timer bring-up
+- userspace launch

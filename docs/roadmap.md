@@ -17,19 +17,28 @@
 - monotonic time and deadline wakeup foundation
 - syscall dispatch groundwork on vector `0x80`
 
-## Phase 3
+## Completed in Phase 3
+
+- registry-backed kernel object model
+- bootstrap root task and per-task capability spaces
+- handle rights, duplication, transfer, and close semantics
+- channel IPC with message payloads and capability transfer
+- object lifetime cleanup through weak registry tracking
+
+## Phase 4
 
 - reclaim boot-services memory safely
 - install kernel-owned page tables
 - build direct physical-memory mapping
 - flesh out address-space creation APIs
-- begin kernel object allocation strategy beyond the bootstrap heap
+- connect blocking IPC waits to the eventual scheduler
 
-## Phase 4
+## Phase 5
 
-- capability spaces
-- thread and task bring-up
+- runnable thread bring-up
 - first user address-space construction
+- syscall ABI expansion around handles and objects
+- root userspace service-manager handoff preparation
 
 ## Beyond
 

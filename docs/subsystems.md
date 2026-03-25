@@ -19,24 +19,48 @@ It does not own scheduler policy, service policy, or userspace loading.
 
 ## `task`
 
-Still owns identifiers and future execution-container concepts, but it does not
-yet create runnable processes because the memory model is only now being
-established.
+Now owns:
+
+- task and thread object state
+- task roles and future-ready address-space attachment points
+- execution-state and wait-target bookkeeping for later scheduling
+- per-task capability-space ownership
+
+It still does not own scheduling policy or user-mode execution.
 
 ## `ipc`
 
-Still deferred. No policy-heavy IPC implementation belongs here until address
-spaces and syscall entry are stable.
+Now owns:
+
+- channel endpoint objects
+- bounded message shape rules
+- capability-carrying messages
+- send and receive semantics independent of service policy
+
+It still does not own RPC policy, broker policy, or shared-memory protocol
+semantics.
 
 ## `capability`
 
-Still defines authority concepts only. Real capability-space population waits
-for object and address-space infrastructure.
+Now owns:
+
+- handle allocation within a capability space
+- per-handle rights masks
+- duplication and transfer checks
+- explicit close semantics
+
+It does not own naming policy or global discovery.
 
 ## `object`
 
-Still defines kernel object identity and typing. Later phases will pair it with
-real allocation and lifetime management.
+Now owns:
+
+- registry-backed object identity
+- the unified object taxonomy used by task, IPC, timer, and memory subsystems
+- weak-indexed live-object tracking
+- bootstrap root-task creation
+
+It still does not own slab caches or long-term allocator specialization.
 
 ## `syscall`
 

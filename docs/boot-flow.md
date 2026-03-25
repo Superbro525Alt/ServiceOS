@@ -2,7 +2,7 @@
 
 ## Default path
 
-Phase 2 uses:
+Phase 3 uses:
 
 - the `uefi` crate in the kernel image crate for firmware entry
 - the host-side `xtask` tool to stage an EFI system partition
@@ -24,6 +24,8 @@ QEMU
           -> generic kernel memory initialization
           -> x86_64 GDT/TSS/IDT installation
           -> PIC remap and PIT programming
+          -> generic object and IPC initialization
+          -> phase-3 object/handle/IPC self-check
           -> enable interrupts
           -> wait for timer-driven wakeup
           -> halt loop
@@ -39,6 +41,10 @@ QEMU
 - timer interrupt delivery through the legacy PIC/PIT path
 - deadline wakeup processing in generic kernel time code
 - structured exception/fault reporting in Rust
+- bootstrap root-task creation with an initial self capability
+- a registry-backed object model initialized before interrupts are enabled
+- a boot-time self-check that creates channel endpoints, transfers a
+  rights-reduced memory-object handle, and confirms cleanup semantics
 
 ## What is intentionally deferred
 

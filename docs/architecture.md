@@ -15,7 +15,7 @@ kernel
 ```
 
 Phase 1 still does not implement those service layers. It only establishes the
-low-level boot, memory, and control-flow substrate they will eventually
+low-level boot, memory, control-flow, and object substrate they will eventually
 require.
 
 ## What the kernel owns now
@@ -30,6 +30,10 @@ require.
 - timer interrupt delivery and monotonic tick accounting
 - deadline wakeup bookkeeping for future blocking operations
 - syscall dispatch structure without high-level policy
+- registry-backed kernel object identity and typing
+- per-task capability spaces as the authority boundary
+- channel IPC and capability transfer primitives
+- object lifetime tracking through handles plus strong object references
 
 ## What stays out of the kernel for now
 
@@ -44,6 +48,8 @@ require.
 
 - `x86_64` + UEFI + QEMU is the primary bring-up path
 - generic kernel code owns abstract memory and address-space concepts
+- generic kernel code also owns objects, capabilities, IPC semantics, and
+  lifetime rules
 - the x86_64 crate owns UEFI boot parsing and page-table mutation details
 - the active firmware page tables are reused during Phase 1 instead of being
   replaced immediately
@@ -52,6 +58,8 @@ require.
 - the x86_64 trap path now uses the nightly `extern "x86-interrupt"` ABI for
   exceptions and IRQ handlers, while the syscall vector keeps a small assembly
   shim for general-purpose register capture
+- each task object owns its own capability space, so later userspace services
+  can be composed around explicit handle transfer instead of global namespaces
 
 ## Temporary but explicit assumptions
 
@@ -65,5 +73,10 @@ require.
 - Syscalls use interrupt vector `0x80` as the initial entry point instead of a
   faster `SYSCALL/SYSRET` path because user-mode stacks and privilege
   transitions are not built yet
+- The kernel object registry currently uses `Arc` ownership and a weak-indexed
+  live-object table because it is simple, explicit, and a good fit for early
+  Rust bring-up
+- Channels are the first IPC primitive because they align with the long-term
+  service graph and keep authority transfer explicit
 
-These are Phase 2 bring-up constraints, not long-term ABI commitments.
+These are Phase 3 bring-up constraints, not long-term ABI commitments.

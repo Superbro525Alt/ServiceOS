@@ -9,7 +9,7 @@ pub const BOOT_STORE_VERSION: u32 = 1;
 pub const BOOT_STORE_PATH_MAX: usize = 88;
 pub const BOOT_STORE_MAX_DEPENDENCIES: usize = 6;
 pub const BOOT_STORE_MAX_GRANTS: usize = 4;
-pub const BOOT_STORE_MAX_LOOKUPS: usize = 4;
+pub const BOOT_STORE_MAX_LOOKUPS: usize = 6;
 pub const BOOT_STORE_MAX_RESOURCES: usize = 4;
 
 #[repr(u32)]
@@ -397,6 +397,7 @@ fn parse_service_id(value: &str) -> Result<ServiceId, BootStoreError> {
         "config-service" => Ok(ServiceId::Config),
         "log-service" => Ok(ServiceId::Log),
         "status-service" => Ok(ServiceId::Status),
+        "shell-service" => Ok(ServiceId::Shell),
         _ => Err(BootStoreError::InvalidManifest),
     }
 }
@@ -409,6 +410,8 @@ fn parse_image_id(value: &str) -> Result<ServiceImageId, BootStoreError> {
         "config-service" => Ok(ServiceImageId::ConfigService),
         "log-service" => Ok(ServiceImageId::LogService),
         "status-service" => Ok(ServiceImageId::StatusService),
+        "shell-service" => Ok(ServiceImageId::ShellService),
+        "sysinfo-tool" => Ok(ServiceImageId::SysinfoTool),
         _ => Err(BootStoreError::InvalidManifest),
     }
 }

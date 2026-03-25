@@ -47,6 +47,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "serviceos-shell-service"
+version = "0.1.0"
+dependencies = [
+ "serviceos-abi",
+ "serviceos-userspace-runtime",
+]
+
+[[package]]
 name = "serviceos-status-service"
 version = "0.1.0"
 dependencies = [
@@ -60,6 +68,14 @@ version = "0.1.0"
 dependencies = [
  "serviceos-abi",
  "serviceos-bundle",
+ "serviceos-userspace-runtime",
+]
+
+[[package]]
+name = "serviceos-sysinfo-tool"
+version = "0.1.0"
+dependencies = [
+ "serviceos-abi",
  "serviceos-userspace-runtime",
 ]
 

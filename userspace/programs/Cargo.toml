@@ -8,6 +8,8 @@ members = [
     "config-service",
     "console-service",
     "status-service",
+    "shell-service",
+    "sysinfo-tool",
 ]
 
 [profile.dev]

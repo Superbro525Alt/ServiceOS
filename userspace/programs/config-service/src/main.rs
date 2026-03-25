@@ -2,7 +2,7 @@
 #![no_main]
 
 use serviceos_userspace_runtime as rt;
-use rt::{ConfigKey, ConfigTag, ConfigValueKind, RawMessage, ServiceId};
+use rt::{ConfigKey, ConfigTag, ConfigValueKind, ControlTag, LifecycleEvent, RawMessage, ServiceId};
 
 const MAX_CONFIG_BYTES: usize = 256;
 
@@ -55,27 +55,44 @@ fn main() -> u64 {
     let _ = rt::handle_close(public.second);
 
     loop {
+        match poll_lifecycle(bootstrap) {
+            Ok(true) => return 0,
+            Ok(false) => {}
+            Err(_) => return 0xf207,
+        }
+
         let mut request = RawMessage::empty(0);
-        if rt::channel_receive_blocking(public.first, &mut request).is_err() {
-            return 0xf207;
-        }
-        if request.tag != ConfigTag::ReadRequest as u32 || request.word_count < 1 || request.handle_count < 1 {
-            continue;
+        match rt::channel_receive_nonblocking(public.first, &mut request) {
+            Ok(()) => {
+                if request.tag != ConfigTag::ReadRequest as u32
+                    || request.word_count < 1
+                    || request.handle_count < 1
+                {
+                    continue;
+                }
+
+                let reply_handle = request.handles[0];
+                let (kind, value) =
+                    match find_config(&entries[..entry_count], config_key_from_word(request.words[0])) {
+                        Some(entry) => (entry.kind as u32 as u64, entry.value),
+                        None => (0, 0),
+                    };
+
+                let mut reply = RawMessage::empty(ConfigTag::ReadReply as u32);
+                reply.word_count = 3;
+                reply.words[0] = request.words[0];
+                reply.words[1] = kind;
+                reply.words[2] = value;
+                let _ = rt::channel_send(reply_handle, &reply);
+                let _ = rt::handle_close(reply_handle);
+            }
+            Err(rt::Error::QueueEmpty) => {}
+            Err(_) => return 0xf208,
         }
 
-        let reply_handle = request.handles[0];
-        let (kind, value) = match find_config(&entries[..entry_count], config_key_from_word(request.words[0])) {
-            Some(entry) => (entry.kind as u32 as u64, entry.value),
-            None => (0, 0),
-        };
-
-        let mut reply = RawMessage::empty(ConfigTag::ReadReply as u32);
-        reply.word_count = 3;
-        reply.words[0] = request.words[0];
-        reply.words[1] = kind;
-        reply.words[2] = value;
-        let _ = rt::channel_send(reply_handle, &reply);
-        let _ = rt::handle_close(reply_handle);
+        if rt::yield_current().is_err() {
+            return 0xf209;
+        }
     }
 }
 
@@ -113,5 +130,30 @@ fn config_key_from_word(value: u64) -> ConfigKey {
         x if x == ConfigKey::LogMinimumSeverity as u32 => ConfigKey::LogMinimumSeverity,
         x if x == ConfigKey::StatusConsoleMirror as u32 => ConfigKey::StatusConsoleMirror,
         _ => ConfigKey::StatusHeartbeatTicks,
+    }
+}
+
+fn poll_lifecycle(bootstrap: rt::Handle) -> rt::Result<bool> {
+    let mut message = RawMessage::empty(0);
+    match rt::channel_receive_nonblocking(bootstrap, &mut message) {
+        Ok(()) if message.tag == ControlTag::Lifecycle as u32 && message.word_count > 0 => {
+            Ok(matches!(
+                lifecycle_event_from_word(message.words[0]),
+                LifecycleEvent::Restarting | LifecycleEvent::Stopped
+            ))
+        }
+        Ok(()) => Ok(false),
+        Err(rt::Error::QueueEmpty) => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+fn lifecycle_event_from_word(value: u64) -> LifecycleEvent {
+    match value as u32 {
+        x if x == LifecycleEvent::Starting as u32 => LifecycleEvent::Starting,
+        x if x == LifecycleEvent::Ready as u32 => LifecycleEvent::Ready,
+        x if x == LifecycleEvent::Failed as u32 => LifecycleEvent::Failed,
+        x if x == LifecycleEvent::Stopped as u32 => LifecycleEvent::Stopped,
+        _ => LifecycleEvent::Restarting,
     }
 }

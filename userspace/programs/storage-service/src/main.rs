@@ -6,7 +6,10 @@ use serviceos_bundle::{
     BootStoreHeader,
 };
 use serviceos_userspace_runtime as rt;
-use rt::{rights, Handle, RawMessage, ServiceId, StorageStatus, StorageTag, IPC_MAX_WORDS};
+use rt::{
+    rights, ControlTag, Handle, LifecycleEvent, RawMessage, ServiceId, StorageStatus, StorageTag,
+    IPC_MAX_WORDS,
+};
 
 const MAX_BOOTSTORE_ENTRIES: usize = 32;
 const MAX_BLOB_SESSIONS: usize = 24;
@@ -34,6 +37,10 @@ impl EntrySlot {
 
     fn matches(&self, path: &[u8]) -> bool {
         self.path_len == path.len() && self.path[..self.path_len] == *path
+    }
+
+    fn matches_prefix(&self, prefix: &[u8]) -> bool {
+        prefix.len() <= self.path_len && self.path[..prefix.len()] == *prefix
     }
 }
 
@@ -143,15 +150,22 @@ fn main() -> u64 {
 
     let mut sessions = [BlobSession::empty(); MAX_BLOB_SESSIONS];
     loop {
+        match poll_lifecycle(bootstrap) {
+            Ok(true) => return 0,
+            Ok(false) => {}
+            Err(_) => return 0xf50c,
+        }
+
         let mut root_request = RawMessage::empty(0);
         match rt::channel_receive_nonblocking(public.first, &mut root_request) {
             Ok(()) => {
-                if handle_open_request(&entries[..entry_count], &mut sessions, public.first, &root_request).is_err() {
-                    return 0xf50c;
+                if handle_root_request(&entries[..entry_count], &mut sessions, &root_request).is_err()
+                {
+                    return 0xf50d;
                 }
             }
             Err(rt::Error::QueueEmpty) => {}
-            Err(_) => return 0xf50d,
+            Err(_) => return 0xf50e,
         }
 
         for session in &mut sessions {
@@ -162,27 +176,38 @@ fn main() -> u64 {
             match rt::channel_receive_nonblocking(session.endpoint, &mut request) {
                 Ok(()) => {
                     if handle_read_request(bootstore_handle, session, &request).is_err() {
-                        return 0xf50e;
+                        return 0xf50f;
                     }
                 }
                 Err(rt::Error::QueueEmpty) => {}
-                Err(_) => return 0xf50f,
+                Err(_) => release_session(session),
             }
         }
 
         if rt::yield_current().is_err() {
-            return 0xf510;
+            return 0xf511;
         }
+    }
+}
+
+fn handle_root_request(
+    entries: &[EntrySlot],
+    sessions: &mut [BlobSession; MAX_BLOB_SESSIONS],
+    message: &RawMessage,
+) -> rt::Result<()> {
+    match message.tag {
+        x if x == StorageTag::OpenRequest as u32 => handle_open_request(entries, sessions, message),
+        x if x == StorageTag::ListRequest as u32 => handle_list_request(entries, message),
+        _ => Ok(()),
     }
 }
 
 fn handle_open_request(
     entries: &[EntrySlot],
     sessions: &mut [BlobSession; MAX_BLOB_SESSIONS],
-    _public: Handle,
     message: &RawMessage,
 ) -> rt::Result<()> {
-    if message.tag != StorageTag::OpenRequest as u32 || message.word_count < 1 || message.handle_count < 1 {
+    if message.word_count < 1 || message.handle_count < 1 {
         return Ok(());
     }
 
@@ -223,6 +248,42 @@ fn handle_open_request(
     let _ = rt::channel_send(reply_handle, &reply);
     let _ = rt::handle_close(reply_handle);
     let _ = rt::handle_close(pair.second);
+    Ok(())
+}
+
+fn handle_list_request(entries: &[EntrySlot], message: &RawMessage) -> rt::Result<()> {
+    if message.word_count < 2 || message.handle_count < 1 {
+        return Ok(());
+    }
+
+    let list_index = message.words[0] as usize;
+    let prefix_len = message.words[1] as usize;
+    let mut prefix = [0u8; serviceos_bundle::BOOT_STORE_PATH_MAX];
+    if unpack_bytes(&message.words[2..message.word_count as usize], prefix_len, &mut prefix).is_err()
+    {
+        return Ok(());
+    }
+
+    let reply_handle = message.handles[0];
+    let mut reply = RawMessage::empty(StorageTag::ListReply as u32);
+    reply.word_count = 3;
+    reply.words[0] = StorageStatus::End as u32 as u64;
+    reply.words[1] = 0;
+    reply.words[2] = 0;
+
+    if let Some(entry) = entries
+        .iter()
+        .filter(|entry| entry.matches_prefix(&prefix[..prefix_len]))
+        .nth(list_index)
+    {
+        reply.words[0] = StorageStatus::Ok as u32 as u64;
+        reply.words[1] = entry.kind as u32 as u64;
+        reply.words[2] = entry.path_len as u64;
+        reply.word_count += pack_bytes(&entry.path[..entry.path_len], &mut reply.words[3..])?;
+    }
+
+    let _ = rt::channel_send(reply_handle, &reply);
+    let _ = rt::handle_close(reply_handle);
     Ok(())
 }
 
@@ -296,4 +357,36 @@ fn unpack_bytes(words: &[u64], len: usize, destination: &mut [u8]) -> rt::Result
         copied += chunk;
     }
     Ok(())
+}
+
+fn release_session(session: &mut BlobSession) {
+    if session.endpoint != rt::INVALID_HANDLE {
+        let _ = rt::handle_close(session.endpoint);
+    }
+    *session = BlobSession::empty();
+}
+
+fn poll_lifecycle(bootstrap: rt::Handle) -> rt::Result<bool> {
+    let mut message = RawMessage::empty(0);
+    match rt::channel_receive_nonblocking(bootstrap, &mut message) {
+        Ok(()) if message.tag == ControlTag::Lifecycle as u32 && message.word_count > 0 => {
+            Ok(matches!(
+                lifecycle_event_from_word(message.words[0]),
+                LifecycleEvent::Restarting | LifecycleEvent::Stopped
+            ))
+        }
+        Ok(()) => Ok(false),
+        Err(rt::Error::QueueEmpty) => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+fn lifecycle_event_from_word(value: u64) -> LifecycleEvent {
+    match value as u32 {
+        x if x == LifecycleEvent::Starting as u32 => LifecycleEvent::Starting,
+        x if x == LifecycleEvent::Ready as u32 => LifecycleEvent::Ready,
+        x if x == LifecycleEvent::Failed as u32 => LifecycleEvent::Failed,
+        x if x == LifecycleEvent::Stopped as u32 => LifecycleEvent::Stopped,
+        _ => LifecycleEvent::Restarting,
+    }
 }

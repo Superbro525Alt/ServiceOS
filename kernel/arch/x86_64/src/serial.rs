@@ -24,6 +24,22 @@ pub fn write_args(args: fmt::Arguments<'_>) {
     let _ = writer.write_fmt(args);
 }
 
+pub fn write_bytes(bytes: &[u8]) {
+    for byte in bytes.iter().copied() {
+        write_byte(byte);
+    }
+}
+
+pub fn try_read_byte() -> Option<u8> {
+    unsafe {
+        if read_port(COM1_BASE + 5) & 0x01 == 0 {
+            None
+        } else {
+            Some(read_port(COM1_BASE))
+        }
+    }
+}
+
 struct SerialWriter;
 
 impl Write for SerialWriter {

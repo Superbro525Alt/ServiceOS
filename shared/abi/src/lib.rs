@@ -36,6 +36,8 @@ pub enum SyscallNumber {
     ServiceSpawn = 10,
     TaskStatus = 11,
     MemoryRead = 12,
+    DebugConsoleRead = 13,
+    DebugConsoleWrite = 14,
 }
 
 #[repr(u32)]
@@ -98,6 +100,8 @@ pub enum ServiceImageId {
     ConfigService = 4,
     LogService = 5,
     StatusService = 6,
+    ShellService = 7,
+    SysinfoTool = 8,
 }
 
 #[repr(u32)]
@@ -109,6 +113,7 @@ pub enum ServiceId {
     Config = 4,
     Log = 5,
     Status = 6,
+    Shell = 7,
 }
 
 #[repr(u32)]
@@ -175,6 +180,7 @@ pub enum LogDomain {
     Console = 7,
     Status = 8,
     Ipc = 9,
+    Shell = 10,
 }
 
 #[repr(u32)]
@@ -193,18 +199,30 @@ pub enum LogEvent {
     StorageMounted = 11,
     ManifestLoaded = 12,
     ResourceOpened = 13,
+    SessionOpened = 14,
+    ShellCommand = 15,
+    ToolLaunched = 16,
 }
 
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LogTag {
     Record = 0x100,
+    QueryInfoRequest = 0x101,
+    QueryInfoReply = 0x102,
+    QueryRecordRequest = 0x103,
+    QueryRecordReply = 0x104,
 }
 
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ConsoleTag {
     WriteRecord = 0x200,
+    SessionOpenRequest = 0x201,
+    SessionOpenReply = 0x202,
+    SessionWriteText = 0x203,
+    SessionReadLineRequest = 0x204,
+    SessionReadLineReply = 0x205,
 }
 
 #[repr(u32)]
@@ -228,6 +246,8 @@ pub enum StorageTag {
     OpenReply = 0x501,
     ReadRequest = 0x502,
     ReadReply = 0x503,
+    ListRequest = 0x504,
+    ListReply = 0x505,
 }
 
 #[repr(u32)]
@@ -237,6 +257,51 @@ pub enum StorageStatus {
     NotFound = 1,
     InvalidPath = 2,
     InvalidOffset = 3,
+    End = 4,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LogQueryStatus {
+    Ok = 0,
+    NotFound = 1,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ManagerTag {
+    ListServicesRequest = 0x600,
+    ListServicesReply = 0x601,
+    ServiceStatusRequest = 0x602,
+    ServiceStatusReply = 0x603,
+    ServiceActionRequest = 0x604,
+    ServiceActionReply = 0x605,
+    LaunchRequest = 0x606,
+    LaunchReply = 0x607,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ManagerStatus {
+    Ok = 0,
+    Denied = 1,
+    NotFound = 2,
+    Busy = 3,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ManagerAction {
+    Restart = 1,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ManagerServicePhase {
+    Dormant = 0,
+    Starting = 1,
+    Ready = 2,
+    Exited = 3,
 }
 
 #[repr(u32)]

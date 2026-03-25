@@ -104,6 +104,8 @@ fn kernel_main() -> Status {
     let _ = BOOT_STORE_IMAGE_SOURCE.call_once(|| boot_store);
     kernel_user::register_image_resolver(resolve_boot_store_image);
     syscall::register_debug_log_writer(debug_log_writer);
+    syscall::register_debug_console_reader(serial::try_read_byte);
+    syscall::register_debug_console_writer(serial::write_bytes);
 
     log(
         "memory",

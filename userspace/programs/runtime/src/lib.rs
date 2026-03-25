@@ -8,7 +8,8 @@ use core::{
 pub use serviceos_abi::{
     ConfigKey, ConfigTag, ConfigValueKind, ConsoleTag, ControlTag, Handle, HandlePair,
     IPC_FLAG_NONBLOCK, IPC_MAX_HANDLES, IPC_MAX_WORDS, INVALID_HANDLE, LifecycleEvent,
-    LogDomain, LogEvent, LogSeverity, LogTag, LookupStatus, RawMessage, ServiceId, ServiceImageId,
+    LogDomain, LogEvent, LogQueryStatus, LogSeverity, LogTag, LookupStatus, ManagerAction,
+    ManagerServicePhase, ManagerStatus, ManagerTag, RawMessage, ServiceId, ServiceImageId,
     StatusTag, StorageStatus, StorageTag, SyscallErrorCode, SyscallNumber, TaskStateCode,
     TaskStatus,
 };
@@ -73,6 +74,19 @@ pub fn debug_log(message: &[u8]) -> Result<()> {
         SyscallNumber::DebugLogWrite,
         message.as_ptr() as u64,
         message.len() as u64,
+    )
+    .map(|_| ())
+}
+
+pub fn debug_console_read_byte() -> Result<u8> {
+    syscall0(SyscallNumber::DebugConsoleRead).map(|value| value as u8)
+}
+
+pub fn debug_console_write(bytes: &[u8]) -> Result<()> {
+    syscall2(
+        SyscallNumber::DebugConsoleWrite,
+        bytes.as_ptr() as u64,
+        bytes.len() as u64,
     )
     .map(|_| ())
 }
@@ -177,6 +191,24 @@ pub fn wait_for_exit(task_handle: Handle) -> Result<TaskStatus> {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LogRecord {
+    pub sequence: u64,
+    pub source: ServiceId,
+    pub severity: LogSeverity,
+    pub domain: LogDomain,
+    pub event: LogEvent,
+    pub arg0: u64,
+    pub arg1: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ManagerServiceInfo {
+    pub service_id: ServiceId,
+    pub phase: ManagerServicePhase,
+    pub attempts: u32,
+}
+
 pub fn register_service(bootstrap: Handle, service_id: ServiceId, public: Handle) -> Result<()> {
     let mut register = RawMessage::empty(ControlTag::Register as u32);
     register.word_count = 1;
@@ -247,6 +279,55 @@ pub fn console_write_record(
     message.words[5] = arg1;
     message.words[6] = sequence;
     channel_send(console_handle, &message)
+}
+
+pub fn console_session_open(console_handle: Handle) -> Result<Handle> {
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(ConsoleTag::SessionOpenRequest as u32);
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(console_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != ConsoleTag::SessionOpenReply as u32 || response.handle_count < 1 {
+        return Err(Error::Busy);
+    }
+    Ok(response.handles[0])
+}
+
+pub fn console_session_write(session_handle: Handle, text: &str) -> Result<()> {
+    let text_bytes = text.as_bytes();
+    if text_bytes.len() > IPC_MAX_WORDS * 8 {
+        return Err(Error::BufferTooSmall);
+    }
+    let mut message = RawMessage::empty(ConsoleTag::SessionWriteText as u32);
+    message.word_count = 1 + pack_bytes(text_bytes, &mut message.words[1..])?;
+    message.words[0] = text_bytes.len() as u64;
+    channel_send(session_handle, &message)
+}
+
+pub fn console_session_read_line(session_handle: Handle, buffer: &mut [u8]) -> Result<usize> {
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(ConsoleTag::SessionReadLineRequest as u32);
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(session_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != ConsoleTag::SessionReadLineReply as u32 || response.word_count < 1 {
+        return Err(Error::InvalidArgument);
+    }
+    let len = response.words[0] as usize;
+    unpack_bytes(&response.words[1..response.word_count as usize], len, buffer)?;
+    Ok(len)
 }
 
 pub fn config_read(config_handle: Handle, key: ConfigKey) -> Result<(ConfigValueKind, u64)> {
@@ -341,6 +422,222 @@ pub fn storage_read(blob_handle: Handle, offset: usize, buffer: &mut [u8]) -> Re
         x if x == StorageStatus::NotFound as u32 => Err(Error::NotFound),
         _ => Err(Error::InvalidArgument),
     }
+}
+
+pub fn storage_list(
+    storage_handle: Handle,
+    prefix: &str,
+    index: usize,
+    path_buffer: &mut [u8],
+) -> Result<Option<(StorageStatus, usize)>> {
+    let prefix_bytes = prefix.as_bytes();
+    let max_inline_bytes = (IPC_MAX_WORDS.saturating_sub(2)) * 8;
+    if prefix_bytes.len() > max_inline_bytes {
+        return Err(Error::BufferTooSmall);
+    }
+
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(StorageTag::ListRequest as u32);
+    request.word_count = 2 + pack_bytes(prefix_bytes, &mut request.words[2..])?;
+    request.words[0] = index as u64;
+    request.words[1] = prefix_bytes.len() as u64;
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(storage_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != StorageTag::ListReply as u32 || response.word_count < 3 {
+        return Err(Error::InvalidArgument);
+    }
+
+    let status = match response.words[0] as u32 {
+        x if x == StorageStatus::Ok as u32 => StorageStatus::Ok,
+        x if x == StorageStatus::End as u32 => StorageStatus::End,
+        x if x == StorageStatus::InvalidPath as u32 => StorageStatus::InvalidPath,
+        _ => return Err(Error::InvalidArgument),
+    };
+    if status == StorageStatus::End {
+        return Ok(None);
+    }
+
+    let path_len = response.words[2] as usize;
+    unpack_bytes(&response.words[3..response.word_count as usize], path_len, path_buffer)?;
+    Ok(Some((status, path_len)))
+}
+
+pub fn log_query_info(log_handle: Handle) -> Result<(u64, u64)> {
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(LogTag::QueryInfoRequest as u32);
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(log_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != LogTag::QueryInfoReply as u32 || response.word_count < 2 {
+        return Err(Error::InvalidArgument);
+    }
+    Ok((response.words[0], response.words[1]))
+}
+
+pub fn log_query_record(log_handle: Handle, sequence: u64) -> Result<Option<LogRecord>> {
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(LogTag::QueryRecordRequest as u32);
+    request.word_count = 1;
+    request.words[0] = sequence;
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(log_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != LogTag::QueryRecordReply as u32 || response.word_count < 2 {
+        return Err(Error::InvalidArgument);
+    }
+    if response.words[0] as u32 == LogQueryStatus::NotFound as u32 {
+        return Ok(None);
+    }
+    if response.word_count < 8 {
+        return Err(Error::InvalidArgument);
+    }
+
+    Ok(Some(LogRecord {
+        sequence: response.words[1],
+        source: service_id_from_word(response.words[2]),
+        severity: severity_from_word(response.words[3]),
+        domain: domain_from_word(response.words[4]),
+        event: event_from_word(response.words[5]),
+        arg0: response.words[6],
+        arg1: response.words[7],
+    }))
+}
+
+pub fn manager_list_services(
+    bootstrap: Handle,
+    services: &mut [ManagerServiceInfo],
+) -> Result<usize> {
+    let request = RawMessage::empty(ManagerTag::ListServicesRequest as u32);
+    channel_send(bootstrap, &request)?;
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(bootstrap, &mut response)?;
+    if response.tag != ManagerTag::ListServicesReply as u32 || response.word_count < 1 {
+        return Err(Error::InvalidArgument);
+    }
+
+    let count = response.words[0] as usize;
+    if count > services.len() || response.word_count < (1 + count * 2) as u32 {
+        return Err(Error::BufferTooSmall);
+    }
+    for index in 0..count {
+        services[index] = ManagerServiceInfo {
+            service_id: service_id_from_word(response.words[1 + index * 2]),
+            phase: manager_phase_from_word(response.words[2 + index * 2]),
+            attempts: (response.words[2 + index * 2] >> 32) as u32,
+        };
+    }
+    Ok(count)
+}
+
+pub fn manager_service_status(
+    bootstrap: Handle,
+    service_id: ServiceId,
+) -> Result<(ManagerStatus, ManagerServicePhase, u32, u64)> {
+    let mut request = RawMessage::empty(ManagerTag::ServiceStatusRequest as u32);
+    request.word_count = 1;
+    request.words[0] = service_id as u32 as u64;
+    channel_send(bootstrap, &request)?;
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(bootstrap, &mut response)?;
+    if response.tag != ManagerTag::ServiceStatusReply as u32 || response.word_count < 4 {
+        return Err(Error::InvalidArgument);
+    }
+
+    Ok((
+        manager_status_from_word(response.words[0]),
+        manager_phase_from_word(response.words[1]),
+        response.words[2] as u32,
+        response.words[3],
+    ))
+}
+
+pub fn manager_restart_service(bootstrap: Handle, service_id: ServiceId) -> Result<()> {
+    let mut request = RawMessage::empty(ManagerTag::ServiceActionRequest as u32);
+    request.word_count = 2;
+    request.words[0] = service_id as u32 as u64;
+    request.words[1] = ManagerAction::Restart as u32 as u64;
+    channel_send(bootstrap, &request)?;
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(bootstrap, &mut response)?;
+    if response.tag != ManagerTag::ServiceActionReply as u32 || response.word_count < 1 {
+        return Err(Error::InvalidArgument);
+    }
+    match manager_status_from_word(response.words[0]) {
+        ManagerStatus::Ok => Ok(()),
+        ManagerStatus::Busy => Err(Error::Busy),
+        ManagerStatus::NotFound => Err(Error::NotFound),
+        ManagerStatus::Denied => Err(Error::PermissionDenied),
+    }
+}
+
+pub fn manager_launch_program(
+    bootstrap: Handle,
+    image_id: ServiceImageId,
+    io_handle: Option<Handle>,
+) -> Result<Handle> {
+    let mut request = RawMessage::empty(ManagerTag::LaunchRequest as u32);
+    request.word_count = 1;
+    request.words[0] = image_id as u32 as u64;
+    if let Some(io_handle) = io_handle {
+        request.handle_count = 1;
+        request.handles[0] = io_handle;
+        request.handle_rights[0] =
+            rights::SEND | rights::RECEIVE | rights::DUPLICATE | rights::TRANSFER;
+    }
+    channel_send(bootstrap, &request)?;
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(bootstrap, &mut response)?;
+    if response.tag != ManagerTag::LaunchReply as u32 || response.word_count < 1 {
+        return Err(Error::InvalidArgument);
+    }
+    match manager_status_from_word(response.words[0]) {
+        ManagerStatus::Ok if response.handle_count > 0 => Ok(response.handles[0]),
+        ManagerStatus::Busy => Err(Error::Busy),
+        ManagerStatus::NotFound => Err(Error::NotFound),
+        ManagerStatus::Denied => Err(Error::PermissionDenied),
+        _ => Err(Error::InvalidArgument),
+    }
+}
+
+pub fn status_snapshot(status_handle: Handle) -> Result<(u64, u64)> {
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(StatusTag::SnapshotRequest as u32);
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(status_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != StatusTag::SnapshotReply as u32 || response.word_count < 2 {
+        return Err(Error::InvalidArgument);
+    }
+    Ok((response.words[0], response.words[1]))
 }
 
 pub fn storage_read_all(blob_handle: Handle, buffer: &mut [u8], expected_len: usize) -> Result<usize> {
@@ -468,6 +765,82 @@ fn unpack_bytes(words: &[u64], len: usize, destination: &mut [u8]) -> Result<()>
         copied += chunk;
     }
     Ok(())
+}
+
+fn service_id_from_word(value: u64) -> ServiceId {
+    match value as u32 {
+        x if x == ServiceId::Storage as u32 => ServiceId::Storage,
+        x if x == ServiceId::Console as u32 => ServiceId::Console,
+        x if x == ServiceId::Config as u32 => ServiceId::Config,
+        x if x == ServiceId::Log as u32 => ServiceId::Log,
+        x if x == ServiceId::Status as u32 => ServiceId::Status,
+        x if x == ServiceId::Shell as u32 => ServiceId::Shell,
+        _ => ServiceId::RootManager,
+    }
+}
+
+fn severity_from_word(value: u64) -> LogSeverity {
+    match value as u32 {
+        x if x == LogSeverity::Trace as u32 => LogSeverity::Trace,
+        x if x == LogSeverity::Debug as u32 => LogSeverity::Debug,
+        x if x == LogSeverity::Warn as u32 => LogSeverity::Warn,
+        x if x == LogSeverity::Error as u32 => LogSeverity::Error,
+        _ => LogSeverity::Info,
+    }
+}
+
+fn domain_from_word(value: u64) -> LogDomain {
+    match value as u32 {
+        x if x == LogDomain::Bootstrap as u32 => LogDomain::Bootstrap,
+        x if x == LogDomain::ServiceManager as u32 => LogDomain::ServiceManager,
+        x if x == LogDomain::Storage as u32 => LogDomain::Storage,
+        x if x == LogDomain::Log as u32 => LogDomain::Log,
+        x if x == LogDomain::Config as u32 => LogDomain::Config,
+        x if x == LogDomain::Console as u32 => LogDomain::Console,
+        x if x == LogDomain::Status as u32 => LogDomain::Status,
+        x if x == LogDomain::Ipc as u32 => LogDomain::Ipc,
+        x if x == LogDomain::Shell as u32 => LogDomain::Shell,
+        _ => LogDomain::Service,
+    }
+}
+
+fn event_from_word(value: u64) -> LogEvent {
+    match value as u32 {
+        x if x == LogEvent::ServiceStarted as u32 => LogEvent::ServiceStarted,
+        x if x == LogEvent::ServiceReady as u32 => LogEvent::ServiceReady,
+        x if x == LogEvent::ServiceFailed as u32 => LogEvent::ServiceFailed,
+        x if x == LogEvent::ServiceRestarting as u32 => LogEvent::ServiceRestarting,
+        x if x == LogEvent::ConfigLoaded as u32 => LogEvent::ConfigLoaded,
+        x if x == LogEvent::ConfigRead as u32 => LogEvent::ConfigRead,
+        x if x == LogEvent::ConsoleWrite as u32 => LogEvent::ConsoleWrite,
+        x if x == LogEvent::StatusStarted as u32 => LogEvent::StatusStarted,
+        x if x == LogEvent::StatusHeartbeat as u32 => LogEvent::StatusHeartbeat,
+        x if x == LogEvent::StorageMounted as u32 => LogEvent::StorageMounted,
+        x if x == LogEvent::ManifestLoaded as u32 => LogEvent::ManifestLoaded,
+        x if x == LogEvent::ResourceOpened as u32 => LogEvent::ResourceOpened,
+        x if x == LogEvent::SessionOpened as u32 => LogEvent::SessionOpened,
+        x if x == LogEvent::ShellCommand as u32 => LogEvent::ShellCommand,
+        x if x == LogEvent::ToolLaunched as u32 => LogEvent::ToolLaunched,
+        _ => LogEvent::LookupGranted,
+    }
+}
+
+fn manager_phase_from_word(value: u64) -> ManagerServicePhase {
+    match value as u32 {
+        x if x == ManagerServicePhase::Dormant as u32 => ManagerServicePhase::Dormant,
+        x if x == ManagerServicePhase::Starting as u32 => ManagerServicePhase::Starting,
+        x if x == ManagerServicePhase::Exited as u32 => ManagerServicePhase::Exited,
+        _ => ManagerServicePhase::Ready,
+    }
+}
+
+fn manager_status_from_word(value: u64) -> ManagerStatus {
+    match value as u32 {
+        x if x == ManagerStatus::Denied as u32 => ManagerStatus::Denied,
+        x if x == ManagerStatus::NotFound as u32 => ManagerStatus::NotFound,
+        x if x == ManagerStatus::Busy as u32 => ManagerStatus::Busy,
+        _ => ManagerStatus::Ok,
+    }
 }
 
 fn decode_result(value: u64, error: u64) -> Result<u64> {

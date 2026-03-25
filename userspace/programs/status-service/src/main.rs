@@ -2,7 +2,10 @@
 #![no_main]
 
 use serviceos_userspace_runtime as rt;
-use rt::{ConfigKey, LogDomain, LogEvent, LogSeverity, RawMessage, ServiceId, StatusTag};
+use rt::{
+    ConfigKey, ControlTag, LifecycleEvent, LogDomain, LogEvent, LogSeverity, RawMessage,
+    ServiceId, StatusTag,
+};
 
 const MAX_BANNER_BYTES: usize = 128;
 
@@ -93,6 +96,12 @@ fn main() -> u64 {
     );
 
     loop {
+        match poll_lifecycle(bootstrap) {
+            Ok(true) => return 0,
+            Ok(false) => {}
+            Err(_) => return 0xf40c,
+        }
+
         let mut request = RawMessage::empty(0);
         match rt::channel_receive_nonblocking(public.first, &mut request) {
             Ok(()) => {
@@ -107,12 +116,12 @@ fn main() -> u64 {
                 }
             }
             Err(rt::Error::QueueEmpty) => {}
-            Err(_) => return 0xf40c,
+            Err(_) => return 0xf40d,
         }
 
         let now = match rt::monotonic_now() {
             Ok(now) => now,
-            Err(_) => return 0xf40d,
+            Err(_) => return 0xf40e,
         };
         if now >= next_heartbeat {
             heartbeat_count = heartbeat_count.saturating_add(1);
@@ -142,7 +151,32 @@ fn main() -> u64 {
         }
 
         if rt::yield_current().is_err() {
-            return 0xf40e;
+            return 0xf40f;
         }
+    }
+}
+
+fn poll_lifecycle(bootstrap: rt::Handle) -> rt::Result<bool> {
+    let mut message = RawMessage::empty(0);
+    match rt::channel_receive_nonblocking(bootstrap, &mut message) {
+        Ok(()) if message.tag == ControlTag::Lifecycle as u32 && message.word_count > 0 => {
+            Ok(matches!(
+                lifecycle_event_from_word(message.words[0]),
+                LifecycleEvent::Restarting | LifecycleEvent::Stopped
+            ))
+        }
+        Ok(()) => Ok(false),
+        Err(rt::Error::QueueEmpty) => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+fn lifecycle_event_from_word(value: u64) -> LifecycleEvent {
+    match value as u32 {
+        x if x == LifecycleEvent::Starting as u32 => LifecycleEvent::Starting,
+        x if x == LifecycleEvent::Ready as u32 => LifecycleEvent::Ready,
+        x if x == LifecycleEvent::Failed as u32 => LifecycleEvent::Failed,
+        x if x == LifecycleEvent::Stopped as u32 => LifecycleEvent::Stopped,
+        _ => LifecycleEvent::Restarting,
     }
 }

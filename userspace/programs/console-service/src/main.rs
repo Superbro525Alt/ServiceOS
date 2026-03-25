@@ -2,7 +2,34 @@
 #![no_main]
 
 use serviceos_userspace_runtime as rt;
-use rt::{ConsoleTag, LogDomain, LogEvent, LogSeverity, RawMessage, ServiceId};
+use rt::{
+    rights, ConsoleTag, ControlTag, LifecycleEvent, LogDomain, LogEvent, LogSeverity, RawMessage,
+    ServiceId,
+};
+
+const MAX_SESSIONS: usize = 2;
+const MAX_LINE_BYTES: usize = 128;
+
+#[derive(Clone, Copy)]
+struct Session {
+    endpoint: rt::Handle,
+    pending_reply: rt::Handle,
+    line: [u8; MAX_LINE_BYTES],
+    line_len: usize,
+    occupied: bool,
+}
+
+impl Session {
+    const fn empty() -> Self {
+        Self {
+            endpoint: rt::INVALID_HANDLE,
+            pending_reply: rt::INVALID_HANDLE,
+            line: [0; MAX_LINE_BYTES],
+            line_len: 0,
+            occupied: false,
+        }
+    }
+}
 
 rt::entry!(main);
 
@@ -22,25 +49,93 @@ fn main() -> u64 {
     }
     let _ = rt::handle_close(public.second);
 
+    let mut sessions = [Session::empty(); MAX_SESSIONS];
     loop {
-        let mut message = RawMessage::empty(0);
-        if rt::channel_receive_blocking(public.first, &mut message).is_err() {
-            return 0xf304;
-        }
-        if message.tag != ConsoleTag::WriteRecord as u32 || message.word_count < 7 {
-            continue;
+        match poll_lifecycle(bootstrap) {
+            Ok(true) => return 0,
+            Ok(false) => {}
+            Err(_) => return 0xf304,
         }
 
-        let source = service_id_from_word(message.words[0]);
-        let severity = severity_from_word(message.words[1]);
-        let domain = domain_from_word(message.words[2]);
-        let event = event_from_word(message.words[3]);
-        let _ = match event {
-            LogEvent::ServiceStarted | LogEvent::ServiceReady | LogEvent::ServiceRestarting => {
-                rt::write_logf(
+        let mut message = RawMessage::empty(0);
+        match rt::channel_receive_nonblocking(public.first, &mut message) {
+            Ok(()) => {
+                if handle_public_message(&mut sessions, &message).is_err() {
+                    return 0xf305;
+                }
+            }
+            Err(rt::Error::QueueEmpty) => {}
+            Err(_) => return 0xf306,
+        }
+
+        for session in &mut sessions {
+            if !session.occupied {
+                continue;
+            }
+            let mut session_message = RawMessage::empty(0);
+            match rt::channel_receive_nonblocking(session.endpoint, &mut session_message) {
+                Ok(()) => {
+                    if handle_session_message(session, &session_message).is_err() {
+                        return 0xf307;
+                    }
+                }
+                Err(rt::Error::QueueEmpty) => {}
+                Err(_) => release_session(session),
+            }
+        }
+
+        loop {
+            match rt::debug_console_read_byte() {
+                Ok(byte) => {
+                    if handle_input_byte(&mut sessions, byte).is_err() {
+                        return 0xf309;
+                    }
+                }
+                Err(rt::Error::QueueEmpty) => break,
+                Err(_) => return 0xf30a,
+            }
+        }
+
+        if rt::yield_current().is_err() {
+            return 0xf30b;
+        }
+    }
+}
+
+fn handle_public_message(
+    sessions: &mut [Session; MAX_SESSIONS],
+    message: &RawMessage,
+) -> rt::Result<()> {
+    match message.tag {
+        x if x == ConsoleTag::WriteRecord as u32 => {
+            if message.word_count < 7 {
+                return Ok(());
+            }
+
+            let source = service_id_from_word(message.words[0]);
+            let severity = severity_from_word(message.words[1]);
+            let domain = domain_from_word(message.words[2]);
+            let event = event_from_word(message.words[3]);
+            let _ = match event {
+                LogEvent::ServiceStarted | LogEvent::ServiceReady | LogEvent::ServiceRestarting => {
+                    rt::write_logf(
+                        "console",
+                        format_args!(
+                            "seq={} level={} source={} domain={} event={} service={} detail={}",
+                            message.words[6],
+                            severity_name(severity),
+                            service_name(source),
+                            domain_name(domain),
+                            event_name(event),
+                            service_name(service_id_from_word(message.words[4])),
+                            message.words[5],
+                        ),
+                    )
+                }
+                LogEvent::ServiceFailed => rt::write_logf(
                     "console",
                     format_args!(
-                        "seq={} level={} source={} domain={} event={} service={} detail={}",
+                        "seq={} level={} source={} domain={} event={} service={} exit={}",
                         message.words[6],
                         severity_name(severity),
                         service_name(source),
@@ -49,99 +144,239 @@ fn main() -> u64 {
                         service_name(service_id_from_word(message.words[4])),
                         message.words[5],
                     ),
-                )
+                ),
+                LogEvent::LookupGranted => rt::write_logf(
+                    "console",
+                    format_args!(
+                        "seq={} level={} source={} domain={} event={} requester={} target={}",
+                        message.words[6],
+                        severity_name(severity),
+                        service_name(source),
+                        domain_name(domain),
+                        event_name(event),
+                        service_name(service_id_from_word(message.words[4])),
+                        service_name(service_id_from_word(message.words[5])),
+                    ),
+                ),
+                LogEvent::ConfigLoaded => rt::write_logf(
+                    "console",
+                    format_args!(
+                        "seq={} level={} source={} domain={} event={} minimum-severity={}",
+                        message.words[6],
+                        severity_name(severity),
+                        service_name(source),
+                        domain_name(domain),
+                        event_name(event),
+                        message.words[4],
+                    ),
+                ),
+                LogEvent::StatusStarted => rt::write_logf(
+                    "console",
+                    format_args!(
+                        "seq={} level={} source={} domain={} event={} heartbeat-ticks={} console-period={}",
+                        message.words[6],
+                        severity_name(severity),
+                        service_name(source),
+                        domain_name(domain),
+                        event_name(event),
+                        message.words[4],
+                        message.words[5],
+                    ),
+                ),
+                LogEvent::StatusHeartbeat | LogEvent::ConsoleWrite => rt::write_logf(
+                    "console",
+                    format_args!(
+                        "seq={} level={} source={} domain={} event={} count={} tick={}",
+                        message.words[6],
+                        severity_name(severity),
+                        service_name(source),
+                        domain_name(domain),
+                        event_name(event),
+                        message.words[4],
+                        message.words[5],
+                    ),
+                ),
+                LogEvent::ConfigRead => rt::write_logf(
+                    "console",
+                    format_args!(
+                        "seq={} level={} source={} domain={} event={} key={} value={}",
+                        message.words[6],
+                        severity_name(severity),
+                        service_name(source),
+                        domain_name(domain),
+                        event_name(event),
+                        message.words[4],
+                        message.words[5],
+                    ),
+                ),
+                _ => rt::write_logf(
+                    "console",
+                    format_args!(
+                        "seq={} level={} source={} domain={} event={} detail0={} detail1={}",
+                        message.words[6],
+                        severity_name(severity),
+                        service_name(source),
+                        domain_name(domain),
+                        event_name(event),
+                        message.words[4],
+                        message.words[5],
+                    ),
+                ),
+            };
+        }
+        x if x == ConsoleTag::SessionOpenRequest as u32 => {
+            if message.handle_count < 1 {
+                return Ok(());
             }
-            LogEvent::ServiceFailed => rt::write_logf(
-                "console",
-                format_args!(
-                    "seq={} level={} source={} domain={} event={} service={} exit={}",
-                    message.words[6],
-                    severity_name(severity),
-                    service_name(source),
-                    domain_name(domain),
-                    event_name(event),
-                    service_name(service_id_from_word(message.words[4])),
-                    message.words[5],
-                ),
-            ),
-            LogEvent::LookupGranted => rt::write_logf(
-                "console",
-                format_args!(
-                    "seq={} level={} source={} domain={} event={} requester={} target={}",
-                    message.words[6],
-                    severity_name(severity),
-                    service_name(source),
-                    domain_name(domain),
-                    event_name(event),
-                    service_name(service_id_from_word(message.words[4])),
-                    service_name(service_id_from_word(message.words[5])),
-                ),
-            ),
-            LogEvent::ConfigLoaded => rt::write_logf(
-                "console",
-                format_args!(
-                    "seq={} level={} source={} domain={} event={} minimum-severity={}",
-                    message.words[6],
-                    severity_name(severity),
-                    service_name(source),
-                    domain_name(domain),
-                    event_name(event),
-                    message.words[4],
-                ),
-            ),
-            LogEvent::StatusStarted => rt::write_logf(
-                "console",
-                format_args!(
-                    "seq={} level={} source={} domain={} event={} heartbeat-ticks={} console-period={}",
-                    message.words[6],
-                    severity_name(severity),
-                    service_name(source),
-                    domain_name(domain),
-                    event_name(event),
-                    message.words[4],
-                    message.words[5],
-                ),
-            ),
-            LogEvent::StatusHeartbeat | LogEvent::ConsoleWrite => rt::write_logf(
-                "console",
-                format_args!(
-                    "seq={} level={} source={} domain={} event={} count={} tick={}",
-                    message.words[6],
-                    severity_name(severity),
-                    service_name(source),
-                    domain_name(domain),
-                    event_name(event),
-                    message.words[4],
-                    message.words[5],
-                ),
-            ),
-            LogEvent::ConfigRead => rt::write_logf(
-                "console",
-                format_args!(
-                    "seq={} level={} source={} domain={} event={} key={} value={}",
-                    message.words[6],
-                    severity_name(severity),
-                    service_name(source),
-                    domain_name(domain),
-                    event_name(event),
-                    message.words[4],
-                    message.words[5],
-                ),
-            ),
-            LogEvent::StorageMounted | LogEvent::ManifestLoaded | LogEvent::ResourceOpened => rt::write_logf(
-                "console",
-                format_args!(
-                    "seq={} level={} source={} domain={} event={} detail0={} detail1={}",
-                    message.words[6],
-                    severity_name(severity),
-                    service_name(source),
-                    domain_name(domain),
-                    event_name(event),
-                    message.words[4],
-                    message.words[5],
-                ),
-            ),
-        };
+            let reply_handle = message.handles[0];
+            let mut reply = RawMessage::empty(ConsoleTag::SessionOpenReply as u32);
+
+            if let Some(session) = sessions.iter_mut().find(|session| !session.occupied) {
+                let pair = rt::channel_create()?;
+                session.endpoint = pair.first;
+                session.pending_reply = rt::INVALID_HANDLE;
+                session.line_len = 0;
+                session.occupied = true;
+
+                reply.handle_count = 1;
+                reply.handles[0] = pair.second;
+                reply.handle_rights[0] =
+                    rights::SEND | rights::RECEIVE | rights::DUPLICATE | rights::TRANSFER;
+                let _ = rt::channel_send(reply_handle, &reply);
+                let _ = rt::handle_close(pair.second);
+            } else {
+                let _ = rt::channel_send(reply_handle, &reply);
+            }
+
+            let _ = rt::handle_close(reply_handle);
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
+fn handle_session_message(session: &mut Session, message: &RawMessage) -> rt::Result<()> {
+    match message.tag {
+        x if x == ConsoleTag::SessionWriteText as u32 => {
+            if message.word_count < 1 {
+                return Ok(());
+            }
+            let text_len = message.words[0] as usize;
+            let mut buffer = [0u8; rt::IPC_MAX_WORDS * 8];
+            let payload_words = message.word_count as usize;
+            unpack_bytes(&message.words[1..payload_words], text_len, &mut buffer)?;
+            let _ = rt::debug_console_write(&buffer[..text_len]);
+        }
+        x if x == ConsoleTag::SessionReadLineRequest as u32 => {
+            if message.handle_count < 1 {
+                return Ok(());
+            }
+            if session.pending_reply != rt::INVALID_HANDLE {
+                let _ = rt::handle_close(message.handles[0]);
+                return Ok(());
+            }
+            session.pending_reply = message.handles[0];
+            session.line_len = 0;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn handle_input_byte(sessions: &mut [Session; MAX_SESSIONS], byte: u8) -> rt::Result<()> {
+    let Some(session) = sessions
+        .iter_mut()
+        .find(|session| session.occupied && session.pending_reply != rt::INVALID_HANDLE)
+    else {
+        return Ok(());
+    };
+
+    match byte {
+        b'\r' | b'\n' => {
+            let _ = rt::debug_console_write(b"\r\n");
+            let mut reply = RawMessage::empty(ConsoleTag::SessionReadLineReply as u32);
+            reply.word_count = 1;
+            reply.words[0] = session.line_len as u64;
+            reply.word_count += pack_bytes(&session.line[..session.line_len], &mut reply.words[1..])?;
+            let _ = rt::channel_send(session.pending_reply, &reply);
+            let _ = rt::handle_close(session.pending_reply);
+            session.pending_reply = rt::INVALID_HANDLE;
+            session.line_len = 0;
+        }
+        0x08 | 0x7f => {
+            if session.line_len > 0 {
+                session.line_len -= 1;
+                let _ = rt::debug_console_write(b"\x08 \x08");
+            }
+        }
+        0x20..=0x7e => {
+            if session.line_len < session.line.len() {
+                session.line[session.line_len] = byte;
+                session.line_len += 1;
+                let _ = rt::debug_console_write(&[byte]);
+            }
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
+fn pack_bytes(source: &[u8], words: &mut [u64]) -> rt::Result<u32> {
+    let required = source.len().div_ceil(8);
+    if required > words.len() {
+        return Err(rt::Error::BufferTooSmall);
+    }
+
+    for (index, chunk) in source.chunks(8).enumerate() {
+        let mut bytes = [0u8; 8];
+        bytes[..chunk.len()].copy_from_slice(chunk);
+        words[index] = u64::from_le_bytes(bytes);
+    }
+    Ok(required as u32)
+}
+
+fn unpack_bytes(words: &[u64], len: usize, destination: &mut [u8]) -> rt::Result<()> {
+    if len > destination.len() || len > words.len() * 8 {
+        return Err(rt::Error::BufferTooSmall);
+    }
+
+    let mut copied = 0usize;
+    for word in words.iter().copied() {
+        if copied >= len {
+            break;
+        }
+        let bytes = word.to_le_bytes();
+        let chunk = (len - copied).min(bytes.len());
+        destination[copied..copied + chunk].copy_from_slice(&bytes[..chunk]);
+        copied += chunk;
+    }
+    Ok(())
+}
+
+fn release_session(session: &mut Session) {
+    if session.pending_reply != rt::INVALID_HANDLE {
+        let _ = rt::handle_close(session.pending_reply);
+    }
+    if session.endpoint != rt::INVALID_HANDLE {
+        let _ = rt::handle_close(session.endpoint);
+    }
+    *session = Session::empty();
+}
+
+fn poll_lifecycle(bootstrap: rt::Handle) -> rt::Result<bool> {
+    let mut message = RawMessage::empty(0);
+    match rt::channel_receive_nonblocking(bootstrap, &mut message) {
+        Ok(()) if message.tag == ControlTag::Lifecycle as u32 && message.word_count > 0 => {
+            Ok(matches!(
+                lifecycle_event_from_word(message.words[0]),
+                LifecycleEvent::Restarting | LifecycleEvent::Stopped
+            ))
+        }
+        Ok(()) => Ok(false),
+        Err(rt::Error::QueueEmpty) => Ok(false),
+        Err(error) => Err(error),
     }
 }
 
@@ -152,6 +387,7 @@ fn service_id_from_word(value: u64) -> ServiceId {
         x if x == ServiceId::Config as u32 => ServiceId::Config,
         x if x == ServiceId::Log as u32 => ServiceId::Log,
         x if x == ServiceId::Status as u32 => ServiceId::Status,
+        x if x == ServiceId::Shell as u32 => ServiceId::Shell,
         _ => ServiceId::RootManager,
     }
 }
@@ -176,6 +412,7 @@ fn domain_from_word(value: u64) -> LogDomain {
         x if x == LogDomain::Console as u32 => LogDomain::Console,
         x if x == LogDomain::Status as u32 => LogDomain::Status,
         x if x == LogDomain::Ipc as u32 => LogDomain::Ipc,
+        x if x == LogDomain::Shell as u32 => LogDomain::Shell,
         _ => LogDomain::Service,
     }
 }
@@ -194,7 +431,20 @@ fn event_from_word(value: u64) -> LogEvent {
         x if x == LogEvent::StorageMounted as u32 => LogEvent::StorageMounted,
         x if x == LogEvent::ManifestLoaded as u32 => LogEvent::ManifestLoaded,
         x if x == LogEvent::ResourceOpened as u32 => LogEvent::ResourceOpened,
+        x if x == LogEvent::SessionOpened as u32 => LogEvent::SessionOpened,
+        x if x == LogEvent::ShellCommand as u32 => LogEvent::ShellCommand,
+        x if x == LogEvent::ToolLaunched as u32 => LogEvent::ToolLaunched,
         _ => LogEvent::LookupGranted,
+    }
+}
+
+fn lifecycle_event_from_word(value: u64) -> LifecycleEvent {
+    match value as u32 {
+        x if x == LifecycleEvent::Starting as u32 => LifecycleEvent::Starting,
+        x if x == LifecycleEvent::Ready as u32 => LifecycleEvent::Ready,
+        x if x == LifecycleEvent::Failed as u32 => LifecycleEvent::Failed,
+        x if x == LifecycleEvent::Stopped as u32 => LifecycleEvent::Stopped,
+        _ => LifecycleEvent::Restarting,
     }
 }
 
@@ -206,6 +456,7 @@ fn service_name(service_id: ServiceId) -> &'static str {
         ServiceId::Config => "config-service",
         ServiceId::Log => "log-service",
         ServiceId::Status => "status-service",
+        ServiceId::Shell => "shell-service",
     }
 }
 
@@ -230,6 +481,7 @@ fn domain_name(domain: LogDomain) -> &'static str {
         LogDomain::Console => "console",
         LogDomain::Status => "status",
         LogDomain::Ipc => "ipc",
+        LogDomain::Shell => "shell",
     }
 }
 
@@ -248,5 +500,8 @@ fn event_name(event: LogEvent) -> &'static str {
         LogEvent::StorageMounted => "storage-mounted",
         LogEvent::ManifestLoaded => "manifest-loaded",
         LogEvent::ResourceOpened => "resource-opened",
+        LogEvent::SessionOpened => "session-opened",
+        LogEvent::ShellCommand => "shell-command",
+        LogEvent::ToolLaunched => "tool-launched",
     }
 }

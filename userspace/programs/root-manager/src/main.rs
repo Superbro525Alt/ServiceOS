@@ -4,11 +4,12 @@
 use serviceos_bundle::{parse_manifest, RestartPolicy, ServiceManifest};
 use serviceos_userspace_runtime as rt;
 use rt::{
-    rights, ControlTag, LogDomain, LogEvent, LogSeverity, LookupStatus, RawMessage, ServiceId,
+    rights, ControlTag, LifecycleEvent, LogDomain, LogEvent, LogSeverity, LookupStatus,
+    ManagerAction, ManagerServicePhase, ManagerStatus, ManagerTag, RawMessage, ServiceId,
     ServiceImageId, TaskStateCode, IPC_MAX_HANDLES,
 };
 
-const MAX_SERVICE_SLOTS: usize = 5;
+const MAX_SERVICE_SLOTS: usize = 6;
 const MAX_INDEX_BYTES: usize = 512;
 const MAX_MANIFEST_BYTES: usize = 512;
 
@@ -21,6 +22,7 @@ struct ServiceSlot {
     attempts: u32,
     phase: ServicePhase,
     last_exit_code: u64,
+    restart_requested: bool,
 }
 
 impl ServiceSlot {
@@ -33,6 +35,7 @@ impl ServiceSlot {
             attempts: 0,
             phase: ServicePhase::Dormant,
             last_exit_code: 0,
+            restart_requested: false,
         }
     }
 }
@@ -53,7 +56,8 @@ fn main() -> u64 {
     if rt::channel_receive_blocking(bootstrap, &mut startup).is_err() {
         return 0xf601;
     }
-    if startup.tag != ControlTag::Startup as u32 || startup.handle_count < 1 || startup.word_count < 1 {
+    if startup.tag != ControlTag::Startup as u32 || startup.handle_count < 1 || startup.word_count < 1
+    {
         return 0xf602;
     }
     let bootstore_handle = startup.handles[0];
@@ -63,14 +67,14 @@ fn main() -> u64 {
     let mut slots = [ServiceSlot::empty(); MAX_SERVICE_SLOTS];
     slots[0].manifest = storage_manifest();
 
-    if start_service(&mut slots, 0, Some((bootstore_handle, bootstore_len))).is_err() {
+    if start_service(&mut slots, 1, 0, Some((bootstore_handle, bootstore_len))).is_err() {
         return 0xf603;
     }
-    if wait_until_ready(&mut slots, ServiceId::Storage).is_err() {
+    if wait_until_ready(&mut slots, 1, ServiceId::Storage).is_err() {
         return 0xf604;
     }
 
-    let storage_handle = slots[find_slot_index(&slots, ServiceId::Storage)].public_handle;
+    let storage_handle = slots[find_slot_index(&slots, 1, ServiceId::Storage)].public_handle;
     let service_count = match load_service_graph(&mut slots, storage_handle) {
         Ok(count) => count,
         Err(_) => return 0xf605,
@@ -109,10 +113,15 @@ fn load_service_graph(
     let index_len = index_len.min(index_buffer.len());
     let loaded = rt::storage_read_all(index_handle, &mut index_buffer, index_len)?;
     let _ = rt::handle_close(index_handle);
-    let index_text = core::str::from_utf8(&index_buffer[..loaded]).map_err(|_| rt::Error::InvalidArgument)?;
+    let index_text =
+        core::str::from_utf8(&index_buffer[..loaded]).map_err(|_| rt::Error::InvalidArgument)?;
 
     let mut count = 1usize;
-    for line in index_text.lines().map(|line| line.trim()).filter(|line| !line.is_empty()) {
+    for line in index_text
+        .lines()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty())
+    {
         if count == MAX_SERVICE_SLOTS {
             return Err(rt::Error::CapacityExceeded);
         }
@@ -135,6 +144,7 @@ fn load_service_graph(
         count += 1;
     }
 
+    let _ = fallback_logf(format_args!("loaded {} service manifests", count.saturating_sub(1)));
     Ok(count)
 }
 
@@ -148,13 +158,15 @@ fn activate_service_graph(
 
         for index in 0..service_count {
             match slots[index].phase {
-                ServicePhase::Ready => {
-                    ready += 1;
-                }
+                ServicePhase::Ready => ready += 1,
                 ServicePhase::Dormant => {
                     if dependencies_ready(slots, service_count, index) {
-                        start_service(slots, index, None)?;
-                        wait_until_ready(slots, slots[index].manifest.service_id)?;
+                        let _ = fallback_logf(format_args!(
+                            "activating {}",
+                            service_name(slots[index].manifest.service_id)
+                        ));
+                        start_service(slots, service_count, index, None)?;
+                        wait_until_ready(slots, service_count, slots[index].manifest.service_id)?;
                         progress = true;
                     }
                 }
@@ -173,11 +185,12 @@ fn activate_service_graph(
 
 fn start_service(
     slots: &mut [ServiceSlot; MAX_SERVICE_SLOTS],
+    service_count: usize,
     index: usize,
     bootstrap_resource: Option<(rt::Handle, usize)>,
 ) -> rt::Result<()> {
     let manifest = slots[index].manifest;
-    if bootstrap_resource.is_none() && !dependencies_ready(slots, MAX_SERVICE_SLOTS, index) {
+    if bootstrap_resource.is_none() && !dependencies_ready(slots, service_count, index) {
         return Err(rt::Error::Busy);
     }
 
@@ -190,6 +203,7 @@ fn start_service(
     slots[index].attempts = slots[index].attempts.saturating_add(1);
     slots[index].phase = ServicePhase::Starting;
     slots[index].last_exit_code = 0;
+    slots[index].restart_requested = false;
 
     let mut startup = RawMessage::empty(ControlTag::Startup as u32);
     startup.word_count = 5;
@@ -202,7 +216,8 @@ fn start_service(
     let mut handle_index = 0usize;
     if let Some((handle, _)) = bootstrap_resource {
         startup.handle_count = 1;
-        startup.handles[0] = rt::handle_duplicate(handle, rights::READ | rights::DUPLICATE | rights::TRANSFER)?;
+        startup.handles[0] =
+            rt::handle_duplicate(handle, rights::READ | rights::DUPLICATE | rights::TRANSFER)?;
         startup.handle_rights[0] = rights::READ | rights::DUPLICATE | rights::TRANSFER;
         handle_index = 1;
     }
@@ -212,44 +227,51 @@ fn start_service(
     }
 
     for grant in manifest.grants[..manifest.grant_count].iter().copied() {
-        let source = slots[find_slot_index(slots, grant.target)].public_handle;
-        let transferred = rt::handle_duplicate(source, grant.rights | rights::DUPLICATE | rights::TRANSFER)?;
+        let source_index = find_slot_index(slots, service_count, grant.target);
+        let source = slots[source_index].public_handle;
+        let transferred =
+            rt::handle_duplicate(source, grant.rights | rights::DUPLICATE | rights::TRANSFER)?;
         startup.handles[handle_index] = transferred;
         startup.handle_rights[handle_index] = grant.rights;
         startup.handle_count += 1;
         handle_index += 1;
     }
 
-    let storage_index = find_slot_index(slots, ServiceId::Storage);
-    let storage_handle = slots[storage_index].public_handle;
-    for resource in manifest.resources[..manifest.resource_count].iter() {
-        let (resource_handle, resource_len) = rt::storage_open(
-            storage_handle,
-            resource.as_str().map_err(|_| rt::Error::InvalidArgument)?,
-        )?;
-        startup.handles[handle_index] = resource_handle;
-        startup.handle_rights[handle_index] = rights::SEND | rights::RECEIVE;
-        startup.words[4] = resource_len as u64;
-        startup.handle_count += 1;
-        handle_index += 1;
-        let _ = emit_manager_event(
-            slots,
-            MAX_SERVICE_SLOTS,
-            LogSeverity::Info,
-            LogEvent::ResourceOpened,
-            manifest.service_id,
-            resource_len as u64,
-        );
+    if manifest.resource_count > 0 {
+        let storage_index = find_slot_index(slots, service_count, ServiceId::Storage);
+        let storage_handle = slots[storage_index].public_handle;
+        for resource in manifest.resources[..manifest.resource_count].iter() {
+            let (resource_handle, resource_len) = rt::storage_open(
+                storage_handle,
+                resource.as_str().map_err(|_| rt::Error::InvalidArgument)?,
+            )?;
+            startup.handles[handle_index] = resource_handle;
+            startup.handle_rights[handle_index] = rights::SEND | rights::RECEIVE;
+            startup.words[4] = resource_len as u64;
+            startup.handle_count += 1;
+            handle_index += 1;
+            let _ = emit_manager_event(
+                slots,
+                service_count,
+                LogSeverity::Info,
+                LogEvent::ResourceOpened,
+                manifest.service_id,
+                resource_len as u64,
+            );
+        }
     }
 
     rt::channel_send(slots[index].control_handle, &startup)?;
-    for handle in startup.handles[..startup.handle_count as usize].iter().copied() {
+    for handle in startup.handles[..startup.handle_count as usize]
+        .iter()
+        .copied()
+    {
         let _ = rt::handle_close(handle);
     }
 
     let _ = emit_manager_event(
         slots,
-        MAX_SERVICE_SLOTS,
+        service_count,
         LogSeverity::Info,
         LogEvent::ServiceStarted,
         manifest.service_id,
@@ -260,11 +282,12 @@ fn start_service(
 
 fn wait_until_ready(
     slots: &mut [ServiceSlot; MAX_SERVICE_SLOTS],
+    service_count: usize,
     service_id: ServiceId,
 ) -> rt::Result<()> {
     loop {
-        pump_control_channels(slots, MAX_SERVICE_SLOTS)?;
-        let slot = &slots[find_slot_index(slots, service_id)];
+        pump_control_channels(slots, service_count)?;
+        let slot = &slots[find_slot_index(slots, service_count, service_id)];
         if slot.phase == ServicePhase::Ready {
             return Ok(());
         }
@@ -301,24 +324,43 @@ fn supervision_loop(
                 continue;
             }
 
+            let requested_restart = slots[index].restart_requested;
             if slots[index].phase != ServicePhase::Exited {
                 slots[index].phase = ServicePhase::Exited;
                 slots[index].last_exit_code = status.exit_code;
-                let _ = emit_manager_event(
-                    slots,
-                    service_count,
-                    LogSeverity::Error,
-                    LogEvent::ServiceFailed,
-                    slots[index].manifest.service_id,
-                    status.exit_code,
-                );
+                if !requested_restart {
+                    let _ = emit_manager_event(
+                        slots,
+                        service_count,
+                        LogSeverity::Error,
+                        LogEvent::ServiceFailed,
+                        slots[index].manifest.service_id,
+                        status.exit_code,
+                    );
+                }
+            }
+
+            if requested_restart {
+                slots[index].restart_requested = false;
+                if start_service(slots, service_count, index, None).is_err() {
+                    return 0xf620 + index as u64;
+                }
+                if wait_until_ready(slots, service_count, slots[index].manifest.service_id).is_err()
+                {
+                    return 0xf630 + index as u64;
+                }
+                continue;
+            }
+
+            if status.exit_code == 0 {
+                continue;
             }
 
             let restart_limit = match slots[index].manifest.restart {
                 RestartPolicy::OnFailure { max_restarts } => max_restarts,
             };
-            if slots[index].attempts >= restart_limit {
-                return 0xf620 + index as u64;
+            if slots[index].attempts.saturating_sub(1) >= restart_limit {
+                return 0xf640 + index as u64;
             }
 
             let _ = emit_manager_event(
@@ -335,16 +377,16 @@ fn supervision_loop(
             } else {
                 None
             };
-            if start_service(slots, index, resource).is_err() {
-                return 0xf630 + index as u64;
+            if start_service(slots, service_count, index, resource).is_err() {
+                return 0xf650 + index as u64;
             }
-            if wait_until_ready(slots, slots[index].manifest.service_id).is_err() {
-                return 0xf640 + index as u64;
+            if wait_until_ready(slots, service_count, slots[index].manifest.service_id).is_err() {
+                return 0xf660 + index as u64;
             }
         }
 
         if rt::yield_current().is_err() {
-            return 0xf650;
+            return 0xf670;
         }
     }
 }
@@ -380,7 +422,7 @@ fn handle_control_message(
                 return Err(rt::Error::InvalidArgument);
             }
             let service_id = service_id_from_word(message.words[0]);
-            if find_slot_index(slots, service_id) != service_index {
+            if find_slot_index(slots, service_count, service_id) != service_index {
                 return Err(rt::Error::PermissionDenied);
             }
             slots[service_index].public_handle = message.handles[0];
@@ -398,50 +440,270 @@ fn handle_control_message(
             if message.word_count < 1 {
                 return Err(rt::Error::InvalidArgument);
             }
-            let requested = service_id_from_word(message.words[0]);
-            let permission = lookup_rights(slots[service_index].manifest, requested);
-            let target = &slots[find_slot_index(slots, requested)];
-
-            let mut reply = RawMessage::empty(ControlTag::LookupReply as u32);
-            reply.word_count = 2;
-            reply.words[0] = requested as u32 as u64;
-
-            match permission {
-                Some(rights)
-                    if target.phase == ServicePhase::Ready
-                        && target.public_handle != rt::INVALID_HANDLE =>
-                {
-                    let duplicated =
-                        rt::handle_duplicate(target.public_handle, rights | rights::DUPLICATE | rights::TRANSFER)?;
-                    reply.words[1] = LookupStatus::Ok as u32 as u64;
-                    reply.handle_count = 1;
-                    reply.handles[0] = duplicated;
-                    reply.handle_rights[0] = rights;
-                    rt::channel_send(slots[service_index].control_handle, &reply)?;
-                    let _ = rt::handle_close(duplicated);
-                    let _ = emit_manager_event(
-                        slots,
-                        service_count,
-                        LogSeverity::Debug,
-                        LogEvent::LookupGranted,
-                        slots[service_index].manifest.service_id,
-                        requested as u32 as u64,
-                    );
-                }
-                Some(_) => {
-                    reply.words[1] = LookupStatus::Unavailable as u32 as u64;
-                    rt::channel_send(slots[service_index].control_handle, &reply)?;
-                }
-                None => {
-                    reply.words[1] = LookupStatus::Denied as u32 as u64;
-                    rt::channel_send(slots[service_index].control_handle, &reply)?;
-                }
+            handle_lookup_request(slots, service_count, service_index, message)?;
+        }
+        x if x == ManagerTag::ListServicesRequest as u32 => {
+            handle_list_services_request(slots, service_count, service_index)?;
+        }
+        x if x == ManagerTag::ServiceStatusRequest as u32 => {
+            if message.word_count < 1 {
+                return Err(rt::Error::InvalidArgument);
             }
+            handle_service_status_request(slots, service_count, service_index, message.words[0])?;
+        }
+        x if x == ManagerTag::ServiceActionRequest as u32 => {
+            if message.word_count < 2 {
+                return Err(rt::Error::InvalidArgument);
+            }
+            handle_service_action_request(
+                slots,
+                service_count,
+                service_index,
+                message.words[0],
+                message.words[1],
+            )?;
+        }
+        x if x == ManagerTag::LaunchRequest as u32 => {
+            if message.word_count < 1 {
+                return Err(rt::Error::InvalidArgument);
+            }
+            handle_launch_request(slots, service_count, service_index, message)?;
         }
         _ => {}
     }
 
     Ok(())
+}
+
+fn handle_lookup_request(
+    slots: &mut [ServiceSlot; MAX_SERVICE_SLOTS],
+    service_count: usize,
+    service_index: usize,
+    message: &RawMessage,
+) -> rt::Result<()> {
+    let requested = service_id_from_word(message.words[0]);
+    let permission = lookup_rights(slots[service_index].manifest, requested);
+    let target = find_slot_index_checked(slots, service_count, requested).map(|index| &slots[index]);
+
+    let mut reply = RawMessage::empty(ControlTag::LookupReply as u32);
+    reply.word_count = 2;
+    reply.words[0] = requested as u32 as u64;
+
+    match (permission, target) {
+        (Some(rights), Some(target))
+            if target.phase == ServicePhase::Ready && target.public_handle != rt::INVALID_HANDLE =>
+        {
+            let duplicated =
+                rt::handle_duplicate(target.public_handle, rights | rights::DUPLICATE | rights::TRANSFER)?;
+            reply.words[1] = LookupStatus::Ok as u32 as u64;
+            reply.handle_count = 1;
+            reply.handles[0] = duplicated;
+            reply.handle_rights[0] = rights;
+            rt::channel_send(slots[service_index].control_handle, &reply)?;
+            let _ = rt::handle_close(duplicated);
+            let _ = emit_manager_event(
+                slots,
+                service_count,
+                LogSeverity::Debug,
+                LogEvent::LookupGranted,
+                slots[service_index].manifest.service_id,
+                requested as u32 as u64,
+            );
+        }
+        (Some(_), _) => {
+            reply.words[1] = LookupStatus::Unavailable as u32 as u64;
+            rt::channel_send(slots[service_index].control_handle, &reply)?;
+        }
+        (None, _) => {
+            reply.words[1] = LookupStatus::Denied as u32 as u64;
+            rt::channel_send(slots[service_index].control_handle, &reply)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn handle_list_services_request(
+    slots: &[ServiceSlot; MAX_SERVICE_SLOTS],
+    service_count: usize,
+    service_index: usize,
+) -> rt::Result<()> {
+    let total_count = service_count + 1;
+    let mut reply = RawMessage::empty(ManagerTag::ListServicesReply as u32);
+    reply.word_count = 1 + (total_count * 2) as u32;
+    reply.words[0] = total_count as u64;
+    reply.words[1] = ServiceId::RootManager as u32 as u64;
+    reply.words[2] = encode_phase(ServicePhase::Ready, 1);
+    for index in 0..service_count {
+        let base = 3 + index * 2;
+        reply.words[base] = slots[index].manifest.service_id as u32 as u64;
+        reply.words[base + 1] = encode_phase(slots[index].phase, slots[index].attempts);
+    }
+    rt::channel_send(slots[service_index].control_handle, &reply)
+}
+
+fn handle_service_status_request(
+    slots: &[ServiceSlot; MAX_SERVICE_SLOTS],
+    service_count: usize,
+    service_index: usize,
+    requested_word: u64,
+) -> rt::Result<()> {
+    let requested = service_id_from_word(requested_word);
+    let mut reply = RawMessage::empty(ManagerTag::ServiceStatusReply as u32);
+    reply.word_count = 4;
+
+    if requested == ServiceId::RootManager {
+        reply.words[0] = ManagerStatus::Ok as u32 as u64;
+        reply.words[1] = ManagerServicePhase::Ready as u32 as u64;
+        reply.words[2] = 1;
+        reply.words[3] = 0;
+        return rt::channel_send(slots[service_index].control_handle, &reply);
+    }
+
+    let Some(target_index) = find_slot_index_checked(slots, service_count, requested) else {
+        reply.words[0] = ManagerStatus::NotFound as u32 as u64;
+        return rt::channel_send(slots[service_index].control_handle, &reply);
+    };
+    let slot = &slots[target_index];
+    reply.words[0] = ManagerStatus::Ok as u32 as u64;
+    reply.words[1] = manager_phase(slot.phase) as u32 as u64;
+    reply.words[2] = slot.attempts as u64;
+    reply.words[3] = slot.last_exit_code;
+    rt::channel_send(slots[service_index].control_handle, &reply)
+}
+
+fn handle_service_action_request(
+    slots: &mut [ServiceSlot; MAX_SERVICE_SLOTS],
+    service_count: usize,
+    service_index: usize,
+    requested_word: u64,
+    action_word: u64,
+) -> rt::Result<()> {
+    let mut reply = RawMessage::empty(ManagerTag::ServiceActionReply as u32);
+    reply.word_count = 1;
+    if slots[service_index].manifest.service_id != ServiceId::Shell {
+        reply.words[0] = ManagerStatus::Denied as u32 as u64;
+        return rt::channel_send(slots[service_index].control_handle, &reply);
+    }
+
+    let requested = service_id_from_word(requested_word);
+    let action = manager_action_from_word(action_word);
+    let Some(target_index) = find_slot_index_checked(slots, service_count, requested) else {
+        reply.words[0] = ManagerStatus::NotFound as u32 as u64;
+        return rt::channel_send(slots[service_index].control_handle, &reply);
+    };
+    if matches!(requested, ServiceId::Shell) || action != ManagerAction::Restart {
+        reply.words[0] = ManagerStatus::Denied as u32 as u64;
+        return rt::channel_send(slots[service_index].control_handle, &reply);
+    }
+    if slots[target_index].phase != ServicePhase::Ready || slots[target_index].restart_requested {
+        reply.words[0] = ManagerStatus::Busy as u32 as u64;
+        return rt::channel_send(slots[service_index].control_handle, &reply);
+    }
+
+    reply.words[0] = ManagerStatus::Ok as u32 as u64;
+    rt::channel_send(slots[service_index].control_handle, &reply)?;
+    send_lifecycle(slots[target_index].control_handle, LifecycleEvent::Restarting)?;
+    slots[target_index].restart_requested = true;
+    let _ = emit_manager_event(
+        slots,
+        service_count,
+        LogSeverity::Warn,
+        LogEvent::ServiceRestarting,
+        slots[target_index].manifest.service_id,
+        slots[target_index].attempts as u64 + 1,
+    );
+    Ok(())
+}
+
+fn handle_launch_request(
+    slots: &mut [ServiceSlot; MAX_SERVICE_SLOTS],
+    service_count: usize,
+    service_index: usize,
+    message: &RawMessage,
+) -> rt::Result<()> {
+    let mut reply = RawMessage::empty(ManagerTag::LaunchReply as u32);
+    reply.word_count = 1;
+    if slots[service_index].manifest.service_id != ServiceId::Shell {
+        reply.words[0] = ManagerStatus::Denied as u32 as u64;
+        return rt::channel_send(slots[service_index].control_handle, &reply);
+    }
+
+    let image_id = image_id_from_word(message.words[0]);
+    if image_id != ServiceImageId::SysinfoTool {
+        reply.words[0] = ManagerStatus::NotFound as u32 as u64;
+        return rt::channel_send(slots[service_index].control_handle, &reply);
+    }
+
+    let io_handle = if message.handle_count > 0 {
+        Some(message.handles[0])
+    } else {
+        None
+    };
+    let task_handle = match launch_program(image_id, io_handle) {
+        Ok(task_handle) => task_handle,
+        Err(rt::Error::NotFound) => {
+            reply.words[0] = ManagerStatus::NotFound as u32 as u64;
+            return rt::channel_send(slots[service_index].control_handle, &reply);
+        }
+        Err(rt::Error::PermissionDenied) => {
+            reply.words[0] = ManagerStatus::Denied as u32 as u64;
+            return rt::channel_send(slots[service_index].control_handle, &reply);
+        }
+        Err(_) => {
+            reply.words[0] = ManagerStatus::Busy as u32 as u64;
+            return rt::channel_send(slots[service_index].control_handle, &reply);
+        }
+    };
+
+    reply.words[0] = ManagerStatus::Ok as u32 as u64;
+    reply.handle_count = 1;
+    reply.handles[0] = task_handle;
+    reply.handle_rights[0] = rights::READ;
+    rt::channel_send(slots[service_index].control_handle, &reply)?;
+    let _ = rt::handle_close(task_handle);
+    let _ = emit_manager_event(
+        slots,
+        service_count,
+        LogSeverity::Info,
+        LogEvent::ToolLaunched,
+        ServiceId::Shell,
+        image_id as u32 as u64,
+    );
+    Ok(())
+}
+
+fn launch_program(
+    image_id: ServiceImageId,
+    io_handle: Option<rt::Handle>,
+) -> rt::Result<rt::Handle> {
+    let bootstrap = rt::channel_create()?;
+    let task_handle = rt::service_spawn(image_id, bootstrap.second)?;
+    let task_view =
+        rt::handle_duplicate(task_handle, rights::READ | rights::DUPLICATE | rights::TRANSFER)?;
+
+    let mut startup = RawMessage::empty(ControlTag::Startup as u32);
+    startup.word_count = 1;
+    startup.words[0] = u64::from(io_handle.is_some());
+    if let Some(io_handle) = io_handle {
+        startup.handle_count = 1;
+        startup.handles[0] = io_handle;
+        startup.handle_rights[0] = rights::SEND | rights::RECEIVE;
+    }
+    rt::channel_send(bootstrap.first, &startup)?;
+    if startup.handle_count > 0 {
+        let _ = rt::handle_close(startup.handles[0]);
+    }
+    let _ = rt::handle_close(task_handle);
+    let _ = rt::handle_close(bootstrap.first);
+    Ok(task_view)
+}
+
+fn send_lifecycle(control_handle: rt::Handle, event: LifecycleEvent) -> rt::Result<()> {
+    let mut message = RawMessage::empty(ControlTag::Lifecycle as u32);
+    message.word_count = 1;
+    message.words[0] = event as u32 as u64;
+    rt::channel_send(control_handle, &message)
 }
 
 fn emit_manager_event(
@@ -496,6 +758,9 @@ fn dependencies_ready(
         .iter()
         .copied()
         .all(|dependency| {
+            if dependency == ServiceId::RootManager {
+                return true;
+            }
             find_slot_index_checked(slots, service_count, dependency)
                 .map(|slot| slots[slot].phase == ServicePhase::Ready)
                 .unwrap_or(false)
@@ -522,8 +787,12 @@ fn close_if_valid(handle: &mut rt::Handle) {
     }
 }
 
-fn find_slot_index(slots: &[ServiceSlot; MAX_SERVICE_SLOTS], service_id: ServiceId) -> usize {
-    find_slot_index_checked(slots, MAX_SERVICE_SLOTS, service_id).unwrap_or(0)
+fn find_slot_index(
+    slots: &[ServiceSlot; MAX_SERVICE_SLOTS],
+    service_count: usize,
+    service_id: ServiceId,
+) -> usize {
+    find_slot_index_checked(slots, service_count, service_id).unwrap_or(0)
 }
 
 fn find_slot_index_checked(
@@ -541,7 +810,41 @@ fn service_id_from_word(value: u64) -> ServiceId {
         x if x == ServiceId::Config as u32 => ServiceId::Config,
         x if x == ServiceId::Log as u32 => ServiceId::Log,
         x if x == ServiceId::Status as u32 => ServiceId::Status,
+        x if x == ServiceId::Shell as u32 => ServiceId::Shell,
         _ => ServiceId::RootManager,
+    }
+}
+
+fn image_id_from_word(value: u64) -> ServiceImageId {
+    match value as u32 {
+        x if x == ServiceImageId::StorageService as u32 => ServiceImageId::StorageService,
+        x if x == ServiceImageId::ConsoleService as u32 => ServiceImageId::ConsoleService,
+        x if x == ServiceImageId::ConfigService as u32 => ServiceImageId::ConfigService,
+        x if x == ServiceImageId::LogService as u32 => ServiceImageId::LogService,
+        x if x == ServiceImageId::StatusService as u32 => ServiceImageId::StatusService,
+        x if x == ServiceImageId::ShellService as u32 => ServiceImageId::ShellService,
+        x if x == ServiceImageId::SysinfoTool as u32 => ServiceImageId::SysinfoTool,
+        _ => ServiceImageId::RootManager,
+    }
+}
+
+fn manager_action_from_word(value: u64) -> ManagerAction {
+    match value as u32 {
+        x if x == ManagerAction::Restart as u32 => ManagerAction::Restart,
+        _ => ManagerAction::Restart,
+    }
+}
+
+fn encode_phase(phase: ServicePhase, attempts: u32) -> u64 {
+    manager_phase(phase) as u32 as u64 | ((attempts as u64) << 32)
+}
+
+fn manager_phase(phase: ServicePhase) -> ManagerServicePhase {
+    match phase {
+        ServicePhase::Dormant => ManagerServicePhase::Dormant,
+        ServicePhase::Starting => ManagerServicePhase::Starting,
+        ServicePhase::Ready => ManagerServicePhase::Ready,
+        ServicePhase::Exited => ManagerServicePhase::Exited,
     }
 }
 
@@ -553,6 +856,7 @@ fn service_name(service_id: ServiceId) -> &'static str {
         ServiceId::Config => "config-service",
         ServiceId::Log => "log-service",
         ServiceId::Status => "status-service",
+        ServiceId::Shell => "shell-service",
     }
 }
 
@@ -581,9 +885,16 @@ fn event_name(event: LogEvent) -> &'static str {
         LogEvent::StorageMounted => "storage-mounted",
         LogEvent::ManifestLoaded => "manifest-loaded",
         LogEvent::ResourceOpened => "resource-opened",
+        LogEvent::SessionOpened => "session-opened",
+        LogEvent::ShellCommand => "shell-command",
+        LogEvent::ToolLaunched => "tool-launched",
     }
 }
 
 fn fallback_log(message: &str) {
     let _ = rt::write_log("service-manager", message);
+}
+
+fn fallback_logf(args: core::fmt::Arguments<'_>) -> rt::Result<()> {
+    rt::write_logf("service-manager", args)
 }

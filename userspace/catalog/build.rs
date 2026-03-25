@@ -57,6 +57,20 @@ const PROGRAMS: &[Program] = &[
         service_path: "services/status-service/program.img",
         service_id: 6,
     },
+    Program {
+        package: "serviceos-shell-service",
+        bin_name: "serviceos-shell-service",
+        image_id: 7,
+        service_path: "services/shell-service/program.img",
+        service_id: 7,
+    },
+    Program {
+        package: "serviceos-sysinfo-tool",
+        bin_name: "serviceos-sysinfo-tool",
+        image_id: 8,
+        service_path: "tools/sysinfo-tool/program.img",
+        service_id: 0,
+    },
 ];
 
 struct Program {

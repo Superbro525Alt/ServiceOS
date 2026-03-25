@@ -18,7 +18,7 @@ use crate::{
 };
 
 const SYSCALL_ABI_VERSION: u64 = 0x0003_0000;
-const MAX_SYSCALL_SLOTS: usize = 13;
+const MAX_SYSCALL_SLOTS: usize = 15;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SyscallNumber(pub u32);
@@ -132,6 +132,8 @@ pub enum SyscallKind {
     ServiceSpawn = AbiSyscallNumber::ServiceSpawn as isize,
     TaskStatus = AbiSyscallNumber::TaskStatus as isize,
     MemoryRead = AbiSyscallNumber::MemoryRead as isize,
+    DebugConsoleRead = AbiSyscallNumber::DebugConsoleRead as isize,
+    DebugConsoleWrite = AbiSyscallNumber::DebugConsoleWrite as isize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -190,6 +192,8 @@ impl SyscallDispatcher for DispatchTable {
 
 static DISPATCHER: Once<DispatchTable> = Once::new();
 static DEBUG_LOG_WRITER: Once<fn(&[u8])> = Once::new();
+static DEBUG_CONSOLE_READER: Once<fn() -> Option<u8>> = Once::new();
+static DEBUG_CONSOLE_WRITER: Once<fn(&[u8])> = Once::new();
 
 pub fn initialize() -> &'static DispatchTable {
     DISPATCHER.call_once(|| {
@@ -207,6 +211,8 @@ pub fn initialize() -> &'static DispatchTable {
             Some(handle_service_spawn),
             Some(handle_task_status),
             Some(handle_memory_read),
+            Some(handle_debug_console_read),
+            Some(handle_debug_console_write),
         ])
     })
 }
@@ -217,6 +223,14 @@ pub fn dispatcher() -> Option<&'static DispatchTable> {
 
 pub fn register_debug_log_writer(writer: fn(&[u8])) {
     let _ = DEBUG_LOG_WRITER.call_once(|| writer);
+}
+
+pub fn register_debug_console_reader(reader: fn() -> Option<u8>) {
+    let _ = DEBUG_CONSOLE_READER.call_once(|| reader);
+}
+
+pub fn register_debug_console_writer(writer: fn(&[u8])) {
+    let _ = DEBUG_CONSOLE_WRITER.call_once(|| writer);
 }
 
 fn handle_abi_version(_context: &SyscallContext) -> SyscallReturn {
@@ -571,6 +585,31 @@ fn handle_memory_read(context: &SyscallContext) -> SyscallReturn {
     SyscallReturn::success(memory.read(offset, destination) as u64)
 }
 
+fn handle_debug_console_read(_context: &SyscallContext) -> SyscallReturn {
+    let Some(reader) = DEBUG_CONSOLE_READER.get().copied() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+
+    match reader() {
+        Some(byte) => SyscallReturn::success(byte as u64),
+        None => SyscallReturn::error(SyscallError::QueueEmpty),
+    }
+}
+
+fn handle_debug_console_write(context: &SyscallContext) -> SyscallReturn {
+    let Some(writer) = DEBUG_CONSOLE_WRITER.get().copied() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Ok(length) = usize::try_from(context.arguments[1]) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Ok(bytes) = (unsafe { user_slice(context.arguments[0], length) }) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    writer(bytes);
+    SyscallReturn::success(length as u64)
+}
+
 fn map_capability_error(error: CapabilityError) -> SyscallError {
     match error {
         CapabilityError::InvalidHandle => SyscallError::NotFound,
@@ -657,6 +696,8 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
         ]);
 
         let result = table.dispatch(SyscallNumber(1), &empty_context());
@@ -674,6 +715,8 @@ mod tests {
     fn abi_version_syscall_returns_stable_value() {
         let table = DispatchTable::new([
             Some(handle_abi_version),
+            None,
+            None,
             None,
             None,
             None,

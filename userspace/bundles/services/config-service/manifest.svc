@@ -1,0 +1,5 @@
+service=config-service
+image=config-service
+startup=eager
+restart=on-failure:1
+resource=config/system.cfg

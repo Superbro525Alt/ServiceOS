@@ -1,0 +1,4 @@
+service=storage-service
+image=storage-service
+startup=eager
+restart=on-failure:1

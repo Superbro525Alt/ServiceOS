@@ -962,6 +962,7 @@ mod tests {
             physical_memory_offset: None,
             rsdp_address: None,
             framebuffer: None,
+            boot_store: None,
         };
 
         assert_eq!(context.usable_memory_region_count(), 1);

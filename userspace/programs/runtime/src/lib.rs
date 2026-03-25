@@ -8,8 +8,9 @@ use core::{
 pub use serviceos_abi::{
     ConfigKey, ConfigTag, ConfigValueKind, ConsoleTag, ControlTag, Handle, HandlePair,
     IPC_FLAG_NONBLOCK, IPC_MAX_HANDLES, IPC_MAX_WORDS, INVALID_HANDLE, LifecycleEvent,
-    LogDomain, LogEvent, LogSeverity, LogTag, LookupStatus, RawMessage, ServiceId,
-    ServiceImageId, StatusTag, SyscallErrorCode, SyscallNumber, TaskStateCode, TaskStatus,
+    LogDomain, LogEvent, LogSeverity, LogTag, LookupStatus, RawMessage, ServiceId, ServiceImageId,
+    StatusTag, StorageStatus, StorageTag, SyscallErrorCode, SyscallNumber, TaskStateCode,
+    TaskStatus,
 };
 pub use serviceos_abi::rights;
 
@@ -155,6 +156,17 @@ pub fn task_status(task_handle: Handle) -> Result<TaskStatus> {
     Ok(status)
 }
 
+pub fn memory_read(handle: Handle, offset: usize, buffer: &mut [u8]) -> Result<usize> {
+    syscall4(
+        SyscallNumber::MemoryRead,
+        handle as u64,
+        offset as u64,
+        buffer.as_mut_ptr() as u64,
+        buffer.len() as u64,
+    )
+    .map(|value| value as usize)
+}
+
 pub fn wait_for_exit(task_handle: Handle) -> Result<TaskStatus> {
     loop {
         let status = task_status(task_handle)?;
@@ -261,6 +273,92 @@ pub fn config_read(config_handle: Handle, key: ConfigKey) -> Result<(ConfigValue
     Ok((kind, response.words[2]))
 }
 
+pub fn storage_open(storage_handle: Handle, path: &str) -> Result<(Handle, usize)> {
+    let path_bytes = path.as_bytes();
+    let max_inline_bytes = (IPC_MAX_WORDS.saturating_sub(1)) * 8;
+    if path_bytes.len() > max_inline_bytes {
+        return Err(Error::BufferTooSmall);
+    }
+
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(StorageTag::OpenRequest as u32);
+    request.word_count = 1 + pack_bytes(path_bytes, &mut request.words[1..])?;
+    request.words[0] = path_bytes.len() as u64;
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(storage_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != StorageTag::OpenReply as u32 || response.word_count < 2 {
+        return Err(Error::InvalidArgument);
+    }
+
+    match response.words[0] as u32 {
+        x if x == StorageStatus::Ok as u32 && response.handle_count > 0 => {
+            Ok((response.handles[0], response.words[1] as usize))
+        }
+        x if x == StorageStatus::NotFound as u32 => Err(Error::NotFound),
+        x if x == StorageStatus::InvalidPath as u32 => Err(Error::InvalidArgument),
+        _ => Err(Error::InvalidArgument),
+    }
+}
+
+pub fn storage_read(blob_handle: Handle, offset: usize, buffer: &mut [u8]) -> Result<usize> {
+    let max_inline_bytes = (IPC_MAX_WORDS.saturating_sub(3)) * 8;
+    let requested = buffer.len().min(max_inline_bytes);
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(StorageTag::ReadRequest as u32);
+    request.word_count = 2;
+    request.words[0] = offset as u64;
+    request.words[1] = requested as u64;
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(blob_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != StorageTag::ReadReply as u32 || response.word_count < 3 {
+        return Err(Error::InvalidArgument);
+    }
+
+    match response.words[0] as u32 {
+        x if x == StorageStatus::Ok as u32 => {
+            let byte_len = response.words[2] as usize;
+            if byte_len > requested || byte_len > buffer.len() {
+                return Err(Error::BufferTooSmall);
+            }
+            unpack_bytes(&response.words[3..response.word_count as usize], byte_len, buffer)?;
+            Ok(byte_len)
+        }
+        x if x == StorageStatus::InvalidOffset as u32 => Err(Error::InvalidArgument),
+        x if x == StorageStatus::NotFound as u32 => Err(Error::NotFound),
+        _ => Err(Error::InvalidArgument),
+    }
+}
+
+pub fn storage_read_all(blob_handle: Handle, buffer: &mut [u8], expected_len: usize) -> Result<usize> {
+    if expected_len > buffer.len() {
+        return Err(Error::BufferTooSmall);
+    }
+
+    let mut offset = 0usize;
+    while offset < expected_len {
+        let read = storage_read(blob_handle, offset, &mut buffer[offset..expected_len])?;
+        if read == 0 {
+            break;
+        }
+        offset += read;
+    }
+    Ok(offset)
+}
+
 pub fn write_log(domain: &str, message: &str) -> Result<()> {
     let mut buffer = FixedLogBuffer::<192>::new();
     let _ = write!(&mut buffer, "{domain}: {message}");
@@ -334,6 +432,42 @@ fn syscall1(number: SyscallNumber, arg0: u64) -> Result<u64> {
 fn syscall2(number: SyscallNumber, arg0: u64, arg1: u64) -> Result<u64> {
     let (value, error) = raw_syscall(number as u32 as u64, arg0, arg1, 0, 0, 0, 0);
     decode_result(value, error)
+}
+
+fn syscall4(number: SyscallNumber, arg0: u64, arg1: u64, arg2: u64, arg3: u64) -> Result<u64> {
+    let (value, error) = raw_syscall(number as u32 as u64, arg0, arg1, arg2, arg3, 0, 0);
+    decode_result(value, error)
+}
+
+fn pack_bytes(source: &[u8], words: &mut [u64]) -> Result<u32> {
+    let required_words = source.len().div_ceil(8);
+    if required_words > words.len() {
+        return Err(Error::BufferTooSmall);
+    }
+    for (index, chunk) in source.chunks(8).enumerate() {
+        let mut bytes = [0u8; 8];
+        bytes[..chunk.len()].copy_from_slice(chunk);
+        words[index] = u64::from_le_bytes(bytes);
+    }
+    Ok(required_words as u32)
+}
+
+fn unpack_bytes(words: &[u64], len: usize, destination: &mut [u8]) -> Result<()> {
+    if len > destination.len() || len > words.len() * 8 {
+        return Err(Error::BufferTooSmall);
+    }
+
+    let mut copied = 0usize;
+    for word in words.iter().copied() {
+        if copied >= len {
+            break;
+        }
+        let bytes = word.to_le_bytes();
+        let chunk = (len - copied).min(bytes.len());
+        destination[copied..copied + chunk].copy_from_slice(&bytes[..chunk]);
+        copied += chunk;
+    }
+    Ok(())
 }
 
 fn decode_result(value: u64, error: u64) -> Result<u64> {

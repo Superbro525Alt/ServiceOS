@@ -7,6 +7,13 @@ name = "serviceos-abi"
 version = "0.1.0"
 
 [[package]]
+name = "serviceos-bundle"
+version = "0.1.0"
+dependencies = [
+ "serviceos-abi",
+]
+
+[[package]]
 name = "serviceos-config-service"
 version = "0.1.0"
 dependencies = [
@@ -35,6 +42,7 @@ name = "serviceos-root-service-manager"
 version = "0.1.0"
 dependencies = [
  "serviceos-abi",
+ "serviceos-bundle",
  "serviceos-userspace-runtime",
 ]
 
@@ -43,6 +51,15 @@ name = "serviceos-status-service"
 version = "0.1.0"
 dependencies = [
  "serviceos-abi",
+ "serviceos-userspace-runtime",
+]
+
+[[package]]
+name = "serviceos-storage-service"
+version = "0.1.0"
+dependencies = [
+ "serviceos-abi",
+ "serviceos-bundle",
  "serviceos-userspace-runtime",
 ]
 

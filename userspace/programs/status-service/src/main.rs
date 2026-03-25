@@ -2,9 +2,9 @@
 #![no_main]
 
 use serviceos_userspace_runtime as rt;
-use rt::{
-    ConfigKey, LogDomain, LogEvent, LogSeverity, RawMessage, ServiceId, StatusTag,
-};
+use rt::{ConfigKey, LogDomain, LogEvent, LogSeverity, RawMessage, ServiceId, StatusTag};
+
+const MAX_BANNER_BYTES: usize = 128;
 
 rt::entry!(main);
 
@@ -14,36 +14,55 @@ fn main() -> u64 {
     if rt::channel_receive_blocking(bootstrap, &mut startup).is_err() {
         return 0xf401;
     }
-    if startup.handle_count < 1 {
+    if startup.handle_count < 2 || startup.word_count < 5 {
         return 0xf402;
     }
 
+    let service_grants = startup.words[2] as usize;
+    let resource_grants = startup.words[3] as usize;
+    if service_grants < 1 || resource_grants < 1 {
+        return 0xf403;
+    }
+
     let log_handle = startup.handles[0];
+    let banner_handle = startup.handles[service_grants];
+    let banner_len = startup.words[4] as usize;
+    let mut banner = [0u8; MAX_BANNER_BYTES];
+    let requested = banner_len.min(banner.len());
+    let banner_loaded = match rt::storage_read_all(banner_handle, &mut banner, requested) {
+        Ok(loaded) => loaded,
+        Err(_) => return 0xf404,
+    };
+    let _ = rt::handle_close(banner_handle);
+    if let Ok(text) = core::str::from_utf8(&banner[..banner_loaded]) {
+        let _ = rt::write_logf("status", format_args!("resource: {}", text));
+    }
+
     let config_handle = match rt::lookup_service(bootstrap, ServiceId::Config) {
         Ok(handle) => handle,
-        Err(_) => return 0xf403,
+        Err(_) => return 0xf405,
     };
     let console_handle = match rt::lookup_service(bootstrap, ServiceId::Console) {
         Ok(handle) => handle,
-        Err(_) => return 0xf404,
+        Err(_) => return 0xf406,
     };
 
     let heartbeat_ticks = match rt::config_read(config_handle, ConfigKey::StatusHeartbeatTicks) {
         Ok((_, value)) => value.max(1),
-        Err(_) => return 0xf405,
+        Err(_) => return 0xf407,
     };
     let console_mirror = match rt::config_read(config_handle, ConfigKey::StatusConsoleMirror) {
         Ok((_, value)) => value,
-        Err(_) => return 0xf406,
+        Err(_) => return 0xf408,
     };
     let _ = rt::handle_close(config_handle);
 
     let public = match rt::channel_create() {
         Ok(pair) => pair,
-        Err(_) => return 0xf407,
+        Err(_) => return 0xf409,
     };
     if rt::register_service(bootstrap, ServiceId::Status, public.second).is_err() {
-        return 0xf408;
+        return 0xf40a;
     }
     let _ = rt::handle_close(public.second);
 
@@ -51,7 +70,7 @@ fn main() -> u64 {
     let mut last_tick = 0u64;
     let mut next_heartbeat = match rt::monotonic_now() {
         Ok(now) => now.saturating_add(heartbeat_ticks),
-        Err(_) => return 0xf409,
+        Err(_) => return 0xf40b,
     };
 
     let _ = rt::send_log_record(
@@ -62,6 +81,15 @@ fn main() -> u64 {
         LogEvent::StatusStarted,
         heartbeat_ticks,
         console_mirror,
+    );
+    let _ = rt::send_log_record(
+        log_handle,
+        ServiceId::Status,
+        LogSeverity::Info,
+        LogDomain::Status,
+        LogEvent::ResourceOpened,
+        banner_loaded as u64,
+        0,
     );
 
     loop {
@@ -79,12 +107,12 @@ fn main() -> u64 {
                 }
             }
             Err(rt::Error::QueueEmpty) => {}
-            Err(_) => return 0xf40a,
+            Err(_) => return 0xf40c,
         }
 
         let now = match rt::monotonic_now() {
             Ok(now) => now,
-            Err(_) => return 0xf40b,
+            Err(_) => return 0xf40d,
         };
         if now >= next_heartbeat {
             heartbeat_count = heartbeat_count.saturating_add(1);
@@ -114,7 +142,7 @@ fn main() -> u64 {
         }
 
         if rt::yield_current().is_err() {
-            return 0xf40c;
+            return 0xf40e;
         }
     }
 }

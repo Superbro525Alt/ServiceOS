@@ -1,0 +1,9 @@
+service=status-service
+image=status-service
+startup=eager
+restart=on-failure:2
+depends=log-service,config-service
+grant=log-service:send
+lookup=config-service:send
+lookup=console-service:send
+resource=services/status-service/resources/banner.txt

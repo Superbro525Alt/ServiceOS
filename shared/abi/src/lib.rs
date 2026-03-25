@@ -3,7 +3,7 @@
 pub type Handle = u32;
 
 pub const INVALID_HANDLE: Handle = 0;
-pub const IPC_MAX_WORDS: usize = 8;
+pub const IPC_MAX_WORDS: usize = 16;
 pub const IPC_MAX_HANDLES: usize = 4;
 
 pub mod rights {
@@ -35,6 +35,7 @@ pub enum SyscallNumber {
     HandleClose = 9,
     ServiceSpawn = 10,
     TaskStatus = 11,
+    MemoryRead = 12,
 }
 
 #[repr(u32)]
@@ -92,20 +93,22 @@ pub const IPC_FLAG_NONBLOCK: u32 = 1 << 0;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ServiceImageId {
     RootManager = 1,
-    LogService = 2,
-    ConfigService = 3,
-    ConsoleService = 4,
-    StatusService = 5,
+    StorageService = 2,
+    ConsoleService = 3,
+    ConfigService = 4,
+    LogService = 5,
+    StatusService = 6,
 }
 
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum ServiceId {
     RootManager = 1,
-    Log = 2,
-    Config = 3,
-    Console = 4,
-    Status = 5,
+    Storage = 2,
+    Console = 3,
+    Config = 4,
+    Log = 5,
+    Status = 6,
 }
 
 #[repr(u32)]
@@ -166,11 +169,12 @@ pub enum LogDomain {
     Bootstrap = 1,
     ServiceManager = 2,
     Service = 3,
-    Log = 4,
-    Config = 5,
-    Console = 6,
-    Status = 7,
-    Ipc = 8,
+    Storage = 4,
+    Log = 5,
+    Config = 6,
+    Console = 7,
+    Status = 8,
+    Ipc = 9,
 }
 
 #[repr(u32)]
@@ -186,6 +190,9 @@ pub enum LogEvent {
     StatusStarted = 8,
     StatusHeartbeat = 9,
     LookupGranted = 10,
+    StorageMounted = 11,
+    ManifestLoaded = 12,
+    ResourceOpened = 13,
 }
 
 #[repr(u32)]
@@ -212,6 +219,24 @@ pub enum ConfigTag {
 pub enum StatusTag {
     SnapshotRequest = 0x400,
     SnapshotReply = 0x401,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StorageTag {
+    OpenRequest = 0x500,
+    OpenReply = 0x501,
+    ReadRequest = 0x502,
+    ReadReply = 0x503,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StorageStatus {
+    Ok = 0,
+    NotFound = 1,
+    InvalidPath = 2,
+    InvalidOffset = 3,
 }
 
 #[repr(u32)]

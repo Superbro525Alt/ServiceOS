@@ -212,6 +212,7 @@ pub struct MemoryObjectInfo {
 
 pub struct MemoryObject {
     info: MemoryObjectInfo,
+    bytes: Option<Arc<[u8]>>,
 }
 
 impl MemoryObject {
@@ -224,11 +225,37 @@ impl MemoryObject {
                 page_count,
                 writable,
             },
+            bytes: None,
+        }
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        let size_bytes = bytes.len();
+        let page_count = size_bytes.div_ceil(4096);
+        Self {
+            info: MemoryObjectInfo {
+                size_bytes,
+                page_count,
+                writable: false,
+            },
+            bytes: Some(Arc::from(bytes)),
         }
     }
 
     pub const fn info(&self) -> MemoryObjectInfo {
         self.info
+    }
+
+    pub fn read(&self, offset: usize, destination: &mut [u8]) -> usize {
+        let Some(bytes) = &self.bytes else {
+            return 0;
+        };
+        let Some(source) = bytes.get(offset..) else {
+            return 0;
+        };
+        let len = source.len().min(destination.len());
+        destination[..len].copy_from_slice(&source[..len]);
+        len
     }
 }
 
@@ -358,6 +385,16 @@ impl ObjectRegistry {
                 kind: ObjectKind::MemoryObject,
             },
             body: KernelObject::MemoryObject(MemoryObject::new(size_bytes, writable)),
+        })
+    }
+
+    pub fn create_memory_object_from_bytes(&self, bytes: &[u8]) -> KernelObjectRef {
+        self.register(KernelObjectRecord {
+            header: ObjectHeader {
+                id: self.allocate_id(ObjectKind::MemoryObject),
+                kind: ObjectKind::MemoryObject,
+            },
+            body: KernelObject::MemoryObject(MemoryObject::from_bytes(bytes)),
         })
     }
 

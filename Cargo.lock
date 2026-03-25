@@ -96,6 +96,13 @@ name = "serviceos-abi"
 version = "0.1.0"
 
 [[package]]
+name = "serviceos-bundle"
+version = "0.1.0"
+dependencies = [
+ "serviceos-abi",
+]
+
+[[package]]
 name = "serviceos-kernel-arch-x86_64"
 version = "0.1.0"
 dependencies = [
@@ -119,9 +126,10 @@ name = "serviceos-kernel-x86_64"
 version = "0.1.0"
 dependencies = [
  "serviceos-abi",
+ "serviceos-bundle",
  "serviceos-kernel-arch-x86_64",
  "serviceos-kernel-core",
- "serviceos-userspace-catalog",
+ "spin",
  "uefi",
 ]
 
@@ -129,7 +137,7 @@ dependencies = [
 name = "serviceos-userspace-catalog"
 version = "0.1.0"
 dependencies = [
- "serviceos-abi",
+ "serviceos-bundle",
 ]
 
 [[package]]

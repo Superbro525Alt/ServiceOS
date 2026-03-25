@@ -1,0 +1,7 @@
+service=log-service
+image=log-service
+startup=eager
+restart=on-failure:1
+depends=console-service,config-service
+grant=console-service:send
+grant=config-service:send

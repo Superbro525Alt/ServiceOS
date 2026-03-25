@@ -128,12 +128,26 @@ fn main() -> u64 {
                     message.words[5],
                 ),
             ),
+            LogEvent::StorageMounted | LogEvent::ManifestLoaded | LogEvent::ResourceOpened => rt::write_logf(
+                "console",
+                format_args!(
+                    "seq={} level={} source={} domain={} event={} detail0={} detail1={}",
+                    message.words[6],
+                    severity_name(severity),
+                    service_name(source),
+                    domain_name(domain),
+                    event_name(event),
+                    message.words[4],
+                    message.words[5],
+                ),
+            ),
         };
     }
 }
 
 fn service_id_from_word(value: u64) -> ServiceId {
     match value as u32 {
+        x if x == ServiceId::Storage as u32 => ServiceId::Storage,
         x if x == ServiceId::Console as u32 => ServiceId::Console,
         x if x == ServiceId::Config as u32 => ServiceId::Config,
         x if x == ServiceId::Log as u32 => ServiceId::Log,
@@ -156,6 +170,7 @@ fn domain_from_word(value: u64) -> LogDomain {
     match value as u32 {
         x if x == LogDomain::Bootstrap as u32 => LogDomain::Bootstrap,
         x if x == LogDomain::ServiceManager as u32 => LogDomain::ServiceManager,
+        x if x == LogDomain::Storage as u32 => LogDomain::Storage,
         x if x == LogDomain::Log as u32 => LogDomain::Log,
         x if x == LogDomain::Config as u32 => LogDomain::Config,
         x if x == LogDomain::Console as u32 => LogDomain::Console,
@@ -176,6 +191,9 @@ fn event_from_word(value: u64) -> LogEvent {
         x if x == LogEvent::ConsoleWrite as u32 => LogEvent::ConsoleWrite,
         x if x == LogEvent::StatusStarted as u32 => LogEvent::StatusStarted,
         x if x == LogEvent::StatusHeartbeat as u32 => LogEvent::StatusHeartbeat,
+        x if x == LogEvent::StorageMounted as u32 => LogEvent::StorageMounted,
+        x if x == LogEvent::ManifestLoaded as u32 => LogEvent::ManifestLoaded,
+        x if x == LogEvent::ResourceOpened as u32 => LogEvent::ResourceOpened,
         _ => LogEvent::LookupGranted,
     }
 }
@@ -183,6 +201,7 @@ fn event_from_word(value: u64) -> LogEvent {
 fn service_name(service_id: ServiceId) -> &'static str {
     match service_id {
         ServiceId::RootManager => "root-manager",
+        ServiceId::Storage => "storage-service",
         ServiceId::Console => "console-service",
         ServiceId::Config => "config-service",
         ServiceId::Log => "log-service",
@@ -205,6 +224,7 @@ fn domain_name(domain: LogDomain) -> &'static str {
         LogDomain::Bootstrap => "bootstrap",
         LogDomain::ServiceManager => "service-manager",
         LogDomain::Service => "service",
+        LogDomain::Storage => "storage",
         LogDomain::Log => "log",
         LogDomain::Config => "config",
         LogDomain::Console => "console",
@@ -225,5 +245,8 @@ fn event_name(event: LogEvent) -> &'static str {
         LogEvent::StatusStarted => "status-started",
         LogEvent::StatusHeartbeat => "status-heartbeat",
         LogEvent::LookupGranted => "lookup-granted",
+        LogEvent::StorageMounted => "storage-mounted",
+        LogEvent::ManifestLoaded => "manifest-loaded",
+        LogEvent::ResourceOpened => "resource-opened",
     }
 }

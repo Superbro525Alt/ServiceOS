@@ -117,6 +117,7 @@ mod tests {
             physical_memory_offset: None,
             rsdp_address: None,
             framebuffer: None,
+            boot_store: None,
         }
     }
 

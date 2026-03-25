@@ -18,7 +18,7 @@ use crate::{
 };
 
 const SYSCALL_ABI_VERSION: u64 = 0x0003_0000;
-const MAX_SYSCALL_SLOTS: usize = 12;
+const MAX_SYSCALL_SLOTS: usize = 13;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SyscallNumber(pub u32);
@@ -131,6 +131,7 @@ pub enum SyscallKind {
     HandleClose = AbiSyscallNumber::HandleClose as isize,
     ServiceSpawn = AbiSyscallNumber::ServiceSpawn as isize,
     TaskStatus = AbiSyscallNumber::TaskStatus as isize,
+    MemoryRead = AbiSyscallNumber::MemoryRead as isize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -205,6 +206,7 @@ pub fn initialize() -> &'static DispatchTable {
             Some(handle_handle_close),
             Some(handle_service_spawn),
             Some(handle_task_status),
+            Some(handle_memory_read),
         ])
     })
 }
@@ -532,6 +534,43 @@ fn handle_task_status(context: &SyscallContext) -> SyscallReturn {
     SyscallReturn::success(0)
 }
 
+fn handle_memory_read(context: &SyscallContext) -> SyscallReturn {
+    let Some(current_task) = user::current_task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(task) = current_task.task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(descriptor) = task
+        .capability_space()
+        .resolve_descriptor(CapabilityHandle(context.arguments[0] as Handle))
+    else {
+        return SyscallReturn::error(SyscallError::NotFound);
+    };
+    if !descriptor.rights.contains(CapabilityRights::READ) {
+        return SyscallReturn::error(SyscallError::PermissionDenied);
+    }
+    let Some(object) =
+        crate::object::model().and_then(|model| model.registry().lookup(descriptor.object))
+    else {
+        return SyscallReturn::error(SyscallError::NotFound);
+    };
+    let Some(memory) = object.memory_object() else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Ok(offset) = usize::try_from(context.arguments[1]) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Ok(length) = usize::try_from(context.arguments[3]) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Ok(destination) = (unsafe { user_slice_mut(context.arguments[2], length) }) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+
+    SyscallReturn::success(memory.read(offset, destination) as u64)
+}
+
 fn map_capability_error(error: CapabilityError) -> SyscallError {
     match error {
         CapabilityError::InvalidHandle => SyscallError::NotFound,
@@ -581,6 +620,14 @@ unsafe fn user_slice(address: u64, len: usize) -> Result<&'static [u8], SyscallE
     Ok(unsafe { core::slice::from_raw_parts(address as *const u8, len) })
 }
 
+unsafe fn user_slice_mut(address: u64, len: usize) -> Result<&'static mut [u8], SyscallError> {
+    if address == 0 {
+        return Err(SyscallError::InvalidArgument);
+    }
+
+    Ok(unsafe { core::slice::from_raw_parts_mut(address as *mut u8, len) })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -609,6 +656,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         ]);
 
         let result = table.dispatch(SyscallNumber(1), &empty_context());
@@ -626,6 +674,7 @@ mod tests {
     fn abi_version_syscall_returns_stable_value() {
         let table = DispatchTable::new([
             Some(handle_abi_version),
+            None,
             None,
             None,
             None,

@@ -4,30 +4,14 @@
 use serviceos_userspace_runtime as rt;
 use rt::{ConfigKey, ConfigTag, ConfigValueKind, RawMessage, ServiceId};
 
+const MAX_CONFIG_BYTES: usize = 256;
+
 #[derive(Clone, Copy)]
 struct ConfigEntry {
     key: ConfigKey,
     kind: ConfigValueKind,
     value: u64,
 }
-
-const CONFIG_ENTRIES: &[ConfigEntry] = &[
-    ConfigEntry {
-        key: ConfigKey::LogMinimumSeverity,
-        kind: ConfigValueKind::Unsigned,
-        value: 3,
-    },
-    ConfigEntry {
-        key: ConfigKey::StatusHeartbeatTicks,
-        kind: ConfigValueKind::Unsigned,
-        value: 250,
-    },
-    ConfigEntry {
-        key: ConfigKey::StatusConsoleMirror,
-        kind: ConfigValueKind::Unsigned,
-        value: 2,
-    },
-];
 
 rt::entry!(main);
 
@@ -37,27 +21,50 @@ fn main() -> u64 {
     if rt::channel_receive_blocking(bootstrap, &mut startup).is_err() {
         return 0xf201;
     }
+    if startup.handle_count < 1 || startup.word_count < 5 {
+        return 0xf202;
+    }
+
+    let config_blob = startup.handles[startup.words[2] as usize];
+    let config_len = startup.words[4] as usize;
+    let mut config_bytes = [0u8; MAX_CONFIG_BYTES];
+    let requested = config_len.min(config_bytes.len());
+    let loaded = match rt::storage_read_all(config_blob, &mut config_bytes, requested) {
+        Ok(loaded) => loaded,
+        Err(_) => return 0xf203,
+    };
+    let _ = rt::handle_close(config_blob);
+
+    let mut entries = [ConfigEntry {
+        key: ConfigKey::LogMinimumSeverity,
+        kind: ConfigValueKind::Unsigned,
+        value: 0,
+    }; 3];
+    let entry_count = match parse_config_entries(&config_bytes[..loaded], &mut entries) {
+        Ok(count) => count,
+        Err(_) => return 0xf204,
+    };
 
     let public = match rt::channel_create() {
         Ok(pair) => pair,
-        Err(_) => return 0xf202,
+        Err(_) => return 0xf205,
     };
     if rt::register_service(bootstrap, ServiceId::Config, public.second).is_err() {
-        return 0xf203;
+        return 0xf206;
     }
     let _ = rt::handle_close(public.second);
 
     loop {
         let mut request = RawMessage::empty(0);
         if rt::channel_receive_blocking(public.first, &mut request).is_err() {
-            return 0xf204;
+            return 0xf207;
         }
         if request.tag != ConfigTag::ReadRequest as u32 || request.word_count < 1 || request.handle_count < 1 {
             continue;
         }
 
         let reply_handle = request.handles[0];
-        let (kind, value) = match find_config(config_key_from_word(request.words[0])) {
+        let (kind, value) = match find_config(&entries[..entry_count], config_key_from_word(request.words[0])) {
             Some(entry) => (entry.kind as u32 as u64, entry.value),
             None => (0, 0),
         };
@@ -72,8 +79,33 @@ fn main() -> u64 {
     }
 }
 
-fn find_config(key: ConfigKey) -> Option<ConfigEntry> {
-    CONFIG_ENTRIES.iter().copied().find(|entry| entry.key == key)
+fn parse_config_entries(bytes: &[u8], entries: &mut [ConfigEntry]) -> rt::Result<usize> {
+    let text = core::str::from_utf8(bytes).map_err(|_| rt::Error::InvalidArgument)?;
+    let mut count = 0usize;
+    for line in text.lines().map(|line| line.trim()).filter(|line| !line.is_empty()) {
+        let Some((key, value)) = line.split_once('=') else {
+            return Err(rt::Error::InvalidArgument);
+        };
+        if count == entries.len() {
+            return Err(rt::Error::CapacityExceeded);
+        }
+        entries[count] = ConfigEntry {
+            key: match key.trim() {
+                "log.minimum_severity" => ConfigKey::LogMinimumSeverity,
+                "status.heartbeat_ticks" => ConfigKey::StatusHeartbeatTicks,
+                "status.console_mirror" => ConfigKey::StatusConsoleMirror,
+                _ => return Err(rt::Error::InvalidArgument),
+            },
+            kind: ConfigValueKind::Unsigned,
+            value: value.trim().parse::<u64>().map_err(|_| rt::Error::InvalidArgument)?,
+        };
+        count += 1;
+    }
+    Ok(count)
+}
+
+fn find_config(entries: &[ConfigEntry], key: ConfigKey) -> Option<ConfigEntry> {
+    entries.iter().copied().find(|entry| entry.key == key)
 }
 
 fn config_key_from_word(value: u64) -> ConfigKey {

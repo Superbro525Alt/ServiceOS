@@ -3,7 +3,8 @@
 
 use core::{fmt, panic::PanicInfo, str};
 
-use serviceos_abi::ServiceImageId;
+use serviceos_abi::{ControlTag, ServiceImageId};
+use serviceos_bundle::BootStore;
 use serviceos_kernel_arch_x86_64::{
     boot::exit_boot_services_and_capture_context,
     cpu,
@@ -13,20 +14,27 @@ use serviceos_kernel_arch_x86_64::{
 };
 use serviceos_kernel_core::{
     Kernel,
+    capability::{CapabilityError, CapabilityRights, TransferMode},
+    ipc::{self, IpcError, MessageTag, OutgoingMessage},
     object::ObjectId,
     syscall,
     task::{ExecutionState, SchedulerError, TaskRole, ThreadId, ThreadMode},
     user::{self as kernel_user, SpawnError, TaskExitStatus},
 };
-use serviceos_userspace_catalog as userspace_catalog;
+use spin::Once;
 use uefi::{Status, entry};
+
+static BOOT_STORE_IMAGE_SOURCE: Once<&'static [u8]> = Once::new();
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum BootstrapError {
     RootSpawn(SpawnError),
     Scheduler(SchedulerError),
+    Capability(CapabilityError),
+    Ipc(IpcError),
     MissingRootTask,
     MissingRootThread,
+    MissingBootStore,
     UserRun(user::UserLaunchError),
 }
 
@@ -39,6 +47,18 @@ impl From<SpawnError> for BootstrapError {
 impl From<SchedulerError> for BootstrapError {
     fn from(error: SchedulerError) -> Self {
         Self::Scheduler(error)
+    }
+}
+
+impl From<CapabilityError> for BootstrapError {
+    fn from(error: CapabilityError) -> Self {
+        Self::Capability(error)
+    }
+}
+
+impl From<IpcError> for BootstrapError {
+    fn from(error: IpcError) -> Self {
+        Self::Ipc(error)
     }
 }
 
@@ -66,6 +86,10 @@ fn kernel_main() -> Status {
     log_line("boot", "entered x86_64 UEFI kernel image");
 
     let boot_context = exit_boot_services_and_capture_context();
+    let Some(boot_store) = boot_context.boot_store else {
+        log_line("boot", "boot-store payload missing");
+        cpu::halt_loop()
+    };
     let mut mapper = unsafe { ActivePageTable::new_identity_mapped() };
     let kernel = match Kernel::initialize(&boot_context, &mut mapper, TIMER_TICK_HZ as u64) {
         Ok(kernel) => kernel,
@@ -77,18 +101,20 @@ fn kernel_main() -> Status {
     let descriptor_state = interrupts::initialize();
     user::initialize();
     kernel_user::initialize_runtime();
-    kernel_user::register_image_resolver(userspace_catalog::resolve_image);
+    let _ = BOOT_STORE_IMAGE_SOURCE.call_once(|| boot_store);
+    kernel_user::register_image_resolver(resolve_boot_store_image);
     syscall::register_debug_log_writer(debug_log_writer);
 
     log(
         "memory",
         format_args!(
-            "regions={} usable={} boot-services-reclaimable={}",
+            "regions={} usable={} boot-services-reclaimable={} boot-store-bytes={}",
             kernel.boot_context().memory_region_count(),
             kernel.boot_context().usable_memory_region_count(),
             kernel
                 .boot_context()
-                .boot_services_reclaimable_region_count()
+                .boot_services_reclaimable_region_count(),
+            boot_store.len(),
         ),
     );
     log(
@@ -185,10 +211,66 @@ fn panic(info: &PanicInfo<'_>) -> ! {
 }
 
 fn launch_root_manager(kernel: &Kernel<'_>) -> Result<RootBootstrapSummary, BootstrapError> {
+    let ipc_kernel = ipc::kernel().ok_or(BootstrapError::MissingBootStore)?;
+    let bootstrap_task = kernel
+        .objects()
+        .bootstrap_task()
+        .task()
+        .ok_or(BootstrapError::MissingRootTask)?;
+    let (kernel_bootstrap_endpoint, root_bootstrap_endpoint) =
+        ipc_kernel.create_channel_pair(kernel.objects());
+    let kernel_bootstrap_handle = bootstrap_task.capability_space().install(
+        kernel_bootstrap_endpoint,
+        CapabilityRights::channel_endpoint(),
+        None,
+    )?;
+    let root_bootstrap_handle = bootstrap_task.capability_space().install(
+        root_bootstrap_endpoint,
+        CapabilityRights::channel_endpoint(),
+        None,
+    )?;
+    let root_bootstrap_transfer = bootstrap_task.capability_space().prepare_transfer(
+        root_bootstrap_handle,
+        CapabilityRights::channel_endpoint(),
+        TransferMode::Move,
+    )?;
+    let boot_store_bytes = kernel
+        .boot_context()
+        .boot_store
+        .ok_or(BootstrapError::MissingBootStore)?;
+    let boot_store_object = kernel
+        .objects()
+        .registry()
+        .create_memory_object_from_bytes(boot_store_bytes);
+    let boot_store_handle = bootstrap_task.capability_space().install(
+        boot_store_object,
+        CapabilityRights::READ
+            .union(CapabilityRights::DUPLICATE)
+            .union(CapabilityRights::TRANSFER),
+        None,
+    )?;
+    let boot_store_transfer = bootstrap_task.capability_space().prepare_transfer(
+        boot_store_handle,
+        CapabilityRights::READ
+            .union(CapabilityRights::DUPLICATE)
+            .union(CapabilityRights::TRANSFER),
+        TransferMode::Copy,
+    )?;
+
     let root = kernel_user::spawn_builtin_task(
         ServiceImageId::RootManager as u32,
         TaskRole::BootstrapRoot,
-        None,
+        Some(root_bootstrap_transfer),
+    )?;
+    let startup = OutgoingMessage::new(
+        MessageTag(ControlTag::Startup as u32),
+        &[boot_store_bytes.len() as u64],
+    )?
+    .add_transfer(boot_store_transfer)?;
+    ipc_kernel.send(
+        bootstrap_task.capability_space(),
+        kernel_bootstrap_handle,
+        startup,
     )?;
     let root_task = root
         .task
@@ -218,6 +300,11 @@ fn launch_root_manager(kernel: &Kernel<'_>) -> Result<RootBootstrapSummary, Boot
         blocked_threads: scheduler_snapshot.blocked_threads,
         context_switches: scheduler_snapshot.context_switches,
     })
+}
+
+fn resolve_boot_store_image(image_id: u32) -> Option<&'static [u8]> {
+    let boot_store = BOOT_STORE_IMAGE_SOURCE.get().copied()?;
+    BootStore::parse(boot_store).ok()?.resolve_image(image_id)
 }
 
 fn run_userspace_executor(

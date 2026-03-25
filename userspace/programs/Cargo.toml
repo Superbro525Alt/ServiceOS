@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "runtime",
     "root-manager",
+    "storage-service",
     "log-service",
     "config-service",
     "console-service",

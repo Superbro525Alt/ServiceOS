@@ -45,6 +45,7 @@ pub struct BootContext<'boot> {
     pub physical_memory_offset: Option<u64>,
     pub rsdp_address: Option<PhysicalAddress>,
     pub framebuffer: Option<FramebufferInfo>,
+    pub boot_store: Option<&'boot [u8]>,
 }
 
 impl<'boot> BootContext<'boot> {

@@ -8,6 +8,7 @@ use std::{
 
 const KERNEL_PACKAGE: &str = "serviceos-kernel-x86_64";
 const KERNEL_TARGET: &str = "x86_64-unknown-uefi";
+const USERSPACE_CATALOG_PACKAGE: &str = "serviceos-userspace-catalog";
 
 fn main() -> Result<(), Box<dyn Error>> {
     let options = Options::parse(env::args().skip(1).collect())?;
@@ -75,12 +76,17 @@ impl Error for UsageError {}
 
 struct BuildArtifacts {
     kernel_binary: PathBuf,
+    bootstore_binary: PathBuf,
     esp_dir: PathBuf,
 }
 
 fn build_kernel(release: bool) -> Result<BuildArtifacts, Box<dyn Error>> {
     let profile = if release { "release" } else { "debug" };
     let workspace_root = workspace_root();
+    let userspace_profile_dir = workspace_root
+        .join("target")
+        .join("userspace-programs")
+        .join(profile);
 
     let mut command = Command::new("cargo");
     command.current_dir(&workspace_root);
@@ -92,12 +98,22 @@ fn build_kernel(release: bool) -> Result<BuildArtifacts, Box<dyn Error>> {
     let status = command.status()?;
     ensure_success(status, "cargo build failed")?;
 
+    let mut userspace = Command::new("cargo");
+    userspace.current_dir(&workspace_root);
+    userspace.args(["build", "-p", USERSPACE_CATALOG_PACKAGE]);
+    if release {
+        userspace.arg("--release");
+    }
+    let status = userspace.status()?;
+    ensure_success(status, "userspace catalog build failed")?;
+
     Ok(BuildArtifacts {
         kernel_binary: workspace_root
             .join("target")
             .join(KERNEL_TARGET)
             .join(profile)
             .join(format!("{KERNEL_PACKAGE}.efi")),
+        bootstore_binary: userspace_profile_dir.join("bootstore.bin"),
         esp_dir: workspace_root
             .join("target")
             .join("images")
@@ -108,8 +124,14 @@ fn build_kernel(release: bool) -> Result<BuildArtifacts, Box<dyn Error>> {
 
 fn stage_efi_partition(artifacts: &BuildArtifacts) -> Result<PathBuf, Box<dyn Error>> {
     let boot_dir = artifacts.esp_dir.join("EFI").join("BOOT");
+    let serviceos_dir = artifacts.esp_dir.join("serviceos");
     std::fs::create_dir_all(&boot_dir)?;
+    std::fs::create_dir_all(&serviceos_dir)?;
     std::fs::copy(&artifacts.kernel_binary, boot_dir.join("BOOTX64.EFI"))?;
+    std::fs::copy(
+        &artifacts.bootstore_binary,
+        serviceos_dir.join("bootstore.bin"),
+    )?;
     Ok(artifacts.esp_dir.clone())
 }
 

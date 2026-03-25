@@ -1,0 +1,4 @@
+service=console-service
+image=console-service
+startup=eager
+restart=on-failure:1

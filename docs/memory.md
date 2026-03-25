@@ -1,12 +1,14 @@
 # Memory Foundation
 
-## Implemented in Phase 1
+## Implemented through Phase 5
 
 - UEFI memory-map normalization into architecture-neutral boot regions
 - early frame allocation from `CONVENTIONAL` memory only
 - a reserved virtual layout for kernel and future user spaces
 - active x86_64 page-table mutation for kernel heap mapping
 - a bootstrap bump allocator for kernel heap allocations
+- dedicated owned page-table roots for the first user address spaces
+- flat-image mapping for a bootstrap user code region and user stack
 
 ## Physical memory policy
 
@@ -86,7 +88,7 @@ allocation entry point.
 ## Next steps this enables
 
 - reclaim boot-services memory safely
-- install kernel-owned top-level page tables
+- install fully kernel-owned top-level page tables
 - add a direct physical-memory window
-- create real user address spaces with shared kernel mappings
+- expose richer VM construction and mapping APIs to later process code
 - replace the bootstrap heap with longer-lived slab/object allocators

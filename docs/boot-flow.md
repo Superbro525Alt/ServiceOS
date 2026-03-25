@@ -2,7 +2,7 @@
 
 ## Default path
 
-Phase 4 uses:
+Phase 5 uses:
 
 - the `uefi` crate in the kernel image crate for firmware entry
 - the host-side `xtask` tool to stage an EFI system partition
@@ -26,9 +26,12 @@ QEMU
           -> PIC remap and PIT programming
           -> generic object and IPC initialization
           -> bootstrap thread creation and scheduler initialization
-          -> phase-4 execution-model self-check
-          -> enable interrupts
-          -> wait for scheduler-driven timer wakeup
+          -> create first service task with a user thread
+          -> build a dedicated user address space
+          -> load the flat bootstrap user image
+          -> enter ring 3
+          -> service minimal syscalls from the first user program
+          -> return to the bootstrap kernel thread
           -> halt loop
 ```
 
@@ -44,15 +47,18 @@ QEMU
 - structured exception/fault reporting in Rust
 - bootstrap root-task creation with an initial self capability
 - a registry-backed object model initialized before interrupts are enabled
-- bootstrap thread registration before interrupt enable
-- a boot-time self-check that blocks a service thread on channel receive,
-  wakes it through IPC, blocks it again on a timer, and resumes it after the
-  timer interrupt path delivers a wake event
+- bootstrap thread registration before the first user handoff
+- construction of a separate user page-table root for the first service task
+- loading of a minimal flat user image and bootstrap user stack
+- privilege transition into ring 3 and return through the syscall exit path
+- a boot-time self-check that validates user launch, syscall entry, monotonic
+  time reads, and user-thread exit
 
 ## What is intentionally deferred
 
 - switching to fully kernel-owned page tables
 - reclaiming boot-services memory
 - direct-map installation for all physical memory
-- fast syscall instructions and ring-3 transition support
-- userspace launch
+- fast `SYSCALL/SYSRET`
+- general executable loading
+- the real root service manager

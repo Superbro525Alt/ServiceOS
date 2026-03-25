@@ -28,6 +28,8 @@ Now owns:
 - the scheduler and thread run/block transitions
 
 It still does not own scheduling policy or user-mode execution.
+It now does own the kernel-side bookkeeping for user threads once they have
+been created.
 
 ## `ipc`
 
@@ -75,6 +77,17 @@ Now owns:
 
 It still does not own full process ABI policy, handle tables, or user-buffer
 marshalling.
+
+## `user`
+
+Owns:
+
+- the minimal flat bootstrap image format
+- user-image header parsing
+- kernel-owned mapping of the first executable user region and stack
+
+It does not own executable discovery policy, filesystem integration, or a
+general process loader yet.
 
 ## `interrupts`
 

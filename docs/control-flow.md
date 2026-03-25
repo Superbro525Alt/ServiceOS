@@ -1,6 +1,6 @@
 # Control Flow Foundation
 
-## Implemented by Phase 4
+## Implemented by Phase 5
 
 - a real x86_64 IDT
 - a kernel-owned GDT/TSS pair with a dedicated double-fault IST stack
@@ -10,6 +10,7 @@
 - a monotonic tick source with deadline wakeup bookkeeping
 - a dedicated software-interrupt syscall vector at `0x80`
 - a scheduler that consumes timer wakeups and IPC-readiness events
+- a ring-3 launch path that returns through the same kernel control-flow spine
 
 ## Trap and interrupt flow
 
@@ -50,6 +51,7 @@ The syscall ABI remains intentionally modest:
 
 - the generic kernel owns syscall number typing and dispatch tables
 - the arch layer owns entry mechanics and register capture
+- only ABI probe, monotonic time read, and thread-exit syscalls exist
 - no handle ABI, user-buffer ABI, or service policy is baked in yet
 
 This keeps the syscall layer extensible while userspace threads and handle
@@ -76,5 +78,5 @@ The control-flow path still does not include:
 - LAPIC or HPET timer sources
 - SMP interrupt routing
 - fast `SYSCALL/SYSRET`
-- user/kernel privilege transitions
+- user fault recovery
 - full preemption or CPU-local run queues

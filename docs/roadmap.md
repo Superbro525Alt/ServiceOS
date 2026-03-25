@@ -34,18 +34,21 @@
 - IPC receive blocking and wake integration
 - task objects established as the current process-equivalent container
 
-## Phase 5
+## Completed in Phase 5
 
-- reclaim boot-services memory safely
-- install kernel-owned page tables
-- build direct physical-memory mapping
-- flesh out address-space creation APIs
-- first real user address-space construction
+- dedicated user page-table creation with shared kernel mappings
+- minimal flat user image parsing and loading
+- first ring-3 thread launch path
+- bootstrap syscall ABI for ABI probe, time read, and thread exit
+- first userspace demo program and return path back into the kernel
 
 ## Phase 6
 
-- first user thread launch path
-- syscall ABI expansion around handles and objects
+- user-visible handle and object syscalls
+- channel and capability syscalls for real service composition
+- user fault delivery instead of machine halt
+- reclaim boot-services memory safely
+- replace the bootstrap loader with a richer executable-loading path
 - root userspace service-manager handoff preparation
 
 ## Beyond

@@ -1,6 +1,6 @@
 # ServiceOS Kernel Foundation
 
-The repository now covers Phase 4 of the kernel bring-up:
+The repository now covers Phase 5 of the kernel bring-up:
 
 - direct UEFI boot into Rust on `x86_64`
 - real UEFI memory-map capture
@@ -17,9 +17,13 @@ The repository now covers Phase 4 of the kernel bring-up:
 - a schedulable thread model
 - a round-robin scheduler foundation
 - timer and IPC wakeups routed into task state transitions
+- first user address-space construction
+- a minimal flat user image loader
+- ring-3 entry and return on `x86_64`
+- a tiny bootstrap syscall ABI for the first userspace program
 
-The system remains intentionally early. It does not attempt scheduling,
-userspace launch, IPC policy, drivers, filesystems, networking, audio, or GUI.
+The system remains intentionally early. It does not attempt real
+service-manager policy, drivers, filesystems, networking, audio, or GUI.
 
 ## Initial target
 
@@ -42,6 +46,8 @@ userspace launch, IPC policy, drivers, filesystems, networking, audio, or GUI.
 |   |-- core/
 |   `-- image/x86_64/
 |-- support/xtask/
+|-- userspace/
+|   `-- demo-x86_64/
 `-- tests/
 ```
 
@@ -49,6 +55,7 @@ userspace launch, IPC policy, drivers, filesystems, networking, audio, or GUI.
 - `kernel/arch/x86_64`: x86_64 boot, CPU, serial, and paging implementation
 - `kernel/image/x86_64`: bootable UEFI kernel image entry point
 - `support/xtask`: host-side build and QEMU runner logic
+- `userspace/demo-x86_64`: first minimal ring-3 validation image
 
 ## Commands
 
@@ -56,6 +63,12 @@ userspace launch, IPC policy, drivers, filesystems, networking, audio, or GUI.
 cargo check --workspace
 cargo xtask build
 cargo xtask qemu
+```
+
+Optional QEMU debugging:
+
+```bash
+QEMU_EXTRA_ARGS="-d int -D target/qemu-int.log" cargo xtask qemu
 ```
 
 Optional release build:
@@ -66,7 +79,7 @@ cargo xtask build --release
 
 ## Current state
 
-Phase 4 boots cleanly under QEMU, exits UEFI boot services, captures the memory
+Phase 5 boots cleanly under QEMU, exits UEFI boot services, captures the memory
 map, initializes the memory substrate, installs an x86_64 GDT/TSS/IDT, enables
 PIC/PIT-driven timer interrupts, and then brings up a kernel object model with:
 
@@ -77,12 +90,20 @@ PIC/PIT-driven timer interrupts, and then brings up a kernel object model with:
 - explicit handle close and weak-registry garbage collection
 - a bootstrap kernel thread plus service threads registered with the scheduler
 - channel-receive blocking and timer blocking feeding back into scheduling
+- a dedicated user page-table root with shared kernel mappings
+- a flat-image loader that maps one executable user region plus a bootstrap
+  user stack
+- a first userspace thread that enters ring 3, executes on its own stack, uses
+  the syscall ABI on vector `0x80`, and exits back to the kernel
 
-Userspace service launch still does not exist, but the kernel now has the basic
-execution model it needs for it: process-equivalent task objects, schedulable
-threads, explicit blocking states, and wakeup paths driven by IPC and timers.
-The syscall dispatcher on vector `0x80` remains an early ABI boundary rather
-than a complete user ABI.
+The current syscall surface is intentionally tiny:
+
+- `0`: ABI version probe
+- `1`: monotonic tick read
+- `2`: current-thread exit
+
+This is enough to prove the kernel can start handing responsibility outward to
+userspace without pretending that the real service graph exists yet.
 
 See [docs/architecture.md](/home/paulh/os-dev/docs/architecture.md),
 [docs/boot-flow.md](/home/paulh/os-dev/docs/boot-flow.md),
@@ -91,4 +112,5 @@ See [docs/architecture.md](/home/paulh/os-dev/docs/architecture.md),
 [docs/memory.md](/home/paulh/os-dev/docs/memory.md),
 [docs/objects.md](/home/paulh/os-dev/docs/objects.md),
 [docs/subsystems.md](/home/paulh/os-dev/docs/subsystems.md), and
+[docs/userspace.md](/home/paulh/os-dev/docs/userspace.md), and
 [docs/roadmap.md](/home/paulh/os-dev/docs/roadmap.md).

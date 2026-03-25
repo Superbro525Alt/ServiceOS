@@ -37,6 +37,9 @@ will eventually require.
 - process-equivalent task objects with address-space attachment points
 - a bootstrap kernel thread plus schedulable service threads
 - a simple round-robin scheduler with timer and IPC wake integration
+- dedicated user address-space roots for user threads
+- a bootstrap userspace loader and ring-3 transition path
+- a minimal syscall ABI sufficient for the first user program
 
 ## What stays out of the kernel for now
 
@@ -67,6 +70,11 @@ will eventually require.
   userspace service processes will refine this with real user address spaces
 - the scheduler remains intentionally simple, but its blocking model is already
   aligned with timer waits, channel receives, and future syscall blocking
+- the first user executable format is a kernel-owned flat image because Phase 5
+  is about launch mechanics, not about baking ELF policy into the kernel too
+  early
+- the first user syscall ABI stays on interrupt vector `0x80`; the priority is
+  a clean privilege boundary before any fast-path syscall work
 
 ## Temporary but explicit assumptions
 
@@ -78,8 +86,8 @@ will eventually require.
 - Legacy PIC + PIT are used as the first timer source because they are simple,
   deterministic, and work well under QEMU bring-up
 - Syscalls use interrupt vector `0x80` as the initial entry point instead of a
-  faster `SYSCALL/SYSRET` path because user-mode stacks and privilege
-  transitions are not built yet
+  faster `SYSCALL/SYSRET` path because the kernel is still proving out the
+  first user ABI and wants the most explicit control-flow path
 - The kernel object registry currently uses `Arc` ownership and a weak-indexed
   live-object table because it is simple, explicit, and a good fit for early
   Rust bring-up
@@ -88,4 +96,4 @@ will eventually require.
 - A single-core round-robin scheduler is the first execution policy because it
   is easy to reason about and leaves room for later preemption and SMP work
 
-These are Phase 4 bring-up constraints, not long-term ABI commitments.
+These are Phase 5 bring-up constraints, not long-term ABI commitments.

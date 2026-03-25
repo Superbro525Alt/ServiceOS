@@ -39,7 +39,7 @@ fn main() -> u64 {
         key: ConfigKey::LogMinimumSeverity,
         kind: ConfigValueKind::Unsigned,
         value: 0,
-    }; 3];
+    }; 4];
     let entry_count = match parse_config_entries(&config_bytes[..loaded], &mut entries) {
         Ok(count) => count,
         Err(_) => return 0xf204,
@@ -111,6 +111,7 @@ fn parse_config_entries(bytes: &[u8], entries: &mut [ConfigEntry]) -> rt::Result
                 "log.minimum_severity" => ConfigKey::LogMinimumSeverity,
                 "status.heartbeat_ticks" => ConfigKey::StatusHeartbeatTicks,
                 "status.console_mirror" => ConfigKey::StatusConsoleMirror,
+                "status.heartbeat_log_period" => ConfigKey::StatusHeartbeatLogPeriod,
                 _ => return Err(rt::Error::InvalidArgument),
             },
             kind: ConfigValueKind::Unsigned,
@@ -129,6 +130,7 @@ fn config_key_from_word(value: u64) -> ConfigKey {
     match value as u32 {
         x if x == ConfigKey::LogMinimumSeverity as u32 => ConfigKey::LogMinimumSeverity,
         x if x == ConfigKey::StatusConsoleMirror as u32 => ConfigKey::StatusConsoleMirror,
+        x if x == ConfigKey::StatusHeartbeatLogPeriod as u32 => ConfigKey::StatusHeartbeatLogPeriod,
         _ => ConfigKey::StatusHeartbeatTicks,
     }
 }

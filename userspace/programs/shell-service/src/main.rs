@@ -210,6 +210,7 @@ fn cmd_config(bootstrap: rt::Handle, session: rt::Handle) -> rt::Result<()> {
         ConfigKey::LogMinimumSeverity,
         ConfigKey::StatusHeartbeatTicks,
         ConfigKey::StatusConsoleMirror,
+        ConfigKey::StatusHeartbeatLogPeriod,
     ] {
         let (_, value) = rt::config_read(config_handle, key)?;
         write_session_linef(
@@ -356,6 +357,7 @@ fn config_key_name(key: ConfigKey) -> &'static str {
         ConfigKey::LogMinimumSeverity => "log.minimum_severity",
         ConfigKey::StatusHeartbeatTicks => "status.heartbeat_ticks",
         ConfigKey::StatusConsoleMirror => "status.console_mirror",
+        ConfigKey::StatusHeartbeatLogPeriod => "status.heartbeat_log_period",
     }
 }
 

@@ -44,8 +44,10 @@ Reply:
 ## Current behavior
 
 - reads heartbeat period and console mirror period from `config-service`
+- reads a separate heartbeat-log period from `config-service`
 - reads a persisted banner resource from the boot store
 - emits structured heartbeat records to `log-service`
+- can suppress heartbeat logs entirely when `status.heartbeat_log_period=0`
 - mirrors every Nth heartbeat to `console-service`
 
 ## Deferred

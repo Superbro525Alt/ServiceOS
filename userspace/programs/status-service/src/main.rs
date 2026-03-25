@@ -58,6 +58,11 @@ fn main() -> u64 {
         Ok((_, value)) => value,
         Err(_) => return 0xf408,
     };
+    let heartbeat_log_period =
+        match rt::config_read(config_handle, ConfigKey::StatusHeartbeatLogPeriod) {
+            Ok((_, value)) => value,
+            Err(_) => return 0xf409,
+        };
     let _ = rt::handle_close(config_handle);
 
     let public = match rt::channel_create() {
@@ -83,7 +88,7 @@ fn main() -> u64 {
         LogDomain::Status,
         LogEvent::StatusStarted,
         heartbeat_ticks,
-        console_mirror,
+        heartbeat_log_period,
     );
     let _ = rt::send_log_record(
         log_handle,
@@ -127,15 +132,17 @@ fn main() -> u64 {
             heartbeat_count = heartbeat_count.saturating_add(1);
             last_tick = now;
             next_heartbeat = now.saturating_add(heartbeat_ticks);
-            let _ = rt::send_log_record(
-                log_handle,
-                ServiceId::Status,
-                LogSeverity::Info,
-                LogDomain::Status,
-                LogEvent::StatusHeartbeat,
-                heartbeat_count,
-                last_tick,
-            );
+            if heartbeat_log_period != 0 && heartbeat_count % heartbeat_log_period == 0 {
+                let _ = rt::send_log_record(
+                    log_handle,
+                    ServiceId::Status,
+                    LogSeverity::Info,
+                    LogDomain::Status,
+                    LogEvent::StatusHeartbeat,
+                    heartbeat_count,
+                    last_tick,
+                );
+            }
             if console_mirror != 0 && heartbeat_count % console_mirror == 0 {
                 let _ = rt::console_write_record(
                     console_handle,

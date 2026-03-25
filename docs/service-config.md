@@ -33,11 +33,20 @@ Reply:
 - `LogMinimumSeverity`
 - `StatusHeartbeatTicks`
 - `StatusConsoleMirror`
+- `StatusHeartbeatLogPeriod`
 
 ## Current storage model
 
 The current implementation reads `config/system.cfg` through a startup-granted
 blob capability opened by `storage-service`.
+
+The current default config keeps the operator shell quiet:
+
+- `status.console_mirror=0` disables direct console heartbeat mirroring
+- `status.heartbeat_log_period=0` disables recurring structured heartbeat logs
+
+Set `status.heartbeat_log_period=1` when you want every heartbeat recorded for
+debugging.
 
 ## Deferred
 

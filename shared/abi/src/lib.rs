@@ -310,6 +310,7 @@ pub enum ConfigKey {
     LogMinimumSeverity = 1,
     StatusHeartbeatTicks = 2,
     StatusConsoleMirror = 3,
+    StatusHeartbeatLogPeriod = 4,
 }
 
 #[repr(u32)]

@@ -125,8 +125,15 @@ Deferred work:
 - fault delivery to user processes
 - executable-loader expansion beyond the boot-store bootstrap format
 
-## Desktop shell
+## Shell and session stack
 
-The future shell, session manager, and application runtime stack should sit
-above the root service manager and platform services. Nothing in the current
-kernel hardcodes desktop concepts, which is the correct long-term boundary.
+A minimal text shell now exists as a normal userspace service. Later shell,
+session-manager, and application runtime work should build on that userspace
+boundary instead of pulling terminal or desktop policy back into the kernel.
+
+Deferred work:
+
+- multiple sessions and login policy
+- package-backed command discovery
+- richer terminal semantics and networking tools
+- graphical session management and desktop shell layers

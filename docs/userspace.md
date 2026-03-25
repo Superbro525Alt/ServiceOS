@@ -10,6 +10,7 @@ The userspace path now covers four layers:
   capability
 - the root manager can start a small always-on platform graph from persisted
   manifests
+- the platform can host a real operator shell and launch transient tools
 
 This is still intentionally early, but it is now a real service-composed
 platform substrate rather than a single bootstrap demo.
@@ -75,6 +76,8 @@ Current syscall numbers:
 - `10`: spawn a boot-store service image from the bootstrap root
 - `11`: query task exit status
 - `12`: read from a kernel memory object
+- `13`: read one byte from the raw debug console
+- `14`: write bytes directly to the raw debug console
 
 This is enough for a real service manager and storage bootstrap without
 pretending the kernel already exposes a full general-purpose process API.
@@ -88,6 +91,7 @@ The root manager now brings up:
 - `config-service`
 - `log-service`
 - `status-service`
+- `shell-service`
 
 That graph proves:
 
@@ -98,6 +102,21 @@ That graph proves:
 - controlled service discovery
 - long-running service supervision
 - structured logging through userspace services
+- a text-first operator session layered on the service graph
+- manager-mediated transient program launch
+
+## Session and tool launch model
+
+The shell does not get ambient kernel or filesystem power.
+
+- `shell-service` opens a session through `console-service`
+- shell commands inspect services through the root-manager bootstrap/control
+  channel
+- shell reads logs, config, and storage through the same capability-scoped
+  service contracts as any other service
+- transient tools are launched by the root manager on shell request
+- tools can inherit only the session handle or other explicit capabilities that
+  the shell passes through the manager
 
 ## Still deferred
 
@@ -110,4 +129,5 @@ The current userspace layer still does not include:
 - directory capabilities for general applications
 - a richer VM syscall surface
 - kernel-mediated blocking receive completion for userspace threads
-- the broader platform-service graph beyond the current foundations
+- richer terminal semantics, login/session policy, and the broader
+  platform-service graph beyond the current foundations

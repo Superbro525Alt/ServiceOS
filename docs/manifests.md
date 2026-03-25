@@ -9,6 +9,7 @@ as:
 - `services/config-service/manifest.svc`
 - `services/log-service/manifest.svc`
 - `services/status-service/manifest.svc`
+- `services/shell-service/manifest.svc`
 
 The root manager loads `services/index.txt` from `storage-service`, then opens
 each listed manifest through the same storage contract.
@@ -39,6 +40,9 @@ lookup=config-service:send
 lookup=console-service:send
 resource=services/status-service/resources/banner.txt
 ```
+
+The current shell manifest uses the same schema to declare its dependencies and
+lookup permissions without needing any shell-specific manifest escape hatch.
 
 ## Startup grants and resources
 
@@ -97,6 +101,8 @@ This keeps capability distribution honest:
 - manager registry handles can remain redistributable
 - child-service handles can be send-only or otherwise reduced
 - reply endpoints can be transferred with only the rights needed to answer
+- transient tool-launch handles can be returned to the shell without granting
+  broader manager authority
 
 ## Future evolution
 

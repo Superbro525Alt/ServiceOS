@@ -14,6 +14,9 @@ root-manager
        depends on console-service, config-service
   -> status-service
        depends on log-service, config-service
+  -> shell-service
+       depends on console-service, log-service, config-service,
+       storage-service, status-service
 ```
 
 The important change is that the graph now consumes persisted inputs. The root
@@ -31,6 +34,7 @@ The root manager is the first real system coordinator in userspace. It owns:
 - startup capability grants
 - service registration and lookup mediation
 - restart supervision
+- shell-facing service inspection and transient tool launch
 
 The kernel still only provides mechanisms: address spaces, threads, channels,
 capabilities, timers, and the executable launch path.
@@ -64,6 +68,12 @@ Current lookup permissions:
 - `status-service`
   - `config-service` with send-only rights
   - `console-service` with send-only rights
+- `shell-service`
+  - `console-service` with send-only rights
+  - `log-service` with send-only rights
+  - `config-service` with send-only rights
+  - `storage-service` with send-only rights
+  - `status-service` with send-only rights
 
 ## Service roles
 
@@ -79,6 +89,7 @@ Current lookup permissions:
 
 - owns the userspace route to the kernel debug sink
 - renders structured service and lifecycle events into readable diagnostics
+- owns line-oriented operator sessions backed by the raw serial console path
 
 ### `config-service`
 
@@ -97,6 +108,14 @@ Current lookup permissions:
 - proves both manager-mediated lookup and startup-granted resource access
 - reads config, consumes a resource blob, and emits periodic heartbeats
 
+### `shell-service`
+
+- owns the first operator/developer command environment
+- opens a console session through `console-service`
+- inspects services through the manager control channel
+- reads logs, config, and storage through explicit service lookups
+- launches transient tools through the manager rather than direct shell power
+
 ## Registry and discovery
 
 The registry remains manager-mediated and identity-based.
@@ -109,6 +128,9 @@ The registry remains manager-mediated and identity-based.
 
 Discovery is explicit. Knowing a service name does not imply access.
 
+The shell follows the same rule. It can inspect and operate the platform only
+because its manifest and bootstrap channel explicitly allow those actions.
+
 ## Supervision
 
 All current platform services are long-running services. The manager:
@@ -118,6 +140,10 @@ All current platform services are long-running services. The manager:
 - restarts a service within its manifest restart budget
 - treats exhausted restart budgets as fatal to the current root graph
 
+Transient tools are separate from long-running services. The manager launches
+them on shell request, binds any requested session handles, and returns only a
+task handle back to the shell for observation.
+
 ## Deferred
 
 This platform layer still does not implement:
@@ -126,4 +152,5 @@ This platform layer still does not implement:
 - directory capabilities for general applications
 - package or update policy
 - dynamic service installation
-- networking, graphics, audio, shell, or compatibility services
+- richer terminal features, login/session policy, networking, graphics, audio,
+  or compatibility services

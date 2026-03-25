@@ -22,6 +22,8 @@ userspace platform layer:
 - a refined manager-mediated service registry
 - foundational userspace services for storage, logging, configuration, console
   I/O, and system status
+- a text-first shell service and transient tool launch path for in-system
+  operation
 - host-side unit tests for the core kernel semantics
 
 The system remains intentionally early. It does not attempt desktop, package,
@@ -109,6 +111,8 @@ The current platform layer provides:
 - a `config-service` backed by persisted configuration data
 - a long-running `status-service` that depends on log, config, and console and
   consumes a startup-granted resource blob
+- a `shell-service` that owns the first operator session and command surface
+- a manager-mediated transient tool launch path validated by `sysinfo-tool`
 
 The current syscall surface is intentionally small, but it is now enough for a
 real service platform:
@@ -126,12 +130,15 @@ real service platform:
 - `10`: bootstrap-only service spawn
 - `11`: task status query
 - `12`: kernel memory-object read for boot-rooted storage hydration
+- `13`: raw debug-console byte read for console input polling
+- `14`: raw debug-console byte write for session output
 
 See [docs/kernel-summary.md](/home/paulh/os-dev/docs/kernel-summary.md),
 [docs/boot-flow.md](/home/paulh/os-dev/docs/boot-flow.md),
 [docs/storage.md](/home/paulh/os-dev/docs/storage.md),
 [docs/userspace.md](/home/paulh/os-dev/docs/userspace.md),
 [docs/services.md](/home/paulh/os-dev/docs/services.md),
+[docs/shell.md](/home/paulh/os-dev/docs/shell.md),
 [docs/manifests.md](/home/paulh/os-dev/docs/manifests.md),
 [docs/service-logging.md](/home/paulh/os-dev/docs/service-logging.md),
 [docs/service-config.md](/home/paulh/os-dev/docs/service-config.md),

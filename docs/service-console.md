@@ -4,13 +4,15 @@
 
 `console-service` is the current console-adjacent system I/O service.
 
-It exists now to:
+It owns:
 
-- own the direct route to the kernel debug output sink
-- render structured service/platform events into readable lines
-- establish a durable boundary between system output and log collection
+- the userspace route to the kernel debug log sink
+- formatted lifecycle/log rendering for the wider service graph
+- the first line-oriented operator session contract used by `shell-service`
 
-## Public contract
+## Public contracts
+
+### Structured log rendering
 
 Request:
 
@@ -24,16 +26,62 @@ Request:
   - `5`: detail field 1
   - `6`: sequence number
 
-There is no reply path today. Console writes are one-way best-effort output.
+This is one-way best-effort output. `log-service` uses it to publish the
+filtered structured log stream.
+
+### Session open
+
+Request:
+
+- tag: `ConsoleTag::SessionOpenRequest`
+- handles:
+  - `0`: reply endpoint
+
+Reply:
+
+- tag: `ConsoleTag::SessionOpenReply`
+- handles:
+  - `0`: session channel
+
+### Session write
+
+Request:
+
+- tag: `ConsoleTag::SessionWriteText`
+- words:
+  - `0`: byte length
+  - `1..`: packed UTF-8 bytes
+
+This writes directly to the raw console stream without reformatting it as a
+structured service log line.
+
+### Session read
+
+Request:
+
+- tag: `ConsoleTag::SessionReadLineRequest`
+- handles:
+  - `0`: reply endpoint
+
+Reply:
+
+- tag: `ConsoleTag::SessionReadLineReply`
+- words:
+  - `0`: byte length
+  - `1..`: packed UTF-8 line bytes
+
+The current session contract is line-oriented and single-reader per session.
 
 ## Current users
 
 - `log-service` forwards filtered structured logs here
-- `status-service` mirrors periodic status summaries here
+- `shell-service` opens an operator session here
+- transient tools such as `sysinfo-tool` write through a shell-granted session
+  handle
 
 ## Deferred
 
-- terminal sessions
-- input handling
-- richer text rendering
-- ownership transfer between shells or sessions
+- multiple concurrent operator sessions with routing policy
+- terminal capabilities beyond simple line input and text output
+- ownership transfer between shells or richer session managers
+- terminal emulation and graphical console surfaces

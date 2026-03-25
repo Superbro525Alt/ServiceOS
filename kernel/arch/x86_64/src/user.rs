@@ -62,7 +62,7 @@ pub fn run_user_program(
             0x202,
         );
         cpu::load_page_table_root(kernel_page_table_root);
-        serial::write_line("serviceos: phase5 returned to kernel from userspace");
+        serial::write_line("serviceos: userspace: returned to kernel from ring 3");
     }
 
     USER_EXIT_STATUS

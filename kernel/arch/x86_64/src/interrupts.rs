@@ -347,7 +347,7 @@ fn handle_exception(report: ExceptionReport) -> ! {
         report.disposition,
         serviceos_kernel_core::interrupts::FaultDisposition::DeliverToTask
     ) {
-        serial::write_line("serviceos: user fault delivery is not implemented in phase5");
+        serial::write_line("serviceos: interrupt: user fault delivery is not implemented");
     }
 
     cpu::halt_loop()

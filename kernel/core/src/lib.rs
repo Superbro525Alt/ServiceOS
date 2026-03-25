@@ -11,7 +11,10 @@ pub mod task;
 pub mod time;
 
 use bootstrap::{BootContext, BootstrapPlan};
+use interrupts::InterruptState;
 use memory::{MemoryManager, PageMapper};
+use syscall::DispatchTable;
+use time::TimeManager;
 
 /// Architecture-neutral kernel state constructed after early boot handoff
 /// normalization. Real subsystem initialization starts in later phases.
@@ -19,11 +22,15 @@ pub struct Kernel<'boot> {
     boot_context: &'boot BootContext<'boot>,
     bootstrap_plan: BootstrapPlan,
     memory: &'static MemoryManager,
+    interrupts: &'static InterruptState,
+    syscalls: &'static DispatchTable,
+    time: &'static TimeManager,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum KernelInitError {
     Memory(memory::InitializationError),
+    Time(time::InitializationError),
 }
 
 impl From<memory::InitializationError> for KernelInitError {
@@ -32,17 +39,32 @@ impl From<memory::InitializationError> for KernelInitError {
     }
 }
 
+impl From<time::InitializationError> for KernelInitError {
+    fn from(error: time::InitializationError) -> Self {
+        Self::Time(error)
+    }
+}
+
 impl<'boot> Kernel<'boot> {
     pub fn initialize(
         boot_context: &'boot BootContext<'boot>,
         mapper: &mut impl PageMapper,
+        timer_tick_hz: u64,
     ) -> Result<Self, KernelInitError> {
         let memory = memory::initialize(boot_context, mapper)?;
+        let interrupts = interrupts::initialize();
+        let syscalls = syscall::initialize();
+        let time = time::initialize(time::TimerSourceInfo {
+            tick_hz: timer_tick_hz,
+        })?;
 
         Ok(Self {
             boot_context,
-            bootstrap_plan: BootstrapPlan::phase1(),
+            bootstrap_plan: BootstrapPlan::phase2(),
             memory,
+            interrupts,
+            syscalls,
+            time,
         })
     }
 
@@ -56,5 +78,17 @@ impl<'boot> Kernel<'boot> {
 
     pub fn memory(&self) -> &'static MemoryManager {
         self.memory
+    }
+
+    pub fn interrupts(&self) -> &'static InterruptState {
+        self.interrupts
+    }
+
+    pub fn syscalls(&self) -> &'static DispatchTable {
+        self.syscalls
+    }
+
+    pub fn time(&self) -> &'static TimeManager {
+        self.time
     }
 }

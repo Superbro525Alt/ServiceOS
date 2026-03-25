@@ -71,6 +71,7 @@ impl<'boot> BootContext<'boot> {
 pub enum BootstrapStage {
     EarlyArchitectureBringUp,
     MemoryDiscovery,
+    ControlFlowFoundation,
     KernelObjectFoundation,
     RootTaskPreparation,
 }
@@ -92,6 +93,13 @@ impl BootstrapPlan {
     pub const fn phase1() -> Self {
         Self {
             current: BootstrapStage::MemoryDiscovery,
+            next: Some(BootstrapStage::ControlFlowFoundation),
+        }
+    }
+
+    pub const fn phase2() -> Self {
+        Self {
+            current: BootstrapStage::ControlFlowFoundation,
             next: Some(BootstrapStage::KernelObjectFoundation),
         }
     }

@@ -1,5 +1,7 @@
 #![no_std]
 
+extern crate alloc;
+
 pub mod bootstrap;
 pub mod capability;
 pub mod interrupts;
@@ -12,7 +14,9 @@ pub mod time;
 
 use bootstrap::{BootContext, BootstrapPlan};
 use interrupts::InterruptState;
+use ipc::IpcKernel;
 use memory::{MemoryManager, PageMapper};
+use object::KernelObjectModel;
 use syscall::DispatchTable;
 use time::TimeManager;
 
@@ -25,6 +29,8 @@ pub struct Kernel<'boot> {
     interrupts: &'static InterruptState,
     syscalls: &'static DispatchTable,
     time: &'static TimeManager,
+    objects: &'static KernelObjectModel,
+    ipc: &'static IpcKernel,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -57,14 +63,18 @@ impl<'boot> Kernel<'boot> {
         let time = time::initialize(time::TimerSourceInfo {
             tick_hz: timer_tick_hz,
         })?;
+        let objects = object::initialize();
+        let ipc = ipc::initialize();
 
         Ok(Self {
             boot_context,
-            bootstrap_plan: BootstrapPlan::phase2(),
+            bootstrap_plan: BootstrapPlan::phase3(),
             memory,
             interrupts,
             syscalls,
             time,
+            objects,
+            ipc,
         })
     }
 
@@ -90,5 +100,13 @@ impl<'boot> Kernel<'boot> {
 
     pub fn time(&self) -> &'static TimeManager {
         self.time
+    }
+
+    pub fn objects(&self) -> &'static KernelObjectModel {
+        self.objects
+    }
+
+    pub fn ipc(&self) -> &'static IpcKernel {
+        self.ipc
     }
 }

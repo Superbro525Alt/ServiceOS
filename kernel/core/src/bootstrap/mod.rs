@@ -103,4 +103,11 @@ impl BootstrapPlan {
             next: Some(BootstrapStage::KernelObjectFoundation),
         }
     }
+
+    pub const fn phase3() -> Self {
+        Self {
+            current: BootstrapStage::KernelObjectFoundation,
+            next: Some(BootstrapStage::RootTaskPreparation),
+        }
+    }
 }

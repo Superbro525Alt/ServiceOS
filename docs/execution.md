@@ -1,17 +1,12 @@
 # Execution Model
 
-## Phase 5 scope
-
-Phase 5 keeps the Phase 4 scheduler model and adds the first real user thread
-launch path on top of it.
-
 ## Process and thread model
 
 The current task object is the process-equivalent container.
 
 A task owns:
 
-- an optional future address-space identifier
+- an optional address-space identifier
 - a capability space
 - a set of member threads
 - a role such as bootstrap root or system service
@@ -35,7 +30,7 @@ The current scheduler is deliberately simple:
 - explicit blocked queues for timer waits and channel-receive waits
 
 This is enough to make state transitions real without baking in policy that
-would fight later SMP or userspace work.
+would fight later SMP or richer userspace work.
 
 ## State transitions
 
@@ -59,33 +54,19 @@ Important transitions in the current implementation:
 - IPC send makes one blocked receiver runnable again
 - timer expiry makes one blocked timer waiter runnable again
 
-## Wakeup model
+## Userspace implications
 
-Phase 4 integrates two real wakeup paths:
+This model is now exercised by a real service platform:
 
-- timer interrupts feed the monotonic clock and produce `WakeEvent`s
-- channel send operations notify the scheduler that a receive waiter can run
-
-The scheduler consumes both and turns them into runnable threads. The current
-boot demo exercises both paths in one sequence.
-
-## Userspace bootstrap implications
-
-This model is now exercised by a real bootstrap path:
-
-- the task object now carries a real user address-space attachment point in the
-  first user launch path
-- the `ThreadMode::User` variant now reaches ring 3 in the boot demo
-- blocking and wake transitions are expressed independently of service policy
-- later syscall handlers can block the current thread through the same
-  scheduler APIs used by the boot demo
+- user tasks carry real address-space attachment points
+- `ThreadMode::User` reaches ring 3 in normal bring-up
+- the root manager and foundational services run on the same scheduler
+- later blocking syscalls can reuse the same scheduler APIs
 
 ## Still deferred
 
-Phase 5 still does not include:
-
-- actual context switching of CPU register state
+- actual CPU register context switching between unrelated kernel threads
 - preemptive time-slice enforcement
 - SMP scheduling
 - user fault delivery back into the owning task
-- a general executable loader or root service manager policy
+- richer executable loading

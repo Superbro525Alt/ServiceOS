@@ -2,14 +2,14 @@
 
 ## Current scope
 
-The userspace path now covers two layers:
+The userspace path now covers three layers:
 
 - the kernel can construct and enter isolated user address spaces
-- the kernel can launch a real root userspace service manager that builds the
-  first service graph
+- the kernel can launch a real root userspace service manager
+- the root manager can start a small always-on foundational service graph
 
-This is still intentionally early, but it is no longer just a single demo
-program.
+This is still intentionally early, but it is now a real service-composed
+platform substrate rather than a single bootstrap demo.
 
 ## Executable format and image catalog
 
@@ -29,13 +29,8 @@ The flat-image header carries:
 - an image byte count
 - a user stack top
 
-Why this is still flat instead of ELF:
-
-- it keeps this stage focused on privilege transition, address-space ownership,
-  and service bootstrap
-- it avoids dragging relocation, segment, and filesystem policy into the kernel
-- it gives later phases a replaceable loader boundary instead of baking storage
-  policy into the kernel too early
+This remains flat rather than ELF because the current priority is clean launch
+mechanics and service composition, not storage or relocation policy.
 
 ## Address-space model
 
@@ -51,7 +46,7 @@ segment permissions and user-visible VM policy remain deferred.
 
 ## Syscall ABI
 
-Userspace currently enters the kernel through interrupt vector `0x80`.
+Userspace enters the kernel through interrupt vector `0x80`.
 
 Current syscall numbers:
 
@@ -68,28 +63,25 @@ Current syscall numbers:
 - `10`: spawn a built-in service image from the bootstrap root
 - `11`: query task exit status
 
-This is enough for a real root service manager without pretending the kernel
-already exposes a broad general-purpose process API.
+This is enough for a real service manager and foundational services without
+pretending the kernel already exposes a full general-purpose process API.
 
-## Root manager bootstrap
+## Current service graph
 
-The first userspace task is now the root service manager. The current bootstrap
-contract is:
+The root manager now brings up:
 
-- the kernel launches the built-in root-manager image
-- the root manager runs as the bootstrap-root task
-- it can spawn child services through the current bootstrap syscall
-- child services receive bootstrap control channels and explicit startup grants
-- registration and discovery remain manager-owned userspace policy
-
-The first service graph consists of:
-
+- `console-service`
+- `config-service`
 - `log-service`
-- `echo-service`
-- `probe-service`
+- `status-service`
 
-That graph proves dependency ordering, explicit capability distribution,
-registry-mediated discovery, and restart supervision.
+That graph proves:
+
+- dependency ordering
+- startup capability grants
+- controlled service discovery
+- long-running service supervision
+- structured logging through userspace services
 
 ## Still deferred
 
@@ -99,7 +91,6 @@ The current userspace layer still does not include:
 - user fault delivery back to the owning task
 - a general executable loader backed by storage services
 - a richer VM syscall surface
-- userspace-visible scheduler or signal policy
 - kernel-mediated blocking receive completion for userspace threads
 - package-backed manifest loading
-- the broader platform-service graph
+- the broader platform-service graph beyond the current foundations

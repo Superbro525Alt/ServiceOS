@@ -1,12 +1,12 @@
 # Control Flow Foundation
 
-## Implemented by Phase 5
+## What exists now
 
 - a real x86_64 IDT
 - a kernel-owned GDT/TSS pair with a dedicated double-fault IST stack
 - legacy PIC remapping and PIT programming for the first timer source
 - Rust exception and IRQ handlers through `extern "x86-interrupt"`
-- a generic interrupt/fault classification layer in `kernel/core`
+- a generic interrupt and fault classification layer in `kernel/core`
 - a monotonic tick source with deadline wakeup bookkeeping
 - a dedicated software-interrupt syscall vector at `0x80`
 - a scheduler that consumes timer wakeups and IPC-readiness events
@@ -31,49 +31,42 @@ The boundary remains explicit:
 
 ## Fault model
 
-Kernel faults are still fatal. The important addition is that the
-classification path now distinguishes between kernel-origin and user-origin
-faults so later phases can deliver user faults back to the owning task instead
-of halting the machine.
-
-Page fault and general protection fault handlers now log:
-
-- fault type
-- instruction pointer
-- fault address when applicable
-- privilege origin
+Kernel faults are still fatal. The important distinction already in place is
+kernel-origin versus user-origin classification so later work can deliver user
+faults back to the owning task instead of halting the machine.
 
 ## Syscall model
 
 The initial syscall vector is `0x80`.
 
-The syscall ABI remains intentionally modest:
+The current ABI is intentionally small:
 
-- the generic kernel owns syscall number typing and dispatch tables
-- the arch layer owns entry mechanics and register capture
-- only ABI probe, monotonic time read, and thread-exit syscalls exist
-- no handle ABI, user-buffer ABI, or service policy is baked in yet
+- ABI probe
+- monotonic time read
+- current-thread exit
+- cooperative yield
+- debug log write
+- channel create/send/receive
+- handle duplicate and close
+- bootstrap-only service spawn
+- task status query
 
-This keeps the syscall layer extensible while userspace threads and handle
-syscalls are still under construction.
+This is enough for the root manager and foundational services without baking
+high-level service policy into the kernel.
 
 ## Timer and wakeup model
 
-The current clock is a simple PIT-driven monotonic tick source.
+The current clock is a PIT-driven monotonic tick source.
 
 The generic time layer supports:
 
 - current monotonic tick reads
-- one-shot and periodic deadline descriptions
-- a bounded ready-to-wake queue keyed by opaque wake tokens
+- one-shot deadline descriptions
+- wake tokens consumed by the scheduler
 
-That queue is still explicit and mechanical, but it is no longer unused. Phase
-4 binds wake tokens to blocked threads in the scheduler and routes channel
-readiness into the same scheduling path.
+That foundation now directly drives the long-running `status-service`.
 
 ## Deferred work
-
-The control-flow path still does not include:
 
 - LAPIC or HPET timer sources
 - SMP interrupt routing

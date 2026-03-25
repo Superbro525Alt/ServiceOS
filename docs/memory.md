@@ -1,14 +1,14 @@
 # Memory Foundation
 
-## Implemented through Phase 5
+## What exists now
 
 - UEFI memory-map normalization into architecture-neutral boot regions
 - early frame allocation from `CONVENTIONAL` memory only
 - a reserved virtual layout for kernel and future user spaces
 - active x86_64 page-table mutation for kernel heap mapping
 - a bootstrap bump allocator for kernel heap allocations
-- dedicated owned page-table roots for the first user address spaces
-- flat-image mapping for a bootstrap user code region and user stack
+- dedicated owned page-table roots for user address spaces
+- flat-image mapping for bootstrap user code regions and user stacks
 
 ## Physical memory policy
 
@@ -25,29 +25,23 @@ Region handling:
 - MMIO and firmware/runtime ranges remain reserved
 
 The current frame allocator only allocates from `Usable` regions. This is
-deliberately conservative so the kernel does not trample firmware-owned data
-while it still runs on the firmware’s active page tables.
+deliberately conservative while the kernel still runs on the firmware’s active
+page tables.
 
 ## Early frame allocator
 
-The Phase 1 frame allocator is region-based and monotonic.
+The frame allocator is region-based and monotonic.
 
 Invariants:
 
 - frames are 4 KiB aligned
 - only `Usable` regions enter the allocator
-- allocations are unique and never reused in Phase 1
-- the allocator never hands out reclaimable firmware memory yet
-
-This is sufficient for:
-
-- page-table growth while mapping new kernel pages
-- heap backing pages
-- future short-term bootstrap structures
+- allocations are unique and never reused
+- reclaimable firmware memory is not allocated yet
 
 ## Virtual memory layout
 
-Phase 1 reserves the following conceptual layout:
+The current conceptual layout is:
 
 - lower canonical half: future user address spaces
 - `0xffff_8000_0000_0000..0xffff_c000_0000_0000`: reserved future physical
@@ -56,14 +50,14 @@ Phase 1 reserves the following conceptual layout:
 - `0xffff_c200_0000_0000..0xffff_c201_0000_0000`: reserved future kernel
   object arena
 
-Only the heap range is actively mapped in Phase 1.
+Only the heap range is actively mapped today.
 
 ## Paging strategy
 
 The kernel currently reuses the active firmware page tables and wraps them with
 an x86_64 mapper.
 
-Phase 1 assumptions:
+Current bring-up assumptions:
 
 - physical memory is reachable through the firmware’s flat mapping
 - the active CR3 root remains valid after exiting boot services
@@ -79,11 +73,7 @@ Allocator properties:
 
 - simple bump allocator
 - thread-safe through a spin mutex
-- deallocation is intentionally minimal and only resets the bump pointer once
-  all live allocations are gone
-
-That keeps unsafe code small while giving later phases a stable global
-allocation entry point.
+- deallocation is intentionally minimal
 
 ## Next steps this enables
 
@@ -91,4 +81,4 @@ allocation entry point.
 - install fully kernel-owned top-level page tables
 - add a direct physical-memory window
 - expose richer VM construction and mapping APIs to later process code
-- replace the bootstrap heap with longer-lived slab/object allocators
+- replace the bootstrap heap with longer-lived slab or object allocators

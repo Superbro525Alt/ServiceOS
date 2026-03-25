@@ -1,126 +1,139 @@
-# Root Service Bootstrap
+# Foundational Services
 
-## Role of the root manager
+## Why these services exist now
 
-The first userspace process is now a real root service manager rather than a
-demo program. Its job is to turn kernel mechanisms into a userspace-owned
-service graph.
+This stage is about turning the root bootstrap into a real platform layer
+without jumping into storage, networking, GUI, or package policy.
 
-The kernel still owns:
+The current foundational set is intentionally small:
 
-- process and thread creation
-- address-space construction
-- handles, rights, and IPC transport
-- timer and scheduling mechanisms
+- `console-service`
+- `config-service`
+- `log-service`
+- `status-service`
 
-The root manager owns:
+Together they establish:
 
-- which services start
-- startup order
-- which service receives which capabilities
-- which services are long-running versus one-shot
-- restart and failure policy
-- service registration and discovery policy
+- stable service contracts
+- explicit capability-based access between services
+- a clean lookup model
+- lifecycle management for always-on system services
+- a pattern future platform services can follow
 
-This keeps high-level system coordination in userspace where it can evolve.
+## Dependency graph
 
-## Kernel to root contract
+```text
+root-manager
+  -> console-service
+  -> config-service
+  -> log-service
+       depends on console-service, config-service
+  -> status-service
+       depends on log-service, config-service, console-service
+```
 
-The current contract is intentionally narrow:
+## Root manager responsibilities
 
-- the kernel launches the built-in root-manager image as the first user task
-- that task runs with the bootstrap-root role for this phase
-- only the bootstrap root may request service spawn through the current syscall
-  surface
-- all child-service authority is then distributed explicitly as handles
+The root manager now owns:
 
-This is the only remaining bootstrap exception to the otherwise
-capability-oriented model. Later work should replace the role check with an
-explicit bootstrap capability object.
+- manifest evaluation
+- startup ordering
+- startup capability grants
+- service registration
+- controlled lookup/discovery
+- restart supervision for long-running services
 
-## Service manifests
+The kernel still only provides process/thread creation, handle spaces, IPC,
+timers, and scheduling mechanisms.
 
-The root manager owns a built-in manifest catalog. Each manifest declares:
+## Capability distribution model
 
-- stable service identity
-- executable image identifier
-- dependencies on other services
-- service mode (`LongRunning` or `OneShot`)
-- capability grants needed at startup
-- restart policy
-
-The current catalog is compiled into the root manager because there is not yet a
-filesystem or package service. That keeps the schema explicit without dragging
-storage policy into the kernel.
-
-## Dependency ordering
-
-Startup is dependency-aware but deliberately simple:
-
-- the manifest list is arranged in a valid topological order
-- each service starts only after its dependencies have reached the required
-  state
-- long-running services must register and become ready
-- one-shot services are supervised until they complete successfully or exhaust
-  their restart policy
-
-This is enough to validate the service model without inventing a full init
-framework.
-
-## Capability distribution
-
-The root manager does not spawn children with unrestricted authority.
+The root manager does not start services with global power.
 
 Instead it:
 
-- creates a per-service bootstrap control channel
-- spawns the child with only that bootstrap endpoint
-- duplicates only the specific service endpoint handles the child needs
-- reduces rights on those duplicates before transfer
-- closes its temporary distribution handles after the startup message is sent
+- spawns each child with a private bootstrap control channel
+- duplicates only the specific startup handles declared in the manifest
+- transfers only the declared rights for each handle
+- retains stronger registry handles when a service registers itself
+- mediates later lookups through per-service lookup policy
 
-In the current graph:
+Current startup grants:
 
-- `echo-service` receives a send-only logging endpoint
-- `probe-service` receives a send-only logging endpoint
-- `probe-service` later asks the manager for an `echo-service` endpoint through
-  the registry path instead of receiving ambient access up front
+- `log-service` receives:
+  - a send-only handle to `console-service`
+  - a send-only handle to `config-service`
+- `status-service` receives:
+  - a send-only handle to `log-service`
+
+Current lookup permissions:
+
+- `status-service` may look up:
+  - `config-service` with send-only rights
+  - `console-service` with send-only rights
+
+There is no ambient namespace where every service can connect to every other
+service.
+
+## Service roles
+
+### `console-service`
+
+- owns the immediate route to the kernel debug output sink
+- renders structured records into readable text
+- acts as the first console-adjacent system I/O service
+
+### `config-service`
+
+- serves small typed configuration values
+- establishes the request/reply pattern for shared system configuration
+- provides a stable capability-gated contract that later storage-backed config
+  can preserve
+
+### `log-service`
+
+- is the durable destination for service log records
+- filters by configured minimum severity
+- tags records by source service and domain
+- forwards readable output through `console-service`
+- receives service-manager lifecycle events as normal structured records
+
+### `status-service`
+
+- is the first long-running dependent platform service
+- discovers peer services through the manager rather than ambient access
+- reads configuration, logs structured heartbeats, and optionally mirrors
+  periodic status to the console
+- exposes a small snapshot contract for future readers
 
 ## Registry and discovery
 
-The service registry is manager-mediated, not kernel-global.
+The registry is manager-mediated and identity-based.
 
-- a service registers itself by sending a public endpoint to the manager
-- the manager stores that endpoint under the service identity from its manifest
-- another service requests access by sending a lookup request to the manager
-- the manager duplicates a rights-scoped endpoint handle into the caller's reply
+- services register themselves under a stable `ServiceId`
+- the manager stores the registered public endpoint handle
+- callers must request a lookup through their control channel
+- the manager checks the manifest lookup policy before granting access
+- replies return a newly duplicated handle with the requested reduced rights
 
-This means discovery is still explicit capability distribution. There is no
-ambient namespace where arbitrary services can open arbitrary peers.
+This keeps discovery explicit and compatible with future richer namespaces.
 
-## Supervision and logging
+## Supervision
 
-The manager tracks service phase, startup attempt count, last exit status, and
-public endpoint state. It currently supports:
+All current foundational services are long-running services. The manager:
 
-- lifecycle logging for start, ready, failure, restart, and stop events
-- restart-on-failure for one-shot bootstrap validators
-- steady-state supervision for long-running services
+- waits for registration before considering a service ready
+- monitors task exit status
+- restarts failed services within the manifest restart budget
+- treats exhausted restart budgets as fatal for the current bootstrap graph
 
-The example graph proves the model with three services:
+## Deferred
 
-- `log-service`: receives lifecycle events and emits structured logs
-- `echo-service`: registers a public endpoint and serves request/reply traffic
-- `probe-service`: a supervised one-shot validator that intentionally fails once
-  and then succeeds after restart
+This platform layer still does not implement:
 
-## Intentionally deferred
-
-This phase does not yet implement:
-
-- filesystem-backed manifest loading
-- persistent service state
-- kernel-delivered blocking receive for userspace threads
+- filesystem-backed manifests
+- dynamic service installation
+- persistent configuration storage
+- richer service health probes
 - user fault delivery back into the manager
-- dynamic package or update policy
-- desktop, networking, storage, audio, or graphics services
+- networking, storage, graphics, audio, shell, or package services

@@ -2,7 +2,7 @@
 
 ## Default path
 
-Phase 5 uses:
+The default bring-up path uses:
 
 - the `uefi` crate in the kernel image crate for firmware entry
 - the host-side `xtask` tool to stage an EFI system partition
@@ -24,15 +24,12 @@ QEMU
           -> generic kernel memory initialization
           -> x86_64 GDT/TSS/IDT installation
           -> PIC remap and PIT programming
-          -> generic object and IPC initialization
-          -> bootstrap thread creation and scheduler initialization
-          -> create first service task with a user thread
+          -> generic object, IPC, scheduler, and syscall initialization
+          -> create the root userspace task and user thread
           -> build a dedicated user address space
-          -> load the flat bootstrap user image
+          -> load the root manager flat image
           -> enter ring 3
-          -> service minimal syscalls from the first user program
-          -> return to the bootstrap kernel thread
-          -> halt loop
+          -> root manager starts foundational userspace services
 ```
 
 ## What is implemented now
@@ -43,16 +40,13 @@ QEMU
 - dedicated kernel heap mapping in the upper canonical half
 - x86_64 descriptor-table installation before `sti`
 - timer interrupt delivery through the legacy PIC/PIT path
-- deadline wakeup processing in generic kernel time code
 - structured exception/fault reporting in Rust
 - bootstrap root-task creation with an initial self capability
-- a registry-backed object model initialized before interrupts are enabled
-- bootstrap thread registration before the first user handoff
-- construction of a separate user page-table root for the first service task
-- loading of a minimal flat user image and bootstrap user stack
+- registration of the bootstrap kernel thread before user handoff
+- construction of a separate user page-table root for the root manager
+- loading of built-in flat userspace images and bootstrap user stacks
 - privilege transition into ring 3 and return through the syscall exit path
-- a boot-time self-check that validates user launch, syscall entry, monotonic
-  time reads, and user-thread exit
+- launch of a foundational userspace service graph after root-manager entry
 
 ## What is intentionally deferred
 
@@ -60,5 +54,4 @@ QEMU
 - reclaiming boot-services memory
 - direct-map installation for all physical memory
 - fast `SYSCALL/SYSRET`
-- general executable loading
-- the real root service manager
+- general executable loading from storage services

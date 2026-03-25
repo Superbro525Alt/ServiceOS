@@ -117,26 +117,32 @@ fn run_qemu(esp_dir: &Path) -> Result<(), Box<dyn Error>> {
     let ovmf_code = find_ovmf_code().ok_or("no OVMF code firmware found")?;
     let ovmf_vars = create_ovmf_vars_copy(&workspace_root().join("target").join("ovmf"))?;
 
-    let status = Command::new("qemu-system-x86_64")
-        .args(["-machine", "q35"])
-        .args(["-serial", "stdio"])
-        .args(["-display", "none"])
-        .args([
-            "-drive",
-            &format!(
-                "if=pflash,format=raw,readonly=on,file={}",
-                ovmf_code.display()
-            ),
-        ])
-        .args([
-            "-drive",
-            &format!("if=pflash,format=raw,file={}", ovmf_vars.display()),
-        ])
-        .args([
-            "-drive",
-            &format!("format=raw,file=fat:rw:{}", esp_dir.display()),
-        ])
-        .status()?;
+    let mut command = Command::new("qemu-system-x86_64");
+    command.args(["-machine", "q35"]);
+    command.args(["-serial", "stdio"]);
+    command.args(["-display", "none"]);
+    command.args([
+        "-drive",
+        &format!(
+            "if=pflash,format=raw,readonly=on,file={}",
+            ovmf_code.display()
+        ),
+    ]);
+    command.args([
+        "-drive",
+        &format!("if=pflash,format=raw,file={}", ovmf_vars.display()),
+    ]);
+    command.args([
+        "-drive",
+        &format!("format=raw,file=fat:rw:{}", esp_dir.display()),
+    ]);
+    if let Some(extra_args) = env::var_os("QEMU_EXTRA_ARGS") {
+        for arg in extra_args.to_string_lossy().split_whitespace() {
+            command.arg(arg);
+        }
+    }
+
+    let status = command.status()?;
 
     ensure_success(status, "QEMU UEFI run failed")
 }

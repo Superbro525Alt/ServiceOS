@@ -416,7 +416,8 @@ impl KernelObjectModel {
                 Arc::clone(&bootstrap_task),
                 CapabilityRights::task(),
                 Some(0),
-            );
+            )
+            .expect("bootstrap task install must not exhaust the capability space");
 
         Self {
             registry,
@@ -441,4 +442,51 @@ pub fn initialize() -> &'static KernelObjectModel {
 
 pub fn model() -> Option<&'static KernelObjectModel> {
     OBJECT_MODEL.get()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn task_attach_thread_is_idempotent() {
+        let task = TaskObject::new(
+            TaskId(1),
+            TaskDescriptor {
+                address_space: None,
+                role: TaskRole::BootstrapRoot,
+            },
+        );
+
+        task.attach_thread(ObjectId(9));
+        task.attach_thread(ObjectId(9));
+
+        assert_eq!(task.snapshot().thread_count, 1);
+    }
+
+    #[test]
+    fn registry_collects_dropped_objects() {
+        let registry = ObjectRegistry::new();
+        let event = registry.create_event(false);
+        let id = event.id();
+
+        assert!(registry.lookup(id).is_some());
+        drop(event);
+        registry.collect_garbage();
+        assert!(registry.lookup(id).is_none());
+    }
+
+    #[test]
+    fn memory_object_reports_page_count() {
+        let memory = MemoryObject::new(8193, true);
+
+        assert_eq!(
+            memory.info(),
+            MemoryObjectInfo {
+                size_bytes: 8193,
+                page_count: 3,
+                writable: true,
+            }
+        );
+    }
 }

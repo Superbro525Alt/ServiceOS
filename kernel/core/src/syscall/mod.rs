@@ -66,7 +66,7 @@ pub enum SyscallAction {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SyscallError {
-    UnsupportedInPhase2,
+    Unsupported,
     InvalidCall,
     PermissionDenied,
     NotInitialized,
@@ -75,7 +75,7 @@ pub enum SyscallError {
 impl SyscallError {
     pub const fn abi_code(self) -> u64 {
         match self {
-            Self::UnsupportedInPhase2 => 1,
+            Self::Unsupported => 1,
             Self::InvalidCall => 2,
             Self::PermissionDenied => 3,
             Self::NotInitialized => 4,
@@ -173,4 +173,44 @@ fn handle_monotonic_now(_context: &SyscallContext) -> SyscallReturn {
 
 fn handle_thread_exit(context: &SyscallContext) -> SyscallReturn {
     SyscallReturn::exit_current_thread(context.arguments[0])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_context() -> SyscallContext {
+        SyscallContext {
+            instruction_pointer: 0,
+            stack_pointer: 0,
+            flags: 0,
+            arguments: [0; 6],
+        }
+    }
+
+    #[test]
+    fn unknown_syscall_is_rejected_and_counted() {
+        let table = DispatchTable::new([Some(handle_abi_version), None, Some(handle_thread_exit)]);
+
+        let result = table.dispatch(SyscallNumber(1), &empty_context());
+        assert_eq!(result, SyscallReturn::error(SyscallError::InvalidCall));
+        assert_eq!(
+            table.snapshot(),
+            SyscallSnapshot {
+                dispatched: 1,
+                rejected: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn abi_version_syscall_returns_stable_value() {
+        let table = DispatchTable::new([Some(handle_abi_version), None, None]);
+
+        let result = table.dispatch(
+            SyscallNumber(SyscallKind::AbiVersion as u32),
+            &empty_context(),
+        );
+        assert_eq!(result, SyscallReturn::success(SYSCALL_ABI_VERSION));
+    }
 }

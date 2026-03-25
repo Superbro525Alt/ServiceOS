@@ -72,7 +72,7 @@ impl<'boot> Kernel<'boot> {
 
         Ok(Self {
             boot_context,
-            bootstrap_plan: BootstrapPlan::phase4(),
+            bootstrap_plan: BootstrapPlan::phase6(),
             memory,
             interrupts,
             syscalls,

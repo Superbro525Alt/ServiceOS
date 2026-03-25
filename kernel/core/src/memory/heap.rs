@@ -6,7 +6,7 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::null_mut;
 use spin::Mutex;
 
-#[global_allocator]
+#[cfg_attr(not(test), global_allocator)]
 static KERNEL_ALLOCATOR: KernelAllocator = KernelAllocator::empty();
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

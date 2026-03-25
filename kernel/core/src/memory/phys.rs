@@ -100,3 +100,91 @@ impl EarlyFrameAllocator {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        bootstrap::{BootContext, BootMemoryRegion},
+        memory::PhysicalAddress,
+    };
+
+    fn boot_context(regions: &[BootMemoryRegion]) -> BootContext<'_> {
+        BootContext {
+            memory_regions: regions,
+            memory_map_available: true,
+            memory_map_truncated: false,
+            physical_memory_offset: None,
+            rsdp_address: None,
+            framebuffer: None,
+        }
+    }
+
+    #[test]
+    fn allocator_walks_usable_regions_in_order() {
+        let regions = [
+            BootMemoryRegion {
+                start: PhysicalAddress::new(0x1003),
+                end: PhysicalAddress::new(0x3000),
+                kind: BootMemoryRegionKind::Usable,
+            },
+            BootMemoryRegion {
+                start: PhysicalAddress::new(0x3000),
+                end: PhysicalAddress::new(0x5000),
+                kind: BootMemoryRegionKind::Reserved,
+            },
+            BootMemoryRegion {
+                start: PhysicalAddress::new(0x8000),
+                end: PhysicalAddress::new(0xA000),
+                kind: BootMemoryRegionKind::Usable,
+            },
+        ];
+        let mut allocator =
+            EarlyFrameAllocator::from_boot_context(&boot_context(&regions)).expect("allocator");
+
+        assert_eq!(
+            allocator.allocate_4kib().expect("frame").base.as_u64(),
+            0x2000
+        );
+        assert_eq!(
+            allocator.allocate_4kib().expect("frame").base.as_u64(),
+            0x8000
+        );
+        assert_eq!(
+            allocator.allocate_4kib().expect("frame").base.as_u64(),
+            0x9000
+        );
+        assert!(allocator.allocate_4kib().is_none());
+        assert_eq!(
+            allocator.stats(),
+            FrameAllocatorStats {
+                usable_regions: 2,
+                allocated_frames: 3,
+                remaining_frames: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn allocator_rejects_excess_usable_regions() {
+        let mut regions = [BootMemoryRegion {
+            start: PhysicalAddress::new(0),
+            end: PhysicalAddress::new(0),
+            kind: BootMemoryRegionKind::Reserved,
+        }; MAX_USABLE_REGIONS + 1];
+
+        for (index, region) in regions.iter_mut().enumerate() {
+            let base = 0x1000 * ((index as u64) + 1);
+            *region = BootMemoryRegion {
+                start: PhysicalAddress::new(base),
+                end: PhysicalAddress::new(base + PAGE_SIZE_BYTES),
+                kind: BootMemoryRegionKind::Usable,
+            };
+        }
+
+        assert!(matches!(
+            EarlyFrameAllocator::from_boot_context(&boot_context(&regions)),
+            Err(InitializationError::TooManyUsableRegions)
+        ));
+    }
+}

@@ -80,7 +80,7 @@ pub enum InitializationError {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TimerError {
-    UnsupportedInPhase2,
+    Unsupported,
     CapacityExceeded,
 }
 

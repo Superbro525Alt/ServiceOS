@@ -231,7 +231,7 @@ fn launch_first_userspace(kernel: &Kernel<'_>) -> Result<Phase5Summary, Phase5Bo
         Arc::clone(&user_task),
         CapabilityRights::task(),
         Some(0x700),
-    );
+    )?;
 
     let mut frame_allocator = kernel.memory().frame_allocator().lock();
     let mut user_page_table = unsafe {

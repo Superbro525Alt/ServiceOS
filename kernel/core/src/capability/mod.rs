@@ -123,6 +123,10 @@ impl PreparedTransfer {
             badge: self.badge,
         }
     }
+
+    pub fn object(&self) -> &KernelObjectRef {
+        &self.object
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -134,6 +138,7 @@ pub enum TransferMode {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CapabilityError {
     InvalidHandle,
+    HandleSpaceExhausted,
     RightsViolation {
         required: CapabilityRights,
         actual: CapabilityRights,
@@ -174,10 +179,9 @@ impl CapabilitySpace {
         object: KernelObjectRef,
         rights: CapabilityRights,
         badge: Option<u64>,
-    ) -> CapabilityHandle {
+    ) -> Result<CapabilityHandle, CapabilityError> {
         let mut state = self.state.lock();
-        let handle = CapabilityHandle(state.next_handle);
-        state.next_handle = state.next_handle.saturating_add(1);
+        let handle = allocate_handle(&mut state)?;
         state.entries.insert(
             handle,
             CapabilityEntry {
@@ -186,7 +190,7 @@ impl CapabilitySpace {
                 badge,
             },
         );
-        handle
+        Ok(handle)
     }
 
     pub fn resolve(
@@ -233,8 +237,7 @@ impl CapabilitySpace {
             return Err(CapabilityError::RequestedRightsExceedSource);
         }
 
-        let handle = CapabilityHandle(state.next_handle);
-        state.next_handle = state.next_handle.saturating_add(1);
+        let handle = allocate_handle(&mut state)?;
         state.entries.insert(
             handle,
             CapabilityEntry {
@@ -280,7 +283,10 @@ impl CapabilitySpace {
         })
     }
 
-    pub fn accept_transfer(&self, transfer: PreparedTransfer) -> CapabilityHandle {
+    pub fn accept_transfer(
+        &self,
+        transfer: PreparedTransfer,
+    ) -> Result<CapabilityHandle, CapabilityError> {
         self.install(transfer.object, transfer.rights, transfer.badge)
     }
 
@@ -334,5 +340,96 @@ impl CapabilityResolver for CapabilitySpace {
                 rights: entry.rights,
                 badge: entry.badge,
             })
+    }
+}
+
+fn allocate_handle(state: &mut CapabilitySpaceState) -> Result<CapabilityHandle, CapabilityError> {
+    let handle = CapabilityHandle(state.next_handle);
+    state.next_handle = state
+        .next_handle
+        .checked_add(1)
+        .ok_or(CapabilityError::HandleSpaceExhausted)?;
+    Ok(handle)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::object::ObjectRegistry;
+
+    #[test]
+    fn duplicate_restricts_rights_and_preserves_badge() {
+        let registry = ObjectRegistry::new();
+        let object = registry.create_event(false);
+        let space = CapabilitySpace::new();
+
+        let source = space
+            .install(object, CapabilityRights::event(), Some(0x55aa))
+            .expect("source capability should install");
+        let duplicate = space
+            .duplicate(
+                source,
+                CapabilityRights::READ.union(CapabilityRights::WAIT),
+                None,
+            )
+            .expect("duplicate should succeed");
+
+        let duplicate_view = space
+            .resolve(duplicate, CapabilityRights::WAIT)
+            .expect("duplicate should carry requested rights");
+        assert_eq!(
+            duplicate_view.rights,
+            CapabilityRights::READ.union(CapabilityRights::WAIT)
+        );
+        assert_eq!(duplicate_view.badge, Some(0x55aa));
+    }
+
+    #[test]
+    fn move_transfer_closes_source_and_reinstalls_in_receiver() {
+        let registry = ObjectRegistry::new();
+        let object = registry.create_memory_object(8192, true);
+        let sender = CapabilitySpace::new();
+        let receiver = CapabilitySpace::new();
+
+        let source = sender
+            .install(object, CapabilityRights::memory_object(), Some(7))
+            .expect("source capability should install");
+        let transfer = sender
+            .prepare_transfer(
+                source,
+                CapabilityRights::READ.union(CapabilityRights::MAP),
+                TransferMode::Move,
+            )
+            .expect("move transfer should succeed");
+
+        assert!(matches!(
+            sender.resolve(source, CapabilityRights::READ),
+            Err(CapabilityError::InvalidHandle)
+        ));
+
+        let received = receiver
+            .accept_transfer(transfer)
+            .expect("receiver should accept transfer");
+        let received_view = receiver
+            .resolve(received, CapabilityRights::MAP)
+            .expect("received capability should resolve");
+        assert_eq!(
+            received_view.rights,
+            CapabilityRights::READ.union(CapabilityRights::MAP)
+        );
+        assert_eq!(received_view.badge, Some(7));
+    }
+
+    #[test]
+    fn install_reports_handle_exhaustion() {
+        let registry = ObjectRegistry::new();
+        let object = registry.create_event(false);
+        let space = CapabilitySpace::new();
+        space.state.lock().next_handle = u32::MAX;
+
+        assert_eq!(
+            space.install(object, CapabilityRights::event(), None),
+            Err(CapabilityError::HandleSpaceExhausted)
+        );
     }
 }

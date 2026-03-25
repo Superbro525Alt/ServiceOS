@@ -162,7 +162,10 @@ impl TaskObject {
     }
 
     pub fn attach_thread(&self, thread: ObjectId) {
-        self.state.lock().threads.push(thread);
+        let mut state = self.state.lock();
+        if !state.threads.contains(&thread) {
+            state.threads.push(thread);
+        }
     }
 
     pub fn snapshot(&self) -> TaskStateView {
@@ -285,6 +288,7 @@ pub enum SchedulerError {
     InvalidThread,
     ThreadAlreadyRegistered,
     TimeUnavailable,
+    WakeTokenExhausted,
     Timer(time::TimerError),
 }
 
@@ -475,7 +479,10 @@ impl Scheduler {
         };
 
         let token = WakeToken(state.next_wake_token);
-        state.next_wake_token = state.next_wake_token.saturating_add(1);
+        state.next_wake_token = state
+            .next_wake_token
+            .checked_add(1)
+            .ok_or(SchedulerError::WakeTokenExhausted)?;
         TimerService::arm_wakeup(manager, token, TimerRequest::one_shot(deadline))?;
 
         let thread = lookup_thread(&state, current)?;
@@ -609,7 +616,8 @@ impl TaskSystem {
                 Arc::clone(&bootstrap_thread),
                 CapabilityRights::thread(),
                 Some(1),
-            );
+            )
+            .expect("bootstrap thread install must not exhaust the capability space");
 
         Self {
             bootstrap_task,
@@ -761,4 +769,164 @@ const fn trigger_to_wake_reason(trigger: ScheduleTrigger) -> ThreadWakeReason {
 pub trait TaskManager {
     fn root_task(&self) -> Option<TaskId>;
     fn create_address_space(&mut self) -> Result<AddressSpaceId, TaskCreationError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        bootstrap::{BootContext, BootMemoryRegion, BootMemoryRegionKind},
+        memory::PhysicalAddress,
+        object::ObjectRegistry,
+        time::{self, TimerSourceInfo, WakeReason},
+    };
+
+    fn init_test_time() {
+        let _ = time::initialize(TimerSourceInfo { tick_hz: 100 });
+    }
+
+    fn test_registry() -> (ObjectRegistry, KernelObjectRef, KernelObjectRef) {
+        let registry = ObjectRegistry::new();
+        let task = registry.create_bootstrap_root_task();
+        let thread = registry.create_thread(
+            &task,
+            ThreadDescriptor {
+                mode: ThreadMode::Kernel,
+                scheduling_context: SchedulingContext::round_robin_default(),
+                entry_instruction_pointer: None,
+                stack_pointer: None,
+            },
+        );
+        (registry, task, thread)
+    }
+
+    #[test]
+    fn scheduler_wakes_blocked_receiver() {
+        let (registry, task, bootstrap_thread) = test_registry();
+        let scheduler = Scheduler::new(bootstrap_thread);
+        let worker = registry.create_thread(
+            &task,
+            ThreadDescriptor {
+                mode: ThreadMode::Kernel,
+                scheduling_context: SchedulingContext::round_robin_default(),
+                entry_instruction_pointer: None,
+                stack_pointer: None,
+            },
+        );
+        let worker_id = scheduler
+            .register_thread(Arc::clone(&worker))
+            .expect("worker should register");
+        let endpoint = ObjectId(42);
+
+        scheduler
+            .make_runnable(worker_id, ThreadWakeReason::Explicit)
+            .expect("worker should become runnable");
+        let switch = scheduler.yield_current().expect("yield should succeed");
+        assert_eq!(switch.next, Some(worker_id));
+
+        let block = scheduler
+            .block_current_on_receive(endpoint)
+            .expect("blocking receive should succeed");
+        assert_eq!(block.previous, Some(worker_id));
+        assert_eq!(block.next, Some(ThreadId(2)));
+
+        let wake = scheduler
+            .notify_channel_ready(endpoint)
+            .expect("receiver wake should produce a decision");
+        assert_eq!(wake.trigger, ScheduleTrigger::IpcWake);
+
+        let worker_state = worker.thread().expect("thread object").snapshot();
+        assert_eq!(worker_state.execution_state, ExecutionState::Runnable);
+        assert_eq!(
+            worker_state.last_wake_reason,
+            Some(ThreadWakeReason::ChannelMessage)
+        );
+    }
+
+    #[test]
+    fn scheduler_wakes_timer_blocked_thread() {
+        init_test_time();
+
+        let (registry, task, bootstrap_thread) = test_registry();
+        let scheduler = Scheduler::new(bootstrap_thread);
+        let worker = registry.create_thread(
+            &task,
+            ThreadDescriptor {
+                mode: ThreadMode::Kernel,
+                scheduling_context: SchedulingContext::round_robin_default(),
+                entry_instruction_pointer: None,
+                stack_pointer: None,
+            },
+        );
+        let worker_id = scheduler
+            .register_thread(Arc::clone(&worker))
+            .expect("worker should register");
+
+        scheduler
+            .make_runnable(worker_id, ThreadWakeReason::Explicit)
+            .expect("worker should become runnable");
+        let _ = scheduler.yield_current().expect("yield should succeed");
+
+        let (token, block) = scheduler
+            .block_current_until(MonotonicInstant(5))
+            .expect("timer block should succeed");
+        assert_eq!(block.previous, Some(worker_id));
+        assert_eq!(block.next, Some(ThreadId(2)));
+
+        let wake = scheduler
+            .handle_time_wakeup(WakeEvent {
+                token,
+                reason: WakeReason::DeadlineExpired,
+            })
+            .expect("time wake should produce a decision");
+        assert_eq!(wake.trigger, ScheduleTrigger::TimeWake);
+
+        let worker_state = worker.thread().expect("thread object").snapshot();
+        assert_eq!(worker_state.execution_state, ExecutionState::Runnable);
+        assert_eq!(
+            worker_state.last_wake_reason,
+            Some(ThreadWakeReason::TimerExpired)
+        );
+    }
+
+    #[test]
+    fn block_current_until_reports_wake_token_exhaustion() {
+        init_test_time();
+
+        let (_registry, _task, bootstrap_thread) = test_registry();
+        let scheduler = Scheduler::new(bootstrap_thread);
+        scheduler.state.lock().next_wake_token = u64::MAX;
+
+        assert_eq!(
+            scheduler.block_current_until(MonotonicInstant(1)),
+            Err(SchedulerError::WakeTokenExhausted)
+        );
+    }
+
+    #[test]
+    fn boot_context_counts_memory_kinds() {
+        let regions = [
+            BootMemoryRegion {
+                start: PhysicalAddress::new(0x1000),
+                end: PhysicalAddress::new(0x3000),
+                kind: BootMemoryRegionKind::Usable,
+            },
+            BootMemoryRegion {
+                start: PhysicalAddress::new(0x3000),
+                end: PhysicalAddress::new(0x4000),
+                kind: BootMemoryRegionKind::BootServicesReclaimable,
+            },
+        ];
+        let context = BootContext {
+            memory_regions: &regions,
+            memory_map_available: true,
+            memory_map_truncated: false,
+            physical_memory_offset: None,
+            rsdp_address: None,
+            framebuffer: None,
+        };
+
+        assert_eq!(context.usable_memory_region_count(), 1);
+        assert_eq!(context.boot_services_reclaimable_region_count(), 1);
+    }
 }

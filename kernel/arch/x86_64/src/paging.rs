@@ -99,7 +99,7 @@ impl PageMapper for ActivePageTable {
                     x86_64::structures::paging::mapper::MapToError::FrameAllocationFailed => {
                         MappingError::FrameAllocationFailed
                     }
-                    _ => MappingError::UnsupportedInPhase1,
+                    _ => MappingError::Unsupported,
                 })
                 .map(|flush| flush.flush())
         })
@@ -147,7 +147,7 @@ impl PageMapper for OwnedPageTable {
                     x86_64::structures::paging::mapper::MapToError::FrameAllocationFailed => {
                         MappingError::FrameAllocationFailed
                     }
-                    _ => MappingError::UnsupportedInPhase1,
+                    _ => MappingError::Unsupported,
                 })
                 .map(|flush| flush.flush())
         })

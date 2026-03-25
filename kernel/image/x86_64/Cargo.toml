@@ -9,6 +9,8 @@ rust-version.workspace = true
 [[bin]]
 name = "serviceos-kernel-x86_64"
 path = "src/main.rs"
+test = false
+bench = false
 
 [dependencies]
 serviceos-kernel-arch-x86_64 = { path = "../../arch/x86_64" }

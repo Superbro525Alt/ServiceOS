@@ -186,7 +186,7 @@ pub enum MappingError {
     AddressAlignment,
     AlreadyMapped,
     FrameAllocationFailed,
-    UnsupportedInPhase1,
+    Unsupported,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

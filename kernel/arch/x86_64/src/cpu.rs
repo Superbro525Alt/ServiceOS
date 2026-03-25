@@ -1,4 +1,9 @@
-use x86_64::registers::control::{Cr0, Cr0Flags, Cr2};
+use serviceos_kernel_core::memory::PhysicalAddress;
+use x86_64::{
+    PhysAddr,
+    registers::control::{Cr0, Cr0Flags, Cr2, Cr3, Cr3Flags},
+    structures::paging::PhysFrame,
+};
 
 pub fn disable_interrupts() {
     x86_64::instructions::interrupts::disable();
@@ -44,4 +49,17 @@ pub fn with_write_protect_disabled<R>(f: impl FnOnce() -> R) -> R {
 
 pub fn read_page_fault_address() -> u64 {
     Cr2::read_raw()
+}
+
+pub fn current_page_table_root() -> PhysicalAddress {
+    let (root, _) = Cr3::read();
+    PhysicalAddress::new(root.start_address().as_u64())
+}
+
+pub unsafe fn load_page_table_root(root: PhysicalAddress) {
+    let frame = PhysFrame::from_start_address(PhysAddr::new(root.as_u64()))
+        .expect("page table roots are always page aligned");
+    unsafe {
+        Cr3::write(frame, Cr3Flags::empty());
+    }
 }

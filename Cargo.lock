@@ -114,8 +114,13 @@ version = "0.1.0"
 dependencies = [
  "serviceos-kernel-arch-x86_64",
  "serviceos-kernel-core",
+ "serviceos-userspace-demo-x86_64",
  "uefi",
 ]
+
+[[package]]
+name = "serviceos-userspace-demo-x86_64"
+version = "0.1.0"
 
 [[package]]
 name = "spin"

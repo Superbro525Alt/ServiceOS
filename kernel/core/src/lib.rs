@@ -11,6 +11,7 @@ pub mod object;
 pub mod syscall;
 pub mod task;
 pub mod time;
+pub mod user;
 
 use bootstrap::{BootContext, BootstrapPlan};
 use interrupts::InterruptState;

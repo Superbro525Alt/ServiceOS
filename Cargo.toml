@@ -5,6 +5,7 @@ members = [
     "kernel/arch/x86_64",
     "kernel/image/x86_64",
     "support/xtask",
+    "userspace/demo-x86_64",
 ]
 
 [workspace.package]

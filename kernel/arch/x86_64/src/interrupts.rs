@@ -35,6 +35,8 @@ const PIT_CHANNEL0_PORT: u16 = 0x40;
 const PIT_INPUT_HZ: u32 = 1_193_182;
 const DOUBLE_FAULT_IST_INDEX: u16 = 0;
 const DOUBLE_FAULT_STACK_SIZE: usize = 16 * 1024;
+const PRIVILEGE_STACK_INDEX: usize = 0;
+const PRIVILEGE_STACK_SIZE: usize = 16 * 1024;
 
 pub const PIC_PRIMARY_OFFSET: u8 = 0x20;
 pub const PIC_SECONDARY_OFFSET: u8 = 0x28;
@@ -68,7 +70,7 @@ impl DescriptorState {
 }
 
 #[repr(C, align(16))]
-struct InterruptStack([u8; DOUBLE_FAULT_STACK_SIZE]);
+struct InterruptStack<const N: usize>([u8; N]);
 
 #[repr(C)]
 struct SyscallTrapFrame {
@@ -90,11 +92,15 @@ struct SyscallTrapFrame {
     instruction_pointer: u64,
     code_segment: u64,
     cpu_flags: u64,
+    user_stack_pointer: u64,
+    user_stack_segment: u64,
 }
 
 struct SegmentSelectors {
     kernel_code: SegmentSelector,
     kernel_data: SegmentSelector,
+    user_code: SegmentSelector,
+    user_data: SegmentSelector,
     tss: SegmentSelector,
 }
 
@@ -103,7 +109,10 @@ struct DescriptorTables {
     selectors: SegmentSelectors,
 }
 
-static DOUBLE_FAULT_STACK: InterruptStack = InterruptStack([0; DOUBLE_FAULT_STACK_SIZE]);
+static DOUBLE_FAULT_STACK: InterruptStack<DOUBLE_FAULT_STACK_SIZE> =
+    InterruptStack([0; DOUBLE_FAULT_STACK_SIZE]);
+static PRIVILEGE_STACK: InterruptStack<PRIVILEGE_STACK_SIZE> =
+    InterruptStack([0; PRIVILEGE_STACK_SIZE]);
 static TSS: Once<TaskStateSegment> = Once::new();
 static DESCRIPTOR_TABLES: Once<DescriptorTables> = Once::new();
 static IDT: Once<InterruptDescriptorTable> = Once::new();
@@ -155,6 +164,8 @@ fn install_descriptor_tables() {
         let mut gdt = GlobalDescriptorTable::new();
         let kernel_code = gdt.append(Descriptor::kernel_code_segment());
         let kernel_data = gdt.append(Descriptor::kernel_data_segment());
+        let user_data = gdt.append(Descriptor::user_data_segment());
+        let user_code = gdt.append(Descriptor::user_code_segment());
         let tss = gdt.append(Descriptor::tss_segment(tss()));
 
         DescriptorTables {
@@ -162,6 +173,8 @@ fn install_descriptor_tables() {
             selectors: SegmentSelectors {
                 kernel_code,
                 kernel_data,
+                user_code,
+                user_data,
                 tss,
             },
         }
@@ -227,7 +240,7 @@ fn install_interrupt_table() {
                 .set_handler_addr(VirtAddr::from_ptr(
                     serviceos_x86_64_syscall_entry as *const (),
                 ))
-                .set_privilege_level(PrivilegeLevel::Ring0);
+                .set_privilege_level(PrivilegeLevel::Ring3);
         }
 
         idt
@@ -242,6 +255,9 @@ fn tss() -> &'static TaskStateSegment {
         let stack_base = VirtAddr::from_ptr(&DOUBLE_FAULT_STACK.0);
         tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] =
             stack_base + DOUBLE_FAULT_STACK_SIZE as u64;
+        let privilege_stack_base = VirtAddr::from_ptr(&PRIVILEGE_STACK.0);
+        tss.privilege_stack_table[PRIVILEGE_STACK_INDEX] =
+            privilege_stack_base + PRIVILEGE_STACK_SIZE as u64;
         tss
     })
 }
@@ -331,7 +347,7 @@ fn handle_exception(report: ExceptionReport) -> ! {
         report.disposition,
         serviceos_kernel_core::interrupts::FaultDisposition::DeliverToTask
     ) {
-        serial::write_line("serviceos: user fault delivery is not implemented in phase2");
+        serial::write_line("serviceos: user fault delivery is not implemented in phase5");
     }
 
     cpu::halt_loop()
@@ -525,10 +541,10 @@ extern "x86-interrupt" fn security_exception_handler(frame: InterruptStackFrame,
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn serviceos_x86_64_handle_syscall(frame: &mut SyscallTrapFrame) {
+extern "C" fn serviceos_x86_64_handle_syscall(frame: &mut SyscallTrapFrame) -> u64 {
     let context = SyscallContext {
         instruction_pointer: frame.instruction_pointer,
-        stack_pointer: frame as *const SyscallTrapFrame as u64,
+        stack_pointer: frame.user_stack_pointer,
         flags: frame.cpu_flags,
         arguments: [
             frame.rdi, frame.rsi, frame.rdx, frame.r10, frame.r8, frame.r9,
@@ -538,4 +554,31 @@ extern "C" fn serviceos_x86_64_handle_syscall(frame: &mut SyscallTrapFrame) {
 
     frame.rax = result.value;
     frame.rdx = result.abi_error_code();
+    match result.action {
+        serviceos_kernel_core::syscall::SyscallAction::ReturnToCaller => 0,
+        serviceos_kernel_core::syscall::SyscallAction::ExitCurrentThread { status } => {
+            crate::user::record_user_exit(status);
+            1
+        }
+    }
+}
+
+pub(crate) fn user_code_selector() -> SegmentSelector {
+    let selector = DESCRIPTOR_TABLES
+        .get()
+        .expect("descriptor tables initialized")
+        .selectors
+        .user_code;
+
+    SegmentSelector(selector.0 | 0b11)
+}
+
+pub(crate) fn user_data_selector() -> SegmentSelector {
+    let selector = DESCRIPTOR_TABLES
+        .get()
+        .expect("descriptor tables initialized")
+        .selectors
+        .user_data;
+
+    SegmentSelector(selector.0 | 0b11)
 }

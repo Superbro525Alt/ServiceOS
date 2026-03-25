@@ -37,12 +37,18 @@
 .global serviceos_x86_64_syscall_entry
 serviceos_x86_64_syscall_entry:
     PUSH_GENERAL_REGS
-    mov rdi, rsp
     mov rax, rsp
+    mov rcx, rax
     and rsp, -16
-    sub rsp, 16
-    mov [rsp], rax
+    sub rsp, 40
+    mov [rsp + 32], rax
     call serviceos_x86_64_handle_syscall
-    mov rsp, [rsp]
+    test rax, rax
+    jnz serviceos_x86_64_syscall_exit_to_kernel
+    mov rsp, [rsp + 32]
     POP_GENERAL_REGS
     iretq
+
+serviceos_x86_64_syscall_exit_to_kernel:
+    mov rsp, [rip + serviceos_x86_64_user_return_stack]
+    ret

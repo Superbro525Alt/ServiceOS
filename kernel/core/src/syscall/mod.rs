@@ -5,7 +5,7 @@ use spin::Once;
 use crate::time;
 
 const SYSCALL_ABI_VERSION: u64 = 0x0002_0000;
-const MAX_SYSCALL_SLOTS: usize = 2;
+const MAX_SYSCALL_SLOTS: usize = 3;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SyscallNumber(pub u32);
@@ -22,17 +22,31 @@ pub struct SyscallContext {
 pub struct SyscallReturn {
     pub value: u64,
     pub error: Option<SyscallError>,
+    pub action: SyscallAction,
 }
 
 impl SyscallReturn {
     pub const fn success(value: u64) -> Self {
-        Self { value, error: None }
+        Self {
+            value,
+            error: None,
+            action: SyscallAction::ReturnToCaller,
+        }
     }
 
     pub const fn error(error: SyscallError) -> Self {
         Self {
             value: 0,
             error: Some(error),
+            action: SyscallAction::ReturnToCaller,
+        }
+    }
+
+    pub const fn exit_current_thread(status: u64) -> Self {
+        Self {
+            value: status,
+            error: None,
+            action: SyscallAction::ExitCurrentThread { status },
         }
     }
 
@@ -42,6 +56,12 @@ impl SyscallReturn {
             Some(error) => error.abi_code(),
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SyscallAction {
+    ReturnToCaller,
+    ExitCurrentThread { status: u64 },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -67,6 +87,7 @@ impl SyscallError {
 pub enum SyscallKind {
     AbiVersion = 0,
     MonotonicNow = 1,
+    ThreadExit = 2,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -126,8 +147,13 @@ impl SyscallDispatcher for DispatchTable {
 static DISPATCHER: Once<DispatchTable> = Once::new();
 
 pub fn initialize() -> &'static DispatchTable {
-    DISPATCHER
-        .call_once(|| DispatchTable::new([Some(handle_abi_version), Some(handle_monotonic_now)]))
+    DISPATCHER.call_once(|| {
+        DispatchTable::new([
+            Some(handle_abi_version),
+            Some(handle_monotonic_now),
+            Some(handle_thread_exit),
+        ])
+    })
 }
 
 pub fn dispatcher() -> Option<&'static DispatchTable> {
@@ -143,4 +169,8 @@ fn handle_monotonic_now(_context: &SyscallContext) -> SyscallReturn {
         Some(manager) => SyscallReturn::success(manager.now().0),
         None => SyscallReturn::error(SyscallError::NotInitialized),
     }
+}
+
+fn handle_thread_exit(context: &SyscallContext) -> SyscallReturn {
+    SyscallReturn::exit_current_thread(context.arguments[0])
 }

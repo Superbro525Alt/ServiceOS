@@ -491,6 +491,23 @@ impl Scheduler {
         Ok((token, decision))
     }
 
+    pub fn terminate_current(&self) -> Result<ScheduleDecision, SchedulerError> {
+        let mut state = self.state.lock();
+        let Some(current) = state.current else {
+            return Ok(decision(&state, ScheduleTrigger::Explicit, None, None));
+        };
+
+        let thread = lookup_thread(&state, current)?;
+        thread.transition_to(
+            ExecutionState::Dying,
+            None,
+            Some(ThreadWakeReason::Explicit),
+        );
+        state.current = None;
+
+        schedule_next_locked(&mut state, ScheduleTrigger::Explicit, Some(current))
+    }
+
     pub fn handle_time_wakeup(&self, event: WakeEvent) -> Option<ScheduleDecision> {
         let mut state = self.state.lock();
         let previous = state.current;

@@ -6,3 +6,4 @@ pub mod cpu;
 pub mod interrupts;
 pub mod paging;
 pub mod serial;
+pub mod user;

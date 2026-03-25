@@ -12,6 +12,7 @@ test = false
 bench = false
 
 [dependencies]
+serviceos-abi = { path = "../../../shared/abi" }
 serviceos-kernel-core = { path = "../../core" }
 spin = "0.9"
 uefi = { version = "0.33", default-features = false }

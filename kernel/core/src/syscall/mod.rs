@@ -1,11 +1,24 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
+use serviceos_abi::{
+    Handle, HandlePair, IPC_FLAG_NONBLOCK, IPC_MAX_HANDLES, IPC_MAX_WORDS, RawMessage,
+    SyscallErrorCode as AbiErrorCode, SyscallNumber as AbiSyscallNumber, TaskStateCode,
+    TaskStatus as AbiTaskStatus,
+};
 use spin::Once;
 
-use crate::time;
+use crate::{
+    capability::{
+        CapabilityError, CapabilityHandle, CapabilityResolver, CapabilityRights, TransferMode,
+    },
+    ipc::{self, IpcError, MessageTag, OutgoingMessage},
+    task::TaskRole,
+    time,
+    user::{self, AddressSpacePreparationError, LoadError, SpawnError},
+};
 
-const SYSCALL_ABI_VERSION: u64 = 0x0002_0000;
-const MAX_SYSCALL_SLOTS: usize = 3;
+const SYSCALL_ABI_VERSION: u64 = 0x0003_0000;
+const MAX_SYSCALL_SLOTS: usize = 12;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SyscallNumber(pub u32);
@@ -42,6 +55,14 @@ impl SyscallReturn {
         }
     }
 
+    pub const fn action(value: u64, action: SyscallAction) -> Self {
+        Self {
+            value,
+            error: None,
+            action,
+        }
+    }
+
     pub const fn exit_current_thread(status: u64) -> Self {
         Self {
             value: status,
@@ -61,6 +82,7 @@ impl SyscallReturn {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SyscallAction {
     ReturnToCaller,
+    YieldCurrentThread,
     ExitCurrentThread { status: u64 },
 }
 
@@ -70,24 +92,45 @@ pub enum SyscallError {
     InvalidCall,
     PermissionDenied,
     NotInitialized,
+    InvalidArgument,
+    BufferTooSmall,
+    QueueEmpty,
+    NotFound,
+    Busy,
+    CapacityExceeded,
 }
 
 impl SyscallError {
     pub const fn abi_code(self) -> u64 {
         match self {
-            Self::Unsupported => 1,
-            Self::InvalidCall => 2,
-            Self::PermissionDenied => 3,
-            Self::NotInitialized => 4,
+            Self::Unsupported => AbiErrorCode::Unsupported as u64,
+            Self::InvalidCall => AbiErrorCode::InvalidCall as u64,
+            Self::PermissionDenied => AbiErrorCode::PermissionDenied as u64,
+            Self::NotInitialized => AbiErrorCode::NotInitialized as u64,
+            Self::InvalidArgument => AbiErrorCode::InvalidArgument as u64,
+            Self::BufferTooSmall => AbiErrorCode::BufferTooSmall as u64,
+            Self::QueueEmpty => AbiErrorCode::QueueEmpty as u64,
+            Self::NotFound => AbiErrorCode::NotFound as u64,
+            Self::Busy => AbiErrorCode::Busy as u64,
+            Self::CapacityExceeded => AbiErrorCode::CapacityExceeded as u64,
         }
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SyscallKind {
-    AbiVersion = 0,
-    MonotonicNow = 1,
-    ThreadExit = 2,
+    AbiVersion = AbiSyscallNumber::AbiVersion as isize,
+    MonotonicNow = AbiSyscallNumber::MonotonicNow as isize,
+    ThreadExit = AbiSyscallNumber::ThreadExit as isize,
+    YieldCurrent = AbiSyscallNumber::YieldCurrent as isize,
+    DebugLogWrite = AbiSyscallNumber::DebugLogWrite as isize,
+    ChannelCreate = AbiSyscallNumber::ChannelCreate as isize,
+    ChannelSend = AbiSyscallNumber::ChannelSend as isize,
+    ChannelReceive = AbiSyscallNumber::ChannelReceive as isize,
+    HandleDuplicate = AbiSyscallNumber::HandleDuplicate as isize,
+    HandleClose = AbiSyscallNumber::HandleClose as isize,
+    ServiceSpawn = AbiSyscallNumber::ServiceSpawn as isize,
+    TaskStatus = AbiSyscallNumber::TaskStatus as isize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -145,6 +188,7 @@ impl SyscallDispatcher for DispatchTable {
 }
 
 static DISPATCHER: Once<DispatchTable> = Once::new();
+static DEBUG_LOG_WRITER: Once<fn(&[u8])> = Once::new();
 
 pub fn initialize() -> &'static DispatchTable {
     DISPATCHER.call_once(|| {
@@ -152,12 +196,25 @@ pub fn initialize() -> &'static DispatchTable {
             Some(handle_abi_version),
             Some(handle_monotonic_now),
             Some(handle_thread_exit),
+            Some(handle_yield_current),
+            Some(handle_debug_log_write),
+            Some(handle_channel_create),
+            Some(handle_channel_send),
+            Some(handle_channel_receive),
+            Some(handle_handle_duplicate),
+            Some(handle_handle_close),
+            Some(handle_service_spawn),
+            Some(handle_task_status),
         ])
     })
 }
 
 pub fn dispatcher() -> Option<&'static DispatchTable> {
     DISPATCHER.get()
+}
+
+pub fn register_debug_log_writer(writer: fn(&[u8])) {
+    let _ = DEBUG_LOG_WRITER.call_once(|| writer);
 }
 
 fn handle_abi_version(_context: &SyscallContext) -> SyscallReturn {
@@ -175,6 +232,347 @@ fn handle_thread_exit(context: &SyscallContext) -> SyscallReturn {
     SyscallReturn::exit_current_thread(context.arguments[0])
 }
 
+fn handle_yield_current(_context: &SyscallContext) -> SyscallReturn {
+    SyscallReturn::action(0, SyscallAction::YieldCurrentThread)
+}
+
+fn handle_debug_log_write(context: &SyscallContext) -> SyscallReturn {
+    let Some(writer) = DEBUG_LOG_WRITER.get().copied() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Ok(length) = usize::try_from(context.arguments[1]) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Ok(bytes) = (unsafe { user_slice(context.arguments[0], length) }) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    writer(bytes);
+    SyscallReturn::success(length as u64)
+}
+
+fn handle_channel_create(context: &SyscallContext) -> SyscallReturn {
+    let Some(current_task) = user::current_task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(task) = current_task.task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(ipc) = ipc::kernel() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(objects) = crate::object::model() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+
+    let (first, second) = ipc.create_channel_pair(objects);
+    let first_handle =
+        match task
+            .capability_space()
+            .install(first, CapabilityRights::channel_endpoint(), None)
+        {
+            Ok(handle) => handle,
+            Err(error) => return SyscallReturn::error(map_capability_error(error)),
+        };
+    let second_handle =
+        match task
+            .capability_space()
+            .install(second, CapabilityRights::channel_endpoint(), None)
+        {
+            Ok(handle) => handle,
+            Err(error) => return SyscallReturn::error(map_capability_error(error)),
+        };
+    let Ok(pair_out) = (unsafe { user_mut::<HandlePair>(context.arguments[0]) }) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    *pair_out = HandlePair {
+        first: first_handle.0,
+        second: second_handle.0,
+    };
+    SyscallReturn::success(0)
+}
+
+fn handle_channel_send(context: &SyscallContext) -> SyscallReturn {
+    let Some(current_task) = user::current_task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(task) = current_task.task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(ipc) = ipc::kernel() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Ok(raw) = (unsafe { user_ref::<RawMessage>(context.arguments[1]) }) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+
+    let word_count = raw.word_count as usize;
+    let handle_count = raw.handle_count as usize;
+    if word_count > IPC_MAX_WORDS || handle_count > IPC_MAX_HANDLES {
+        return SyscallReturn::error(SyscallError::BufferTooSmall);
+    }
+
+    let mut message = match OutgoingMessage::new(MessageTag(raw.tag), &raw.words[..word_count]) {
+        Ok(message) => message,
+        Err(error) => return SyscallReturn::error(map_ipc_error(error)),
+    };
+    for handle in raw.handles[..handle_count].iter().copied() {
+        let Some(descriptor) = task
+            .capability_space()
+            .resolve_descriptor(CapabilityHandle(handle))
+        else {
+            return SyscallReturn::error(SyscallError::NotFound);
+        };
+        let transfer = match task.capability_space().prepare_transfer(
+            CapabilityHandle(handle),
+            descriptor.rights,
+            TransferMode::Copy,
+        ) {
+            Ok(transfer) => transfer,
+            Err(error) => return SyscallReturn::error(map_capability_error(error)),
+        };
+        message = match message.add_transfer(transfer) {
+            Ok(message) => message,
+            Err(error) => return SyscallReturn::error(map_ipc_error(error)),
+        };
+    }
+
+    match ipc.send(
+        task.capability_space(),
+        CapabilityHandle(context.arguments[0] as Handle),
+        message,
+    ) {
+        Ok(_) => SyscallReturn::success(0),
+        Err(error) => SyscallReturn::error(map_ipc_error(error)),
+    }
+}
+
+fn handle_channel_receive(context: &SyscallContext) -> SyscallReturn {
+    let Some(current_task) = user::current_task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(task) = current_task.task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(ipc_kernel) = ipc::kernel() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Ok(message_out) = (unsafe { user_mut::<RawMessage>(context.arguments[1]) }) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+
+    match ipc_kernel.receive(
+        task.capability_space(),
+        CapabilityHandle(context.arguments[0] as Handle),
+    ) {
+        Ok(message) => {
+            if message.words.len() > IPC_MAX_WORDS
+                || message.transferred_capabilities.len() > IPC_MAX_HANDLES
+            {
+                return SyscallReturn::error(SyscallError::BufferTooSmall);
+            }
+
+            let mut raw = RawMessage::empty(message.tag.0);
+            raw.word_count = message.words.len() as u32;
+            raw.handle_count = message.transferred_capabilities.len() as u32;
+            raw.flags = message_out.flags;
+            for (index, word) in message.words.iter().copied().enumerate() {
+                raw.words[index] = word;
+            }
+            for (index, handle) in message.transferred_capabilities.iter().copied().enumerate() {
+                raw.handles[index] = handle.0;
+            }
+            *message_out = raw;
+            SyscallReturn::success(message.tag.0 as u64)
+        }
+        Err(IpcError::QueueEmpty) if message_out.flags & IPC_FLAG_NONBLOCK != 0 => {
+            SyscallReturn::error(SyscallError::QueueEmpty)
+        }
+        Err(IpcError::QueueEmpty) => SyscallReturn::error(SyscallError::QueueEmpty),
+        Err(error) => SyscallReturn::error(map_ipc_error(error)),
+    }
+}
+
+fn handle_handle_duplicate(context: &SyscallContext) -> SyscallReturn {
+    let Some(current_task) = user::current_task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(task) = current_task.task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let rights = CapabilityRights::from_bits(context.arguments[1]);
+    match task.capability_space().duplicate(
+        CapabilityHandle(context.arguments[0] as Handle),
+        rights,
+        None,
+    ) {
+        Ok(handle) => SyscallReturn::success(handle.0 as u64),
+        Err(error) => SyscallReturn::error(map_capability_error(error)),
+    }
+}
+
+fn handle_handle_close(context: &SyscallContext) -> SyscallReturn {
+    let Some(current_task) = user::current_task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(task) = current_task.task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    match task
+        .capability_space()
+        .close(CapabilityHandle(context.arguments[0] as Handle))
+    {
+        Ok(_) => SyscallReturn::success(0),
+        Err(error) => SyscallReturn::error(map_capability_error(error)),
+    }
+}
+
+fn handle_service_spawn(context: &SyscallContext) -> SyscallReturn {
+    if user::current_task_role() != Some(TaskRole::BootstrapRoot) {
+        return SyscallReturn::error(SyscallError::PermissionDenied);
+    }
+    let Some(current_task) = user::current_task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(task) = current_task.task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+
+    let bootstrap_transfer = if context.arguments[1] == 0 {
+        None
+    } else {
+        let handle = CapabilityHandle(context.arguments[1] as Handle);
+        let Some(descriptor) = task.capability_space().resolve_descriptor(handle) else {
+            return SyscallReturn::error(SyscallError::NotFound);
+        };
+        match task.capability_space().prepare_transfer(
+            handle,
+            descriptor.rights,
+            TransferMode::Move,
+        ) {
+            Ok(transfer) => Some(transfer),
+            Err(error) => return SyscallReturn::error(map_capability_error(error)),
+        }
+    };
+
+    let spawned = match user::spawn_builtin_task(
+        context.arguments[0] as u32,
+        TaskRole::SystemService,
+        bootstrap_transfer,
+    ) {
+        Ok(spawned) => spawned,
+        Err(SpawnError::ImageNotFound) => return SyscallReturn::error(SyscallError::NotFound),
+        Err(SpawnError::Capability(error)) => {
+            return SyscallReturn::error(map_capability_error(error));
+        }
+        Err(SpawnError::Scheduler(_)) => return SyscallReturn::error(SyscallError::Busy),
+        Err(SpawnError::AddressSpace(AddressSpacePreparationError::Load(
+            LoadError::FrameExhausted,
+        )))
+        | Err(SpawnError::AddressSpace(AddressSpacePreparationError::Mapping(
+            crate::memory::MappingError::FrameAllocationFailed,
+        ))) => {
+            return SyscallReturn::error(SyscallError::CapacityExceeded);
+        }
+        Err(_) => return SyscallReturn::error(SyscallError::NotInitialized),
+    };
+
+    match task
+        .capability_space()
+        .install(spawned.task, CapabilityRights::task(), None)
+    {
+        Ok(handle) => SyscallReturn::success(handle.0 as u64),
+        Err(error) => SyscallReturn::error(map_capability_error(error)),
+    }
+}
+
+fn handle_task_status(context: &SyscallContext) -> SyscallReturn {
+    let Some(current_task) = user::current_task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(task) = current_task.task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(descriptor) = task
+        .capability_space()
+        .resolve_descriptor(CapabilityHandle(context.arguments[0] as Handle))
+    else {
+        return SyscallReturn::error(SyscallError::NotFound);
+    };
+    let Some(object) =
+        crate::object::model().and_then(|model| model.registry().lookup(descriptor.object))
+    else {
+        return SyscallReturn::error(SyscallError::NotFound);
+    };
+    let Some(target_task) = object.task() else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Ok(status_out) = (unsafe { user_mut::<AbiTaskStatus>(context.arguments[1]) }) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+
+    *status_out = match target_task.exit_status() {
+        user::TaskExitStatus::Running => AbiTaskStatus {
+            state: TaskStateCode::Running,
+            exit_code: 0,
+        },
+        user::TaskExitStatus::Exited { code } => AbiTaskStatus {
+            state: TaskStateCode::Exited,
+            exit_code: code,
+        },
+    };
+
+    SyscallReturn::success(0)
+}
+
+fn map_capability_error(error: CapabilityError) -> SyscallError {
+    match error {
+        CapabilityError::InvalidHandle => SyscallError::NotFound,
+        CapabilityError::HandleSpaceExhausted => SyscallError::CapacityExceeded,
+        CapabilityError::RightsViolation { .. }
+        | CapabilityError::DuplicateForbidden
+        | CapabilityError::TransferForbidden
+        | CapabilityError::RequestedRightsExceedSource => SyscallError::PermissionDenied,
+    }
+}
+
+fn map_ipc_error(error: IpcError) -> SyscallError {
+    match error {
+        IpcError::Capability(error) => map_capability_error(error),
+        IpcError::EndpointNotReady | IpcError::EndpointClosed => SyscallError::Busy,
+        IpcError::BufferShapeInvalid
+        | IpcError::ObjectKindMismatch
+        | IpcError::InvalidReplyEndpoint => SyscallError::InvalidArgument,
+        IpcError::QueueEmpty => SyscallError::QueueEmpty,
+        IpcError::QueueFull { .. }
+        | IpcError::MessageTooLarge { .. }
+        | IpcError::TooManyTransfers { .. } => SyscallError::CapacityExceeded,
+    }
+}
+
+unsafe fn user_ref<T>(address: u64) -> Result<&'static T, SyscallError> {
+    if address == 0 || address as usize % core::mem::align_of::<T>() != 0 {
+        return Err(SyscallError::InvalidArgument);
+    }
+
+    Ok(unsafe { &*(address as *const T) })
+}
+
+unsafe fn user_mut<T>(address: u64) -> Result<&'static mut T, SyscallError> {
+    if address == 0 || address as usize % core::mem::align_of::<T>() != 0 {
+        return Err(SyscallError::InvalidArgument);
+    }
+
+    Ok(unsafe { &mut *(address as *mut T) })
+}
+
+unsafe fn user_slice(address: u64, len: usize) -> Result<&'static [u8], SyscallError> {
+    if address == 0 {
+        return Err(SyscallError::InvalidArgument);
+    }
+
+    Ok(unsafe { core::slice::from_raw_parts(address as *const u8, len) })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,7 +588,20 @@ mod tests {
 
     #[test]
     fn unknown_syscall_is_rejected_and_counted() {
-        let table = DispatchTable::new([Some(handle_abi_version), None, Some(handle_thread_exit)]);
+        let table = DispatchTable::new([
+            Some(handle_abi_version),
+            None,
+            Some(handle_thread_exit),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ]);
 
         let result = table.dispatch(SyscallNumber(1), &empty_context());
         assert_eq!(result, SyscallReturn::error(SyscallError::InvalidCall));
@@ -205,7 +616,20 @@ mod tests {
 
     #[test]
     fn abi_version_syscall_returns_stable_value() {
-        let table = DispatchTable::new([Some(handle_abi_version), None, None]);
+        let table = DispatchTable::new([
+            Some(handle_abi_version),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ]);
 
         let result = table.dispatch(
             SyscallNumber(SyscallKind::AbiVersion as u32),

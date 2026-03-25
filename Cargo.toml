@@ -1,11 +1,12 @@
 [workspace]
 resolver = "3"
 members = [
+    "shared/abi",
     "kernel/core",
     "kernel/arch/x86_64",
     "kernel/image/x86_64",
     "support/xtask",
-    "userspace/demo-x86_64",
+    "userspace/catalog",
 ]
 
 [workspace.package]

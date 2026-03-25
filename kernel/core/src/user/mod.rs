@@ -1,11 +1,158 @@
+use alloc::collections::BTreeMap;
+
 use crate::memory::{
     EarlyFrameAllocator, Frame, MappingError, MappingFlags, PAGE_SIZE_BYTES, PageMapper,
     PhysicalAddress, VirtualAddress,
 };
+use crate::{
+    capability::{CapabilityError, PreparedTransfer},
+    memory,
+    object::KernelObjectRef,
+    task::{
+        self, AddressSpaceId, SchedulingContext, TaskDescriptor, TaskId, TaskRole,
+        ThreadDescriptor, ThreadId, ThreadMode, ThreadWakeReason,
+    },
+};
+use spin::{Mutex, Once};
 
 const FLAT_IMAGE_MAGIC: [u8; 8] = *b"SOSUIMG\0";
 const FLAT_IMAGE_HEADER_LEN: usize = 48;
 const USER_STACK_PAGES: usize = 4;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TaskExitStatus {
+    Running,
+    Exited { code: u64 },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PreparedUserAddressSpace {
+    pub page_table_root: PhysicalAddress,
+    pub image: LoadedUserImage,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UserThreadLaunch {
+    pub thread_id: ThreadId,
+    pub page_table_root: PhysicalAddress,
+    pub entry_point: u64,
+    pub user_stack_pointer: u64,
+}
+
+#[derive(Clone, Copy)]
+pub struct UserArchHooks {
+    pub prepare_address_space:
+        fn(&[u8]) -> Result<PreparedUserAddressSpace, AddressSpacePreparationError>,
+    pub register_thread_launch: fn(UserThreadLaunch),
+}
+
+#[derive(Clone)]
+pub struct SpawnedUserTask {
+    pub task: KernelObjectRef,
+    pub thread: KernelObjectRef,
+    pub address_space_id: AddressSpaceId,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AddressSpacePreparationError {
+    Mapping(MappingError),
+    Load(LoadError),
+    NotInitialized,
+}
+
+impl From<MappingError> for AddressSpacePreparationError {
+    fn from(error: MappingError) -> Self {
+        Self::Mapping(error)
+    }
+}
+
+impl From<LoadError> for AddressSpacePreparationError {
+    fn from(error: LoadError) -> Self {
+        Self::Load(error)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SpawnError {
+    ObjectsUnavailable,
+    TasksUnavailable,
+    MemoryUnavailable,
+    ImageResolverUnavailable,
+    ImageNotFound,
+    ArchHooksUnavailable,
+    AddressSpace(AddressSpacePreparationError),
+    Capability(CapabilityError),
+    Scheduler(task::SchedulerError),
+}
+
+impl From<AddressSpacePreparationError> for SpawnError {
+    fn from(error: AddressSpacePreparationError) -> Self {
+        Self::AddressSpace(error)
+    }
+}
+
+impl From<CapabilityError> for SpawnError {
+    fn from(error: CapabilityError) -> Self {
+        Self::Capability(error)
+    }
+}
+
+impl From<task::SchedulerError> for SpawnError {
+    fn from(error: task::SchedulerError) -> Self {
+        Self::Scheduler(error)
+    }
+}
+
+struct UserRuntimeState {
+    next_address_space_id: u64,
+    tasks: BTreeMap<TaskId, TaskExitStatus>,
+    threads: BTreeMap<ThreadId, TaskId>,
+}
+
+pub struct UserRuntime {
+    state: Mutex<UserRuntimeState>,
+}
+
+impl UserRuntime {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(UserRuntimeState {
+                next_address_space_id: 1,
+                tasks: BTreeMap::new(),
+                threads: BTreeMap::new(),
+            }),
+        }
+    }
+
+    fn allocate_address_space_id(&self) -> AddressSpaceId {
+        let mut state = self.state.lock();
+        let id = AddressSpaceId(state.next_address_space_id);
+        state.next_address_space_id = state.next_address_space_id.saturating_add(1);
+        id
+    }
+
+    fn track_task(&self, task_id: TaskId, thread_id: ThreadId) {
+        let mut state = self.state.lock();
+        state.tasks.insert(task_id, TaskExitStatus::Running);
+        state.threads.insert(thread_id, task_id);
+    }
+
+    pub fn task_exit_status(&self, task_id: TaskId) -> Option<TaskExitStatus> {
+        self.state.lock().tasks.get(&task_id).copied()
+    }
+
+    pub fn mark_thread_exit(&self, thread_id: ThreadId, code: u64) {
+        let mut state = self.state.lock();
+        let Some(task_id) = state.threads.get(&thread_id).copied() else {
+            return;
+        };
+        state.tasks.insert(task_id, TaskExitStatus::Exited { code });
+    }
+}
+
+static USER_RUNTIME: Once<UserRuntime> = Once::new();
+static IMAGE_RESOLVER: Once<fn(u32) -> Option<&'static [u8]>> = Once::new();
+static ARCH_HOOKS: Once<UserArchHooks> = Once::new();
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FlatImageHeader {
@@ -40,6 +187,111 @@ impl From<MappingError> for LoadError {
     fn from(error: MappingError) -> Self {
         Self::Mapping(error)
     }
+}
+
+pub fn initialize_runtime() -> &'static UserRuntime {
+    USER_RUNTIME.call_once(UserRuntime::new)
+}
+
+pub fn runtime() -> Option<&'static UserRuntime> {
+    USER_RUNTIME.get()
+}
+
+pub fn register_image_resolver(resolver: fn(u32) -> Option<&'static [u8]>) {
+    let _ = IMAGE_RESOLVER.call_once(|| resolver);
+}
+
+pub fn register_arch_hooks(hooks: UserArchHooks) {
+    let _ = ARCH_HOOKS.call_once(|| hooks);
+}
+
+pub fn spawn_builtin_task(
+    image_id: u32,
+    role: TaskRole,
+    bootstrap_transfer: Option<PreparedTransfer>,
+) -> Result<SpawnedUserTask, SpawnError> {
+    let objects = crate::object::model().ok_or(SpawnError::ObjectsUnavailable)?;
+    let tasks = task::system().ok_or(SpawnError::TasksUnavailable)?;
+    let _memory = memory::manager().ok_or(SpawnError::MemoryUnavailable)?;
+    let runtime = initialize_runtime();
+    let resolver = IMAGE_RESOLVER
+        .get()
+        .copied()
+        .ok_or(SpawnError::ImageResolverUnavailable)?;
+    let hooks = ARCH_HOOKS
+        .get()
+        .copied()
+        .ok_or(SpawnError::ArchHooksUnavailable)?;
+    let image = resolver(image_id).ok_or(SpawnError::ImageNotFound)?;
+    let address_space_id = runtime.allocate_address_space_id();
+    let prepared = (hooks.prepare_address_space)(image)?;
+
+    let task = objects.registry().create_task(TaskDescriptor {
+        address_space: Some(address_space_id),
+        role,
+    });
+    if let Some(transfer) = bootstrap_transfer {
+        let _ = task
+            .task()
+            .expect("spawned task object")
+            .capability_space()
+            .accept_transfer(transfer)?;
+    }
+    let thread = objects.registry().create_thread(
+        &task,
+        ThreadDescriptor {
+            mode: ThreadMode::User,
+            scheduling_context: SchedulingContext::round_robin_default(),
+            entry_instruction_pointer: Some(prepared.image.entry_point.as_u64()),
+            stack_pointer: Some(prepared.image.user_stack_top.as_u64()),
+        },
+    );
+    let thread_id = thread.thread().expect("spawned thread object").id();
+
+    runtime.track_task(task.task().expect("spawned task object").id(), thread_id);
+    (hooks.register_thread_launch)(UserThreadLaunch {
+        thread_id,
+        page_table_root: prepared.page_table_root,
+        entry_point: prepared.image.entry_point.as_u64(),
+        user_stack_pointer: prepared.image.user_stack_top.as_u64(),
+    });
+    tasks.scheduler().register_thread(thread.clone())?;
+    tasks
+        .scheduler()
+        .make_runnable(thread_id, ThreadWakeReason::Explicit)?;
+
+    Ok(SpawnedUserTask {
+        task,
+        thread,
+        address_space_id,
+    })
+}
+
+pub fn mark_current_thread_exited(code: u64) {
+    let Some(tasks) = task::system() else {
+        return;
+    };
+    let Some(thread_id) = tasks.scheduler().current_thread() else {
+        return;
+    };
+    if let Some(runtime) = runtime() {
+        runtime.mark_thread_exit(thread_id, code);
+    }
+    if let Some(task_object) = tasks.current_task_object() {
+        if let Some(task) = task_object.task() {
+            task.set_exit_status(TaskExitStatus::Exited { code });
+        }
+    }
+}
+
+pub fn current_task_role() -> Option<TaskRole> {
+    task::system()
+        .and_then(|tasks| tasks.current_task_object())
+        .and_then(|object| object.task().map(|task| task.role()))
+}
+
+pub fn current_task() -> Option<KernelObjectRef> {
+    task::system().and_then(|tasks| tasks.current_task_object())
 }
 
 pub fn parse_flat_image(image: &[u8]) -> Result<FlatImageHeader, LoadError> {

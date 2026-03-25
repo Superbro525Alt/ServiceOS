@@ -28,6 +28,10 @@ impl CapabilityRights {
         self.0
     }
 
+    pub const fn from_bits(bits: u64) -> Self {
+        Self(bits)
+    }
+
     pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }

@@ -9,6 +9,7 @@ use crate::{
     capability::{CapabilityRights, CapabilitySpace},
     object::{KernelObjectModel, KernelObjectRef, ObjectId},
     time::{self, MonotonicInstant, TimerRequest, TimerService, WakeEvent, WakeToken},
+    user::TaskExitStatus,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -107,6 +108,7 @@ pub struct TaskStateView {
     pub role: TaskRole,
     pub address_space: Option<AddressSpaceId>,
     pub thread_count: usize,
+    pub exit_status: TaskExitStatus,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -138,6 +140,7 @@ struct TaskState {
     role: TaskRole,
     address_space: Option<AddressSpaceId>,
     threads: Vec<ObjectId>,
+    exit_status: TaskExitStatus,
 }
 
 impl TaskObject {
@@ -149,6 +152,7 @@ impl TaskObject {
                 role: descriptor.role,
                 address_space: descriptor.address_space,
                 threads: Vec::new(),
+                exit_status: TaskExitStatus::Running,
             }),
         }
     }
@@ -159,6 +163,22 @@ impl TaskObject {
 
     pub fn capability_space(&self) -> &CapabilitySpace {
         &self.capability_space
+    }
+
+    pub fn role(&self) -> TaskRole {
+        self.state.lock().role
+    }
+
+    pub fn address_space(&self) -> Option<AddressSpaceId> {
+        self.state.lock().address_space
+    }
+
+    pub fn set_exit_status(&self, exit_status: TaskExitStatus) {
+        self.state.lock().exit_status = exit_status;
+    }
+
+    pub fn exit_status(&self) -> TaskExitStatus {
+        self.state.lock().exit_status
     }
 
     pub fn attach_thread(&self, thread: ObjectId) {
@@ -176,6 +196,7 @@ impl TaskObject {
             role: state.role,
             address_space: state.address_space,
             thread_count: state.threads.len(),
+            exit_status: state.exit_status,
         }
     }
 }
@@ -586,13 +607,14 @@ impl Scheduler {
 }
 
 pub struct TaskSystem {
+    objects: &'static KernelObjectModel,
     bootstrap_task: TaskId,
     bootstrap_thread: KernelObjectRef,
     scheduler: Scheduler,
 }
 
 impl TaskSystem {
-    fn new(objects: &KernelObjectModel) -> Self {
+    fn new(objects: &'static KernelObjectModel) -> Self {
         let bootstrap_task = objects
             .bootstrap_task()
             .task()
@@ -620,6 +642,7 @@ impl TaskSystem {
             .expect("bootstrap thread install must not exhaust the capability space");
 
         Self {
+            objects,
             bootstrap_task,
             scheduler: Scheduler::new(Arc::clone(&bootstrap_thread)),
             bootstrap_thread,
@@ -638,6 +661,10 @@ impl TaskSystem {
         self.bootstrap_task
     }
 
+    pub fn objects(&self) -> &'static KernelObjectModel {
+        self.objects
+    }
+
     pub fn bootstrap_thread_ref(&self) -> &KernelObjectRef {
         &self.bootstrap_thread
     }
@@ -648,6 +675,17 @@ impl TaskSystem {
 
     pub fn scheduler(&self) -> &Scheduler {
         &self.scheduler
+    }
+
+    pub fn current_thread_object(&self) -> Option<KernelObjectRef> {
+        let thread_id = self.scheduler.current_thread()?;
+        self.objects.registry().lookup(ObjectId(thread_id.0))
+    }
+
+    pub fn current_task_object(&self) -> Option<KernelObjectRef> {
+        let thread = self.current_thread_object()?;
+        let owner = thread.thread()?.snapshot().owner;
+        self.objects.registry().lookup(ObjectId(owner.0))
     }
 
     pub fn handle_time_wakeup(&self, event: WakeEvent) -> Option<ScheduleDecision> {

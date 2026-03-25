@@ -1,77 +1,239 @@
 use core::arch::global_asm;
 
-use crate::{cpu, interrupts, serial};
-use serviceos_kernel_core::memory::PhysicalAddress;
 use spin::Mutex;
+
+use crate::{cpu, interrupts, paging::OwnedPageTable};
+use serviceos_kernel_core::{
+    memory::{self, MappingError, PhysicalAddress},
+    task::ThreadId,
+    user::{
+        self, AddressSpacePreparationError, LoadError, PreparedUserAddressSpace, UserArchHooks,
+        UserThreadLaunch,
+    },
+};
+
+const MAX_USER_THREADS: usize = 16;
 
 global_asm!(
     r#"
-.global serviceos_x86_64_enter_user
-serviceos_x86_64_enter_user:
+.global serviceos_x86_64_resume_user
+serviceos_x86_64_resume_user:
     mov [rip + serviceos_x86_64_user_return_stack], rsp
-    mov rax, [rsp + 0x28]
-    push r9
-    push rdx
-    push rax
-    push r8
-    push rcx
+    mov r11, rcx
+    push qword ptr [r11 + 0x98]
+    push qword ptr [r11 + 0x90]
+    push qword ptr [r11 + 0x88]
+    push qword ptr [r11 + 0x80]
+    push qword ptr [r11 + 0x78]
+    mov r15, [r11 + 0x00]
+    mov r14, [r11 + 0x08]
+    mov r13, [r11 + 0x10]
+    mov r12, [r11 + 0x18]
+    mov r10, [r11 + 0x28]
+    mov r9, [r11 + 0x30]
+    mov r8, [r11 + 0x38]
+    mov rdi, [r11 + 0x40]
+    mov rsi, [r11 + 0x48]
+    mov rbp, [r11 + 0x50]
+    mov rdx, [r11 + 0x58]
+    mov rcx, [r11 + 0x60]
+    mov rbx, [r11 + 0x68]
+    mov rax, [r11 + 0x70]
+    mov r11, [r11 + 0x20]
     iretq
 "#
 );
 
 unsafe extern "C" {
-    fn serviceos_x86_64_enter_user(
-        entry_point: u64,
-        user_stack_pointer: u64,
-        user_code_segment: u64,
-        user_stack_segment: u64,
-        rflags: u64,
-    );
+    fn serviceos_x86_64_resume_user(context: *const SavedUserContext);
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SavedUserContext {
+    pub r15: u64,
+    pub r14: u64,
+    pub r13: u64,
+    pub r12: u64,
+    pub r11: u64,
+    pub r10: u64,
+    pub r9: u64,
+    pub r8: u64,
+    pub rdi: u64,
+    pub rsi: u64,
+    pub rbp: u64,
+    pub rdx: u64,
+    pub rcx: u64,
+    pub rbx: u64,
+    pub rax: u64,
+    pub instruction_pointer: u64,
+    pub code_segment: u64,
+    pub cpu_flags: u64,
+    pub user_stack_pointer: u64,
+    pub user_stack_segment: u64,
+}
+
+impl SavedUserContext {
+    fn initial(entry_point: u64, user_stack_pointer: u64) -> Self {
+        Self {
+            r15: 0,
+            r14: 0,
+            r13: 0,
+            r12: 0,
+            r11: 0,
+            r10: 0,
+            r9: 0,
+            r8: 0,
+            rdi: 0,
+            rsi: 0,
+            rbp: 0,
+            rdx: 0,
+            rcx: 0,
+            rbx: 0,
+            rax: 0,
+            instruction_pointer: entry_point,
+            code_segment: interrupts::user_code_selector().0 as u64,
+            cpu_flags: 0x202,
+            user_stack_pointer,
+            user_stack_segment: interrupts::user_data_selector().0 as u64,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SavedUserThread {
+    thread_id: ThreadId,
+    page_table_root: PhysicalAddress,
+    context: SavedUserContext,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UserLaunchError {
+    UnknownThread,
+    RuntimeCapacityExceeded,
+    Mapping(MappingError),
+    Load(LoadError),
+    MemoryUnavailable,
+}
+
+impl From<MappingError> for UserLaunchError {
+    fn from(error: MappingError) -> Self {
+        Self::Mapping(error)
+    }
+}
+
+impl From<LoadError> for UserLaunchError {
+    fn from(error: LoadError) -> Self {
+        Self::Load(error)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct UserThreadRuntime {
+    slots: [Option<SavedUserThread>; MAX_USER_THREADS],
+}
+
+impl UserThreadRuntime {
+    const fn new() -> Self {
+        Self {
+            slots: [None; MAX_USER_THREADS],
+        }
+    }
+
+    fn register_launch(&mut self, launch: UserThreadLaunch) -> Result<(), UserLaunchError> {
+        for slot in &mut self.slots {
+            if slot.is_none() {
+                *slot = Some(SavedUserThread {
+                    thread_id: launch.thread_id,
+                    page_table_root: launch.page_table_root,
+                    context: SavedUserContext::initial(
+                        launch.entry_point,
+                        launch.user_stack_pointer,
+                    ),
+                });
+                return Ok(());
+            }
+        }
+
+        Err(UserLaunchError::RuntimeCapacityExceeded)
+    }
+
+    fn context_mut(&mut self, thread_id: ThreadId) -> Option<&mut SavedUserContext> {
+        self.slots
+            .iter_mut()
+            .flatten()
+            .find(|thread| thread.thread_id == thread_id)
+            .map(|thread| &mut thread.context)
+    }
+
+    fn thread(&self, thread_id: ThreadId) -> Option<SavedUserThread> {
+        self.slots
+            .iter()
+            .flatten()
+            .copied()
+            .find(|thread| thread.thread_id == thread_id)
+    }
 }
 
 #[unsafe(no_mangle)]
 static mut serviceos_x86_64_user_return_stack: u64 = 0;
 
-static USER_EXIT_STATUS: Mutex<Option<u64>> = Mutex::new(None);
+static USER_THREADS: Mutex<UserThreadRuntime> = Mutex::new(UserThreadRuntime::new());
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct UserExitStatus {
-    pub code: u64,
+pub fn initialize() {
+    user::register_arch_hooks(UserArchHooks {
+        prepare_address_space,
+        register_thread_launch,
+    });
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum UserLaunchError {
-    MissingExitStatus,
+pub fn prepare_address_space(
+    image: &[u8],
+) -> Result<PreparedUserAddressSpace, AddressSpacePreparationError> {
+    let memory = memory::manager().ok_or(AddressSpacePreparationError::NotInitialized)?;
+    let mut frame_allocator = memory.frame_allocator().lock();
+    let mut user_page_table = unsafe {
+        OwnedPageTable::new_user_space(
+            memory.kernel_address_space().root.level_4_frame,
+            &mut frame_allocator,
+        )
+    }?;
+    let loaded = serviceos_kernel_core::user::load_flat_image(
+        image,
+        &mut user_page_table,
+        &mut frame_allocator,
+    )?;
+
+    Ok(PreparedUserAddressSpace {
+        page_table_root: user_page_table.root_frame(),
+        image: loaded,
+    })
 }
 
-pub fn run_user_program(
-    page_table_root: PhysicalAddress,
-    entry_point: u64,
-    user_stack_pointer: u64,
-) -> Result<UserExitStatus, UserLaunchError> {
-    *USER_EXIT_STATUS.lock() = None;
+pub fn register_thread_launch(launch: UserThreadLaunch) {
+    USER_THREADS
+        .lock()
+        .register_launch(launch)
+        .expect("user thread runtime capacity must cover bootstrap services");
+}
+
+pub fn save_thread_context(thread_id: ThreadId, context: &SavedUserContext) {
+    if let Some(slot) = USER_THREADS.lock().context_mut(thread_id) {
+        *slot = *context;
+    }
+}
+
+pub fn run_thread(thread_id: ThreadId) -> Result<(), UserLaunchError> {
+    let Some(thread) = USER_THREADS.lock().thread(thread_id) else {
+        return Err(UserLaunchError::UnknownThread);
+    };
     let kernel_page_table_root = cpu::current_page_table_root();
 
     unsafe {
-        cpu::load_page_table_root(page_table_root);
-        serviceos_x86_64_enter_user(
-            entry_point,
-            user_stack_pointer,
-            interrupts::user_code_selector().0 as u64,
-            interrupts::user_data_selector().0 as u64,
-            0x202,
-        );
+        cpu::load_page_table_root(thread.page_table_root);
+        serviceos_x86_64_resume_user(&thread.context);
         cpu::load_page_table_root(kernel_page_table_root);
-        serial::write_line("serviceos: userspace: returned to kernel from ring 3");
     }
 
-    USER_EXIT_STATUS
-        .lock()
-        .take()
-        .map(|code| UserExitStatus { code })
-        .ok_or(UserLaunchError::MissingExitStatus)
-}
-
-pub fn record_user_exit(status: u64) {
-    *USER_EXIT_STATUS.lock() = Some(status);
+    Ok(())
 }

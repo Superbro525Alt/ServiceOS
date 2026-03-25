@@ -92,9 +92,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
+name = "serviceos-abi"
+version = "0.1.0"
+
+[[package]]
 name = "serviceos-kernel-arch-x86_64"
 version = "0.1.0"
 dependencies = [
+ "serviceos-abi",
  "serviceos-kernel-core",
  "spin",
  "uefi",
@@ -105,6 +110,7 @@ dependencies = [
 name = "serviceos-kernel-core"
 version = "0.1.0"
 dependencies = [
+ "serviceos-abi",
  "spin",
 ]
 
@@ -112,15 +118,19 @@ dependencies = [
 name = "serviceos-kernel-x86_64"
 version = "0.1.0"
 dependencies = [
+ "serviceos-abi",
  "serviceos-kernel-arch-x86_64",
  "serviceos-kernel-core",
- "serviceos-userspace-demo-x86_64",
+ "serviceos-userspace-catalog",
  "uefi",
 ]
 
 [[package]]
-name = "serviceos-userspace-demo-x86_64"
+name = "serviceos-userspace-catalog"
 version = "0.1.0"
+dependencies = [
+ "serviceos-abi",
+]
 
 [[package]]
 name = "spin"

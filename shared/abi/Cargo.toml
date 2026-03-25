@@ -1,5 +1,5 @@
 [package]
-name = "serviceos-kernel-core"
+name = "serviceos-abi"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
@@ -8,7 +8,3 @@ rust-version.workspace = true
 
 [lib]
 path = "src/lib.rs"
-
-[dependencies]
-serviceos-abi = { path = "../../shared/abi" }
-spin = "0.9"

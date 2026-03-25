@@ -13,7 +13,8 @@ test = false
 bench = false
 
 [dependencies]
+serviceos-abi = { path = "../../../shared/abi" }
 serviceos-kernel-arch-x86_64 = { path = "../../arch/x86_64" }
 serviceos-kernel-core = { path = "../../core" }
-serviceos-userspace-demo-x86_64 = { path = "../../../userspace/demo-x86_64" }
+serviceos-userspace-catalog = { path = "../../../userspace/catalog" }
 uefi = { version = "0.33", default-features = false }

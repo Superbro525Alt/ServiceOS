@@ -1,0 +1,15 @@
+[workspace]
+resolver = "3"
+members = [
+    "runtime",
+    "root-manager",
+    "log-service",
+    "echo-service",
+    "probe-service",
+]
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

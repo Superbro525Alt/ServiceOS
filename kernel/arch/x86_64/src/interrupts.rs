@@ -19,7 +19,7 @@ use x86_64::{
     },
 };
 
-use crate::{cpu, serial};
+use crate::{cpu, serial, user::SavedUserContext};
 
 global_asm!(include_str!("syscall_entry.S"));
 
@@ -71,30 +71,6 @@ impl DescriptorState {
 
 #[repr(C, align(16))]
 struct InterruptStack<const N: usize>([u8; N]);
-
-#[repr(C)]
-struct SyscallTrapFrame {
-    rax: u64,
-    rbx: u64,
-    rcx: u64,
-    rdx: u64,
-    rbp: u64,
-    rsi: u64,
-    rdi: u64,
-    r8: u64,
-    r9: u64,
-    r10: u64,
-    r11: u64,
-    r12: u64,
-    r13: u64,
-    r14: u64,
-    r15: u64,
-    instruction_pointer: u64,
-    code_segment: u64,
-    cpu_flags: u64,
-    user_stack_pointer: u64,
-    user_stack_segment: u64,
-}
 
 struct SegmentSelectors {
     kernel_code: SegmentSelector,
@@ -541,7 +517,7 @@ extern "x86-interrupt" fn security_exception_handler(frame: InterruptStackFrame,
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn serviceos_x86_64_handle_syscall(frame: &mut SyscallTrapFrame) -> u64 {
+extern "C" fn serviceos_x86_64_handle_syscall(frame: &mut SavedUserContext) -> u64 {
     let context = SyscallContext {
         instruction_pointer: frame.instruction_pointer,
         stack_pointer: frame.user_stack_pointer,
@@ -556,8 +532,20 @@ extern "C" fn serviceos_x86_64_handle_syscall(frame: &mut SyscallTrapFrame) -> u
     frame.rdx = result.abi_error_code();
     match result.action {
         serviceos_kernel_core::syscall::SyscallAction::ReturnToCaller => 0,
+        serviceos_kernel_core::syscall::SyscallAction::YieldCurrentThread => {
+            if let Some(tasks) = serviceos_kernel_core::task::system() {
+                if let Some(thread_id) = tasks.scheduler().current_thread() {
+                    crate::user::save_thread_context(thread_id, frame);
+                }
+                let _ = tasks.scheduler().yield_current();
+            }
+            1
+        }
         serviceos_kernel_core::syscall::SyscallAction::ExitCurrentThread { status } => {
-            crate::user::record_user_exit(status);
+            serviceos_kernel_core::user::mark_current_thread_exited(status);
+            if let Some(tasks) = serviceos_kernel_core::task::system() {
+                let _ = tasks.scheduler().terminate_current();
+            }
             1
         }
     }

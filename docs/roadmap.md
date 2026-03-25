@@ -9,7 +9,7 @@
 - bootstrap kernel heap allocator
 - kernel address-space root tracking
 
-## Phase 2
+## Completed in Phase 2
 
 - x86_64 GDT/TSS/IDT installation
 - exception and fault classification
@@ -52,18 +52,29 @@
   userspace parsing invariants
 - architecture summary and future-service readiness documentation
 
+## Completed in Root Userspace Bootstrap
+
+- shared kernel/userspace ABI crate
+- built-in flat-image catalog for freestanding userspace services
+- first real root service manager launched by the kernel
+- manifest-driven dependency startup in userspace
+- capability-scoped startup grants from root to child services
+- manager-mediated service registration and discovery
+- restart supervision for a one-shot bootstrap validator
+- example log, echo, and probe services
+
 ## Next
 
-- user-visible handle and object syscalls
-- channel and capability syscalls for real service composition
-- user fault delivery instead of machine halt
+- replace the temporary bootstrap-root role gate with an explicit bootstrap
+  capability object
+- add user fault delivery instead of machine halt
+- integrate real kernel-backed blocking receive completion for userspace waits
 - reclaim boot-services memory safely
-- replace the bootstrap loader with a richer executable-loading path
-- root userspace service-manager handoff preparation
+- replace the built-in flat-image catalog with a richer executable-loading path
+- grow the service manifest source beyond compiled-in data
 
 ## Beyond
 
-- root service manager
 - platform services
 - driver isolation strategy
 - storage, networking, and graphics in services

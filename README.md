@@ -1,6 +1,7 @@
-# ServiceOS Kernel Foundation
+# ServiceOS Foundation
 
-The repository now covers Phase 6 of the kernel bring-up:
+The repository now covers the full early-kernel foundation plus the first real
+userspace platform layer:
 
 - direct UEFI boot into Rust on `x86_64`
 - real UEFI memory-map capture
@@ -17,16 +18,18 @@ The repository now covers Phase 6 of the kernel bring-up:
 - a schedulable thread model
 - a round-robin scheduler foundation
 - timer and IPC wakeups routed into task state transitions
-- first user address-space construction
-- a minimal flat user image loader
-- ring-3 entry and return on `x86_64`
-- a tiny bootstrap syscall ABI for the first userspace program
-- hardening and validation around the object, IPC, scheduler, and userspace
-  bootstrap substrate
+- user address-space construction and ring-3 entry
+- a built-in userspace image catalog
+- a root userspace service manager launched by the kernel
+- dependency-aware service startup from manifests
+- explicit capability distribution from root into child services
+- manager-mediated service registration and discovery
+- supervised example services for logging, request/reply IPC, and bootstrap
+  validation
 - host-side unit tests for the core kernel semantics
 
-The system remains intentionally early. It does not attempt real
-service-manager policy, drivers, filesystems, networking, audio, or GUI.
+The system remains intentionally early. It does not attempt desktop, package,
+networking, storage, audio, graphics, or compatibility stacks yet.
 
 ## Initial target
 
@@ -44,28 +47,43 @@ service-manager policy, drivers, filesystems, networking, audio, or GUI.
 ```text
 .
 |-- docs/
+|-- shared/
 |-- kernel/
 |   |-- arch/x86_64/
 |   |-- core/
 |   `-- image/x86_64/
 |-- support/xtask/
 |-- userspace/
-|   `-- demo-x86_64/
+|   |-- catalog/
+|   `-- programs/
 `-- tests/
 ```
 
+- `shared/abi`: syscall, IPC, handle, and service identity ABI shared between
+  kernel and userspace
 - `kernel/core`: generic kernel bootstrap and subsystem foundations
-- `kernel/arch/x86_64`: x86_64 boot, CPU, serial, and paging implementation
+- `kernel/arch/x86_64`: x86_64 boot, CPU, serial, paging, trap, and user-entry
+  implementation
 - `kernel/image/x86_64`: bootable UEFI kernel image entry point
 - `support/xtask`: host-side build and QEMU runner logic
-- `userspace/demo-x86_64`: first minimal ring-3 validation image
+- `userspace/catalog`: host-built catalog of bootable flat userspace images
+- `userspace/programs`: freestanding userspace runtime plus the root manager
+  and example services
 
 ## Commands
 
 ```bash
 cargo check --workspace
+cargo test --workspace
 cargo xtask build
 cargo xtask qemu
+```
+
+For smoke testing, keep `qemu` under a timeout because the system now stays
+alive under the root service manager:
+
+```bash
+timeout 20 cargo xtask qemu
 ```
 
 Optional QEMU debugging:
@@ -82,9 +100,10 @@ cargo xtask build --release
 
 ## Current state
 
-Phase 6 boots cleanly under QEMU, exits UEFI boot services, captures the memory
+The system now boots under QEMU, exits UEFI boot services, captures the memory
 map, initializes the memory substrate, installs an x86_64 GDT/TSS/IDT, enables
-PIC/PIT-driven timer interrupts, and then brings up a kernel object model with:
+PIC/PIT-driven timer interrupts, and then hands off to a real userspace root
+service manager. The current platform layer provides:
 
 - a registry-backed object namespace
 - bootstrap and service-task capability spaces
@@ -92,24 +111,34 @@ PIC/PIT-driven timer interrupts, and then brings up a kernel object model with:
 - capability duplication and transfer with rights reduction
 - explicit handle close and weak-registry garbage collection
 - a bootstrap kernel thread plus service threads registered with the scheduler
-- channel-receive blocking and timer blocking feeding back into scheduling
+- channel-receive and timer wakeups integrated into task state transitions
 - a dedicated user page-table root with shared kernel mappings
-- a flat-image loader that maps one executable user region plus a bootstrap
-  user stack
-- a first userspace thread that enters ring 3, executes on its own stack, uses
-  the syscall ABI on vector `0x80`, and exits back to the kernel
+- a flat-image loader and bootstrap user stack
+- userspace threads that execute in ring 3 and use the syscall ABI on vector
+  `0x80`
+- a root service manager that starts a dependency-ordered service graph
+- limited capability grants from the root manager into child services
+- manager-mediated service discovery instead of ambient global lookup
+- restart supervision for a one-shot bootstrap validation service
 - explicit capability-handle exhaustion checks and bounded IPC queues
 - host-side unit coverage for capabilities, IPC, object lifetime, memory,
-  scheduler transitions, syscalls, and user-image parsing
+  scheduler transitions, syscalls, and user-image parsing invariants
 
-The current syscall surface is intentionally tiny:
+The current syscall surface is still intentionally small, but it is now enough
+for a real service bootstrap:
 
 - `0`: ABI version probe
 - `1`: monotonic tick read
 - `2`: current-thread exit
-
-This is enough to prove the kernel can start handing responsibility outward to
-userspace without pretending that the real service graph exists yet.
+- `3`: cooperative yield
+- `4`: kernel-routed debug log write
+- `5`: channel creation
+- `6`: channel send
+- `7`: channel receive
+- `8`: handle duplication with rights reduction
+- `9`: handle close
+- `10`: bootstrap-only service spawn
+- `11`: task status query
 
 See [docs/kernel-summary.md](/home/paulh/os-dev/docs/kernel-summary.md),
 [docs/future-services.md](/home/paulh/os-dev/docs/future-services.md),
@@ -119,6 +148,8 @@ See [docs/kernel-summary.md](/home/paulh/os-dev/docs/kernel-summary.md),
 [docs/execution.md](/home/paulh/os-dev/docs/execution.md),
 [docs/memory.md](/home/paulh/os-dev/docs/memory.md),
 [docs/objects.md](/home/paulh/os-dev/docs/objects.md),
-[docs/subsystems.md](/home/paulh/os-dev/docs/subsystems.md), and
+[docs/services.md](/home/paulh/os-dev/docs/services.md),
+[docs/manifests.md](/home/paulh/os-dev/docs/manifests.md),
+[docs/subsystems.md](/home/paulh/os-dev/docs/subsystems.md),
 [docs/userspace.md](/home/paulh/os-dev/docs/userspace.md), and
 [docs/roadmap.md](/home/paulh/os-dev/docs/roadmap.md).

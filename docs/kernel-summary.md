@@ -1,8 +1,9 @@
 # Kernel Summary
 
-This repository now covers a complete early-kernel foundation through Phase 6.
-The code is still intentionally small, but the boundaries are now shaped for a
-long-lived service-oriented system rather than a one-off hobby kernel.
+This repository now covers a complete early-kernel foundation plus the first
+real userspace service layer. The code is still intentionally small, but the
+boundaries are shaped for a long-lived service-oriented system rather than a
+one-off hobby kernel.
 
 ## Design stance
 
@@ -23,8 +24,9 @@ The current boot path is:
 3. generic kernel initialization builds the memory manager, interrupt state,
    syscall dispatcher, time manager, object model, IPC kernel, and task system
 4. architecture code finishes descriptor-table and timer bring-up
-5. the kernel creates a first user address space, loads the demo image, and
-   enters ring 3
+5. the kernel creates the root userspace address space, loads the root-manager
+   image, and enters ring 3
+6. the root manager starts the first service graph in userspace
 
 The `BootContext` is the contract between firmware handoff and generic kernel
 initialization. It carries normalized memory-region data plus optional platform
@@ -65,14 +67,20 @@ The trap path is intentionally explicit.
 - syscall entry uses a dedicated software-interrupt vector and a narrow ABI
   surface
 
-The current syscall ABI is minimal on purpose:
+The current syscall ABI is still narrow on purpose:
 
 - ABI version probe
 - monotonic time read
 - current-thread exit
+- cooperative yield
+- debug log write
+- channel create/send/receive
+- handle duplicate and close
+- bootstrap-only service spawn
+- task status query
 
-The dispatch path is table-driven and easy to grow, but the kernel does not yet
-pretend to expose a complete user API.
+The dispatch path is table-driven and easy to grow, but the kernel still does
+not pretend to expose a complete general user API.
 
 ## Execution model
 
@@ -83,7 +91,7 @@ The execution model now has a real shape.
 - thread objects carry execution mode, register-entry metadata, wait target, and
   last wake reason
 - the scheduler is deliberately simple round-robin state machine code
-- blocking integrates with channel receive and timer deadlines
+- blocking integrates with channel receive and timer deadlines inside the kernel
 
 The current scheduler is not sophisticated. It is designed to be inspectable and
 correct enough that later preemption, CPU-local queues, and policy layers can be
@@ -117,33 +125,36 @@ IPC is channel-based and kernel-mediated.
 - reply endpoints are explicit and must themselves refer to channel endpoints
 - per-endpoint queues are bounded to keep failure modes explicit
 
-This is the substrate for a future service graph. The kernel is not acting as an
-RPC framework, service registry, or policy engine.
+This is the substrate for a broader service graph. The kernel is not acting as
+an RPC framework, service registry, or policy engine.
 
-## Userspace bootstrap
+## Userspace bootstrap and services
 
-The current userspace path proves that the kernel can hand control outward.
+The current userspace path now proves more than bare ring-3 entry.
 
 - a dedicated user page-table root is created with shared kernel mappings
-- a minimal flat executable image is parsed and mapped
+- a built-in flat executable image is parsed and mapped
 - a bootstrap user stack is created
 - a user thread enters ring 3 and uses the syscall ABI
-- user-thread exit returns control to the kernel cleanly
+- the root manager starts a small service graph in dependency order
+- service registration and discovery happen in userspace over control channels
+- capability distribution is explicit and rights-scoped
+- one-shot bootstrap validation is supervised and restarted in userspace
 
-The demo userspace program is intentionally tiny. Its purpose is validation of
-the kernel/userspace boundary, not early service-manager policy.
+The kernel is now clearly handing system coordination outward, even though the
+broader platform-service stack is still deferred.
 
 ## Hardening and tests
 
-Phase 6 tightened several contracts that were previously only implicit.
+The current code enforces several contracts that were previously only implicit.
 
-- capability-handle exhaustion is now reported instead of silently saturating
+- capability-handle exhaustion is reported instead of silently saturating
 - IPC reply-endpoint and queue-capacity validation is enforced
 - duplicate thread attachment within a task is suppressed
 - scheduler wake-token exhaustion is explicit
 - host-side unit tests no longer depend on the freestanding kernel allocator
 
-The unit-test suite now exercises:
+The unit-test suite exercises:
 
 - capability duplication, transfer, and exhaustion rules
 - IPC rights transfer, reply-endpoint validation, and queue bounds
@@ -157,7 +168,6 @@ The unit-test suite now exercises:
 
 The kernel is intentionally not doing the following yet:
 
-- root service-manager policy
 - executable discovery or package policy
 - filesystems
 - networking stacks
@@ -167,4 +177,5 @@ The kernel is intentionally not doing the following yet:
 - compatibility runtimes
 
 Those belong in later userspace services. The kernel is now prepared to support
-them through address spaces, handles, IPC, timers, and schedulable threads.
+them through address spaces, handles, IPC, timers, schedulable threads, and a
+real root service manager boundary.

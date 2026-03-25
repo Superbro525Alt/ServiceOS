@@ -14,9 +14,9 @@ kernel
         -> shells, runtimes, applications, compatibility layers
 ```
 
-The current code still does not implement those service layers. It establishes
-the low-level boot, memory, control-flow, object, and execution substrate they
-will eventually require.
+The current code now implements the first userspace layer of that structure:
+the root service manager plus a very small bootstrap service graph. The broader
+platform and application layers remain deferred.
 
 ## What the kernel owns now
 
@@ -39,11 +39,19 @@ will eventually require.
 - a simple round-robin scheduler with timer and IPC wake integration
 - dedicated user address-space roots for user threads
 - a bootstrap userspace loader and ring-3 transition path
-- a minimal syscall ABI sufficient for the first user program
+- the minimal syscall ABI needed for the root service manager and child services
+
+## What lives in userspace now
+
+- service manifests
+- service startup ordering
+- service registration and discovery policy
+- capability distribution from root into child services
+- restart and failure handling policy
+- service lifecycle logging
 
 ## What stays out of the kernel for now
 
-- service startup policy
 - driver policy
 - filesystem and storage semantics
 - networking policy
@@ -57,43 +65,48 @@ will eventually require.
 - generic kernel code also owns objects, capabilities, IPC semantics, and
   lifetime rules
 - the x86_64 crate owns UEFI boot parsing and page-table mutation details
-- the active firmware page tables are reused during Phase 1 instead of being
-  replaced immediately
+- the active firmware page tables are reused during early bring-up instead of
+  being replaced immediately
 - the kernel reserves a future high-half layout even though only the heap is
   actively mapped there today
-- the x86_64 trap path now uses the nightly `extern "x86-interrupt"` ABI for
+- the x86_64 trap path uses the nightly `extern "x86-interrupt"` ABI for
   exceptions and IRQ handlers, while the syscall vector keeps a small assembly
   shim for general-purpose register capture
-- each task object owns its own capability space, so later userspace services
-  can be composed around explicit handle transfer instead of global namespaces
+- each task object owns its own capability space, so userspace services are
+  composed around explicit handle transfer instead of global namespaces
 - the current task object is the kernel's process-equivalent abstraction; later
-  userspace service processes will refine this with real user address spaces
-- the scheduler remains intentionally simple, but its blocking model is already
-  aligned with timer waits, channel receives, and future syscall blocking
-- the first user executable format is a kernel-owned flat image because Phase 5
-  is about launch mechanics, not about baking ELF policy into the kernel too
-  early
+  userspace service processes will refine this with richer address-space policy
+- the scheduler remains intentionally simple, but its blocking model is aligned
+  with timer waits, channel receives, and future syscall blocking
+- the current user executable format is a kernel-owned flat image because this
+  stage is about launch mechanics and service bootstrap, not storage policy
+- service manifests are currently compiled into the root manager because there
+  is not yet a filesystem or package service
+- discovery is manager-mediated rather than kernel-global so service composition
+  stays capability-oriented
 - the first user syscall ABI stays on interrupt vector `0x80`; the priority is
   a clean privilege boundary before any fast-path syscall work
 
 ## Temporary but explicit assumptions
 
-- The early x86_64 bring-up uses the firmware’s flat physical mapping with
+- the early x86_64 bring-up uses the firmware’s flat physical mapping with
   `physical_memory_offset = 0`
-- Page-table writes are bracketed by temporarily clearing `CR0.WP` because the
+- page-table writes are bracketed by temporarily clearing `CR0.WP` because the
   firmware keeps its active page-table pages read-only
-- Only UEFI `CONVENTIONAL` memory is handed to the early frame allocator
-- Legacy PIC + PIT are used as the first timer source because they are simple,
+- only UEFI `CONVENTIONAL` memory is handed to the early frame allocator
+- legacy PIC + PIT are used as the first timer source because they are simple,
   deterministic, and work well under QEMU bring-up
-- Syscalls use interrupt vector `0x80` as the initial entry point instead of a
+- syscalls use interrupt vector `0x80` as the initial entry point instead of a
   faster `SYSCALL/SYSRET` path because the kernel is still proving out the
   first user ABI and wants the most explicit control-flow path
-- The kernel object registry currently uses `Arc` ownership and a weak-indexed
+- the kernel object registry currently uses `Arc` ownership and a weak-indexed
   live-object table because it is simple, explicit, and a good fit for early
   Rust bring-up
-- Channels are the first IPC primitive because they align with the long-term
+- channels are the first IPC primitive because they align with the long-term
   service graph and keep authority transfer explicit
-- A single-core round-robin scheduler is the first execution policy because it
+- the bootstrap root still uses a temporary kernel role gate for service spawn;
+  later work should replace that with an explicit bootstrap capability object
+- a single-core round-robin scheduler is the first execution policy because it
   is easy to reason about and leaves room for later preemption and SMP work
 
-These are Phase 5 bring-up constraints, not long-term ABI commitments.
+These are early bring-up constraints, not long-term ABI commitments.

@@ -1,27 +1,32 @@
 # Future Service Readiness
 
-This kernel is now prepared to host a future service-oriented system, but it is
-not implementing those services yet. This document records the intended
-integration boundary so later phases do not pull policy back into the kernel.
+The kernel and root bootstrap layer are now prepared to host a broader
+service-oriented system, but they are not implementing those services yet. This
+document records the intended integration boundary so later phases do not pull
+policy back into the kernel.
 
 ## Root service manager
 
-The future root service manager should launch as a normal userspace task with a
-privileged initial capability set. The kernel is already prepared for that
-direction through:
+A minimal root service manager now exists and launches as the first userspace
+task. The next phases should refine it, not move its policy back into the
+kernel.
 
-- per-task capability spaces
-- schedulable user threads
-- user address-space bootstrap
-- channel IPC with handle transfer
-- timer-driven blocking and wakeups
+The current system already has:
 
-The root manager should eventually own:
+- a kernel-to-root bootstrap path
+- a built-in service manifest catalog
+- dependency-aware startup
+- capability-scoped service startup grants
+- manager-mediated service registration and discovery
+- basic restart supervision
 
-- service launch ordering
-- naming and discovery policy
-- initial capability distribution
-- restart and fault-recovery policy
+Later work should extend the root manager with:
+
+- an explicit bootstrap capability object instead of the temporary root-role
+  gate
+- persistent manifest sources and trust policy
+- richer supervision and health policy
+- fault-aware process isolation and recovery
 
 ## Filesystem services
 
@@ -116,7 +121,7 @@ Deferred work:
 
 - richer memory-mapping syscalls
 - fault delivery to user processes
-- executable-loader expansion beyond the flat bootstrap image
+- executable-loader expansion beyond the built-in flat-image catalog
 
 ## Desktop shell
 

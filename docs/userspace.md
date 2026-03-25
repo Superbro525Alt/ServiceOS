@@ -1,91 +1,105 @@
 # Userspace Bootstrap
 
-## Phase 5 scope
+## Current scope
 
-Phase 5 adds the first real kernel-to-userspace handoff.
+The userspace path now covers two layers:
 
-The kernel now:
+- the kernel can construct and enter isolated user address spaces
+- the kernel can launch a real root userspace service manager that builds the
+  first service graph
 
-- creates a dedicated user page-table root
-- maps a minimal executable image and a bootstrap stack
-- creates a `ThreadMode::User` thread owned by a service task
-- enters ring 3 on `x86_64`
-- handles a minimal syscall round trip
-- returns to the kernel when the user thread exits
+This is still intentionally early, but it is no longer just a single demo
+program.
 
-This is a bootstrap path, not a full process runtime.
+## Executable format and image catalog
 
-## Executable format
+Userspace binaries are built as freestanding `x86_64-unknown-none` programs and
+packed into a deliberately small flat image format owned by `kernel/core::user`.
 
-The first userspace image is a deliberately small flat format owned by
-`kernel/core::user`.
+The current kernel image does not discover executables from storage. Instead it
+links against a host-built userspace catalog that resolves image IDs to built-in
+flat images.
 
-The header carries:
+The flat-image header carries:
 
 - a magic value
 - an ABI version
 - an image base
 - an entry offset
-- a code byte count
+- an image byte count
 - a user stack top
 
-Why a flat image instead of ELF now:
+Why this is still flat instead of ELF:
 
-- it keeps Phase 5 focused on privilege transition and address-space ownership
+- it keeps this stage focused on privilege transition, address-space ownership,
+  and service bootstrap
 - it avoids dragging relocation, segment, and filesystem policy into the kernel
-- it gives later phases a replaceable loader boundary instead of a one-off blob
+- it gives later phases a replaceable loader boundary instead of baking storage
+  policy into the kernel too early
 
 ## Address-space model
 
-The Phase 5 user address space is built by:
+The current user address space is built by:
 
 - allocating a new top-level page table
 - copying the kernel-visible mappings needed for kernel entry and return
-- mapping one user executable region
+- mapping one flat user image region
 - mapping one bootstrap user stack region
 
-The current loader does not yet expose a general VM API to userspace. It is a
-kernel-owned construction path for the first program only.
+The loader still maps the flat image as one contiguous user region. Fine-grained
+segment permissions and user-visible VM policy remain deferred.
 
-## Initial syscall ABI
+## Syscall ABI
 
-The first user program uses interrupt vector `0x80`.
+Userspace currently enters the kernel through interrupt vector `0x80`.
 
 Current syscall numbers:
 
 - `0`: return the kernel syscall ABI version
 - `1`: return the current monotonic tick count
 - `2`: terminate the current thread with a supplied status code
+- `3`: cooperatively yield the current thread
+- `4`: write a debug log line through the kernel serial path
+- `5`: create a channel pair
+- `6`: send a channel message
+- `7`: receive a channel message
+- `8`: duplicate a handle with rights reduction
+- `9`: close a handle
+- `10`: spawn a built-in service image from the bootstrap root
+- `11`: query task exit status
 
-The ABI is intentionally small:
+This is enough for a real root service manager without pretending the kernel
+already exposes a broad general-purpose process API.
 
-- no handle table syscalls yet
-- no user buffer marshalling yet
-- no memory mapping syscalls yet
-- no IPC syscalls exposed to ring 3 yet
+## Root manager bootstrap
 
-That keeps the kernel/userspace contract narrow while the first launch path is
-still stabilizing.
+The first userspace task is now the root service manager. The current bootstrap
+contract is:
 
-## What the demo proves
+- the kernel launches the built-in root-manager image
+- the root manager runs as the bootstrap-root task
+- it can spawn child services through the current bootstrap syscall
+- child services receive bootstrap control channels and explicit startup grants
+- registration and discovery remain manager-owned userspace policy
 
-The demo userspace image proves that the kernel can:
+The first service graph consists of:
 
-- transfer from firmware-driven kernel bring-up into a user-controlled
-  instruction stream
-- execute with user CS/SS selectors and a user stack
-- trap back into the kernel through the syscall path
-- resume kernel execution after the user thread exits
+- `log-service`
+- `echo-service`
+- `probe-service`
 
-This is the minimum needed before a real root service manager becomes credible.
+That graph proves dependency ordering, explicit capability distribution,
+registry-mediated discovery, and restart supervision.
 
 ## Still deferred
 
-Phase 5 does not yet include:
+The current userspace layer still does not include:
 
 - ELF loading
-- user-visible handle, IPC, or VM syscalls
 - user fault delivery back to the owning task
-- process spawning policy
-- executable discovery or filesystem-backed loading
-- the real root service manager
+- a general executable loader backed by storage services
+- a richer VM syscall surface
+- userspace-visible scheduler or signal policy
+- kernel-mediated blocking receive completion for userspace threads
+- package-backed manifest loading
+- the broader platform-service graph

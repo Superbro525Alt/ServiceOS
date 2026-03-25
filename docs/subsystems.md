@@ -23,8 +23,9 @@ Now owns:
 
 - task and thread object state
 - task roles and future-ready address-space attachment points
-- execution-state and wait-target bookkeeping for later scheduling
+- execution-state and wait-target bookkeeping
 - per-task capability-space ownership
+- the scheduler and thread run/block transitions
 
 It still does not own scheduling policy or user-mode execution.
 
@@ -36,6 +37,7 @@ Now owns:
 - bounded message shape rules
 - capability-carrying messages
 - send and receive semantics independent of service policy
+- wake notification into the scheduler when a blocked receiver can run again
 
 It still does not own RPC policy, broker policy, or shared-memory protocol
 semantics.
@@ -71,7 +73,7 @@ Now owns:
 - explicit return/error encoding
 - the long-term boundary between trap entry and object/capability policy
 
-It still does not own process ABI policy, handle tables, or user-buffer
+It still does not own full process ABI policy, handle tables, or user-buffer
 marshalling.
 
 ## `interrupts`
@@ -93,6 +95,6 @@ Now owns:
 - monotonic tick accounting
 - timer-source description
 - deadline registration
-- ready-to-wake token queues for later schedulers and IPC waits
+- ready-to-wake token queues consumed by the scheduler
 
-It still does not own a scheduler, CPU accounting, or wall-clock policy.
+It still does not own CPU accounting, preemption policy, or wall-clock policy.

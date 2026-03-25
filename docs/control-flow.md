@@ -1,6 +1,6 @@
 # Control Flow Foundation
 
-## Implemented in Phase 2
+## Implemented by Phase 4
 
 - a real x86_64 IDT
 - a kernel-owned GDT/TSS pair with a dedicated double-fault IST stack
@@ -9,6 +9,7 @@
 - a generic interrupt/fault classification layer in `kernel/core`
 - a monotonic tick source with deadline wakeup bookkeeping
 - a dedicated software-interrupt syscall vector at `0x80`
+- a scheduler that consumes timer wakeups and IPC-readiness events
 
 ## Trap and interrupt flow
 
@@ -20,16 +21,16 @@ CPU event
         -> timer tick accounting, fatal fault reporting, or syscall dispatch
 ```
 
-Phase 2 keeps the boundary explicit:
+The boundary remains explicit:
 
 - `kernel/arch/x86_64` owns descriptor tables, PIC/PIT programming, IRQ
   acknowledgement, and low-level entry mechanics
-- `kernel/core` owns trap accounting, fault disposition, syscall dispatch, and
-  timer queue state
+- `kernel/core` owns trap accounting, fault disposition, syscall dispatch,
+  timer queue state, and deferred scheduler wake handling
 
 ## Fault model
 
-Kernel faults are still fatal in Phase 2. The important addition is that the
+Kernel faults are still fatal. The important addition is that the
 classification path now distinguishes between kernel-origin and user-origin
 faults so later phases can deliver user faults back to the owning task instead
 of halting the machine.
@@ -45,14 +46,14 @@ Page fault and general protection fault handlers now log:
 
 The initial syscall vector is `0x80`.
 
-Phase 2 intentionally keeps the syscall ABI modest:
+The syscall ABI remains intentionally modest:
 
 - the generic kernel owns syscall number typing and dispatch tables
 - the arch layer owns entry mechanics and register capture
 - no handle ABI, user-buffer ABI, or service policy is baked in yet
 
-This keeps the syscall layer extensible while userspace and capability spaces
-are still under construction.
+This keeps the syscall layer extensible while userspace threads and handle
+syscalls are still under construction.
 
 ## Timer and wakeup model
 
@@ -64,16 +65,16 @@ The generic time layer supports:
 - one-shot and periodic deadline descriptions
 - a bounded ready-to-wake queue keyed by opaque wake tokens
 
-That queue is intentionally scheduler-agnostic. Later task and IPC work can
-bind those wake tokens to threads, notifications, or wait channels without
-rewriting the timer subsystem.
+That queue is still explicit and mechanical, but it is no longer unused. Phase
+4 binds wake tokens to blocked threads in the scheduler and routes channel
+readiness into the same scheduling path.
 
 ## Deferred work
 
-Phase 2 does not yet include:
+The control-flow path still does not include:
 
 - LAPIC or HPET timer sources
 - SMP interrupt routing
 - fast `SYSCALL/SYSRET`
 - user/kernel privilege transitions
-- scheduler integration beyond wake-token readiness
+- full preemption or CPU-local run queues

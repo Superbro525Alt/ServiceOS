@@ -25,18 +25,26 @@
 - channel IPC with message payloads and capability transfer
 - object lifetime cleanup through weak registry tracking
 
-## Phase 4
+## Completed in Phase 4
+
+- bootstrap thread bring-up
+- schedulable service threads
+- round-robin scheduler foundation
+- timer wakeup integration
+- IPC receive blocking and wake integration
+- task objects established as the current process-equivalent container
+
+## Phase 5
 
 - reclaim boot-services memory safely
 - install kernel-owned page tables
 - build direct physical-memory mapping
 - flesh out address-space creation APIs
-- connect blocking IPC waits to the eventual scheduler
+- first real user address-space construction
 
-## Phase 5
+## Phase 6
 
-- runnable thread bring-up
-- first user address-space construction
+- first user thread launch path
 - syscall ABI expansion around handles and objects
 - root userspace service-manager handoff preparation
 

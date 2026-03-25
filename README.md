@@ -1,6 +1,6 @@
 # ServiceOS Kernel Foundation
 
-The repository now covers Phase 3 of the kernel bring-up:
+The repository now covers Phase 4 of the kernel bring-up:
 
 - direct UEFI boot into Rust on `x86_64`
 - real UEFI memory-map capture
@@ -14,6 +14,9 @@ The repository now covers Phase 3 of the kernel bring-up:
 - unified kernel object registry
 - per-task capability spaces and handle rights
 - channel-based IPC with capability transfer
+- a schedulable thread model
+- a round-robin scheduler foundation
+- timer and IPC wakeups routed into task state transitions
 
 The system remains intentionally early. It does not attempt scheduling,
 userspace launch, IPC policy, drivers, filesystems, networking, audio, or GUI.
@@ -63,7 +66,7 @@ cargo xtask build --release
 
 ## Current state
 
-Phase 3 boots cleanly under QEMU, exits UEFI boot services, captures the memory
+Phase 4 boots cleanly under QEMU, exits UEFI boot services, captures the memory
 map, initializes the memory substrate, installs an x86_64 GDT/TSS/IDT, enables
 PIC/PIT-driven timer interrupts, and then brings up a kernel object model with:
 
@@ -72,15 +75,19 @@ PIC/PIT-driven timer interrupts, and then brings up a kernel object model with:
 - channel endpoints as first-class kernel objects
 - capability duplication and transfer with rights reduction
 - explicit handle close and weak-registry garbage collection
+- a bootstrap kernel thread plus service threads registered with the scheduler
+- channel-receive blocking and timer blocking feeding back into scheduling
 
-The current scheduler and userspace model still do not exist. The timer and
-wakeup code remains scheduler-agnostic groundwork, and the syscall dispatcher
-on vector `0x80` is still an early kernel ABI boundary rather than a complete
-user ABI.
+Userspace service launch still does not exist, but the kernel now has the basic
+execution model it needs for it: process-equivalent task objects, schedulable
+threads, explicit blocking states, and wakeup paths driven by IPC and timers.
+The syscall dispatcher on vector `0x80` remains an early ABI boundary rather
+than a complete user ABI.
 
 See [docs/architecture.md](/home/paulh/os-dev/docs/architecture.md),
 [docs/boot-flow.md](/home/paulh/os-dev/docs/boot-flow.md),
 [docs/control-flow.md](/home/paulh/os-dev/docs/control-flow.md),
+[docs/execution.md](/home/paulh/os-dev/docs/execution.md),
 [docs/memory.md](/home/paulh/os-dev/docs/memory.md),
 [docs/objects.md](/home/paulh/os-dev/docs/objects.md),
 [docs/subsystems.md](/home/paulh/os-dev/docs/subsystems.md), and

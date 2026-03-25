@@ -2,7 +2,7 @@
 
 ## Default path
 
-Phase 3 uses:
+Phase 4 uses:
 
 - the `uefi` crate in the kernel image crate for firmware entry
 - the host-side `xtask` tool to stage an EFI system partition
@@ -25,9 +25,10 @@ QEMU
           -> x86_64 GDT/TSS/IDT installation
           -> PIC remap and PIT programming
           -> generic object and IPC initialization
-          -> phase-3 object/handle/IPC self-check
+          -> bootstrap thread creation and scheduler initialization
+          -> phase-4 execution-model self-check
           -> enable interrupts
-          -> wait for timer-driven wakeup
+          -> wait for scheduler-driven timer wakeup
           -> halt loop
 ```
 
@@ -43,8 +44,10 @@ QEMU
 - structured exception/fault reporting in Rust
 - bootstrap root-task creation with an initial self capability
 - a registry-backed object model initialized before interrupts are enabled
-- a boot-time self-check that creates channel endpoints, transfers a
-  rights-reduced memory-object handle, and confirms cleanup semantics
+- bootstrap thread registration before interrupt enable
+- a boot-time self-check that blocks a service thread on channel receive,
+  wakes it through IPC, blocks it again on a timer, and resumes it after the
+  timer interrupt path delivers a wake event
 
 ## What is intentionally deferred
 

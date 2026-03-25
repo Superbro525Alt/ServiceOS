@@ -21,6 +21,12 @@ Each live object receives an `ObjectId` and an `ObjectKind`. The registry keeps
 weak references so it can observe the live set without becoming the owner of
 every object forever.
 
+The task object is currently the process-equivalent abstraction. It owns:
+
+- the future address-space binding
+- the capability space
+- the set of member threads
+
 ## Capability model
 
 Authority is carried by handles, not ambient global access.
@@ -92,9 +98,8 @@ verifying that the registry contracts back to the bootstrap root task.
 
 ## Deferred to later phases
 
-Phase 3 does not yet include:
+What still remains after Phase 4:
 
-- blocking receive queues tied to a scheduler
 - userspace-visible handle syscalls
 - memory-object mapping into user address spaces
 - shared-memory IPC policy

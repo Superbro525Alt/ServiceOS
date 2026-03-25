@@ -14,9 +14,9 @@ kernel
         -> shells, runtimes, applications, compatibility layers
 ```
 
-Phase 1 still does not implement those service layers. It only establishes the
-low-level boot, memory, control-flow, and object substrate they will eventually
-require.
+The current code still does not implement those service layers. It establishes
+the low-level boot, memory, control-flow, object, and execution substrate they
+will eventually require.
 
 ## What the kernel owns now
 
@@ -34,6 +34,9 @@ require.
 - per-task capability spaces as the authority boundary
 - channel IPC and capability transfer primitives
 - object lifetime tracking through handles plus strong object references
+- process-equivalent task objects with address-space attachment points
+- a bootstrap kernel thread plus schedulable service threads
+- a simple round-robin scheduler with timer and IPC wake integration
 
 ## What stays out of the kernel for now
 
@@ -60,6 +63,10 @@ require.
   shim for general-purpose register capture
 - each task object owns its own capability space, so later userspace services
   can be composed around explicit handle transfer instead of global namespaces
+- the current task object is the kernel's process-equivalent abstraction; later
+  userspace service processes will refine this with real user address spaces
+- the scheduler remains intentionally simple, but its blocking model is already
+  aligned with timer waits, channel receives, and future syscall blocking
 
 ## Temporary but explicit assumptions
 
@@ -78,5 +85,7 @@ require.
   Rust bring-up
 - Channels are the first IPC primitive because they align with the long-term
   service graph and keep authority transfer explicit
+- A single-core round-robin scheduler is the first execution policy because it
+  is easy to reason about and leaves room for later preemption and SMP work
 
-These are Phase 3 bring-up constraints, not long-term ABI commitments.
+These are Phase 4 bring-up constraints, not long-term ABI commitments.

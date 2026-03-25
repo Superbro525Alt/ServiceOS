@@ -38,7 +38,7 @@ fn main() -> u64 {
 fn write_linef(session: rt::Handle, args: core::fmt::Arguments<'_>) -> rt::Result<()> {
     let mut buffer = FixedLogBuffer::<160>::new();
     let _ = buffer.write_fmt(args);
+    let _ = buffer.write_str("\r\n");
     let text = core::str::from_utf8(buffer.as_bytes()).map_err(|_| rt::Error::InvalidArgument)?;
-    rt::console_session_write(session, text)?;
-    rt::console_session_write(session, "\r\n")
+    rt::console_session_write(session, text)
 }

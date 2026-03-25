@@ -304,9 +304,9 @@ fn emit_shell_log(
 fn write_session_linef(session: rt::Handle, args: core::fmt::Arguments<'_>) -> rt::Result<()> {
     let mut buffer = FixedLogBuffer::<256>::new();
     let _ = buffer.write_fmt(args);
+    let _ = buffer.write_str("\r\n");
     let text = core::str::from_utf8(buffer.as_bytes()).map_err(|_| rt::Error::InvalidArgument)?;
-    rt::console_session_write(session, text)?;
-    rt::console_session_write(session, "\r\n")
+    rt::console_session_write(session, text)
 }
 
 fn parse_service_name(name: &str) -> Option<ServiceId> {

@@ -9,6 +9,7 @@ use rt::{
 
 const MAX_SESSIONS: usize = 2;
 const MAX_LINE_BYTES: usize = 128;
+const MAX_DISPLAY_BYTES: usize = 192;
 
 #[derive(Clone, Copy)]
 struct Session {
@@ -16,6 +17,8 @@ struct Session {
     pending_reply: rt::Handle,
     line: [u8; MAX_LINE_BYTES],
     line_len: usize,
+    display: [u8; MAX_DISPLAY_BYTES],
+    display_len: usize,
     occupied: bool,
 }
 
@@ -26,6 +29,8 @@ impl Session {
             pending_reply: rt::INVALID_HANDLE,
             line: [0; MAX_LINE_BYTES],
             line_len: 0,
+            display: [0; MAX_DISPLAY_BYTES],
+            display_len: 0,
             occupied: false,
         }
     }
@@ -118,7 +123,8 @@ fn handle_public_message(
             let event = event_from_word(message.words[3]);
             let _ = match event {
                 LogEvent::ServiceStarted | LogEvent::ServiceReady | LogEvent::ServiceRestarting => {
-                    rt::write_logf(
+                    write_structured_line(
+                        sessions,
                         "console",
                         format_args!(
                             "seq={} level={} source={} domain={} event={} service={} detail={}",
@@ -132,7 +138,8 @@ fn handle_public_message(
                         ),
                     )
                 }
-                LogEvent::ServiceFailed => rt::write_logf(
+                LogEvent::ServiceFailed => write_structured_line(
+                    sessions,
                     "console",
                     format_args!(
                         "seq={} level={} source={} domain={} event={} service={} exit={}",
@@ -145,7 +152,8 @@ fn handle_public_message(
                         message.words[5],
                     ),
                 ),
-                LogEvent::LookupGranted => rt::write_logf(
+                LogEvent::LookupGranted => write_structured_line(
+                    sessions,
                     "console",
                     format_args!(
                         "seq={} level={} source={} domain={} event={} requester={} target={}",
@@ -158,7 +166,8 @@ fn handle_public_message(
                         service_name(service_id_from_word(message.words[5])),
                     ),
                 ),
-                LogEvent::ConfigLoaded => rt::write_logf(
+                LogEvent::ConfigLoaded => write_structured_line(
+                    sessions,
                     "console",
                     format_args!(
                         "seq={} level={} source={} domain={} event={} minimum-severity={}",
@@ -170,7 +179,8 @@ fn handle_public_message(
                         message.words[4],
                     ),
                 ),
-                LogEvent::StatusStarted => rt::write_logf(
+                LogEvent::StatusStarted => write_structured_line(
+                    sessions,
                     "console",
                     format_args!(
                         "seq={} level={} source={} domain={} event={} heartbeat-ticks={} console-period={}",
@@ -183,7 +193,8 @@ fn handle_public_message(
                         message.words[5],
                     ),
                 ),
-                LogEvent::StatusHeartbeat | LogEvent::ConsoleWrite => rt::write_logf(
+                LogEvent::StatusHeartbeat | LogEvent::ConsoleWrite => write_structured_line(
+                    sessions,
                     "console",
                     format_args!(
                         "seq={} level={} source={} domain={} event={} count={} tick={}",
@@ -196,7 +207,8 @@ fn handle_public_message(
                         message.words[5],
                     ),
                 ),
-                LogEvent::ConfigRead => rt::write_logf(
+                LogEvent::ConfigRead => write_structured_line(
+                    sessions,
                     "console",
                     format_args!(
                         "seq={} level={} source={} domain={} event={} key={} value={}",
@@ -209,7 +221,8 @@ fn handle_public_message(
                         message.words[5],
                     ),
                 ),
-                _ => rt::write_logf(
+                _ => write_structured_line(
+                    sessions,
                     "console",
                     format_args!(
                         "seq={} level={} source={} domain={} event={} detail0={} detail1={}",
@@ -236,6 +249,7 @@ fn handle_public_message(
                 session.endpoint = pair.first;
                 session.pending_reply = rt::INVALID_HANDLE;
                 session.line_len = 0;
+                session.display_len = 0;
                 session.occupied = true;
 
                 reply.handle_count = 1;
@@ -266,7 +280,7 @@ fn handle_session_message(session: &mut Session, message: &RawMessage) -> rt::Re
             let mut buffer = [0u8; rt::IPC_MAX_WORDS * 8];
             let payload_words = message.word_count as usize;
             unpack_bytes(&message.words[1..payload_words], text_len, &mut buffer)?;
-            let _ = rt::debug_console_write(&buffer[..text_len]);
+            write_session_bytes(session, &buffer[..text_len])?;
         }
         x if x == ConsoleTag::SessionReadLineRequest as u32 => {
             if message.handle_count < 1 {
@@ -303,11 +317,13 @@ fn handle_input_byte(sessions: &mut [Session; MAX_SESSIONS], byte: u8) -> rt::Re
             let _ = rt::handle_close(session.pending_reply);
             session.pending_reply = rt::INVALID_HANDLE;
             session.line_len = 0;
+            session.display_len = 0;
         }
         0x08 | 0x7f => {
             if session.line_len > 0 {
                 session.line_len -= 1;
                 let _ = rt::debug_console_write(b"\x08 \x08");
+                pop_display_byte(session);
             }
         }
         0x20..=0x7e => {
@@ -315,6 +331,7 @@ fn handle_input_byte(sessions: &mut [Session; MAX_SESSIONS], byte: u8) -> rt::Re
                 session.line[session.line_len] = byte;
                 session.line_len += 1;
                 let _ = rt::debug_console_write(&[byte]);
+                push_display_byte(session, byte);
             }
         }
         _ => {}
@@ -353,6 +370,53 @@ fn unpack_bytes(words: &[u64], len: usize, destination: &mut [u8]) -> rt::Result
         copied += chunk;
     }
     Ok(())
+}
+
+fn write_session_bytes(session: &mut Session, bytes: &[u8]) -> rt::Result<()> {
+    rt::debug_console_write(bytes)?;
+    for byte in bytes.iter().copied() {
+        match byte {
+            b'\r' | b'\n' => session.display_len = 0,
+            0x08 | 0x7f => pop_display_byte(session),
+            _ => push_display_byte(session, byte),
+        }
+    }
+    Ok(())
+}
+
+fn write_structured_line(
+    sessions: &[Session; MAX_SESSIONS],
+    domain: &str,
+    args: core::fmt::Arguments<'_>,
+) -> rt::Result<()> {
+    if active_display(sessions).is_some() {
+        let _ = rt::debug_console_write(b"\r\n");
+    }
+    rt::write_logf(domain, args)?;
+    if let Some(display) = active_display(sessions) {
+        let _ = rt::debug_console_write(display);
+    }
+    Ok(())
+}
+
+fn active_display(sessions: &[Session; MAX_SESSIONS]) -> Option<&[u8]> {
+    sessions
+        .iter()
+        .find(|session| session.occupied && session.display_len > 0)
+        .map(|session| &session.display[..session.display_len])
+}
+
+fn push_display_byte(session: &mut Session, byte: u8) {
+    if matches!(byte, 0x20..=0x7e) && session.display_len < session.display.len() {
+        session.display[session.display_len] = byte;
+        session.display_len += 1;
+    }
+}
+
+fn pop_display_byte(session: &mut Session) {
+    if session.display_len > 0 {
+        session.display_len -= 1;
+    }
 }
 
 fn release_session(session: &mut Session) {

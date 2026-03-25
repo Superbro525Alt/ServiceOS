@@ -3,3 +3,5 @@ xtask = "run --package xtask --"
 kernel-build = "xtask build"
 kernel-run = "xtask qemu"
 
+[target.x86_64-unknown-uefi]
+rustflags = ["-C", "no-redzone=yes"]

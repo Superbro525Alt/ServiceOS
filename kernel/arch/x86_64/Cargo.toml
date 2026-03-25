@@ -11,5 +11,6 @@ path = "src/lib.rs"
 
 [dependencies]
 serviceos-kernel-core = { path = "../../core" }
+spin = "0.9"
 uefi = { version = "0.33", default-features = false }
-x86_64 = { version = "0.15", default-features = false, features = ["instructions"] }
+x86_64 = { version = "0.15", default-features = false, features = ["instructions", "abi_x86_interrupt"] }

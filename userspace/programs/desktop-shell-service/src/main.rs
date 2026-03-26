@@ -12,7 +12,7 @@ use rt::{
 
 const SESSION_ID: u32 = 1;
 const APP_COUNT: usize = 3;
-const STATUS_REFRESH_TICKS: u64 = 25;
+const STATUS_REFRESH_TICKS: u64 = 100;
 const TOPBAR_HEIGHT: u32 = 42;
 const LAUNCHER_WIDTH: u32 = 250;
 const PANEL_MARGIN: u32 = 20;
@@ -60,7 +60,17 @@ struct DesktopState {
     chrome: Chrome,
     apps: [AppSlot; APP_COUNT],
     focused_app: Option<DesktopAppId>,
-    last_status_refresh: u64,
+    next_status_refresh: u64,
+    last_status_snapshot: Option<DesktopStatusSnapshot>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct DesktopStatusSnapshot {
+    running_apps: u32,
+    focused_app: Option<DesktopAppId>,
+    heartbeat_count: u64,
+    heartbeat_tick: u64,
+    ipv4_address: u32,
 }
 
 rt::entry!(main);
@@ -125,7 +135,8 @@ fn main() -> u64 {
             AppSlot::new(DesktopAppId::Monitor, ServiceImageId::MonitorApp),
         ],
         focused_app: None,
-        last_status_refresh: 0,
+        next_status_refresh: 0,
+        last_status_snapshot: None,
     };
 
     if render_desktop(&mut state).is_err() {
@@ -167,11 +178,11 @@ fn main() -> u64 {
             Ok(now) => now,
             Err(_) => return 0xfe10,
         };
-        if now.saturating_sub(state.last_status_refresh) >= STATUS_REFRESH_TICKS {
-            if render_desktop(&mut state).is_err() {
+        if now >= state.next_status_refresh {
+            if refresh_desktop_status(&mut state).is_err() {
                 return 0xfe11;
             }
-            state.last_status_refresh = now;
+            state.next_status_refresh = now.saturating_add(STATUS_REFRESH_TICKS);
         }
 
         if rt::yield_current().is_err() {
@@ -455,24 +466,24 @@ fn refresh_apps(state: &mut DesktopState) -> rt::Result<()> {
 }
 
 fn render_desktop(state: &mut DesktopState) -> rt::Result<()> {
+    let status_snapshot = sample_desktop_status(state);
     rt::surface_set_fill(state.chrome.desktop_handle, ui::BG_DESKTOP)?;
     rt::surface_clear_scene(state.chrome.desktop_handle)?;
 
-    let running_count = running_app_count(&state.apps);
     let mut running_buf = FixedLogBuffer::<32>::new();
-    let _ = write!(&mut running_buf, "RUNNING {}", running_count);
+    let _ = write!(&mut running_buf, "RUNNING {}", status_snapshot.running_apps);
     let running_text = str::from_utf8(running_buf.as_bytes()).unwrap_or("RUNNING ?");
 
     let mut focus_buf = FixedLogBuffer::<32>::new();
     let _ = write!(
         &mut focus_buf,
         "FOCUS {}",
-        state.focused_app.map(app_title).unwrap_or("NONE")
+        status_snapshot.focused_app.map(app_title).unwrap_or("NONE")
     );
     let focus_text = str::from_utf8(focus_buf.as_bytes()).unwrap_or("FOCUS ?");
 
     let mut network_buf = FixedLogBuffer::<48>::new();
-    write_network_status(&mut network_buf, state.network_handle);
+    write_network_status(&mut network_buf, status_snapshot.ipv4_address);
     let network_text = str::from_utf8(network_buf.as_bytes()).unwrap_or("NET OFFLINE");
     ui::render_panel(
         state.chrome.topbar_handle,
@@ -501,14 +512,12 @@ fn render_desktop(state: &mut DesktopState) -> rt::Result<()> {
         &app_lines,
     )?;
 
-    let (heartbeat_count, heartbeat_tick) =
-        rt::status_snapshot(state.system_status_handle).unwrap_or((0, 0));
     let mut hb_buf = FixedLogBuffer::<32>::new();
-    let _ = write!(&mut hb_buf, "HEARTBEAT {}", heartbeat_count);
+    let _ = write!(&mut hb_buf, "HEARTBEAT {}", status_snapshot.heartbeat_count);
     let heartbeat_text = str::from_utf8(hb_buf.as_bytes()).unwrap_or("HEARTBEAT ?");
 
     let mut tick_buf = FixedLogBuffer::<32>::new();
-    let _ = write!(&mut tick_buf, "LAST TICK {}", heartbeat_tick);
+    let _ = write!(&mut tick_buf, "LAST TICK {}", status_snapshot.heartbeat_tick);
     let tick_text = str::from_utf8(tick_buf.as_bytes()).unwrap_or("LAST TICK ?");
 
     ui::render_status_panel(
@@ -524,21 +533,47 @@ fn render_desktop(state: &mut DesktopState) -> rt::Result<()> {
         ],
     )?;
 
+    state.last_status_snapshot = Some(status_snapshot);
     Ok(())
 }
 
-fn write_network_status(buffer: &mut FixedLogBuffer<48>, network_handle: rt::Handle) {
-    let Ok(Some(info)) = rt::network_interface_status(network_handle, 0) else {
+fn refresh_desktop_status(state: &mut DesktopState) -> rt::Result<()> {
+    let snapshot = sample_desktop_status(state);
+    if state.last_status_snapshot == Some(snapshot) {
+        return Ok(());
+    }
+    render_desktop(state)
+}
+
+fn sample_desktop_status(state: &DesktopState) -> DesktopStatusSnapshot {
+    let (heartbeat_count, heartbeat_tick) =
+        rt::status_snapshot(state.system_status_handle).unwrap_or((0, 0));
+    let ipv4_address = rt::network_interface_status(state.network_handle, 0)
+        .ok()
+        .flatten()
+        .map(|info| info.address)
+        .unwrap_or(0);
+    DesktopStatusSnapshot {
+        running_apps: running_app_count(&state.apps) as u32,
+        focused_app: state.focused_app,
+        heartbeat_count,
+        heartbeat_tick,
+        ipv4_address,
+    }
+}
+
+fn write_network_status(buffer: &mut FixedLogBuffer<48>, ipv4_address: u32) {
+    if ipv4_address == 0 {
         let _ = write!(buffer, "NET OFFLINE");
         return;
-    };
+    }
     let _ = write!(
         buffer,
         "NET {}.{}.{}.{}",
-        (info.address >> 24) & 0xff,
-        (info.address >> 16) & 0xff,
-        (info.address >> 8) & 0xff,
-        info.address & 0xff,
+        (ipv4_address >> 24) & 0xff,
+        (ipv4_address >> 16) & 0xff,
+        (ipv4_address >> 8) & 0xff,
+        ipv4_address & 0xff,
     );
 }
 

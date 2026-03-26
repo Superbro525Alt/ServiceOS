@@ -7,7 +7,15 @@ use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
 use rt::{ControlTag, FixedLogBuffer, LifecycleEvent, LogDomain, LogEvent, LogSeverity, RawMessage, ServiceId};
 
-const REFRESH_TICKS: u64 = 20;
+const REFRESH_TICKS: u64 = 100;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct MonitorSnapshot {
+    heartbeat_count: u64,
+    heartbeat_tick: u64,
+    ipv4_address: u32,
+    link_up: bool,
+}
 
 rt::entry!(main);
 
@@ -39,6 +47,7 @@ fn main() -> u64 {
     );
 
     let mut next_refresh = 0u64;
+    let mut last_snapshot: Option<MonitorSnapshot> = None;
     loop {
         match poll_lifecycle(bootstrap) {
             Ok(true) => return 0,
@@ -48,7 +57,11 @@ fn main() -> u64 {
 
         let now = rt::monotonic_now().unwrap_or(0);
         if now >= next_refresh {
-            let _ = render(surface_handle, width, height, status_handle, network_handle, now);
+            let snapshot = sample_snapshot(status_handle, network_handle);
+            if last_snapshot != Some(snapshot) {
+                let _ = render(surface_handle, width, height, snapshot);
+                last_snapshot = Some(snapshot);
+            }
             next_refresh = now.saturating_add(REFRESH_TICKS);
         }
 
@@ -62,31 +75,30 @@ fn render(
     surface_handle: rt::Handle,
     width: u32,
     height: u32,
-    status_handle: rt::Handle,
-    network_handle: rt::Handle,
-    now: u64,
+    snapshot: MonitorSnapshot,
 ) -> rt::Result<()> {
-    let (heartbeat_count, heartbeat_tick) = rt::status_snapshot(status_handle).unwrap_or((0, 0));
-    let iface = rt::network_interface_status(network_handle, 0).unwrap_or(None);
-
     let mut line0 = FixedLogBuffer::<48>::new();
-    let _ = write!(&mut line0, "TICK {}", now);
+    let _ = write!(&mut line0, "HEARTBEAT {}", snapshot.heartbeat_count);
     let mut line1 = FixedLogBuffer::<48>::new();
-    let _ = write!(&mut line1, "HEARTBEAT {}", heartbeat_count);
+    let _ = write!(&mut line1, "LAST {}", snapshot.heartbeat_tick);
     let mut line2 = FixedLogBuffer::<48>::new();
-    let _ = write!(&mut line2, "LAST {}", heartbeat_tick);
-    let mut line3 = FixedLogBuffer::<48>::new();
-    if let Some(info) = iface {
+    if snapshot.ipv4_address != 0 {
         let _ = write!(
-            &mut line3,
+            &mut line2,
             "ADDR {}.{}.{}.{}",
-            (info.address >> 24) & 0xff,
-            (info.address >> 16) & 0xff,
-            (info.address >> 8) & 0xff,
-            info.address & 0xff,
+            (snapshot.ipv4_address >> 24) & 0xff,
+            (snapshot.ipv4_address >> 16) & 0xff,
+            (snapshot.ipv4_address >> 8) & 0xff,
+            snapshot.ipv4_address & 0xff,
         );
     } else {
-        let _ = write!(&mut line3, "ADDR UNAVAILABLE");
+        let _ = write!(&mut line2, "ADDR UNAVAILABLE");
+    }
+    let mut line3 = FixedLogBuffer::<48>::new();
+    if snapshot.link_up {
+        let _ = write!(&mut line3, "LINK UP");
+    } else {
+        let _ = write!(&mut line3, "LINK DOWN");
     }
 
     ui::render_window(
@@ -103,6 +115,21 @@ fn render(
             str::from_utf8(line3.as_bytes()).unwrap_or("ADDR ?"),
         ],
     )
+}
+
+fn sample_snapshot(status_handle: rt::Handle, network_handle: rt::Handle) -> MonitorSnapshot {
+    let (heartbeat_count, heartbeat_tick) = rt::status_snapshot(status_handle).unwrap_or((0, 0));
+    let interface = rt::network_interface_status(network_handle, 0)
+        .ok()
+        .flatten();
+    MonitorSnapshot {
+        heartbeat_count,
+        heartbeat_tick,
+        ipv4_address: interface.map(|info| info.address).unwrap_or(0),
+        link_up: interface
+            .map(|info| info.link_state == rt::PacketInterfaceLinkState::Up)
+            .unwrap_or(false),
+    }
 }
 
 fn poll_lifecycle(bootstrap: rt::Handle) -> rt::Result<bool> {

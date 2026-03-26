@@ -483,7 +483,8 @@ pub fn console_session_open(console_handle: Handle) -> Result<Handle> {
 
 pub fn console_session_write(session_handle: Handle, text: &str) -> Result<()> {
     let text_bytes = text.as_bytes();
-    if text_bytes.len() > IPC_MAX_WORDS * 8 {
+    let max_inline_bytes = (IPC_MAX_WORDS.saturating_sub(1)) * 8;
+    if text_bytes.len() > max_inline_bytes {
         return Err(Error::BufferTooSmall);
     }
     let mut message = RawMessage::empty(ConsoleTag::SessionWriteText as u32);

@@ -3,6 +3,7 @@
 ## Kernel foundation completed
 
 - firmware handoff, memory discovery, paging, and kernel heap bootstrap
+- reusable kernel heap allocator with free-list reclamation
 - interrupt, exception, syscall, and timer foundations
 - kernel object model, capabilities, and IPC
 - scheduler, task model, and userspace entry

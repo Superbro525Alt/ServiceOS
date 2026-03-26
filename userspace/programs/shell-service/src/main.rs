@@ -15,7 +15,7 @@ const MAX_STORAGE_PATH: usize = 96;
 const MAX_CAT_CHUNK: usize = 96;
 const MAX_VERSION_BYTES: usize = 24;
 const MAX_DESKTOP_APPS: usize = 8;
-const MAX_SESSION_WRITE_BYTES: usize = rt::IPC_MAX_WORDS * 8;
+const MAX_SESSION_WRITE_BYTES: usize = (rt::IPC_MAX_WORDS - 1) * 8;
 const HELP_TEXT: &str = "\
 help: show this command list\r\n\
 services: list managed services\r\n\

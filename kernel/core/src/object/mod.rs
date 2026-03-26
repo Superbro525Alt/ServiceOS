@@ -7,6 +7,7 @@ use spin::{Mutex, Once};
 use crate::{
     capability::CapabilityRights,
     ipc::ChannelEndpointObject,
+    network::{self, PacketBackend, PacketInterfaceObject},
     task::{
         TaskDescriptor, TaskId, TaskObject, TaskRole, ThreadDescriptor, ThreadId, ThreadObject,
     },
@@ -25,6 +26,7 @@ pub enum ObjectKind {
     Timer,
     MemoryObject,
     BootstrapCapability,
+    PacketInterface,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -49,6 +51,7 @@ pub enum KernelObject {
     Timer(TimerObject),
     MemoryObject(MemoryObject),
     BootstrapCapability(BootstrapCapabilityObject),
+    PacketInterface(PacketInterfaceObject),
 }
 
 impl KernelObjectRecord {
@@ -109,6 +112,13 @@ impl KernelObjectRecord {
     pub fn bootstrap_capability(&self) -> Option<&BootstrapCapabilityObject> {
         match &self.body {
             KernelObject::BootstrapCapability(authority) => Some(authority),
+            _ => None,
+        }
+    }
+
+    pub fn packet_interface(&self) -> Option<&PacketInterfaceObject> {
+        match &self.body {
+            KernelObject::PacketInterface(interface) => Some(interface),
             _ => None,
         }
     }
@@ -423,6 +433,25 @@ impl ObjectRegistry {
             },
             body: KernelObject::BootstrapCapability(BootstrapCapabilityObject::new()),
         })
+    }
+
+    pub fn create_packet_interface(
+        &self,
+        backend: alloc::sync::Arc<dyn PacketBackend>,
+    ) -> KernelObjectRef {
+        let object = self.register(KernelObjectRecord {
+            header: ObjectHeader {
+                id: self.allocate_id(ObjectKind::PacketInterface),
+                kind: ObjectKind::PacketInterface,
+            },
+            body: KernelObject::PacketInterface(PacketInterfaceObject::new(backend)),
+        });
+        let packet = object
+            .packet_interface()
+            .expect("packet interface object must be a packet interface")
+            .backend();
+        let _ = network::initialize().register_interface(object.id().0, packet);
+        object
     }
 
     pub fn lookup(&self, id: ObjectId) -> Option<KernelObjectRef> {

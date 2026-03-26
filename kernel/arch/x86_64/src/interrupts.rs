@@ -422,6 +422,7 @@ fn fatal_unknown_exception(frame: InterruptStackFrame, vector: u8, error_code: O
 
 extern "x86-interrupt" fn timer_interrupt_handler(_frame: InterruptStackFrame) {
     let _ = interrupts::note_timer_interrupt(InterruptVector(TIMER_VECTOR as u16));
+    crate::network::poll_ready_interfaces();
     acknowledge_pic(TIMER_VECTOR);
 }
 
@@ -575,6 +576,17 @@ extern "C" fn serviceos_x86_64_handle_syscall(frame: &mut SavedUserContext) -> u
                     crate::user::save_thread_context(thread_id, frame);
                 }
                 let _ = tasks.scheduler().block_current_on_receive(endpoint);
+            }
+            1
+        }
+        serviceos_kernel_core::syscall::SyscallAction::BlockCurrentThreadOnPacketReceive {
+            interface,
+        } => {
+            if let Some(tasks) = serviceos_kernel_core::task::system() {
+                if let Some(thread_id) = tasks.scheduler().current_thread() {
+                    crate::user::save_thread_context(thread_id, frame);
+                }
+                let _ = tasks.scheduler().block_current_on_packet_receive(interface);
             }
             1
         }

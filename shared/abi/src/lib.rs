@@ -38,6 +38,9 @@ pub enum SyscallNumber {
     MemoryRead = 12,
     DebugConsoleRead = 13,
     DebugConsoleWrite = 14,
+    PacketInterfaceInfo = 15,
+    PacketInterfaceReceive = 16,
+    PacketInterfaceTransmit = 17,
 }
 
 #[repr(u32)]
@@ -104,6 +107,7 @@ pub enum ServiceImageId {
     SysinfoTool = 8,
     PackageService = 9,
     AnnounceService = 10,
+    NetworkService = 11,
 }
 
 #[repr(u32)]
@@ -118,6 +122,7 @@ pub enum ServiceId {
     Shell = 7,
     Package = 8,
     Announce = 9,
+    Network = 10,
 }
 
 #[repr(u32)]
@@ -186,6 +191,7 @@ pub enum LogDomain {
     Ipc = 9,
     Shell = 10,
     Package = 11,
+    Network = 12,
 }
 
 #[repr(u32)]
@@ -213,6 +219,11 @@ pub enum LogEvent {
     PackageRemoved = 20,
     PackageRolledBack = 21,
     PackageActivationFailed = 22,
+    NetworkInterfaceReady = 23,
+    NetworkAddressConfigured = 24,
+    NetworkResolveCompleted = 25,
+    NetworkProbeCompleted = 26,
+    NetworkLinkChanged = 27,
 }
 
 #[repr(u32)]
@@ -329,6 +340,10 @@ pub enum ConfigKey {
     StatusHeartbeatTicks = 2,
     StatusConsoleMirror = 3,
     StatusHeartbeatLogPeriod = 4,
+    NetworkIpv4Address = 5,
+    NetworkIpv4PrefixLength = 6,
+    NetworkIpv4Gateway = 7,
+    NetworkProbeTimeoutTicks = 8,
 }
 
 #[repr(u32)]
@@ -369,4 +384,59 @@ pub enum PackageStatus {
     End = 7,
     NoChange = 8,
     NoRollback = 9,
+}
+
+pub const PACKET_INTERFACE_FLAG_NONBLOCK: u32 = 1 << 0;
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PacketInterfaceBackend {
+    Unknown = 0,
+    VirtioPci = 1,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PacketInterfaceLinkState {
+    Down = 0,
+    Up = 1,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PacketInterfaceInfo {
+    pub backend: u32,
+    pub link_state: u32,
+    pub mtu: u32,
+    pub rx_ready: u32,
+    pub mac: [u8; 6],
+    pub reserved: [u8; 2],
+    pub rx_packets: u64,
+    pub tx_packets: u64,
+    pub dropped_packets: u64,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NetworkTag {
+    InterfaceListRequest = 0x800,
+    InterfaceListReply = 0x801,
+    InterfaceStatusRequest = 0x802,
+    InterfaceStatusReply = 0x803,
+    ResolveRequest = 0x804,
+    ResolveReply = 0x805,
+    PingRequest = 0x806,
+    PingReply = 0x807,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NetworkStatus {
+    Ok = 0,
+    NotFound = 1,
+    Busy = 2,
+    InvalidTarget = 3,
+    Timeout = 4,
+    End = 5,
+    Unsupported = 6,
 }

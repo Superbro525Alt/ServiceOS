@@ -53,6 +53,7 @@ pub enum ThreadWakeReason {
     Yield,
     TimerExpired,
     ChannelMessage,
+    PacketReady,
     EventSignal,
     Explicit,
 }
@@ -67,6 +68,9 @@ pub enum WaitTarget {
     },
     Reply {
         endpoint: ObjectId,
+    },
+    PacketReceive {
+        interface: ObjectId,
     },
     Timer {
         token: WakeToken,
@@ -274,6 +278,7 @@ pub enum ScheduleTrigger {
     Blocked,
     TimeWake,
     IpcWake,
+    NetworkWake,
     Explicit,
 }
 
@@ -294,6 +299,7 @@ pub struct SchedulerSnapshot {
     pub blocked_threads: usize,
     pub timer_waits: usize,
     pub channel_receive_waits: usize,
+    pub packet_receive_waits: usize,
     pub context_switches: u64,
 }
 
@@ -330,6 +336,7 @@ struct SchedulerState {
     threads: BTreeMap<ThreadId, ThreadRecord>,
     waiting_timers: BTreeMap<WakeToken, ThreadId>,
     waiting_receivers: BTreeMap<ObjectId, VecDeque<ThreadId>>,
+    waiting_packets: BTreeMap<ObjectId, VecDeque<ThreadId>>,
     next_wake_token: u64,
     context_switches: u64,
 }
@@ -365,6 +372,7 @@ impl Scheduler {
                 threads,
                 waiting_timers: BTreeMap::new(),
                 waiting_receivers: BTreeMap::new(),
+                waiting_packets: BTreeMap::new(),
                 next_wake_token: 1,
                 context_switches: 0,
             }),
@@ -381,6 +389,7 @@ impl Scheduler {
             blocked_threads: blocked_thread_count(&state),
             timer_waits: state.waiting_timers.len(),
             channel_receive_waits: state.waiting_receivers.values().map(VecDeque::len).sum(),
+            packet_receive_waits: state.waiting_packets.values().map(VecDeque::len).sum(),
             context_switches: state.context_switches,
         }
     }
@@ -480,6 +489,30 @@ impl Scheduler {
         state
             .waiting_receivers
             .entry(endpoint)
+            .or_default()
+            .push_back(current);
+
+        schedule_next_locked(&mut state, ScheduleTrigger::Blocked, Some(current))
+    }
+
+    pub fn block_current_on_packet_receive(
+        &self,
+        interface: ObjectId,
+    ) -> Result<ScheduleDecision, SchedulerError> {
+        let mut state = self.state.lock();
+        let Some(current) = state.current else {
+            return Ok(decision(&state, ScheduleTrigger::Blocked, None, None));
+        };
+        let thread = lookup_thread(&state, current)?;
+        thread.transition_to(
+            ExecutionState::Blocked,
+            Some(WaitTarget::PacketReceive { interface }),
+            None,
+        );
+        state.current = None;
+        state
+            .waiting_packets
+            .entry(interface)
             .or_default()
             .push_back(current);
 
@@ -601,6 +634,41 @@ impl Scheduler {
         }
     }
 
+    pub fn notify_packet_ready(&self, interface: ObjectId) -> Option<ScheduleDecision> {
+        let mut state = self.state.lock();
+        let previous = state.current;
+        let waiters = state.waiting_packets.get_mut(&interface)?;
+        let thread_id = waiters.pop_front()?;
+        if waiters.is_empty() {
+            state.waiting_packets.remove(&interface);
+        }
+
+        let thread = lookup_thread_record(&state, thread_id).ok()?;
+        if !state.runnable.contains(&thread_id) {
+            state.runnable.push_back(thread_id);
+        }
+        thread
+            .object
+            .thread()
+            .expect("registered thread object")
+            .transition_to(
+                ExecutionState::Runnable,
+                None,
+                Some(ThreadWakeReason::PacketReady),
+            );
+
+        if previous.is_none() {
+            schedule_next_locked(&mut state, ScheduleTrigger::NetworkWake, previous).ok()
+        } else {
+            Some(decision(
+                &state,
+                ScheduleTrigger::NetworkWake,
+                previous,
+                state.current,
+            ))
+        }
+    }
+
     pub fn current_thread(&self) -> Option<ThreadId> {
         self.state.lock().current
     }
@@ -695,6 +763,10 @@ impl TaskSystem {
     pub fn notify_channel_ready(&self, endpoint: ObjectId) -> Option<ScheduleDecision> {
         self.scheduler.notify_channel_ready(endpoint)
     }
+
+    pub fn notify_packet_ready(&self, interface: ObjectId) -> Option<ScheduleDecision> {
+        self.scheduler.notify_packet_ready(interface)
+    }
 }
 
 static TASK_SYSTEM: Once<TaskSystem> = Once::new();
@@ -711,6 +783,10 @@ pub fn notify_channel_ready(endpoint: ObjectId) -> Option<ScheduleDecision> {
     system().and_then(|tasks| tasks.notify_channel_ready(endpoint))
 }
 
+pub fn notify_packet_ready(interface: ObjectId) -> Option<ScheduleDecision> {
+    system().and_then(|tasks| tasks.notify_packet_ready(interface))
+}
+
 fn thread_ref_id(thread: &KernelObjectRef) -> ThreadId {
     thread.thread().expect("thread object").id()
 }
@@ -719,6 +795,11 @@ fn blocked_thread_count(state: &SchedulerState) -> usize {
     state.waiting_timers.len()
         + state
             .waiting_receivers
+            .values()
+            .map(VecDeque::len)
+            .sum::<usize>()
+        + state
+            .waiting_packets
             .values()
             .map(VecDeque::len)
             .sum::<usize>()
@@ -791,6 +872,10 @@ fn remove_from_wait_queues(state: &mut SchedulerState, thread_id: ThreadId) {
         waiters.retain(|waiting| *waiting != thread_id);
         !waiters.is_empty()
     });
+    state.waiting_packets.retain(|_, waiters| {
+        waiters.retain(|waiting| *waiting != thread_id);
+        !waiters.is_empty()
+    });
 }
 
 const fn trigger_to_wake_reason(trigger: ScheduleTrigger) -> ThreadWakeReason {
@@ -800,6 +885,7 @@ const fn trigger_to_wake_reason(trigger: ScheduleTrigger) -> ThreadWakeReason {
         ScheduleTrigger::Blocked => ThreadWakeReason::Explicit,
         ScheduleTrigger::TimeWake => ThreadWakeReason::TimerExpired,
         ScheduleTrigger::IpcWake => ThreadWakeReason::ChannelMessage,
+        ScheduleTrigger::NetworkWake => ThreadWakeReason::PacketReady,
         ScheduleTrigger::Explicit => ThreadWakeReason::Explicit,
     }
 }

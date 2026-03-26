@@ -1,7 +1,8 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use serviceos_abi::{
-    Handle, HandlePair, IPC_FLAG_NONBLOCK, IPC_MAX_HANDLES, IPC_MAX_WORDS, RawMessage,
+    Handle, HandlePair, IPC_FLAG_NONBLOCK, IPC_MAX_HANDLES, IPC_MAX_WORDS,
+    PACKET_INTERFACE_FLAG_NONBLOCK, PacketInterfaceInfo as AbiPacketInterfaceInfo, RawMessage,
     SyscallErrorCode as AbiErrorCode, SyscallNumber as AbiSyscallNumber, TaskStateCode,
     TaskStatus as AbiTaskStatus,
 };
@@ -19,7 +20,7 @@ use crate::{
 };
 
 const SYSCALL_ABI_VERSION: u64 = 0x0003_0000;
-const MAX_SYSCALL_SLOTS: usize = 15;
+const MAX_SYSCALL_SLOTS: usize = 18;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SyscallNumber(pub u32);
@@ -93,6 +94,7 @@ pub enum SyscallAction {
     ReturnToCaller,
     YieldCurrentThread,
     BlockCurrentThreadOnReceive { endpoint: ObjectId },
+    BlockCurrentThreadOnPacketReceive { interface: ObjectId },
     ExitCurrentThread { status: u64 },
 }
 
@@ -144,6 +146,9 @@ pub enum SyscallKind {
     MemoryRead = AbiSyscallNumber::MemoryRead as isize,
     DebugConsoleRead = AbiSyscallNumber::DebugConsoleRead as isize,
     DebugConsoleWrite = AbiSyscallNumber::DebugConsoleWrite as isize,
+    PacketInterfaceInfo = AbiSyscallNumber::PacketInterfaceInfo as isize,
+    PacketInterfaceReceive = AbiSyscallNumber::PacketInterfaceReceive as isize,
+    PacketInterfaceTransmit = AbiSyscallNumber::PacketInterfaceTransmit as isize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -223,6 +228,9 @@ pub fn initialize() -> &'static DispatchTable {
             Some(handle_memory_read),
             Some(handle_debug_console_read),
             Some(handle_debug_console_write),
+            Some(handle_packet_interface_info),
+            Some(handle_packet_interface_receive),
+            Some(handle_packet_interface_transmit),
         ])
     })
 }
@@ -640,6 +648,141 @@ fn handle_debug_console_write(context: &SyscallContext) -> SyscallReturn {
     SyscallReturn::success(length as u64)
 }
 
+fn handle_packet_interface_info(context: &SyscallContext) -> SyscallReturn {
+    let Some(current_task) = user::current_task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(task) = current_task.task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(descriptor) = task
+        .capability_space()
+        .resolve_descriptor(CapabilityHandle(context.arguments[0] as Handle))
+    else {
+        return SyscallReturn::error(SyscallError::NotFound);
+    };
+    if !descriptor.rights.contains(CapabilityRights::READ) {
+        return SyscallReturn::error(SyscallError::PermissionDenied);
+    }
+    let Some(object) =
+        crate::object::model().and_then(|model| model.registry().lookup(descriptor.object))
+    else {
+        return SyscallReturn::error(SyscallError::NotFound);
+    };
+    let Some(interface) = object.packet_interface() else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Ok(info_out) = (unsafe { user_mut::<AbiPacketInterfaceInfo>(context.arguments[1]) }) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+
+    *info_out = interface.info();
+    SyscallReturn::success(0)
+}
+
+fn handle_packet_interface_receive(context: &SyscallContext) -> SyscallReturn {
+    let Some(current_task) = user::current_task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(task) = current_task.task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(descriptor) = task
+        .capability_space()
+        .resolve_descriptor(CapabilityHandle(context.arguments[0] as Handle))
+    else {
+        return SyscallReturn::error(SyscallError::NotFound);
+    };
+    if !descriptor
+        .rights
+        .contains(CapabilityRights::READ.union(CapabilityRights::WAIT))
+    {
+        return SyscallReturn::error(SyscallError::PermissionDenied);
+    }
+    let Some(object) =
+        crate::object::model().and_then(|model| model.registry().lookup(descriptor.object))
+    else {
+        return SyscallReturn::error(SyscallError::NotFound);
+    };
+    let Some(interface) = object.packet_interface() else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Ok(length) = usize::try_from(context.arguments[2]) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Ok(buffer) = (unsafe { user_slice_mut(context.arguments[1], length) }) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+
+    match interface.receive(buffer) {
+        Ok(received) => SyscallReturn::success(received as u64),
+        Err(crate::network::PacketInterfaceError::QueueEmpty)
+            if context.arguments[3] as u32 & PACKET_INTERFACE_FLAG_NONBLOCK != 0 =>
+        {
+            SyscallReturn::error(SyscallError::QueueEmpty)
+        }
+        Err(crate::network::PacketInterfaceError::QueueEmpty) => SyscallReturn::error_with_action(
+            SyscallError::QueueEmpty,
+            SyscallAction::BlockCurrentThreadOnPacketReceive {
+                interface: descriptor.object,
+            },
+        ),
+        Err(crate::network::PacketInterfaceError::BufferTooSmall) => {
+            SyscallReturn::error(SyscallError::BufferTooSmall)
+        }
+        Err(crate::network::PacketInterfaceError::Busy) => SyscallReturn::error(SyscallError::Busy),
+        Err(crate::network::PacketInterfaceError::Unsupported) => {
+            SyscallReturn::error(SyscallError::Unsupported)
+        }
+    }
+}
+
+fn handle_packet_interface_transmit(context: &SyscallContext) -> SyscallReturn {
+    let Some(current_task) = user::current_task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(task) = current_task.task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(descriptor) = task
+        .capability_space()
+        .resolve_descriptor(CapabilityHandle(context.arguments[0] as Handle))
+    else {
+        return SyscallReturn::error(SyscallError::NotFound);
+    };
+    if !descriptor.rights.contains(CapabilityRights::WRITE) {
+        return SyscallReturn::error(SyscallError::PermissionDenied);
+    }
+    let Some(object) =
+        crate::object::model().and_then(|model| model.registry().lookup(descriptor.object))
+    else {
+        return SyscallReturn::error(SyscallError::NotFound);
+    };
+    let Some(interface) = object.packet_interface() else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Ok(length) = usize::try_from(context.arguments[2]) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Ok(buffer) = (unsafe { user_slice(context.arguments[1], length) }) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+
+    match interface.transmit(buffer) {
+        Ok(()) => SyscallReturn::success(length as u64),
+        Err(crate::network::PacketInterfaceError::QueueEmpty) => {
+            SyscallReturn::error(SyscallError::QueueEmpty)
+        }
+        Err(crate::network::PacketInterfaceError::BufferTooSmall) => {
+            SyscallReturn::error(SyscallError::BufferTooSmall)
+        }
+        Err(crate::network::PacketInterfaceError::Busy) => SyscallReturn::error(SyscallError::Busy),
+        Err(crate::network::PacketInterfaceError::Unsupported) => {
+            SyscallReturn::error(SyscallError::Unsupported)
+        }
+    }
+}
+
 fn map_capability_error(error: CapabilityError) -> SyscallError {
     match error {
         CapabilityError::InvalidHandle => SyscallError::NotFound,
@@ -728,6 +871,9 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
+            None,
         ]);
 
         let result = table.dispatch(SyscallNumber(1), &empty_context());
@@ -745,6 +891,9 @@ mod tests {
     fn abi_version_syscall_returns_stable_value() {
         let table = DispatchTable::new([
             Some(handle_abi_version),
+            None,
+            None,
+            None,
             None,
             None,
             None,

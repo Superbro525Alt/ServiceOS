@@ -143,6 +143,11 @@ fn run_qemu(esp_dir: &Path) -> Result<(), Box<dyn Error>> {
     command.args(["-machine", "q35"]);
     command.args(["-serial", "stdio"]);
     command.args(["-display", "none"]);
+    command.args(["-netdev", "user,id=net0"]);
+    command.args([
+        "-device",
+        "virtio-net-pci,netdev=net0,mac=52:54:00:12:34:56",
+    ]);
     command.args([
         "-drive",
         &format!(

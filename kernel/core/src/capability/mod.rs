@@ -101,6 +101,14 @@ impl CapabilityRights {
     pub const fn bootstrap() -> Self {
         Self::MANAGE
     }
+
+    pub const fn packet_interface() -> Self {
+        Self::READ
+            .union(Self::WRITE)
+            .union(Self::WAIT)
+            .union(Self::DUPLICATE)
+            .union(Self::TRANSFER)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

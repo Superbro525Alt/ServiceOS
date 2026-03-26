@@ -142,6 +142,9 @@ fn main() -> u64 {
     if render_desktop(&mut state).is_err() {
         return 0xfe0b;
     }
+    if show_chrome(&state.chrome).is_err() {
+        return 0xfe0c;
+    }
     let _ = emit_log(
         state.log_handle,
         LogSeverity::Info,
@@ -156,37 +159,37 @@ fn main() -> u64 {
         match poll_lifecycle(bootstrap) {
             Ok(true) => return 0,
             Ok(false) => {}
-            Err(_) => return 0xfe0c,
+            Err(_) => return 0xfe0d,
         }
 
         let mut request = RawMessage::empty(0);
         match rt::channel_receive_nonblocking(public.first, &mut request) {
             Ok(()) => {
                 if handle_request(&mut state, &request).is_err() {
-                    return 0xfe0d;
+                    return 0xfe0e;
                 }
             }
             Err(rt::Error::QueueEmpty) => {}
-            Err(_) => return 0xfe0e,
+            Err(_) => return 0xfe0f,
         }
 
         if refresh_apps(&mut state).is_err() {
-            return 0xfe0f;
+            return 0xfe10;
         }
 
         let now = match rt::monotonic_now() {
             Ok(now) => now,
-            Err(_) => return 0xfe10,
+            Err(_) => return 0xfe11,
         };
         if now >= state.next_status_refresh {
             if refresh_desktop_status(&mut state).is_err() {
-                return 0xfe11;
+                return 0xfe12;
             }
             state.next_status_refresh = now.saturating_add(STATUS_REFRESH_TICKS);
         }
 
         if rt::yield_current().is_err() {
-            return 0xfe12;
+            return 0xfe13;
         }
     }
 }
@@ -205,7 +208,7 @@ fn create_chrome(
         output_height,
         0,
         ui::BG_DESKTOP,
-        true,
+        false,
     )?;
     let (_, topbar_handle) = rt::graphics_surface_create(
         graphics_handle,
@@ -216,7 +219,7 @@ fn create_chrome(
         TOPBAR_HEIGHT,
         1,
         ui::BG_PANEL,
-        true,
+        false,
     )?;
     let (_, launcher_handle) = rt::graphics_surface_create(
         graphics_handle,
@@ -227,7 +230,7 @@ fn create_chrome(
         248,
         2,
         ui::BG_PANEL,
-        true,
+        false,
     )?;
     let (_, status_handle) = rt::graphics_surface_create(
         graphics_handle,
@@ -238,7 +241,7 @@ fn create_chrome(
         STATUS_PANEL_HEIGHT,
         2,
         ui::BG_PANEL,
-        true,
+        false,
     )?;
 
     Ok(Chrome {
@@ -249,6 +252,14 @@ fn create_chrome(
         output_width,
         output_height,
     })
+}
+
+fn show_chrome(chrome: &Chrome) -> rt::Result<()> {
+    rt::surface_set_visibility(chrome.desktop_handle, true)?;
+    rt::surface_set_visibility(chrome.topbar_handle, true)?;
+    rt::surface_set_visibility(chrome.launcher_handle, true)?;
+    rt::surface_set_visibility(chrome.status_handle, true)?;
+    Ok(())
 }
 
 fn handle_request(state: &mut DesktopState, request: &RawMessage) -> rt::Result<()> {
@@ -367,7 +378,7 @@ fn launch_or_focus_app(state: &mut DesktopState, app_id: DesktopAppId) -> rt::Re
         height,
         z_order,
         fill_rgb,
-        true,
+        false,
     )?;
     let _ = ui::render_window(
         surface_handle,
@@ -378,6 +389,7 @@ fn launch_or_focus_app(state: &mut DesktopState, app_id: DesktopAppId) -> rt::Re
         app_title(app_id),
         &["LAUNCHING", "PLEASE WAIT"],
     );
+    let _ = rt::surface_set_visibility(surface_handle, true);
 
     let task_handle = rt::manager_launch_program_with_payload(
         state.bootstrap,

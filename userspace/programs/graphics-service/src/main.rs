@@ -15,6 +15,7 @@ const MAX_SURFACE_RECTS: usize = 16;
 const MAX_SURFACE_LABELS: usize = 16;
 const MAX_LABEL_BYTES: usize = 56;
 const DEFAULT_BACKGROUND_RGB: u32 = 0x10151d;
+const PRESENT_COALESCE_TICKS: u64 = 2;
 const LABEL_ADVANCE: usize = 6;
 const GLYPH_WIDTH: usize = 5;
 const GLYPH_HEIGHT: usize = 7;
@@ -150,6 +151,7 @@ fn main() -> u64 {
     let mut present_count = 0u64;
     let mut last_logged_surface_count = 0usize;
     let mut dirty = true;
+    let mut present_deadline = 0u64;
 
     loop {
         match poll_lifecycle(bootstrap) {
@@ -158,63 +160,51 @@ fn main() -> u64 {
             Err(_) => return 0xfc07,
         }
 
-        let mut request = RawMessage::empty(0);
-        match rt::channel_receive_nonblocking(public.first, &mut request) {
-            Ok(()) => {
-                if handle_public_request(
-                    &request,
-                    log_handle,
-                    output,
-                    present_count,
-                    &mut surfaces,
-                    &mut next_surface_id,
-                    &mut dirty,
-                )
-                .is_err()
-                {
-                    return 0xfc08;
-                }
-            }
-            Err(rt::Error::QueueEmpty) => {}
-            Err(_) => return 0xfc09,
-        }
-
-        for surface in &mut surfaces {
-            if !surface.occupied {
-                continue;
-            }
-            let mut message = RawMessage::empty(0);
-            match rt::channel_receive_nonblocking(surface.endpoint, &mut message) {
-                Ok(()) => {
-                    if handle_surface_request(log_handle, surface, &message, &mut dirty).is_err() {
-                        return 0xfc0a;
-                    }
-                }
-                Err(rt::Error::QueueEmpty) => {}
-                Err(_) => {
-                    release_surface(surface);
-                    dirty = true;
-                }
-            }
-        }
+        let had_work = match drain_public_requests(
+            public.first,
+            log_handle,
+            output,
+            present_count,
+            &mut surfaces,
+            &mut next_surface_id,
+            &mut dirty,
+        ) {
+            Ok(had_work) => had_work,
+            Err(_) => return 0xfc08,
+        };
+        let had_surface_work =
+            match drain_surface_requests(log_handle, &mut surfaces, &mut dirty) {
+                Ok(had_work) => had_work,
+                Err(_) => return 0xfc0a,
+            };
+        let had_work = had_work || had_surface_work;
 
         if dirty {
-            if compose_and_present(output_handle, output, &surfaces).is_err() {
-                return 0xfc0b;
+            let now = rt::monotonic_now().unwrap_or(0);
+            if present_deadline == 0 {
+                present_deadline = now.saturating_add(PRESENT_COALESCE_TICKS);
             }
-            present_count = present_count.saturating_add(1);
-            let active_surface_count = active_surface_count(&surfaces);
-            if present_count == 1 || active_surface_count != last_logged_surface_count {
-                let _ = emit_log(
-                    log_handle,
-                    LogSeverity::Info,
-                    LogEvent::CompositorPresented,
-                    active_surface_count as u64,
-                    present_count,
-                );
-                last_logged_surface_count = active_surface_count;
+            if !had_work && now >= present_deadline {
+                if compose_and_present(output_handle, output, &surfaces).is_err() {
+                    return 0xfc0b;
+                }
+                present_count = present_count.saturating_add(1);
+                let active_surface_count = active_surface_count(&surfaces);
+                if present_count == 1 || active_surface_count != last_logged_surface_count {
+                    let _ = emit_log(
+                        log_handle,
+                        LogSeverity::Info,
+                        LogEvent::CompositorPresented,
+                        active_surface_count as u64,
+                        present_count,
+                    );
+                    last_logged_surface_count = active_surface_count;
+                }
+                dirty = false;
+                present_deadline = 0;
             }
-            dirty = false;
+        } else {
+            present_deadline = 0;
         }
 
         if rt::yield_current().is_err() {
@@ -370,6 +360,66 @@ fn handle_public_request(
     }
 
     Ok(())
+}
+
+fn drain_public_requests(
+    public_handle: rt::Handle,
+    log_handle: rt::Handle,
+    output: rt::DisplayOutputInfo,
+    present_count: u64,
+    surfaces: &mut [SurfaceSlot; MAX_SURFACES],
+    next_surface_id: &mut u32,
+    dirty: &mut bool,
+) -> rt::Result<bool> {
+    let mut had_work = false;
+    loop {
+        let mut request = RawMessage::empty(0);
+        match rt::channel_receive_nonblocking(public_handle, &mut request) {
+            Ok(()) => {
+                had_work = true;
+                handle_public_request(
+                    &request,
+                    log_handle,
+                    output,
+                    present_count,
+                    surfaces,
+                    next_surface_id,
+                    dirty,
+                )?;
+            }
+            Err(rt::Error::QueueEmpty) => return Ok(had_work),
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn drain_surface_requests(
+    log_handle: rt::Handle,
+    surfaces: &mut [SurfaceSlot; MAX_SURFACES],
+    dirty: &mut bool,
+) -> rt::Result<bool> {
+    let mut had_work = false;
+    for surface in surfaces {
+        if !surface.occupied {
+            continue;
+        }
+        loop {
+            let mut message = RawMessage::empty(0);
+            match rt::channel_receive_nonblocking(surface.endpoint, &mut message) {
+                Ok(()) => {
+                    had_work = true;
+                    handle_surface_request(log_handle, surface, &message, dirty)?;
+                }
+                Err(rt::Error::QueueEmpty) => break,
+                Err(_) => {
+                    release_surface(surface);
+                    *dirty = true;
+                    break;
+                }
+            }
+        }
+    }
+    Ok(had_work)
 }
 
 fn handle_surface_request(

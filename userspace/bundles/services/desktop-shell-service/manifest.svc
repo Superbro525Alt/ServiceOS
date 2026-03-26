@@ -1,0 +1,10 @@
+service=desktop-shell-service
+image=desktop-shell-service
+startup=eager
+restart=on-failure:1
+depends=graphics-service, session-service, log-service, network-service, status-service
+grant=log-service:send
+lookup=graphics-service:send
+lookup=session-service:send
+lookup=network-service:send
+lookup=status-service:send

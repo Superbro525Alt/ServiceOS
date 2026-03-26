@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "runtime",
+    "ui",
     "root-manager",
     "storage-service",
     "log-service",
@@ -12,7 +13,11 @@ members = [
     "package-service",
     "network-service",
     "session-service",
+    "desktop-shell-service",
     "shell-service",
+    "settings-app",
+    "files-app",
+    "monitor-app",
     "announce-service",
     "sysinfo-tool",
 ]

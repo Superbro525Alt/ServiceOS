@@ -1,7 +1,10 @@
 #![no_std]
 #![no_main]
 
-use serviceos_bundle::{BOOT_STORE_PATH_MAX, RestartPolicy, ServiceManifest, parse_manifest};
+use serviceos_bundle::{
+    BOOT_STORE_INDEX_TEXT_MAX, BOOT_STORE_MANIFEST_TEXT_MAX, BOOT_STORE_PATH_MAX, RestartPolicy,
+    ServiceManifest, parse_manifest,
+};
 use serviceos_userspace_runtime as rt;
 use rt::{
     ControlTag, LifecycleEvent, LogDomain, LogEvent, LogSeverity, LookupStatus, ManagerAction,
@@ -10,8 +13,8 @@ use rt::{
 };
 
 const MAX_SERVICE_SLOTS: usize = 16;
-const MAX_INDEX_BYTES: usize = 512;
-const MAX_MANIFEST_BYTES: usize = 512;
+const MAX_INDEX_BYTES: usize = BOOT_STORE_INDEX_TEXT_MAX;
+const MAX_MANIFEST_BYTES: usize = BOOT_STORE_MANIFEST_TEXT_MAX;
 
 #[derive(Clone, Copy)]
 struct BootstrapResource {
@@ -803,35 +806,61 @@ fn handle_launch_request(
 ) -> rt::Result<()> {
     let mut reply = RawMessage::empty(ManagerTag::LaunchReply as u32);
     reply.word_count = 1;
-    if slots[service_index].manifest.service_id != ServiceId::Shell {
+    let caller = slots[service_index].manifest.service_id;
+    if caller != ServiceId::Shell && caller != ServiceId::DesktopShell {
         reply.words[0] = ManagerStatus::Denied as u32 as u64;
-        return rt::channel_send(slots[service_index].control_handle, &reply);
+        let result = rt::channel_send(slots[service_index].control_handle, &reply);
+        close_message_handles(message);
+        return result;
     }
 
     let image_id = image_id_from_word(message.words[0]);
-    if image_id != ServiceImageId::SysinfoTool {
+    if !launch_is_authorized(caller, image_id) {
         reply.words[0] = ManagerStatus::NotFound as u32 as u64;
-        return rt::channel_send(slots[service_index].control_handle, &reply);
+        let result = rt::channel_send(slots[service_index].control_handle, &reply);
+        close_message_handles(message);
+        return result;
     }
 
-    let io_handle = if message.handle_count > 0 {
-        Some(message.handles[0])
+    let startup_word_count = if message.word_count > 1 {
+        (message.words[1] as usize).min(IPC_MAX_WORDS.saturating_sub(2))
     } else {
-        None
+        0
     };
-    let task_handle = match launch_program(bootstrap_authority, image_id, io_handle) {
+    if (message.word_count as usize) < 2 + startup_word_count {
+        reply.words[0] = ManagerStatus::Failed as u32 as u64;
+        let result = rt::channel_send(slots[service_index].control_handle, &reply);
+        close_message_handles(message);
+        return result;
+    }
+    let task_handle = match launch_program(
+        slots,
+        service_count,
+        bootstrap_authority,
+        caller,
+        image_id,
+        &message.words[2..2 + startup_word_count],
+        &message.handles[..message.handle_count as usize],
+        &message.handle_rights[..message.handle_count as usize],
+    ) {
         Ok(task_handle) => task_handle,
         Err(rt::Error::NotFound) => {
             reply.words[0] = ManagerStatus::NotFound as u32 as u64;
-            return rt::channel_send(slots[service_index].control_handle, &reply);
+            let result = rt::channel_send(slots[service_index].control_handle, &reply);
+            close_message_handles(message);
+            return result;
         }
         Err(rt::Error::PermissionDenied) => {
             reply.words[0] = ManagerStatus::Denied as u32 as u64;
-            return rt::channel_send(slots[service_index].control_handle, &reply);
+            let result = rt::channel_send(slots[service_index].control_handle, &reply);
+            close_message_handles(message);
+            return result;
         }
         Err(_) => {
             reply.words[0] = ManagerStatus::Busy as u32 as u64;
-            return rt::channel_send(slots[service_index].control_handle, &reply);
+            let result = rt::channel_send(slots[service_index].control_handle, &reply);
+            close_message_handles(message);
+            return result;
         }
     };
 
@@ -846,10 +875,19 @@ fn handle_launch_request(
         service_count,
         LogSeverity::Info,
         LogEvent::ToolLaunched,
-        ServiceId::Shell,
+        caller,
         image_id as u32 as u64,
     );
     Ok(())
+}
+
+fn close_message_handles(message: &RawMessage) {
+    for handle in message.handles[..message.handle_count as usize]
+        .iter()
+        .copied()
+    {
+        let _ = rt::handle_close(handle);
+    }
 }
 
 fn handle_activate_request(
@@ -971,9 +1009,14 @@ fn handle_deactivate_request(
 }
 
 fn launch_program(
+    slots: &[ServiceSlot; MAX_SERVICE_SLOTS],
+    service_count: usize,
     bootstrap_authority: rt::Handle,
+    caller: ServiceId,
     image_id: ServiceImageId,
-    io_handle: Option<rt::Handle>,
+    startup_words: &[u64],
+    startup_handles: &[rt::Handle],
+    startup_handle_rights: &[u64],
 ) -> rt::Result<rt::Handle> {
     let bootstrap = rt::channel_create()?;
     let task_handle = rt::service_spawn(image_id, bootstrap_authority, bootstrap.second)?;
@@ -981,20 +1024,165 @@ fn launch_program(
         rt::handle_duplicate(task_handle, rights::READ | rights::DUPLICATE | rights::TRANSFER)?;
 
     let mut startup = RawMessage::empty(ControlTag::Startup as u32);
-    startup.word_count = 1;
-    startup.words[0] = u64::from(io_handle.is_some());
-    if let Some(io_handle) = io_handle {
-        startup.handle_count = 1;
-        startup.handles[0] = io_handle;
-        startup.handle_rights[0] = rights::SEND | rights::RECEIVE;
+    if startup_words.len() > IPC_MAX_WORDS {
+        return Err(rt::Error::BufferTooSmall);
     }
+    startup.word_count = startup_words.len() as u32;
+    for (index, word) in startup_words.iter().copied().enumerate() {
+        startup.words[index] = word;
+    }
+
+    let mut handle_index = 0usize;
+    for (index, handle) in startup_handles.iter().copied().enumerate() {
+        if handle_index >= IPC_MAX_HANDLES {
+            return Err(rt::Error::BufferTooSmall);
+        }
+        startup.handles[handle_index] = handle;
+        startup.handle_rights[handle_index] = startup_handle_rights.get(index).copied().unwrap_or(0);
+        handle_index += 1;
+    }
+    append_launch_grants(
+        slots,
+        service_count,
+        caller,
+        image_id,
+        &mut startup,
+        &mut handle_index,
+    )?;
+    startup.handle_count = handle_index as u32;
+
     rt::channel_send(bootstrap.first, &startup)?;
-    if startup.handle_count > 0 {
-        let _ = rt::handle_close(startup.handles[0]);
+    for handle in startup.handles[..startup.handle_count as usize]
+        .iter()
+        .copied()
+    {
+        let _ = rt::handle_close(handle);
     }
     let _ = rt::handle_close(task_handle);
     let _ = rt::handle_close(bootstrap.first);
     Ok(task_view)
+}
+
+fn launch_is_authorized(caller: ServiceId, image_id: ServiceImageId) -> bool {
+    match caller {
+        ServiceId::Shell => image_id == ServiceImageId::SysinfoTool,
+        ServiceId::DesktopShell => matches!(
+            image_id,
+            ServiceImageId::SettingsApp | ServiceImageId::FilesApp | ServiceImageId::MonitorApp
+        ),
+        _ => false,
+    }
+}
+
+fn append_launch_grants(
+    slots: &[ServiceSlot; MAX_SERVICE_SLOTS],
+    service_count: usize,
+    caller: ServiceId,
+    image_id: ServiceImageId,
+    startup: &mut RawMessage,
+    handle_index: &mut usize,
+) -> rt::Result<()> {
+    if caller != ServiceId::DesktopShell {
+        return Ok(());
+    }
+
+    match image_id {
+        ServiceImageId::SettingsApp => {
+            append_service_launch_handle(
+                slots,
+                service_count,
+                ServiceId::Log,
+                rights::SEND | rights::TRANSFER,
+                startup,
+                handle_index,
+            )?;
+            append_service_launch_handle(
+                slots,
+                service_count,
+                ServiceId::Config,
+                rights::SEND | rights::TRANSFER,
+                startup,
+                handle_index,
+            )?;
+            append_service_launch_handle(
+                slots,
+                service_count,
+                ServiceId::Network,
+                rights::SEND | rights::TRANSFER,
+                startup,
+                handle_index,
+            )?;
+        }
+        ServiceImageId::FilesApp => {
+            append_service_launch_handle(
+                slots,
+                service_count,
+                ServiceId::Log,
+                rights::SEND | rights::TRANSFER,
+                startup,
+                handle_index,
+            )?;
+            append_service_launch_handle(
+                slots,
+                service_count,
+                ServiceId::Storage,
+                rights::SEND | rights::TRANSFER,
+                startup,
+                handle_index,
+            )?;
+        }
+        ServiceImageId::MonitorApp => {
+            append_service_launch_handle(
+                slots,
+                service_count,
+                ServiceId::Log,
+                rights::SEND | rights::TRANSFER,
+                startup,
+                handle_index,
+            )?;
+            append_service_launch_handle(
+                slots,
+                service_count,
+                ServiceId::Status,
+                rights::SEND | rights::TRANSFER,
+                startup,
+                handle_index,
+            )?;
+            append_service_launch_handle(
+                slots,
+                service_count,
+                ServiceId::Network,
+                rights::SEND | rights::TRANSFER,
+                startup,
+                handle_index,
+            )?;
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
+fn append_service_launch_handle(
+    slots: &[ServiceSlot; MAX_SERVICE_SLOTS],
+    service_count: usize,
+    service_id: ServiceId,
+    rights_mask: u64,
+    startup: &mut RawMessage,
+    handle_index: &mut usize,
+) -> rt::Result<()> {
+    if *handle_index >= IPC_MAX_HANDLES {
+        return Err(rt::Error::BufferTooSmall);
+    }
+    let index = find_slot_index(slots, service_count, service_id)?;
+    let transferred = rt::handle_duplicate(
+        slots[index].public_handle,
+        rights_mask | rights::DUPLICATE,
+    )?;
+    startup.handles[*handle_index] = transferred;
+    startup.handle_rights[*handle_index] = rights_mask & !rights::TRANSFER;
+    *handle_index += 1;
+    Ok(())
 }
 
 fn load_manifest_from_storage(
@@ -1210,6 +1398,7 @@ fn service_id_from_word(value: u64) -> ServiceId {
         x if x == ServiceId::Network as u32 => ServiceId::Network,
         x if x == ServiceId::Graphics as u32 => ServiceId::Graphics,
         x if x == ServiceId::Session as u32 => ServiceId::Session,
+        x if x == ServiceId::DesktopShell as u32 => ServiceId::DesktopShell,
         _ => ServiceId::RootManager,
     }
 }
@@ -1228,6 +1417,12 @@ fn image_id_from_word(value: u64) -> ServiceImageId {
         x if x == ServiceImageId::NetworkService as u32 => ServiceImageId::NetworkService,
         x if x == ServiceImageId::GraphicsService as u32 => ServiceImageId::GraphicsService,
         x if x == ServiceImageId::SessionService as u32 => ServiceImageId::SessionService,
+        x if x == ServiceImageId::DesktopShellService as u32 => {
+            ServiceImageId::DesktopShellService
+        }
+        x if x == ServiceImageId::SettingsApp as u32 => ServiceImageId::SettingsApp,
+        x if x == ServiceImageId::FilesApp as u32 => ServiceImageId::FilesApp,
+        x if x == ServiceImageId::MonitorApp as u32 => ServiceImageId::MonitorApp,
         _ => ServiceImageId::RootManager,
     }
 }
@@ -1266,6 +1461,7 @@ fn service_name(service_id: ServiceId) -> &'static str {
         ServiceId::Network => "network-service",
         ServiceId::Graphics => "graphics-service",
         ServiceId::Session => "session-service",
+        ServiceId::DesktopShell => "desktop-shell-service",
     }
 }
 
@@ -1314,6 +1510,11 @@ fn event_name(event: LogEvent) -> &'static str {
         LogEvent::CompositorPresented => "compositor-presented",
         LogEvent::SessionReady => "session-ready",
         LogEvent::SessionFocusChanged => "session-focus-changed",
+        LogEvent::DesktopReady => "desktop-ready",
+        LogEvent::DesktopAppLaunched => "desktop-app-launched",
+        LogEvent::DesktopAppExited => "desktop-app-exited",
+        LogEvent::DesktopFocusChanged => "desktop-focus-changed",
+        LogEvent::AppRendered => "app-rendered",
     }
 }
 

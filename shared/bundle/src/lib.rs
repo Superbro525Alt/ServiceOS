@@ -7,6 +7,8 @@ use serviceos_abi::{ServiceId, ServiceImageId, rights};
 pub const BOOT_STORE_MAGIC: [u8; 8] = *b"SOSBOOT\0";
 pub const BOOT_STORE_VERSION: u32 = 1;
 pub const BOOT_STORE_PATH_MAX: usize = 88;
+pub const BOOT_STORE_INDEX_TEXT_MAX: usize = 2048;
+pub const BOOT_STORE_MANIFEST_TEXT_MAX: usize = 2048;
 pub const BOOT_STORE_MAX_DEPENDENCIES: usize = 12;
 pub const BOOT_STORE_MAX_GRANTS: usize = 4;
 pub const BOOT_STORE_MAX_LOOKUPS: usize = 12;
@@ -533,6 +535,7 @@ fn parse_service_id(value: &str) -> Result<ServiceId, BootStoreError> {
         "network-service" => Ok(ServiceId::Network),
         "graphics-service" => Ok(ServiceId::Graphics),
         "session-service" => Ok(ServiceId::Session),
+        "desktop-shell-service" => Ok(ServiceId::DesktopShell),
         _ => Err(BootStoreError::InvalidManifest),
     }
 }
@@ -552,6 +555,7 @@ fn parse_image_id(value: &str) -> Result<ServiceImageId, BootStoreError> {
         "network-service" => Ok(ServiceImageId::NetworkService),
         "graphics-service" => Ok(ServiceImageId::GraphicsService),
         "session-service" => Ok(ServiceImageId::SessionService),
+        "desktop-shell-service" => Ok(ServiceImageId::DesktopShellService),
         _ => Err(BootStoreError::InvalidManifest),
     }
 }

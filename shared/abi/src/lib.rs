@@ -112,6 +112,10 @@ pub enum ServiceImageId {
     NetworkService = 11,
     GraphicsService = 12,
     SessionService = 13,
+    DesktopShellService = 14,
+    SettingsApp = 15,
+    FilesApp = 16,
+    MonitorApp = 17,
 }
 
 #[repr(u32)]
@@ -129,6 +133,7 @@ pub enum ServiceId {
     Network = 10,
     Graphics = 11,
     Session = 12,
+    DesktopShell = 13,
 }
 
 #[repr(u32)]
@@ -200,6 +205,8 @@ pub enum LogDomain {
     Network = 12,
     Graphics = 13,
     Session = 14,
+    Desktop = 15,
+    App = 16,
 }
 
 #[repr(u32)]
@@ -238,6 +245,11 @@ pub enum LogEvent {
     CompositorPresented = 31,
     SessionReady = 32,
     SessionFocusChanged = 33,
+    DesktopReady = 34,
+    DesktopAppLaunched = 35,
+    DesktopAppExited = 36,
+    DesktopFocusChanged = 37,
+    AppRendered = 38,
 }
 
 #[repr(u32)]
@@ -509,6 +521,36 @@ pub enum GraphicsTag {
 
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DesktopTag {
+    StatusRequest = 0xa00,
+    StatusReply = 0xa01,
+    ListAppsRequest = 0xa02,
+    ListAppsReply = 0xa03,
+    LaunchAppRequest = 0xa04,
+    LaunchAppReply = 0xa05,
+    FocusAppRequest = 0xa06,
+    FocusAppReply = 0xa07,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DesktopStatus {
+    Ok = 0,
+    NotFound = 1,
+    Busy = 2,
+    Denied = 3,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub enum DesktopAppId {
+    Settings = 1,
+    Files = 2,
+    Monitor = 3,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GraphicsStatus {
     Ok = 0,
     NotFound = 1,
@@ -527,6 +569,12 @@ pub enum SurfaceTag {
     SetVisibilityRequest = 0x924,
     SetVisibilityReply = 0x925,
     CloseRequest = 0x926,
+    ClearSceneRequest = 0x927,
+    ClearSceneReply = 0x928,
+    SetRectRequest = 0x929,
+    SetRectReply = 0x92a,
+    SetLabelRequest = 0x92b,
+    SetLabelReply = 0x92c,
 }
 
 #[repr(u32)]

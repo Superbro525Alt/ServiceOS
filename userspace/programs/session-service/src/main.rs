@@ -8,10 +8,6 @@ use rt::{
 };
 
 const SESSION_ID: u32 = 1;
-const BACKGROUND_IDLE_RGB: u32 = 0x1b2740;
-const BACKGROUND_FOCUSED_RGB: u32 = 0x29456e;
-const PANEL_IDLE_RGB: u32 = 0x5a6372;
-const PANEL_FOCUSED_RGB: u32 = 0x7cc6ff;
 
 rt::entry!(main);
 
@@ -26,99 +22,55 @@ fn main() -> u64 {
     }
 
     let log_handle = startup.handles[0];
-    let graphics_handle = match rt::lookup_service(bootstrap, ServiceId::Graphics) {
-        Ok(handle) => handle,
-        Err(_) => return 0xfd03,
-    };
-    let output = match rt::graphics_output_status(graphics_handle, 0) {
-        Ok(Some(output)) => output,
-        _ => return 0xfd04,
-    };
-
-    let (background_id, background_handle) = match rt::graphics_surface_create(
-        graphics_handle,
-        SESSION_ID,
-        0,
-        0,
-        output.width,
-        output.height,
-        0,
-        BACKGROUND_IDLE_RGB,
-        true,
-    ) {
-        Ok(surface) => surface,
-        Err(_) => return 0xfd05,
-    };
-    let (panel_id, panel_handle) = match rt::graphics_surface_create(
-        graphics_handle,
-        SESSION_ID,
-        (output.width / 4) as i32,
-        (output.height / 3) as i32,
-        output.width / 2,
-        output.height / 3,
-        1,
-        PANEL_FOCUSED_RGB,
-        true,
-    ) {
-        Ok(surface) => surface,
-        Err(_) => return 0xfd06,
-    };
-    let _ = rt::handle_close(graphics_handle);
 
     let public = match rt::channel_create() {
         Ok(pair) => pair,
-        Err(_) => return 0xfd07,
+        Err(_) => return 0xfd03,
     };
     if rt::register_service(bootstrap, ServiceId::Session, public.second).is_err() {
-        return 0xfd08;
+        return 0xfd04;
     }
     let _ = rt::handle_close(public.second);
 
     let mut state = SessionState {
-        focused_surface: panel_id,
-        background_id,
-        panel_id,
-        background_handle,
-        panel_handle,
+        focused_surface: 0,
+        surface_count_hint: 0,
     };
     let _ = emit_log(
         log_handle,
         LogSeverity::Info,
         LogEvent::SessionReady,
         SESSION_ID as u64,
-        state.focused_surface as u64,
+        0,
     );
 
     loop {
         match poll_lifecycle(bootstrap) {
             Ok(true) => return 0,
             Ok(false) => {}
-            Err(_) => return 0xfd09,
+            Err(_) => return 0xfd05,
         }
 
         let mut request = RawMessage::empty(0);
         match rt::channel_receive_nonblocking(public.first, &mut request) {
             Ok(()) => {
                 if handle_request(&request, log_handle, &mut state).is_err() {
-                    return 0xfd0a;
+                    return 0xfd06;
                 }
             }
             Err(rt::Error::QueueEmpty) => {}
-            Err(_) => return 0xfd0b,
+            Err(_) => return 0xfd07,
         }
 
         if rt::yield_current().is_err() {
-            return 0xfd0c;
+            return 0xfd08;
         }
     }
 }
 
 struct SessionState {
     focused_surface: u32,
-    background_id: u32,
-    panel_id: u32,
-    background_handle: rt::Handle,
-    panel_handle: rt::Handle,
+    surface_count_hint: u32,
 }
 
 fn handle_request(
@@ -154,7 +106,7 @@ fn handle_request(
                 reply.words[1] = SESSION_ID as u64;
                 reply.words[2] = SessionInputSource::ServiceControl as u32 as u64;
                 reply.words[3] = state.focused_surface as u64;
-                reply.words[4] = 2;
+                reply.words[4] = state.surface_count_hint as u64;
             }
             let _ = rt::channel_send(reply_handle, &reply);
             let _ = rt::handle_close(reply_handle);
@@ -172,10 +124,11 @@ fn handle_request(
             if session_id != SESSION_ID {
                 reply.words[0] = SessionStatus::NotFound as u32 as u64;
                 reply.words[1] = 0;
-            } else if apply_focus(state, surface_id).is_err() {
-                reply.words[0] = SessionStatus::NotFound as u32 as u64;
-                reply.words[1] = state.focused_surface as u64;
             } else {
+                state.focused_surface = surface_id;
+                if surface_id != 0 {
+                    state.surface_count_hint = state.surface_count_hint.max(1);
+                }
                 reply.words[0] = SessionStatus::Ok as u32 as u64;
                 reply.words[1] = state.focused_surface as u64;
                 let _ = emit_log(
@@ -194,24 +147,6 @@ fn handle_request(
     }
 
     Ok(())
-}
-
-fn apply_focus(state: &mut SessionState, surface_id: u32) -> rt::Result<()> {
-    match surface_id {
-        id if id == state.background_id => {
-            rt::surface_set_fill(state.background_handle, BACKGROUND_FOCUSED_RGB)?;
-            rt::surface_set_fill(state.panel_handle, PANEL_IDLE_RGB)?;
-            state.focused_surface = state.background_id;
-            Ok(())
-        }
-        id if id == state.panel_id => {
-            rt::surface_set_fill(state.background_handle, BACKGROUND_IDLE_RGB)?;
-            rt::surface_set_fill(state.panel_handle, PANEL_FOCUSED_RGB)?;
-            state.focused_surface = state.panel_id;
-            Ok(())
-        }
-        _ => Err(rt::Error::NotFound),
-    }
 }
 
 fn poll_lifecycle(bootstrap: rt::Handle) -> rt::Result<bool> {

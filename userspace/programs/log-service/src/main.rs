@@ -249,6 +249,7 @@ fn service_id_from_word(value: u64) -> ServiceId {
         x if x == ServiceId::Network as u32 => ServiceId::Network,
         x if x == ServiceId::Graphics as u32 => ServiceId::Graphics,
         x if x == ServiceId::Session as u32 => ServiceId::Session,
+        x if x == ServiceId::DesktopShell as u32 => ServiceId::DesktopShell,
         _ => ServiceId::RootManager,
     }
 }
@@ -278,6 +279,8 @@ fn domain_from_word(value: u64) -> LogDomain {
         x if x == LogDomain::Network as u32 => LogDomain::Network,
         x if x == LogDomain::Graphics as u32 => LogDomain::Graphics,
         x if x == LogDomain::Session as u32 => LogDomain::Session,
+        x if x == LogDomain::Desktop as u32 => LogDomain::Desktop,
+        x if x == LogDomain::App as u32 => LogDomain::App,
         _ => LogDomain::Service,
     }
 }
@@ -316,6 +319,11 @@ fn event_from_word(value: u64) -> LogEvent {
         x if x == LogEvent::CompositorPresented as u32 => LogEvent::CompositorPresented,
         x if x == LogEvent::SessionReady as u32 => LogEvent::SessionReady,
         x if x == LogEvent::SessionFocusChanged as u32 => LogEvent::SessionFocusChanged,
+        x if x == LogEvent::DesktopReady as u32 => LogEvent::DesktopReady,
+        x if x == LogEvent::DesktopAppLaunched as u32 => LogEvent::DesktopAppLaunched,
+        x if x == LogEvent::DesktopAppExited as u32 => LogEvent::DesktopAppExited,
+        x if x == LogEvent::DesktopFocusChanged as u32 => LogEvent::DesktopFocusChanged,
+        x if x == LogEvent::AppRendered as u32 => LogEvent::AppRendered,
         _ => LogEvent::LookupGranted,
     }
 }

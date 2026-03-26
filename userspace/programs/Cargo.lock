@@ -81,6 +81,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "serviceos-desktop-shell-service"
+version = "0.1.0"
+dependencies = [
+ "serviceos-desktop-ui",
+ "serviceos-userspace-runtime",
+]
+
+[[package]]
+name = "serviceos-desktop-ui"
+version = "0.1.0"
+dependencies = [
+ "serviceos-userspace-runtime",
+]
+
+[[package]]
+name = "serviceos-files-app"
+version = "0.1.0"
+dependencies = [
+ "serviceos-desktop-ui",
+ "serviceos-userspace-runtime",
+]
+
+[[package]]
 name = "serviceos-graphics-service"
 version = "0.1.0"
 dependencies = [
@@ -92,6 +115,14 @@ name = "serviceos-log-service"
 version = "0.1.0"
 dependencies = [
  "serviceos-abi",
+ "serviceos-userspace-runtime",
+]
+
+[[package]]
+name = "serviceos-monitor-app"
+version = "0.1.0"
+dependencies = [
+ "serviceos-desktop-ui",
  "serviceos-userspace-runtime",
 ]
 
@@ -125,6 +156,14 @@ dependencies = [
 name = "serviceos-session-service"
 version = "0.1.0"
 dependencies = [
+ "serviceos-userspace-runtime",
+]
+
+[[package]]
+name = "serviceos-settings-app"
+version = "0.1.0"
+dependencies = [
+ "serviceos-desktop-ui",
  "serviceos-userspace-runtime",
 ]
 

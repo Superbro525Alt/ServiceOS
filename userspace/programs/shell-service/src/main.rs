@@ -5,8 +5,8 @@ use core::fmt::Write;
 
 use serviceos_userspace_runtime as rt;
 use rt::{
-    ConfigKey, FixedLogBuffer, LogDomain, LogEvent, LogSeverity, ManagerServiceInfo,
-    ManagerServicePhase, RawMessage, ServiceId, ServiceImageId,
+    ConfigKey, DesktopAppId, DesktopAppInfo, FixedLogBuffer, LogDomain, LogEvent, LogSeverity,
+    ManagerServiceInfo, ManagerServicePhase, RawMessage, ServiceId, ServiceImageId,
 };
 
 const MAX_LINE_BYTES: usize = 128;
@@ -14,6 +14,7 @@ const MAX_LISTED_SERVICES: usize = 12;
 const MAX_STORAGE_PATH: usize = 96;
 const MAX_CAT_CHUNK: usize = 96;
 const MAX_VERSION_BYTES: usize = 24;
+const MAX_DESKTOP_APPS: usize = 8;
 
 rt::entry!(main);
 
@@ -119,6 +120,7 @@ fn execute_command(bootstrap: rt::Handle, session: rt::Handle, line: &str) -> rt
         "status" => cmd_status(bootstrap, session),
         "net" => cmd_net(bootstrap, session, parts),
         "gfx" => cmd_gfx(bootstrap, session, parts),
+        "desktop" => cmd_desktop(bootstrap, session, parts),
         "pkg" => cmd_pkg(bootstrap, session, parts),
         "run" => match parts.next() {
             Some("sysinfo") => cmd_run_sysinfo(bootstrap, session),
@@ -146,6 +148,10 @@ fn print_help(session: rt::Handle) -> rt::Result<()> {
     write_session_linef(session, format_args!("gfx surfaces: show compositor surfaces"))?;
     write_session_linef(session, format_args!("gfx sessions: show graphical sessions"))?;
     write_session_linef(session, format_args!("gfx focus <surface-id>: change focused session surface"))?;
+    write_session_linef(session, format_args!("desktop status: show desktop shell status"))?;
+    write_session_linef(session, format_args!("desktop apps: list desktop app state"))?;
+    write_session_linef(session, format_args!("desktop launch <settings|files|monitor>: launch a desktop app"))?;
+    write_session_linef(session, format_args!("desktop focus <settings|files|monitor>: focus a desktop app"))?;
     write_session_linef(session, format_args!("pkg list: list repository packages"))?;
     write_session_linef(session, format_args!("pkg info <name>: inspect one package"))?;
     write_session_linef(session, format_args!("pkg install <name> [version]: activate a package"))?;
@@ -536,6 +542,108 @@ fn cmd_gfx_focus(bootstrap: rt::Handle, session: rt::Handle, surface_id: u32) ->
     )
 }
 
+fn cmd_desktop<'a, I>(bootstrap: rt::Handle, session: rt::Handle, mut parts: I) -> rt::Result<()>
+where
+    I: Iterator<Item = &'a str>,
+{
+    match parts.next() {
+        Some("status") => cmd_desktop_status(bootstrap, session),
+        Some("apps") => cmd_desktop_apps(bootstrap, session),
+        Some("launch") => match parts.next().and_then(parse_desktop_app_name) {
+            Some(app_id) => cmd_desktop_launch(bootstrap, session, app_id),
+            None => write_session_linef(
+                session,
+                format_args!("usage: desktop launch <settings|files|monitor>"),
+            ),
+        },
+        Some("focus") => match parts.next().and_then(parse_desktop_app_name) {
+            Some(app_id) => cmd_desktop_focus(bootstrap, session, app_id),
+            None => write_session_linef(
+                session,
+                format_args!("usage: desktop focus <settings|files|monitor>"),
+            ),
+        },
+        _ => write_session_linef(
+            session,
+            format_args!("usage: desktop <status|apps|launch|focus> ..."),
+        ),
+    }
+}
+
+fn cmd_desktop_status(bootstrap: rt::Handle, session: rt::Handle) -> rt::Result<()> {
+    let desktop_handle = rt::lookup_service(bootstrap, ServiceId::DesktopShell)?;
+    let status = rt::desktop_status(desktop_handle)?;
+    let _ = rt::handle_close(desktop_handle);
+    write_session_linef(
+        session,
+        format_args!(
+            "session={} focused-app={} running-apps={}",
+            status.session_id,
+            status
+                .focused_app
+                .map(desktop_app_name)
+                .unwrap_or("none"),
+            status.running_apps,
+        ),
+    )
+}
+
+fn cmd_desktop_apps(bootstrap: rt::Handle, session: rt::Handle) -> rt::Result<()> {
+    let desktop_handle = rt::lookup_service(bootstrap, ServiceId::DesktopShell)?;
+    let mut apps = [DesktopAppInfo {
+        app_id: DesktopAppId::Settings,
+        running: false,
+        focused: false,
+        surface_id: 0,
+    }; MAX_DESKTOP_APPS];
+    let count = rt::desktop_list_apps(desktop_handle, &mut apps)?;
+    let _ = rt::handle_close(desktop_handle);
+    if count == 0 {
+        return write_session_linef(session, format_args!("no desktop apps"));
+    }
+    for app in apps.iter().copied().take(count) {
+        write_session_linef(
+            session,
+            format_args!(
+                "{:<10} running={} focused={} surface={}",
+                desktop_app_name(app.app_id),
+                app.running,
+                app.focused,
+                app.surface_id,
+            ),
+        )?;
+    }
+    Ok(())
+}
+
+fn cmd_desktop_launch(
+    bootstrap: rt::Handle,
+    session: rt::Handle,
+    app_id: DesktopAppId,
+) -> rt::Result<()> {
+    let desktop_handle = rt::lookup_service(bootstrap, ServiceId::DesktopShell)?;
+    let surface_id = rt::desktop_launch_app(desktop_handle, app_id)?;
+    let _ = rt::handle_close(desktop_handle);
+    write_session_linef(
+        session,
+        format_args!("launched {} on surface {}", desktop_app_name(app_id), surface_id),
+    )
+}
+
+fn cmd_desktop_focus(
+    bootstrap: rt::Handle,
+    session: rt::Handle,
+    app_id: DesktopAppId,
+) -> rt::Result<()> {
+    let desktop_handle = rt::lookup_service(bootstrap, ServiceId::DesktopShell)?;
+    let surface_id = rt::desktop_focus_app(desktop_handle, app_id)?;
+    let _ = rt::handle_close(desktop_handle);
+    write_session_linef(
+        session,
+        format_args!("focused {} on surface {}", desktop_app_name(app_id), surface_id),
+    )
+}
+
 fn cmd_pkg<'a, I>(bootstrap: rt::Handle, session: rt::Handle, mut parts: I) -> rt::Result<()>
 where
     I: Iterator<Item = &'a str>,
@@ -747,6 +855,16 @@ fn parse_service_name(name: &str) -> Option<ServiceId> {
         "network" | "network-service" => Some(ServiceId::Network),
         "graphics" | "graphics-service" => Some(ServiceId::Graphics),
         "session" | "session-service" => Some(ServiceId::Session),
+        "desktop" | "desktop-shell" | "desktop-shell-service" => Some(ServiceId::DesktopShell),
+        _ => None,
+    }
+}
+
+fn parse_desktop_app_name(name: &str) -> Option<DesktopAppId> {
+    match name {
+        "settings" => Some(DesktopAppId::Settings),
+        "files" => Some(DesktopAppId::Files),
+        "monitor" => Some(DesktopAppId::Monitor),
         _ => None,
     }
 }
@@ -765,6 +883,15 @@ fn service_name(service_id: ServiceId) -> &'static str {
         ServiceId::Network => "network-service",
         ServiceId::Graphics => "graphics-service",
         ServiceId::Session => "session-service",
+        ServiceId::DesktopShell => "desktop-shell-service",
+    }
+}
+
+fn desktop_app_name(app_id: DesktopAppId) -> &'static str {
+    match app_id {
+        DesktopAppId::Settings => "settings",
+        DesktopAppId::Files => "files",
+        DesktopAppId::Monitor => "monitor",
     }
 }
 
@@ -826,6 +953,8 @@ fn domain_name(domain: LogDomain) -> &'static str {
         LogDomain::Network => "network",
         LogDomain::Graphics => "graphics",
         LogDomain::Session => "session",
+        LogDomain::Desktop => "desktop",
+        LogDomain::App => "app",
     }
 }
 
@@ -864,6 +993,11 @@ fn event_name(event: LogEvent) -> &'static str {
         LogEvent::CompositorPresented => "compositor-presented",
         LogEvent::SessionReady => "session-ready",
         LogEvent::SessionFocusChanged => "session-focus-changed",
+        LogEvent::DesktopReady => "desktop-ready",
+        LogEvent::DesktopAppLaunched => "desktop-app-launched",
+        LogEvent::DesktopAppExited => "desktop-app-exited",
+        LogEvent::DesktopFocusChanged => "desktop-focus-changed",
+        LogEvent::AppRendered => "app-rendered",
     }
 }
 

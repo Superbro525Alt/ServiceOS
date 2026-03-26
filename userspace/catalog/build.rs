@@ -107,6 +107,34 @@ const PROGRAMS: &[Program] = &[
         service_path: "services/session-service/program.img",
         service_id: 12,
     },
+    Program {
+        package: "serviceos-desktop-shell-service",
+        bin_name: "serviceos-desktop-shell-service",
+        image_id: 14,
+        service_path: "services/desktop-shell-service/program.img",
+        service_id: 13,
+    },
+    Program {
+        package: "serviceos-settings-app",
+        bin_name: "serviceos-settings-app",
+        image_id: 15,
+        service_path: "apps/settings-app/program.img",
+        service_id: 0,
+    },
+    Program {
+        package: "serviceos-files-app",
+        bin_name: "serviceos-files-app",
+        image_id: 16,
+        service_path: "apps/files-app/program.img",
+        service_id: 0,
+    },
+    Program {
+        package: "serviceos-monitor-app",
+        bin_name: "serviceos-monitor-app",
+        image_id: 17,
+        service_path: "apps/monitor-app/program.img",
+        service_id: 0,
+    },
 ];
 
 struct Program {

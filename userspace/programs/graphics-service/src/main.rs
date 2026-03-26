@@ -9,11 +9,65 @@ use rt::{
     LogEvent, LogSeverity, RawMessage, ServiceId, SurfaceTag,
 };
 
-const MAX_SURFACES: usize = 8;
+const MAX_SURFACES: usize = 16;
 const MAX_FRAMEBUFFER_BYTES: usize = 8 * 1024 * 1024;
+const MAX_SURFACE_RECTS: usize = 16;
+const MAX_SURFACE_LABELS: usize = 16;
+const MAX_LABEL_BYTES: usize = 56;
 const DEFAULT_BACKGROUND_RGB: u32 = 0x10151d;
+const LABEL_ADVANCE: usize = 6;
+const GLYPH_WIDTH: usize = 5;
+const GLYPH_HEIGHT: usize = 7;
 
 static mut FRAMEBUFFER_BYTES: [u8; MAX_FRAMEBUFFER_BYTES] = [0; MAX_FRAMEBUFFER_BYTES];
+
+#[derive(Clone, Copy)]
+struct RectSlot {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    color_rgb: u32,
+    visible: bool,
+    occupied: bool,
+}
+
+impl RectSlot {
+    const fn empty() -> Self {
+        Self {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+            color_rgb: 0,
+            visible: false,
+            occupied: false,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct LabelSlot {
+    x: i32,
+    y: i32,
+    color_rgb: u32,
+    len: usize,
+    bytes: [u8; MAX_LABEL_BYTES],
+    occupied: bool,
+}
+
+impl LabelSlot {
+    const fn empty() -> Self {
+        Self {
+            x: 0,
+            y: 0,
+            color_rgb: 0,
+            len: 0,
+            bytes: [0; MAX_LABEL_BYTES],
+            occupied: false,
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 struct SurfaceSlot {
@@ -28,6 +82,8 @@ struct SurfaceSlot {
     fill_rgb: u32,
     visible: bool,
     occupied: bool,
+    rects: [RectSlot; MAX_SURFACE_RECTS],
+    labels: [LabelSlot; MAX_SURFACE_LABELS],
 }
 
 impl SurfaceSlot {
@@ -44,6 +100,8 @@ impl SurfaceSlot {
             fill_rgb: 0,
             visible: false,
             occupied: false,
+            rects: [RectSlot::empty(); MAX_SURFACE_RECTS],
+            labels: [LabelSlot::empty(); MAX_SURFACE_LABELS],
         }
     }
 }
@@ -90,6 +148,7 @@ fn main() -> u64 {
     let mut surfaces = [SurfaceSlot::empty(); MAX_SURFACES];
     let mut next_surface_id = 1u32;
     let mut present_count = 0u64;
+    let mut last_logged_surface_count = 0usize;
     let mut dirty = true;
 
     loop {
@@ -127,7 +186,7 @@ fn main() -> u64 {
             let mut message = RawMessage::empty(0);
             match rt::channel_receive_nonblocking(surface.endpoint, &mut message) {
                 Ok(()) => {
-                    if handle_surface_request(surface, &message, &mut dirty).is_err() {
+                    if handle_surface_request(log_handle, surface, &message, &mut dirty).is_err() {
                         return 0xfc0a;
                     }
                 }
@@ -144,13 +203,17 @@ fn main() -> u64 {
                 return 0xfc0b;
             }
             present_count = present_count.saturating_add(1);
-            let _ = emit_log(
-                log_handle,
-                LogSeverity::Info,
-                LogEvent::CompositorPresented,
-                active_surface_count(&surfaces) as u64,
-                present_count,
-            );
+            let active_surface_count = active_surface_count(&surfaces);
+            if present_count == 1 || active_surface_count != last_logged_surface_count {
+                let _ = emit_log(
+                    log_handle,
+                    LogSeverity::Info,
+                    LogEvent::CompositorPresented,
+                    active_surface_count as u64,
+                    present_count,
+                );
+                last_logged_surface_count = active_surface_count;
+            }
             dirty = false;
         }
 
@@ -266,6 +329,7 @@ fn handle_public_request(
                 let _ = rt::handle_close(reply_handle);
                 return Ok(());
             };
+
             let pair = rt::channel_create()?;
             slot.id = *next_surface_id;
             *next_surface_id = next_surface_id.saturating_add(1);
@@ -279,6 +343,8 @@ fn handle_public_request(
             slot.fill_rgb = request.words[6] as u32;
             slot.visible = request.words[7] != 0;
             slot.occupied = true;
+            slot.rects = [RectSlot::empty(); MAX_SURFACE_RECTS];
+            slot.labels = [LabelSlot::empty(); MAX_SURFACE_LABELS];
             *dirty = true;
 
             let mut reply = RawMessage::empty(GraphicsTag::SurfaceCreateReply as u32);
@@ -307,6 +373,7 @@ fn handle_public_request(
 }
 
 fn handle_surface_request(
+    log_handle: rt::Handle,
     surface: &mut SurfaceSlot,
     message: &RawMessage,
     dirty: &mut bool,
@@ -322,6 +389,13 @@ fn handle_surface_request(
             surface.height = message.words[3] as u32;
             surface.z_order = message.words[4] as u32;
             *dirty = true;
+            let _ = emit_log(
+                log_handle,
+                LogSeverity::Debug,
+                LogEvent::SurfaceUpdated,
+                surface.id as u64,
+                0,
+            );
             reply_surface_status(message.handles[0], SurfaceTag::SetGeometryReply, GraphicsStatus::Ok);
         }
         x if x == SurfaceTag::SetFillRequest as u32 => {
@@ -330,6 +404,13 @@ fn handle_surface_request(
             }
             surface.fill_rgb = message.words[0] as u32;
             *dirty = true;
+            let _ = emit_log(
+                log_handle,
+                LogSeverity::Debug,
+                LogEvent::SurfaceUpdated,
+                surface.id as u64,
+                1,
+            );
             reply_surface_status(message.handles[0], SurfaceTag::SetFillReply, GraphicsStatus::Ok);
         }
         x if x == SurfaceTag::SetVisibilityRequest as u32 => {
@@ -343,6 +424,86 @@ fn handle_surface_request(
                 SurfaceTag::SetVisibilityReply,
                 GraphicsStatus::Ok,
             );
+        }
+        x if x == SurfaceTag::ClearSceneRequest as u32 => {
+            if message.handle_count < 1 {
+                return Ok(());
+            }
+            surface.rects = [RectSlot::empty(); MAX_SURFACE_RECTS];
+            surface.labels = [LabelSlot::empty(); MAX_SURFACE_LABELS];
+            *dirty = true;
+            let _ = emit_log(
+                log_handle,
+                LogSeverity::Debug,
+                LogEvent::SurfaceUpdated,
+                surface.id as u64,
+                2,
+            );
+            reply_surface_status(message.handles[0], SurfaceTag::ClearSceneReply, GraphicsStatus::Ok);
+        }
+        x if x == SurfaceTag::SetRectRequest as u32 => {
+            if message.word_count < 7 || message.handle_count < 1 {
+                return Ok(());
+            }
+            let slot_index = message.words[0] as usize;
+            let status = if let Some(slot) = surface.rects.get_mut(slot_index) {
+                slot.x = message.words[1] as i64 as i32;
+                slot.y = message.words[2] as i64 as i32;
+                slot.width = message.words[3] as u32;
+                slot.height = message.words[4] as u32;
+                slot.color_rgb = message.words[5] as u32;
+                slot.visible = message.words[6] != 0;
+                slot.occupied = slot.visible;
+                *dirty = true;
+                let _ = emit_log(
+                    log_handle,
+                    LogSeverity::Debug,
+                    LogEvent::SurfaceUpdated,
+                    surface.id as u64,
+                    slot_index as u64,
+                );
+                GraphicsStatus::Ok
+            } else {
+                GraphicsStatus::CapacityExceeded
+            };
+            reply_surface_status(message.handles[0], SurfaceTag::SetRectReply, status);
+        }
+        x if x == SurfaceTag::SetLabelRequest as u32 => {
+            if message.word_count < 5 || message.handle_count < 1 {
+                return Ok(());
+            }
+            let slot_index = message.words[0] as usize;
+            let status = if let Some(slot) = surface.labels.get_mut(slot_index) {
+                let text_len = message.words[4] as usize;
+                if text_len > MAX_LABEL_BYTES
+                    || unpack_bytes(
+                        &message.words[5..message.word_count as usize],
+                        text_len,
+                        &mut slot.bytes,
+                    )
+                    .is_err()
+                {
+                    GraphicsStatus::CapacityExceeded
+                } else {
+                    slot.x = message.words[1] as i64 as i32;
+                    slot.y = message.words[2] as i64 as i32;
+                    slot.color_rgb = message.words[3] as u32;
+                    slot.len = text_len;
+                    slot.occupied = text_len != 0;
+                    *dirty = true;
+                    let _ = emit_log(
+                        log_handle,
+                        LogSeverity::Debug,
+                        LogEvent::SurfaceUpdated,
+                        surface.id as u64,
+                        (MAX_SURFACE_RECTS + slot_index) as u64,
+                    );
+                    GraphicsStatus::Ok
+                }
+            } else {
+                GraphicsStatus::CapacityExceeded
+            };
+            reply_surface_status(message.handles[0], SurfaceTag::SetLabelReply, status);
         }
         x if x == SurfaceTag::CloseRequest as u32 => {
             release_surface(surface);
@@ -407,18 +568,171 @@ fn fill_frame(frame: &mut [u8], output: rt::DisplayOutputInfo, rgb: u32) {
 }
 
 fn draw_surface(frame: &mut [u8], output: rt::DisplayOutputInfo, surface: &SurfaceSlot) {
-    let start_x = surface.x.max(0) as usize;
-    let start_y = surface.y.max(0) as usize;
-    let end_x = ((surface.x + surface.width as i32).max(0) as usize).min(output.width as usize);
-    let end_y = ((surface.y + surface.height as i32).max(0) as usize).min(output.height as usize);
+    draw_rect(
+        frame,
+        output,
+        surface.x,
+        surface.y,
+        surface.width,
+        surface.height,
+        surface.fill_rgb,
+    );
+    for rect in surface.rects.iter().filter(|rect| rect.occupied && rect.visible) {
+        draw_rect(
+            frame,
+            output,
+            surface.x.saturating_add(rect.x),
+            surface.y.saturating_add(rect.y),
+            rect.width,
+            rect.height,
+            rect.color_rgb,
+        );
+    }
+    for label in surface.labels.iter().filter(|label| label.occupied) {
+        draw_label(
+            frame,
+            output,
+            surface.x.saturating_add(label.x),
+            surface.y.saturating_add(label.y),
+            label.color_rgb,
+            &label.bytes[..label.len],
+        );
+    }
+}
+
+fn draw_rect(
+    frame: &mut [u8],
+    output: rt::DisplayOutputInfo,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    rgb: u32,
+) {
+    let start_x = x.max(0) as usize;
+    let start_y = y.max(0) as usize;
+    let end_x = ((x + width as i32).max(0) as usize).min(output.width as usize);
+    let end_y = ((y + height as i32).max(0) as usize).min(output.height as usize);
     if start_x >= end_x || start_y >= end_y {
         return;
     }
 
-    for y in start_y..end_y {
-        for x in start_x..end_x {
-            write_pixel(frame, output, x, y, surface.fill_rgb);
+    for py in start_y..end_y {
+        for px in start_x..end_x {
+            write_pixel(frame, output, px, py, rgb);
         }
+    }
+}
+
+fn draw_label(
+    frame: &mut [u8],
+    output: rt::DisplayOutputInfo,
+    x: i32,
+    y: i32,
+    color_rgb: u32,
+    text: &[u8],
+) {
+    for (index, byte) in text.iter().copied().enumerate() {
+        let ch = normalize_glyph(byte);
+        let glyph_x = x.saturating_add((index * LABEL_ADVANCE) as i32);
+        draw_glyph(frame, output, glyph_x, y, color_rgb, ch);
+    }
+}
+
+fn draw_glyph(
+    frame: &mut [u8],
+    output: rt::DisplayOutputInfo,
+    x: i32,
+    y: i32,
+    color_rgb: u32,
+    ch: u8,
+) {
+    let rows = glyph_rows(ch);
+    for (row_index, bits) in rows.iter().copied().enumerate().take(GLYPH_HEIGHT) {
+        for column in 0..GLYPH_WIDTH {
+            if (bits >> (GLYPH_WIDTH - 1 - column)) & 1 == 0 {
+                continue;
+            }
+            let px = x.saturating_add(column as i32);
+            let py = y.saturating_add(row_index as i32);
+            if px < 0 || py < 0 {
+                continue;
+            }
+            write_pixel(frame, output, px as usize, py as usize, color_rgb);
+        }
+    }
+}
+
+fn normalize_glyph(byte: u8) -> u8 {
+    if byte.is_ascii_lowercase() {
+        byte - 32
+    } else {
+        byte
+    }
+}
+
+fn unpack_bytes(words: &[u64], len: usize, destination: &mut [u8]) -> rt::Result<()> {
+    if len > destination.len() || len > words.len() * 8 {
+        return Err(rt::Error::BufferTooSmall);
+    }
+    let mut copied = 0usize;
+    for word in words.iter().copied() {
+        if copied >= len {
+            break;
+        }
+        let bytes = word.to_le_bytes();
+        let chunk = (len - copied).min(bytes.len());
+        destination[copied..copied + chunk].copy_from_slice(&bytes[..chunk]);
+        copied += chunk;
+    }
+    Ok(())
+}
+
+fn glyph_rows(ch: u8) -> [u8; GLYPH_HEIGHT] {
+    match ch {
+        b'A' => [0x0e, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11],
+        b'B' => [0x1e, 0x11, 0x11, 0x1e, 0x11, 0x11, 0x1e],
+        b'C' => [0x0f, 0x10, 0x10, 0x10, 0x10, 0x10, 0x0f],
+        b'D' => [0x1e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1e],
+        b'E' => [0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x1f],
+        b'F' => [0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x10],
+        b'G' => [0x0f, 0x10, 0x10, 0x17, 0x11, 0x11, 0x0f],
+        b'H' => [0x11, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11],
+        b'I' => [0x1f, 0x04, 0x04, 0x04, 0x04, 0x04, 0x1f],
+        b'J' => [0x01, 0x01, 0x01, 0x01, 0x11, 0x11, 0x0e],
+        b'K' => [0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11],
+        b'L' => [0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1f],
+        b'M' => [0x11, 0x1b, 0x15, 0x15, 0x11, 0x11, 0x11],
+        b'N' => [0x11, 0x11, 0x19, 0x15, 0x13, 0x11, 0x11],
+        b'O' => [0x0e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e],
+        b'P' => [0x1e, 0x11, 0x11, 0x1e, 0x10, 0x10, 0x10],
+        b'Q' => [0x0e, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0d],
+        b'R' => [0x1e, 0x11, 0x11, 0x1e, 0x14, 0x12, 0x11],
+        b'S' => [0x0f, 0x10, 0x10, 0x0e, 0x01, 0x01, 0x1e],
+        b'T' => [0x1f, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04],
+        b'U' => [0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e],
+        b'V' => [0x11, 0x11, 0x11, 0x11, 0x11, 0x0a, 0x04],
+        b'W' => [0x11, 0x11, 0x11, 0x15, 0x15, 0x1b, 0x11],
+        b'X' => [0x11, 0x11, 0x0a, 0x04, 0x0a, 0x11, 0x11],
+        b'Y' => [0x11, 0x11, 0x0a, 0x04, 0x04, 0x04, 0x04],
+        b'Z' => [0x1f, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1f],
+        b'0' => [0x0e, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0e],
+        b'1' => [0x04, 0x0c, 0x14, 0x04, 0x04, 0x04, 0x1f],
+        b'2' => [0x0e, 0x11, 0x01, 0x06, 0x08, 0x10, 0x1f],
+        b'3' => [0x1f, 0x02, 0x04, 0x06, 0x01, 0x11, 0x0e],
+        b'4' => [0x02, 0x06, 0x0a, 0x12, 0x1f, 0x02, 0x02],
+        b'5' => [0x1f, 0x10, 0x1e, 0x01, 0x01, 0x11, 0x0e],
+        b'6' => [0x06, 0x08, 0x10, 0x1e, 0x11, 0x11, 0x0e],
+        b'7' => [0x1f, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08],
+        b'8' => [0x0e, 0x11, 0x11, 0x0e, 0x11, 0x11, 0x0e],
+        b'9' => [0x0e, 0x11, 0x11, 0x0f, 0x01, 0x02, 0x0c],
+        b'.' => [0x00, 0x00, 0x00, 0x00, 0x00, 0x0c, 0x0c],
+        b':' => [0x00, 0x0c, 0x0c, 0x00, 0x0c, 0x0c, 0x00],
+        b'-' => [0x00, 0x00, 0x00, 0x1f, 0x00, 0x00, 0x00],
+        b'/' => [0x01, 0x02, 0x02, 0x04, 0x08, 0x08, 0x10],
+        b'_' => [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1f],
+        b' ' => [0x00; GLYPH_HEIGHT],
+        _ => [0x0e, 0x11, 0x01, 0x06, 0x04, 0x00, 0x04],
     }
 }
 

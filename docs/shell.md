@@ -37,7 +37,7 @@ The shell is intentionally not all-powerful.
 It has:
 
 - lookup rights for `console-service`, `log-service`, `config-service`,
-  `storage-service`, and `status-service`
+  `storage-service`, `status-service`, and `package-service`
 - its own bootstrap/control channel back to the root manager
 - manager authorization for service restart and transient tool launch
 
@@ -61,10 +61,21 @@ Current built-in commands:
 - `store ls [prefix]`
 - `cat <path>`
 - `status`
+- `pkg list`
+- `pkg info <name>`
+- `pkg install <name> [version]`
+- `pkg update <name> [version]`
+- `pkg remove <name>`
+- `pkg rollback <name>`
+- `pkg history <name>`
 - `run sysinfo`
 
 These commands intentionally exercise the real service contracts rather than
 special shell-only backdoors.
+
+Package commands call the real `package-service`, which then coordinates with
+the root manager. The shell does not edit manifests or activate services by
+itself.
 
 ## Tool launch model
 
@@ -90,4 +101,5 @@ long-running services and transient operator tools.
 - environment variables and richer process environments
 - login/account/session ownership
 - package-installed command discovery
+- richer package UX and operator history views
 - richer terminal emulation and graphical shells

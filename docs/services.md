@@ -14,9 +14,20 @@ root-manager
        depends on console-service, config-service
   -> status-service
        depends on log-service, config-service
+  -> package-service
+       depends on storage-service, log-service
   -> shell-service
        depends on console-service, log-service, config-service,
-       storage-service, status-service
+       storage-service, status-service, package-service
+
+The current repository-backed optional package graph is:
+
+```text
+package-service
+  -> announce-service package
+       versioned at 1.0.0 and 1.1.0
+       activated on operator request
+```
 ```
 
 The important change is that the graph now consumes persisted inputs. The root
@@ -35,6 +46,8 @@ The root manager is the first real system coordinator in userspace. It owns:
 - service registration and lookup mediation
 - restart supervision
 - shell-facing service inspection and transient tool launch
+- package-driven service activation and deactivation for repository-backed
+  service bundles
 
 The kernel still only provides mechanisms: address spaces, threads, channels,
 capabilities, timers, and the executable launch path.
@@ -74,6 +87,9 @@ Current lookup permissions:
   - `config-service` with send-only rights
   - `storage-service` with send-only rights
   - `status-service` with send-only rights
+  - `package-service` with send-only rights
+- `package-service`
+  - `storage-service` with send-only rights
 
 ## Service roles
 
@@ -116,6 +132,24 @@ Current lookup permissions:
 - reads logs, config, and storage through explicit service lookups
 - launches transient tools through the manager rather than direct shell power
 
+### `package-service`
+
+- owns package repository inspection and operator-facing install/update/remove
+  policy
+- reads repository metadata and package manifests from `storage-service`
+- calls back into the root manager for package-provided service activation and
+  deactivation
+- keeps package authority explicit by requiring an explicit service handle; the
+  shell has it, ordinary services do not
+
+### `announce-service`
+
+- is the first package-provided long-running service
+- consumes a package-owned resource blob through the normal service-manifest
+  resource path
+- proves package activation, version switch, removal, and rollback without
+  moving package policy into the kernel
+
 ## Registry and discovery
 
 The registry remains manager-mediated and identity-based.
@@ -154,3 +188,4 @@ This platform layer still does not implement:
 - dynamic service installation
 - richer terminal features, login/session policy, networking, graphics, audio,
   or compatibility services
+- signed repositories, writable install roots, and package-feed transport

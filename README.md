@@ -24,9 +24,10 @@ userspace platform layer:
   I/O, and system status
 - a text-first shell service and transient tool launch path for in-system
   operation
+- a package service with install, update, remove, and rollback coordination
 - host-side unit tests for the core kernel semantics
 
-The system remains intentionally early. It does not attempt desktop, package,
+The system remains intentionally early. It does not attempt desktop,
 networking, audio, graphics, or compatibility stacks yet.
 
 ## Initial target
@@ -113,6 +114,10 @@ The current platform layer provides:
   consumes a startup-granted resource blob
 - a `shell-service` that owns the first operator session and command surface
 - a manager-mediated transient tool launch path validated by `sysinfo-tool`
+- a `package-service` that activates repository-backed service packages through
+  the root manager
+- a package repository format for versioned service bundles such as the current
+  `announce-service` package
 
 The current syscall surface is intentionally small, but it is now enough for a
 real service platform:
@@ -139,6 +144,7 @@ See [docs/kernel-summary.md](/home/paulh/os-dev/docs/kernel-summary.md),
 [docs/userspace.md](/home/paulh/os-dev/docs/userspace.md),
 [docs/services.md](/home/paulh/os-dev/docs/services.md),
 [docs/shell.md](/home/paulh/os-dev/docs/shell.md),
+[docs/packages.md](/home/paulh/os-dev/docs/packages.md),
 [docs/manifests.md](/home/paulh/os-dev/docs/manifests.md),
 [docs/service-logging.md](/home/paulh/os-dev/docs/service-logging.md),
 [docs/service-config.md](/home/paulh/os-dev/docs/service-config.md),

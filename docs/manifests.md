@@ -10,6 +10,12 @@ as:
 - `services/log-service/manifest.svc`
 - `services/status-service/manifest.svc`
 - `services/shell-service/manifest.svc`
+- `services/package-service/manifest.svc`
+
+Package manifests now live beside those service manifests under paths such as:
+
+- `packages/announce-service/1.0.0/package.pkg`
+- `packages/announce-service/1.1.0/package.pkg`
 
 The root manager loads `services/index.txt` from `storage-service`, then opens
 each listed manifest through the same storage contract.
@@ -68,6 +74,39 @@ not get ambient storage root authority just because they need one file.
 This is the current discovery policy. A service cannot look up arbitrary peers
 just because it knows their name.
 
+## Package manifest schema
+
+Current fields:
+
+- `package`: stable package identity
+- `version`: package version string
+- `compat`: runtime/storage compatibility marker
+- `service`: service identity provided by the package
+- `service_manifest`: path to the service manifest to activate
+- `activation`: current activation mode, currently `manual`
+- `depends`: package-level dependency references, currently service identities
+- `content`: one repository content path per line
+- `integrity`: package metadata digest, currently `fnv64:0x...`
+
+Example:
+
+```text
+package=announce-service
+version=1.1.0
+compat=serviceos.bootstore.v1
+service=announce-service
+service_manifest=packages/announce-service/1.1.0/service/manifest.svc
+activation=manual
+depends=log-service
+content=packages/announce-service/1.1.0/service/manifest.svc
+content=packages/announce-service/1.1.0/resources/message.txt
+integrity=fnv64:0xd2b5f5606fc641cc
+```
+
+The package manifest does not replace the service manifest. It wraps one or
+more versioned service bundles with lifecycle metadata that belongs to the
+package/update layer rather than the root service manager.
+
 ## Restart policy
 
 The current implementation uses:
@@ -86,9 +125,12 @@ partition. It currently contains:
 - shared config blobs such as `config/system.cfg`
 - service-specific resources such as
   `services/status-service/resources/banner.txt`
+- repository-backed package bundles such as
+  `packages/announce-service/<version>/...`
 
 This is intentionally small and boot-focused. It is not yet a general package
-format or mutable filesystem.
+format or mutable filesystem install root, but it is now enough to stage
+versioned packages and activate them through the package service.
 
 ## Transfer-right model
 
@@ -113,3 +155,4 @@ The format is intentionally small, but it is ready to grow with:
 - richer health-check definitions
 - on-demand activation policy
 - directory capabilities and writable storage objects
+- repository-backed install roots and rollback journals

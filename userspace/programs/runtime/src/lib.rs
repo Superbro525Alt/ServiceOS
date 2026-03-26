@@ -9,9 +9,9 @@ pub use serviceos_abi::{
     ConfigKey, ConfigTag, ConfigValueKind, ConsoleTag, ControlTag, Handle, HandlePair,
     IPC_FLAG_NONBLOCK, IPC_MAX_HANDLES, IPC_MAX_WORDS, INVALID_HANDLE, LifecycleEvent,
     LogDomain, LogEvent, LogQueryStatus, LogSeverity, LogTag, LookupStatus, ManagerAction,
-    ManagerServicePhase, ManagerStatus, ManagerTag, RawMessage, ServiceId, ServiceImageId,
-    StatusTag, StorageStatus, StorageTag, SyscallErrorCode, SyscallNumber, TaskStateCode,
-    TaskStatus,
+    ManagerServicePhase, ManagerStatus, ManagerTag, PackageStatus, PackageTag, RawMessage,
+    ServiceId, ServiceImageId, StatusTag, StorageStatus, StorageTag, SyscallErrorCode,
+    SyscallNumber, TaskStateCode, TaskStatus,
 };
 pub use serviceos_abi::rights;
 
@@ -209,6 +209,29 @@ pub struct ManagerServiceInfo {
     pub attempts: u32,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PackageListEntry {
+    pub service_id: ServiceId,
+    pub installed: bool,
+    pub active: bool,
+    pub rollback_available: bool,
+    pub repository_versions: u32,
+    pub installed_version_len: usize,
+    pub active_version_len: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PackageInfo {
+    pub installed: bool,
+    pub active: bool,
+    pub rollback_available: bool,
+    pub repository_versions: u32,
+    pub installed_version_len: usize,
+    pub active_version_len: usize,
+    pub rollback_version_len: usize,
+    pub latest_version_len: usize,
+}
+
 pub fn register_service(bootstrap: Handle, service_id: ServiceId, public: Handle) -> Result<()> {
     let mut register = RawMessage::empty(ControlTag::Register as u32);
     register.word_count = 1;
@@ -383,6 +406,7 @@ pub fn storage_open(storage_handle: Handle, path: &str) -> Result<(Handle, usize
             Ok((response.handles[0], response.words[1] as usize))
         }
         x if x == StorageStatus::NotFound as u32 => Err(Error::NotFound),
+        x if x == StorageStatus::Busy as u32 => Err(Error::Busy),
         x if x == StorageStatus::InvalidPath as u32 => Err(Error::InvalidArgument),
         _ => Err(Error::InvalidArgument),
     }
@@ -424,6 +448,12 @@ pub fn storage_read(blob_handle: Handle, offset: usize, buffer: &mut [u8]) -> Re
     }
 }
 
+pub fn storage_blob_close(blob_handle: Handle) -> Result<()> {
+    let request = RawMessage::empty(StorageTag::CloseRequest as u32);
+    let _ = channel_send(blob_handle, &request);
+    handle_close(blob_handle)
+}
+
 pub fn storage_list(
     storage_handle: Handle,
     prefix: &str,
@@ -457,6 +487,7 @@ pub fn storage_list(
     let status = match response.words[0] as u32 {
         x if x == StorageStatus::Ok as u32 => StorageStatus::Ok,
         x if x == StorageStatus::End as u32 => StorageStatus::End,
+        x if x == StorageStatus::Busy as u32 => StorageStatus::Busy,
         x if x == StorageStatus::InvalidPath as u32 => StorageStatus::InvalidPath,
         _ => return Err(Error::InvalidArgument),
     };
@@ -526,27 +557,43 @@ pub fn manager_list_services(
     bootstrap: Handle,
     services: &mut [ManagerServiceInfo],
 ) -> Result<usize> {
-    let request = RawMessage::empty(ManagerTag::ListServicesRequest as u32);
-    channel_send(bootstrap, &request)?;
+    let mut loaded = 0usize;
+    let mut page = 0usize;
 
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(bootstrap, &mut response)?;
-    if response.tag != ManagerTag::ListServicesReply as u32 || response.word_count < 1 {
-        return Err(Error::InvalidArgument);
+    loop {
+        let mut request = RawMessage::empty(ManagerTag::ListServicesRequest as u32);
+        request.word_count = 1;
+        request.words[0] = page as u64;
+        channel_send(bootstrap, &request)?;
+
+        let mut response = RawMessage::empty(0);
+        channel_receive_blocking(bootstrap, &mut response)?;
+        if response.tag != ManagerTag::ListServicesReply as u32 || response.word_count < 2 {
+            return Err(Error::InvalidArgument);
+        }
+
+        let count = response.words[0] as usize;
+        let next_page = response.words[1] as usize;
+        if loaded + count > services.len() || response.word_count < (2 + count * 2) as u32 {
+            return Err(Error::BufferTooSmall);
+        }
+
+        for index in 0..count {
+            services[loaded + index] = ManagerServiceInfo {
+                service_id: service_id_from_word(response.words[2 + index * 2]),
+                phase: manager_phase_from_word(response.words[3 + index * 2]),
+                attempts: (response.words[3 + index * 2] >> 32) as u32,
+            };
+        }
+        loaded += count;
+
+        if next_page == usize::MAX {
+            break;
+        }
+        page = next_page;
     }
 
-    let count = response.words[0] as usize;
-    if count > services.len() || response.word_count < (1 + count * 2) as u32 {
-        return Err(Error::BufferTooSmall);
-    }
-    for index in 0..count {
-        services[index] = ManagerServiceInfo {
-            service_id: service_id_from_word(response.words[1 + index * 2]),
-            phase: manager_phase_from_word(response.words[2 + index * 2]),
-            attempts: (response.words[2 + index * 2] >> 32) as u32,
-        };
-    }
-    Ok(count)
+    Ok(loaded)
 }
 
 pub fn manager_service_status(
@@ -586,7 +633,7 @@ pub fn manager_restart_service(bootstrap: Handle, service_id: ServiceId) -> Resu
     }
     match manager_status_from_word(response.words[0]) {
         ManagerStatus::Ok => Ok(()),
-        ManagerStatus::Busy => Err(Error::Busy),
+        ManagerStatus::Busy | ManagerStatus::Failed => Err(Error::Busy),
         ManagerStatus::NotFound => Err(Error::NotFound),
         ManagerStatus::Denied => Err(Error::PermissionDenied),
     }
@@ -615,10 +662,305 @@ pub fn manager_launch_program(
     }
     match manager_status_from_word(response.words[0]) {
         ManagerStatus::Ok if response.handle_count > 0 => Ok(response.handles[0]),
-        ManagerStatus::Busy => Err(Error::Busy),
+        ManagerStatus::Busy | ManagerStatus::Failed => Err(Error::Busy),
         ManagerStatus::NotFound => Err(Error::NotFound),
         ManagerStatus::Denied => Err(Error::PermissionDenied),
         _ => Err(Error::InvalidArgument),
+    }
+}
+
+pub fn manager_activate_service(bootstrap: Handle, manifest_path: &str) -> Result<ServiceId> {
+    let path_bytes = manifest_path.as_bytes();
+    let max_inline_bytes = (IPC_MAX_WORDS.saturating_sub(1)) * 8;
+    if path_bytes.len() > max_inline_bytes {
+        return Err(Error::BufferTooSmall);
+    }
+
+    let mut request = RawMessage::empty(ManagerTag::ActivateRequest as u32);
+    request.word_count = 1 + pack_bytes(path_bytes, &mut request.words[1..])?;
+    request.words[0] = path_bytes.len() as u64;
+    channel_send(bootstrap, &request)?;
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(bootstrap, &mut response)?;
+    if response.tag != ManagerTag::ActivateReply as u32 || response.word_count < 2 {
+        return Err(Error::InvalidArgument);
+    }
+
+    match manager_status_from_word(response.words[0]) {
+        ManagerStatus::Ok => Ok(service_id_from_word(response.words[1])),
+        ManagerStatus::Busy | ManagerStatus::Failed => Err(Error::Busy),
+        ManagerStatus::NotFound => Err(Error::NotFound),
+        ManagerStatus::Denied => Err(Error::PermissionDenied),
+    }
+}
+
+pub fn manager_deactivate_service(bootstrap: Handle, service_id: ServiceId) -> Result<()> {
+    let mut request = RawMessage::empty(ManagerTag::DeactivateRequest as u32);
+    request.word_count = 1;
+    request.words[0] = service_id as u32 as u64;
+    channel_send(bootstrap, &request)?;
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(bootstrap, &mut response)?;
+    if response.tag != ManagerTag::DeactivateReply as u32 || response.word_count < 1 {
+        return Err(Error::InvalidArgument);
+    }
+
+    match manager_status_from_word(response.words[0]) {
+        ManagerStatus::Ok => Ok(()),
+        ManagerStatus::Busy | ManagerStatus::Failed => Err(Error::Busy),
+        ManagerStatus::NotFound => Err(Error::NotFound),
+        ManagerStatus::Denied => Err(Error::PermissionDenied),
+    }
+}
+
+pub fn package_list(
+    package_handle: Handle,
+    index: usize,
+    installed_version: &mut [u8],
+    active_version: &mut [u8],
+) -> Result<Option<PackageListEntry>> {
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(PackageTag::ListRequest as u32);
+    request.word_count = 1;
+    request.words[0] = index as u64;
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(package_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != PackageTag::ListReply as u32 || response.word_count < 7 {
+        return Err(Error::InvalidArgument);
+    }
+
+    let status = package_status_from_word(response.words[0]);
+    if status == PackageStatus::End {
+        return Ok(None);
+    }
+    if status != PackageStatus::Ok {
+        return Err(package_status_error(status));
+    }
+
+    let installed_len = response.words[4] as usize;
+    let active_len = response.words[5] as usize;
+    let total_bytes = installed_len + active_len;
+    let total_words = total_bytes.div_ceil(8);
+    if response.word_count as usize != 7 + total_words {
+        return Err(Error::InvalidArgument);
+    }
+
+    let mut combined = [0u8; IPC_MAX_WORDS * 8];
+    unpack_bytes(
+        &response.words[7..response.word_count as usize],
+        total_bytes,
+        &mut combined,
+    )?;
+    installed_version[..installed_len].copy_from_slice(&combined[..installed_len]);
+    active_version[..active_len]
+        .copy_from_slice(&combined[installed_len..installed_len + active_len]);
+
+    Ok(Some(PackageListEntry {
+        service_id: service_id_from_word(response.words[1]),
+        installed: response.words[2] & 1 != 0,
+        active: response.words[2] & 2 != 0,
+        rollback_available: response.words[2] & 4 != 0,
+        repository_versions: response.words[3] as u32,
+        installed_version_len: installed_len,
+        active_version_len: active_len,
+    }))
+}
+
+pub fn package_info(
+    package_handle: Handle,
+    service_id: ServiceId,
+    installed_version: &mut [u8],
+    active_version: &mut [u8],
+    rollback_version: &mut [u8],
+    latest_version: &mut [u8],
+) -> Result<PackageInfo> {
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(PackageTag::InfoRequest as u32);
+    request.word_count = 1;
+    request.words[0] = service_id as u32 as u64;
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(package_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != PackageTag::InfoReply as u32 || response.word_count < 8 {
+        return Err(Error::InvalidArgument);
+    }
+
+    let status = package_status_from_word(response.words[0]);
+    if status != PackageStatus::Ok {
+        return Err(package_status_error(status));
+    }
+
+    let installed_len = response.words[3] as usize;
+    let active_len = response.words[4] as usize;
+    let rollback_len = response.words[5] as usize;
+    let latest_len = response.words[6] as usize;
+    let total_bytes = installed_len + active_len + rollback_len + latest_len;
+    let total_words = total_bytes.div_ceil(8);
+    if response.word_count as usize != 8 + total_words {
+        return Err(Error::InvalidArgument);
+    }
+
+    let mut combined = [0u8; IPC_MAX_WORDS * 8];
+    unpack_bytes(
+        &response.words[8..response.word_count as usize],
+        total_bytes,
+        &mut combined,
+    )?;
+
+    let mut offset = 0usize;
+    installed_version[..installed_len].copy_from_slice(&combined[offset..offset + installed_len]);
+    offset += installed_len;
+    active_version[..active_len].copy_from_slice(&combined[offset..offset + active_len]);
+    offset += active_len;
+    rollback_version[..rollback_len].copy_from_slice(&combined[offset..offset + rollback_len]);
+    offset += rollback_len;
+    latest_version[..latest_len].copy_from_slice(&combined[offset..offset + latest_len]);
+
+    Ok(PackageInfo {
+        installed: response.words[1] & 1 != 0,
+        active: response.words[1] & 2 != 0,
+        rollback_available: response.words[1] & 4 != 0,
+        repository_versions: response.words[2] as u32,
+        installed_version_len: installed_len,
+        active_version_len: active_len,
+        rollback_version_len: rollback_len,
+        latest_version_len: latest_len,
+    })
+}
+
+pub fn package_install(
+    package_handle: Handle,
+    service_id: ServiceId,
+    version: Option<&str>,
+) -> Result<()> {
+    package_mutation(package_handle, PackageTag::InstallRequest, PackageTag::InstallReply, service_id, version)
+}
+
+pub fn package_update(
+    package_handle: Handle,
+    service_id: ServiceId,
+    version: Option<&str>,
+) -> Result<()> {
+    package_mutation(package_handle, PackageTag::UpdateRequest, PackageTag::UpdateReply, service_id, version)
+}
+
+pub fn package_remove(package_handle: Handle, service_id: ServiceId) -> Result<()> {
+    package_mutation(
+        package_handle,
+        PackageTag::RemoveRequest,
+        PackageTag::RemoveReply,
+        service_id,
+        None,
+    )
+}
+
+pub fn package_rollback(package_handle: Handle, service_id: ServiceId) -> Result<()> {
+    package_mutation(
+        package_handle,
+        PackageTag::RollbackRequest,
+        PackageTag::RollbackReply,
+        service_id,
+        None,
+    )
+}
+
+pub fn package_history(
+    package_handle: Handle,
+    service_id: ServiceId,
+    current_version: &mut [u8],
+    previous_version: &mut [u8],
+) -> Result<(usize, usize)> {
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(PackageTag::HistoryRequest as u32);
+    request.word_count = 1;
+    request.words[0] = service_id as u32 as u64;
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(package_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != PackageTag::HistoryReply as u32 || response.word_count < 4 {
+        return Err(Error::InvalidArgument);
+    }
+
+    let status = package_status_from_word(response.words[0]);
+    if status != PackageStatus::Ok {
+        return Err(package_status_error(status));
+    }
+
+    let current_len = response.words[1] as usize;
+    let previous_len = response.words[2] as usize;
+    let total_bytes = current_len + previous_len;
+    let total_words = total_bytes.div_ceil(8);
+    if response.word_count as usize != 4 + total_words {
+        return Err(Error::InvalidArgument);
+    }
+
+    let mut combined = [0u8; IPC_MAX_WORDS * 8];
+    unpack_bytes(
+        &response.words[4..response.word_count as usize],
+        total_bytes,
+        &mut combined,
+    )?;
+    current_version[..current_len].copy_from_slice(&combined[..current_len]);
+    previous_version[..previous_len]
+        .copy_from_slice(&combined[current_len..current_len + previous_len]);
+    Ok((current_len, previous_len))
+}
+
+fn package_mutation(
+    package_handle: Handle,
+    request_tag: PackageTag,
+    reply_tag: PackageTag,
+    service_id: ServiceId,
+    version: Option<&str>,
+) -> Result<()> {
+    let version_bytes = version.unwrap_or("").as_bytes();
+    let max_inline_bytes = (IPC_MAX_WORDS.saturating_sub(2)) * 8;
+    if version_bytes.len() > max_inline_bytes {
+        return Err(Error::BufferTooSmall);
+    }
+
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(request_tag as u32);
+    request.word_count = 2 + pack_bytes(version_bytes, &mut request.words[2..])?;
+    request.words[0] = service_id as u32 as u64;
+    request.words[1] = version_bytes.len() as u64;
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(package_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != reply_tag as u32 || response.word_count < 1 {
+        return Err(Error::InvalidArgument);
+    }
+
+    match package_status_from_word(response.words[0]) {
+        PackageStatus::Ok => Ok(()),
+        status => Err(package_status_error(status)),
     }
 }
 
@@ -775,6 +1117,8 @@ fn service_id_from_word(value: u64) -> ServiceId {
         x if x == ServiceId::Log as u32 => ServiceId::Log,
         x if x == ServiceId::Status as u32 => ServiceId::Status,
         x if x == ServiceId::Shell as u32 => ServiceId::Shell,
+        x if x == ServiceId::Package as u32 => ServiceId::Package,
+        x if x == ServiceId::Announce as u32 => ServiceId::Announce,
         _ => ServiceId::RootManager,
     }
 }
@@ -800,6 +1144,7 @@ fn domain_from_word(value: u64) -> LogDomain {
         x if x == LogDomain::Status as u32 => LogDomain::Status,
         x if x == LogDomain::Ipc as u32 => LogDomain::Ipc,
         x if x == LogDomain::Shell as u32 => LogDomain::Shell,
+        x if x == LogDomain::Package as u32 => LogDomain::Package,
         _ => LogDomain::Service,
     }
 }
@@ -821,6 +1166,12 @@ fn event_from_word(value: u64) -> LogEvent {
         x if x == LogEvent::SessionOpened as u32 => LogEvent::SessionOpened,
         x if x == LogEvent::ShellCommand as u32 => LogEvent::ShellCommand,
         x if x == LogEvent::ToolLaunched as u32 => LogEvent::ToolLaunched,
+        x if x == LogEvent::PackageCatalogLoaded as u32 => LogEvent::PackageCatalogLoaded,
+        x if x == LogEvent::PackageInstalled as u32 => LogEvent::PackageInstalled,
+        x if x == LogEvent::PackageUpdated as u32 => LogEvent::PackageUpdated,
+        x if x == LogEvent::PackageRemoved as u32 => LogEvent::PackageRemoved,
+        x if x == LogEvent::PackageRolledBack as u32 => LogEvent::PackageRolledBack,
+        x if x == LogEvent::PackageActivationFailed as u32 => LogEvent::PackageActivationFailed,
         _ => LogEvent::LookupGranted,
     }
 }
@@ -836,10 +1187,41 @@ fn manager_phase_from_word(value: u64) -> ManagerServicePhase {
 
 fn manager_status_from_word(value: u64) -> ManagerStatus {
     match value as u32 {
+        x if x == ManagerStatus::Ok as u32 => ManagerStatus::Ok,
         x if x == ManagerStatus::Denied as u32 => ManagerStatus::Denied,
         x if x == ManagerStatus::NotFound as u32 => ManagerStatus::NotFound,
         x if x == ManagerStatus::Busy as u32 => ManagerStatus::Busy,
-        _ => ManagerStatus::Ok,
+        x if x == ManagerStatus::Failed as u32 => ManagerStatus::Failed,
+        _ => ManagerStatus::Busy,
+    }
+}
+
+fn package_status_from_word(value: u64) -> PackageStatus {
+    match value as u32 {
+        x if x == PackageStatus::Ok as u32 => PackageStatus::Ok,
+        x if x == PackageStatus::NotFound as u32 => PackageStatus::NotFound,
+        x if x == PackageStatus::AlreadyInstalled as u32 => PackageStatus::AlreadyInstalled,
+        x if x == PackageStatus::NotInstalled as u32 => PackageStatus::NotInstalled,
+        x if x == PackageStatus::Busy as u32 => PackageStatus::Busy,
+        x if x == PackageStatus::Denied as u32 => PackageStatus::Denied,
+        x if x == PackageStatus::IntegrityFailed as u32 => PackageStatus::IntegrityFailed,
+        x if x == PackageStatus::End as u32 => PackageStatus::End,
+        x if x == PackageStatus::NoChange as u32 => PackageStatus::NoChange,
+        x if x == PackageStatus::NoRollback as u32 => PackageStatus::NoRollback,
+        _ => PackageStatus::Busy,
+    }
+}
+
+fn package_status_error(status: PackageStatus) -> Error {
+    match status {
+        PackageStatus::NotFound => Error::NotFound,
+        PackageStatus::AlreadyInstalled | PackageStatus::Busy | PackageStatus::NoChange => Error::Busy,
+        PackageStatus::NotInstalled | PackageStatus::NoRollback | PackageStatus::End => {
+            Error::InvalidArgument
+        }
+        PackageStatus::Denied => Error::PermissionDenied,
+        PackageStatus::IntegrityFailed => Error::InvalidCall,
+        PackageStatus::Ok => Error::InvalidArgument,
     }
 }
 

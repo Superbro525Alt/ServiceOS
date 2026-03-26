@@ -1,0 +1,10 @@
+package=announce-service
+version=1.1.0
+compat=serviceos.bootstore.v1
+service=announce-service
+service_manifest=packages/announce-service/1.1.0/service/manifest.svc
+activation=manual
+depends=log-service
+content=packages/announce-service/1.1.0/service/manifest.svc
+content=packages/announce-service/1.1.0/resources/message.txt
+integrity=fnv64:0xd2b5f5606fc641cc

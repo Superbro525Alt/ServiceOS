@@ -1,0 +1,7 @@
+service=package-service
+image=package-service
+startup=eager
+restart=on-failure:1
+depends=storage-service,log-service
+grant=log-service:send
+lookup=storage-service:send

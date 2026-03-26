@@ -1,0 +1,7 @@
+service=announce-service
+image=announce-service
+startup=eager
+restart=on-failure:1
+depends=log-service
+grant=log-service:send
+resource=packages/announce-service/1.0.0/resources/message.txt

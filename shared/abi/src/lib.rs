@@ -102,6 +102,8 @@ pub enum ServiceImageId {
     StatusService = 6,
     ShellService = 7,
     SysinfoTool = 8,
+    PackageService = 9,
+    AnnounceService = 10,
 }
 
 #[repr(u32)]
@@ -114,6 +116,8 @@ pub enum ServiceId {
     Log = 5,
     Status = 6,
     Shell = 7,
+    Package = 8,
+    Announce = 9,
 }
 
 #[repr(u32)]
@@ -181,6 +185,7 @@ pub enum LogDomain {
     Status = 8,
     Ipc = 9,
     Shell = 10,
+    Package = 11,
 }
 
 #[repr(u32)]
@@ -202,6 +207,12 @@ pub enum LogEvent {
     SessionOpened = 14,
     ShellCommand = 15,
     ToolLaunched = 16,
+    PackageCatalogLoaded = 17,
+    PackageInstalled = 18,
+    PackageUpdated = 19,
+    PackageRemoved = 20,
+    PackageRolledBack = 21,
+    PackageActivationFailed = 22,
 }
 
 #[repr(u32)]
@@ -248,6 +259,7 @@ pub enum StorageTag {
     ReadReply = 0x503,
     ListRequest = 0x504,
     ListReply = 0x505,
+    CloseRequest = 0x506,
 }
 
 #[repr(u32)]
@@ -258,6 +270,7 @@ pub enum StorageStatus {
     InvalidPath = 2,
     InvalidOffset = 3,
     End = 4,
+    Busy = 5,
 }
 
 #[repr(u32)]
@@ -278,6 +291,10 @@ pub enum ManagerTag {
     ServiceActionReply = 0x605,
     LaunchRequest = 0x606,
     LaunchReply = 0x607,
+    ActivateRequest = 0x608,
+    ActivateReply = 0x609,
+    DeactivateRequest = 0x60a,
+    DeactivateReply = 0x60b,
 }
 
 #[repr(u32)]
@@ -287,6 +304,7 @@ pub enum ManagerStatus {
     Denied = 1,
     NotFound = 2,
     Busy = 3,
+    Failed = 4,
 }
 
 #[repr(u32)]
@@ -317,4 +335,38 @@ pub enum ConfigKey {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ConfigValueKind {
     Unsigned = 1,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PackageTag {
+    ListRequest = 0x700,
+    ListReply = 0x701,
+    InfoRequest = 0x702,
+    InfoReply = 0x703,
+    InstallRequest = 0x704,
+    InstallReply = 0x705,
+    RemoveRequest = 0x706,
+    RemoveReply = 0x707,
+    UpdateRequest = 0x708,
+    UpdateReply = 0x709,
+    RollbackRequest = 0x70a,
+    RollbackReply = 0x70b,
+    HistoryRequest = 0x70c,
+    HistoryReply = 0x70d,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PackageStatus {
+    Ok = 0,
+    NotFound = 1,
+    AlreadyInstalled = 2,
+    NotInstalled = 3,
+    Busy = 4,
+    Denied = 5,
+    IntegrityFailed = 6,
+    End = 7,
+    NoChange = 8,
+    NoRollback = 9,
 }

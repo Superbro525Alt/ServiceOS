@@ -36,7 +36,7 @@ fn main() -> u64 {
         Ok(loaded) => loaded,
         Err(_) => return 0xf404,
     };
-    let _ = rt::handle_close(banner_handle);
+    let _ = rt::storage_blob_close(banner_handle);
     if let Ok(text) = core::str::from_utf8(&banner[..banner_loaded]) {
         let _ = rt::write_logf("status", format_args!("resource: {}", text));
     }

@@ -452,6 +452,8 @@ fn service_id_from_word(value: u64) -> ServiceId {
         x if x == ServiceId::Log as u32 => ServiceId::Log,
         x if x == ServiceId::Status as u32 => ServiceId::Status,
         x if x == ServiceId::Shell as u32 => ServiceId::Shell,
+        x if x == ServiceId::Package as u32 => ServiceId::Package,
+        x if x == ServiceId::Announce as u32 => ServiceId::Announce,
         _ => ServiceId::RootManager,
     }
 }
@@ -498,6 +500,12 @@ fn event_from_word(value: u64) -> LogEvent {
         x if x == LogEvent::SessionOpened as u32 => LogEvent::SessionOpened,
         x if x == LogEvent::ShellCommand as u32 => LogEvent::ShellCommand,
         x if x == LogEvent::ToolLaunched as u32 => LogEvent::ToolLaunched,
+        x if x == LogEvent::PackageCatalogLoaded as u32 => LogEvent::PackageCatalogLoaded,
+        x if x == LogEvent::PackageInstalled as u32 => LogEvent::PackageInstalled,
+        x if x == LogEvent::PackageUpdated as u32 => LogEvent::PackageUpdated,
+        x if x == LogEvent::PackageRemoved as u32 => LogEvent::PackageRemoved,
+        x if x == LogEvent::PackageRolledBack as u32 => LogEvent::PackageRolledBack,
+        x if x == LogEvent::PackageActivationFailed as u32 => LogEvent::PackageActivationFailed,
         _ => LogEvent::LookupGranted,
     }
 }
@@ -521,6 +529,8 @@ fn service_name(service_id: ServiceId) -> &'static str {
         ServiceId::Log => "log-service",
         ServiceId::Status => "status-service",
         ServiceId::Shell => "shell-service",
+        ServiceId::Package => "package-service",
+        ServiceId::Announce => "announce-service",
     }
 }
 
@@ -546,6 +556,7 @@ fn domain_name(domain: LogDomain) -> &'static str {
         LogDomain::Status => "status",
         LogDomain::Ipc => "ipc",
         LogDomain::Shell => "shell",
+        LogDomain::Package => "package",
     }
 }
 
@@ -567,5 +578,11 @@ fn event_name(event: LogEvent) -> &'static str {
         LogEvent::SessionOpened => "session-opened",
         LogEvent::ShellCommand => "shell-command",
         LogEvent::ToolLaunched => "tool-launched",
+        LogEvent::PackageCatalogLoaded => "package-catalog-loaded",
+        LogEvent::PackageInstalled => "package-installed",
+        LogEvent::PackageUpdated => "package-updated",
+        LogEvent::PackageRemoved => "package-removed",
+        LogEvent::PackageRolledBack => "package-rolled-back",
+        LogEvent::PackageActivationFailed => "package-activation-failed",
     }
 }

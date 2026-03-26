@@ -33,7 +33,7 @@ fn main() -> u64 {
         Ok(loaded) => loaded,
         Err(_) => return 0xf203,
     };
-    let _ = rt::handle_close(config_blob);
+    let _ = rt::storage_blob_close(config_blob);
 
     let mut entries = [ConfigEntry {
         key: ConfigKey::LogMinimumSeverity,

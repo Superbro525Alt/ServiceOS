@@ -1,15 +1,15 @@
 #![no_std]
 #![no_main]
 
-use serviceos_bundle::{parse_manifest, RestartPolicy, ServiceManifest};
+use serviceos_bundle::{BOOT_STORE_PATH_MAX, RestartPolicy, ServiceManifest, parse_manifest};
 use serviceos_userspace_runtime as rt;
 use rt::{
-    rights, ControlTag, LifecycleEvent, LogDomain, LogEvent, LogSeverity, LookupStatus,
-    ManagerAction, ManagerServicePhase, ManagerStatus, ManagerTag, RawMessage, ServiceId,
-    ServiceImageId, TaskStateCode, IPC_MAX_HANDLES,
+    ControlTag, LifecycleEvent, LogDomain, LogEvent, LogSeverity, LookupStatus, ManagerAction,
+    ManagerServicePhase, ManagerStatus, ManagerTag, RawMessage, ServiceId, ServiceImageId,
+    TaskStateCode, IPC_MAX_HANDLES, IPC_MAX_WORDS, rights,
 };
 
-const MAX_SERVICE_SLOTS: usize = 6;
+const MAX_SERVICE_SLOTS: usize = 10;
 const MAX_INDEX_BYTES: usize = 512;
 const MAX_MANIFEST_BYTES: usize = 512;
 
@@ -23,6 +23,8 @@ struct ServiceSlot {
     phase: ServicePhase,
     last_exit_code: u64,
     restart_requested: bool,
+    occupied: bool,
+    dynamic: bool,
 }
 
 impl ServiceSlot {
@@ -36,6 +38,8 @@ impl ServiceSlot {
             phase: ServicePhase::Dormant,
             last_exit_code: 0,
             restart_requested: false,
+            occupied: false,
+            dynamic: false,
         }
     }
 }
@@ -60,27 +64,29 @@ fn main() -> u64 {
     {
         return 0xf602;
     }
+
     let bootstore_handle = startup.handles[0];
     let bootstore_len = startup.words[0] as usize;
 
     fallback_log("bootstrap started");
+
     let mut slots = [ServiceSlot::empty(); MAX_SERVICE_SLOTS];
     slots[0].manifest = storage_manifest();
+    slots[0].occupied = true;
+    let mut service_count = 1usize;
 
-    if start_service(&mut slots, 1, 0, Some((bootstore_handle, bootstore_len))).is_err() {
+    if start_service(&mut slots, service_count, 0, Some((bootstore_handle, bootstore_len))).is_err()
+    {
         return 0xf603;
     }
-    if wait_until_ready(&mut slots, 1, ServiceId::Storage).is_err() {
+    if wait_until_ready(&mut slots, &mut service_count, ServiceId::Storage).is_err() {
         return 0xf604;
     }
 
-    let storage_handle = slots[find_slot_index(&slots, 1, ServiceId::Storage)].public_handle;
-    let service_count = match load_service_graph(&mut slots, storage_handle) {
-        Ok(count) => count,
-        Err(_) => return 0xf605,
-    };
-
-    if activate_service_graph(&mut slots, service_count).is_err() {
+    if load_base_service_graph(&mut slots, &mut service_count).is_err() {
+        return 0xf605;
+    }
+    if activate_base_service_graph(&mut slots, &mut service_count).is_err() {
         return 0xf606;
     }
 
@@ -93,7 +99,11 @@ fn main() -> u64 {
         0,
     );
 
-    supervision_loop(&mut slots, service_count, (bootstore_handle, bootstore_len))
+    supervision_loop(
+        &mut slots,
+        &mut service_count,
+        (bootstore_handle, bootstore_len),
+    )
 }
 
 fn storage_manifest() -> ServiceManifest {
@@ -104,79 +114,73 @@ fn storage_manifest() -> ServiceManifest {
     manifest
 }
 
-fn load_service_graph(
+fn load_base_service_graph(
     slots: &mut [ServiceSlot; MAX_SERVICE_SLOTS],
-    storage_handle: rt::Handle,
-) -> rt::Result<usize> {
-    let mut index_buffer = [0u8; MAX_INDEX_BYTES];
+    service_count: &mut usize,
+) -> rt::Result<()> {
+    let storage_index = find_slot_index(slots, *service_count, ServiceId::Storage)?;
+    let storage_handle = slots[storage_index].public_handle;
     let (index_handle, index_len) = rt::storage_open(storage_handle, "services/index.txt")?;
-    let index_len = index_len.min(index_buffer.len());
-    let loaded = rt::storage_read_all(index_handle, &mut index_buffer, index_len)?;
-    let _ = rt::handle_close(index_handle);
+    let mut index_buffer = [0u8; MAX_INDEX_BYTES];
+    let requested = index_len.min(index_buffer.len());
+    let loaded = rt::storage_read_all(index_handle, &mut index_buffer, requested)?;
+    let _ = rt::storage_blob_close(index_handle);
+
     let index_text =
         core::str::from_utf8(&index_buffer[..loaded]).map_err(|_| rt::Error::InvalidArgument)?;
-
-    let mut count = 1usize;
-    for line in index_text
-        .lines()
-        .map(|line| line.trim())
-        .filter(|line| !line.is_empty())
-    {
-        if count == MAX_SERVICE_SLOTS {
-            return Err(rt::Error::CapacityExceeded);
-        }
-        let mut manifest_buffer = [0u8; MAX_MANIFEST_BYTES];
-        let (manifest_handle, manifest_len) = rt::storage_open(storage_handle, line)?;
-        let manifest_len = manifest_len.min(manifest_buffer.len());
-        let loaded = rt::storage_read_all(manifest_handle, &mut manifest_buffer, manifest_len)?;
-        let _ = rt::handle_close(manifest_handle);
-        let manifest =
-            parse_manifest(&manifest_buffer[..loaded]).map_err(|_| rt::Error::InvalidArgument)?;
-        slots[count].manifest = manifest;
+    for line in index_text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        let manifest = load_manifest_from_storage(slots, *service_count, line)?;
+        let slot_index = allocate_slot(slots, service_count)?;
+        slots[slot_index] = ServiceSlot {
+            manifest,
+            occupied: true,
+            dynamic: false,
+            ..ServiceSlot::empty()
+        };
         let _ = emit_manager_event(
             slots,
-            count + 1,
+            *service_count,
             LogSeverity::Info,
             LogEvent::ManifestLoaded,
             manifest.service_id,
             loaded as u64,
         );
-        count += 1;
     }
 
-    let _ = fallback_logf(format_args!("loaded {} service manifests", count.saturating_sub(1)));
-    Ok(count)
+    let _ = fallback_logf(format_args!(
+        "loaded {} service manifests",
+        occupied_service_count(slots, *service_count).saturating_sub(1)
+    ));
+    Ok(())
 }
 
-fn activate_service_graph(
+fn activate_base_service_graph(
     slots: &mut [ServiceSlot; MAX_SERVICE_SLOTS],
-    service_count: usize,
+    service_count: &mut usize,
 ) -> rt::Result<()> {
     loop {
-        let mut progress = false;
-        let mut ready = 0usize;
+        let total = occupied_service_count(slots, *service_count);
+        let ready = ready_service_count(slots, *service_count);
+        if ready == total {
+            return Ok(());
+        }
 
-        for index in 0..service_count {
-            match slots[index].phase {
-                ServicePhase::Ready => ready += 1,
-                ServicePhase::Dormant => {
-                    if dependencies_ready(slots, service_count, index) {
-                        let _ = fallback_logf(format_args!(
-                            "activating {}",
-                            service_name(slots[index].manifest.service_id)
-                        ));
-                        start_service(slots, service_count, index, None)?;
-                        wait_until_ready(slots, service_count, slots[index].manifest.service_id)?;
-                        progress = true;
-                    }
-                }
-                ServicePhase::Starting | ServicePhase::Exited => {}
+        let mut progress = false;
+        for index in 0..*service_count {
+            if !slots[index].occupied || slots[index].phase != ServicePhase::Dormant {
+                continue;
+            }
+            if dependencies_ready(slots, *service_count, index) {
+                let _ = fallback_logf(format_args!(
+                    "activating {}",
+                    service_name(slots[index].manifest.service_id)
+                ));
+                start_service(slots, *service_count, index, None)?;
+                wait_until_ready(slots, service_count, slots[index].manifest.service_id)?;
+                progress = true;
             }
         }
 
-        if ready == service_count {
-            return Ok(());
-        }
         if !progress {
             return Err(rt::Error::Busy);
         }
@@ -227,7 +231,7 @@ fn start_service(
     }
 
     for grant in manifest.grants[..manifest.grant_count].iter().copied() {
-        let source_index = find_slot_index(slots, service_count, grant.target);
+        let source_index = find_slot_index(slots, service_count, grant.target)?;
         let source = slots[source_index].public_handle;
         let transferred =
             rt::handle_duplicate(source, grant.rights | rights::DUPLICATE | rights::TRANSFER)?;
@@ -238,7 +242,7 @@ fn start_service(
     }
 
     if manifest.resource_count > 0 {
-        let storage_index = find_slot_index(slots, service_count, ServiceId::Storage);
+        let storage_index = find_slot_index(slots, service_count, ServiceId::Storage)?;
         let storage_handle = slots[storage_index].public_handle;
         for resource in manifest.resources[..manifest.resource_count].iter() {
             let (resource_handle, resource_len) = rt::storage_open(
@@ -282,12 +286,13 @@ fn start_service(
 
 fn wait_until_ready(
     slots: &mut [ServiceSlot; MAX_SERVICE_SLOTS],
-    service_count: usize,
+    service_count: &mut usize,
     service_id: ServiceId,
 ) -> rt::Result<()> {
     loop {
         pump_control_channels(slots, service_count)?;
-        let slot = &slots[find_slot_index(slots, service_count, service_id)];
+        let slot_index = find_slot_index(slots, *service_count, service_id)?;
+        let slot = &slots[slot_index];
         if slot.phase == ServicePhase::Ready {
             return Ok(());
         }
@@ -307,7 +312,7 @@ fn wait_until_ready(
 
 fn supervision_loop(
     slots: &mut [ServiceSlot; MAX_SERVICE_SLOTS],
-    service_count: usize,
+    service_count: &mut usize,
     bootstrap_resource: (rt::Handle, usize),
 ) -> u64 {
     loop {
@@ -315,7 +320,11 @@ fn supervision_loop(
             return 0xf610;
         }
 
-        for index in 0..service_count {
+        for index in 0..*service_count {
+            if !slots[index].occupied || slots[index].task_handle == rt::INVALID_HANDLE {
+                continue;
+            }
+
             let status = match rt::task_status(slots[index].task_handle) {
                 Ok(status) => status,
                 Err(_) => return 0xf611 + index as u64,
@@ -324,29 +333,17 @@ fn supervision_loop(
                 continue;
             }
 
+            let service_id = slots[index].manifest.service_id;
             let requested_restart = slots[index].restart_requested;
-            if slots[index].phase != ServicePhase::Exited {
-                slots[index].phase = ServicePhase::Exited;
-                slots[index].last_exit_code = status.exit_code;
-                if !requested_restart {
-                    let _ = emit_manager_event(
-                        slots,
-                        service_count,
-                        LogSeverity::Error,
-                        LogEvent::ServiceFailed,
-                        slots[index].manifest.service_id,
-                        status.exit_code,
-                    );
-                }
-            }
+            slots[index].phase = ServicePhase::Exited;
+            slots[index].last_exit_code = status.exit_code;
 
             if requested_restart {
                 slots[index].restart_requested = false;
-                if start_service(slots, service_count, index, None).is_err() {
+                if start_service(slots, *service_count, index, bootstrap_resource_for(service_id, bootstrap_resource)).is_err() {
                     return 0xf620 + index as u64;
                 }
-                if wait_until_ready(slots, service_count, slots[index].manifest.service_id).is_err()
-                {
+                if wait_until_ready(slots, service_count, service_id).is_err() {
                     return 0xf630 + index as u64;
                 }
                 continue;
@@ -355,6 +352,15 @@ fn supervision_loop(
             if status.exit_code == 0 {
                 continue;
             }
+
+            let _ = emit_manager_event(
+                slots,
+                *service_count,
+                LogSeverity::Error,
+                LogEvent::ServiceFailed,
+                service_id,
+                status.exit_code,
+            );
 
             let restart_limit = match slots[index].manifest.restart {
                 RestartPolicy::OnFailure { max_restarts } => max_restarts,
@@ -365,22 +371,17 @@ fn supervision_loop(
 
             let _ = emit_manager_event(
                 slots,
-                service_count,
+                *service_count,
                 LogSeverity::Warn,
                 LogEvent::ServiceRestarting,
-                slots[index].manifest.service_id,
+                service_id,
                 slots[index].attempts as u64 + 1,
             );
 
-            let resource = if slots[index].manifest.service_id == ServiceId::Storage {
-                Some(bootstrap_resource)
-            } else {
-                None
-            };
-            if start_service(slots, service_count, index, resource).is_err() {
+            if start_service(slots, *service_count, index, bootstrap_resource_for(service_id, bootstrap_resource)).is_err() {
                 return 0xf650 + index as u64;
             }
-            if wait_until_ready(slots, service_count, slots[index].manifest.service_id).is_err() {
+            if wait_until_ready(slots, service_count, service_id).is_err() {
                 return 0xf660 + index as u64;
             }
         }
@@ -391,12 +392,25 @@ fn supervision_loop(
     }
 }
 
+fn bootstrap_resource_for(
+    service_id: ServiceId,
+    bootstrap_resource: (rt::Handle, usize),
+) -> Option<(rt::Handle, usize)> {
+    if service_id == ServiceId::Storage {
+        Some(bootstrap_resource)
+    } else {
+        None
+    }
+}
+
 fn pump_control_channels(
     slots: &mut [ServiceSlot; MAX_SERVICE_SLOTS],
-    service_count: usize,
+    service_count: &mut usize,
 ) -> rt::Result<()> {
-    for index in 0..service_count {
-        if slots[index].control_handle == rt::INVALID_HANDLE {
+    let mut index = 0usize;
+    while index < *service_count {
+        if !slots[index].occupied || slots[index].control_handle == rt::INVALID_HANDLE {
+            index += 1;
             continue;
         }
 
@@ -406,13 +420,14 @@ fn pump_control_channels(
             Err(rt::Error::QueueEmpty) => {}
             Err(error) => return Err(error),
         }
+        index += 1;
     }
     Ok(())
 }
 
 fn handle_control_message(
     slots: &mut [ServiceSlot; MAX_SERVICE_SLOTS],
-    service_count: usize,
+    service_count: &mut usize,
     service_index: usize,
     message: &RawMessage,
 ) -> rt::Result<()> {
@@ -422,34 +437,29 @@ fn handle_control_message(
                 return Err(rt::Error::InvalidArgument);
             }
             let service_id = service_id_from_word(message.words[0]);
-            if find_slot_index(slots, service_count, service_id) != service_index {
+            if find_slot_index(slots, *service_count, service_id)? != service_index {
                 return Err(rt::Error::PermissionDenied);
             }
             slots[service_index].public_handle = message.handles[0];
             slots[service_index].phase = ServicePhase::Ready;
             let _ = emit_manager_event(
                 slots,
-                service_count,
+                *service_count,
                 LogSeverity::Info,
                 LogEvent::ServiceReady,
                 service_id,
                 slots[service_index].attempts as u64,
             );
         }
-        x if x == ControlTag::LookupRequest as u32 => {
-            if message.word_count < 1 {
-                return Err(rt::Error::InvalidArgument);
-            }
-            handle_lookup_request(slots, service_count, service_index, message)?;
-        }
+        x if x == ControlTag::LookupRequest as u32 => handle_lookup_request(slots, *service_count, service_index, message)?,
         x if x == ManagerTag::ListServicesRequest as u32 => {
-            handle_list_services_request(slots, service_count, service_index)?;
+            handle_list_services_request(slots, *service_count, service_index, message)?
         }
         x if x == ManagerTag::ServiceStatusRequest as u32 => {
             if message.word_count < 1 {
                 return Err(rt::Error::InvalidArgument);
             }
-            handle_service_status_request(slots, service_count, service_index, message.words[0])?;
+            handle_service_status_request(slots, *service_count, service_index, message.words[0])?;
         }
         x if x == ManagerTag::ServiceActionRequest as u32 => {
             if message.word_count < 2 {
@@ -457,7 +467,7 @@ fn handle_control_message(
             }
             handle_service_action_request(
                 slots,
-                service_count,
+                *service_count,
                 service_index,
                 message.words[0],
                 message.words[1],
@@ -467,7 +477,16 @@ fn handle_control_message(
             if message.word_count < 1 {
                 return Err(rt::Error::InvalidArgument);
             }
-            handle_launch_request(slots, service_count, service_index, message)?;
+            handle_launch_request(slots, *service_count, service_index, message)?;
+        }
+        x if x == ManagerTag::ActivateRequest as u32 => {
+            handle_activate_request(slots, service_count, service_index, message)?;
+        }
+        x if x == ManagerTag::DeactivateRequest as u32 => {
+            if message.word_count < 1 {
+                return Err(rt::Error::InvalidArgument);
+            }
+            handle_deactivate_request(slots, service_count, service_index, message.words[0])?;
         }
         _ => {}
     }
@@ -481,6 +500,10 @@ fn handle_lookup_request(
     service_index: usize,
     message: &RawMessage,
 ) -> rt::Result<()> {
+    if message.word_count < 1 {
+        return Err(rt::Error::InvalidArgument);
+    }
+
     let requested = service_id_from_word(message.words[0]);
     let permission = lookup_rights(slots[service_index].manifest, requested);
     let target = find_slot_index_checked(slots, service_count, requested).map(|index| &slots[index]);
@@ -527,18 +550,46 @@ fn handle_list_services_request(
     slots: &[ServiceSlot; MAX_SERVICE_SLOTS],
     service_count: usize,
     service_index: usize,
+    message: &RawMessage,
 ) -> rt::Result<()> {
-    let total_count = service_count + 1;
+    let page_start = if message.word_count > 0 {
+        message.words[0] as usize
+    } else {
+        0
+    };
+
     let mut reply = RawMessage::empty(ManagerTag::ListServicesReply as u32);
-    reply.word_count = 1 + (total_count * 2) as u32;
-    reply.words[0] = total_count as u64;
-    reply.words[1] = ServiceId::RootManager as u32 as u64;
-    reply.words[2] = encode_phase(ServicePhase::Ready, 1);
-    for index in 0..service_count {
-        let base = 3 + index * 2;
-        reply.words[base] = slots[index].manifest.service_id as u32 as u64;
-        reply.words[base + 1] = encode_phase(slots[index].phase, slots[index].attempts);
+    reply.word_count = 2;
+    reply.words[0] = 0;
+    reply.words[1] = u64::MAX;
+
+    let mut visible_index = 0usize;
+    let mut emitted = 0usize;
+    let mut write_entry = |service_id: ServiceId, phase: ServicePhase, attempts: u32| {
+        if visible_index < page_start {
+            visible_index += 1;
+            return;
+        }
+        if reply.word_count as usize + 2 > IPC_MAX_WORDS {
+            reply.words[1] = visible_index as u64;
+            return;
+        }
+        let base = reply.word_count as usize;
+        reply.words[base] = service_id as u32 as u64;
+        reply.words[base + 1] = encode_phase(phase, attempts);
+        reply.word_count += 2;
+        emitted += 1;
+        visible_index += 1;
+    };
+
+    write_entry(ServiceId::RootManager, ServicePhase::Ready, 1);
+    for slot in &slots[..service_count] {
+        if slot.occupied {
+            write_entry(slot.manifest.service_id, slot.phase, slot.attempts);
+        }
     }
+
+    reply.words[0] = emitted as u64;
     rt::channel_send(slots[service_index].control_handle, &reply)
 }
 
@@ -592,7 +643,7 @@ fn handle_service_action_request(
         reply.words[0] = ManagerStatus::NotFound as u32 as u64;
         return rt::channel_send(slots[service_index].control_handle, &reply);
     };
-    if matches!(requested, ServiceId::Shell) || action != ManagerAction::Restart {
+    if matches!(requested, ServiceId::Shell | ServiceId::Package) || action != ManagerAction::Restart {
         reply.words[0] = ManagerStatus::Denied as u32 as u64;
         return rt::channel_send(slots[service_index].control_handle, &reply);
     }
@@ -673,6 +724,127 @@ fn handle_launch_request(
     Ok(())
 }
 
+fn handle_activate_request(
+    slots: &mut [ServiceSlot; MAX_SERVICE_SLOTS],
+    service_count: &mut usize,
+    service_index: usize,
+    message: &RawMessage,
+) -> rt::Result<()> {
+    let control_handle = slots[service_index].control_handle;
+    let mut reply = RawMessage::empty(ManagerTag::ActivateReply as u32);
+    reply.word_count = 2;
+    reply.words[0] = ManagerStatus::Denied as u32 as u64;
+    reply.words[1] = ServiceId::RootManager as u32 as u64;
+
+    if slots[service_index].manifest.service_id != ServiceId::Package || message.word_count < 1 {
+        return rt::channel_send(control_handle, &reply);
+    }
+
+    let path_len = message.words[0] as usize;
+    let mut path_bytes = [0u8; BOOT_STORE_PATH_MAX];
+    if unpack_bytes(
+        &message.words[1..message.word_count as usize],
+        path_len,
+        &mut path_bytes,
+    )
+    .is_err()
+    {
+        reply.words[0] = ManagerStatus::Failed as u32 as u64;
+        return rt::channel_send(control_handle, &reply);
+    }
+    let path = core::str::from_utf8(&path_bytes[..path_len]).map_err(|_| rt::Error::InvalidArgument)?;
+
+    let manifest = match load_manifest_from_storage(slots, *service_count, path) {
+        Ok(manifest) => manifest,
+        Err(rt::Error::NotFound) => {
+            reply.words[0] = ManagerStatus::NotFound as u32 as u64;
+            return rt::channel_send(control_handle, &reply);
+        }
+        Err(_) => {
+            reply.words[0] = ManagerStatus::Failed as u32 as u64;
+            return rt::channel_send(control_handle, &reply);
+        }
+    };
+    reply.words[1] = manifest.service_id as u32 as u64;
+
+    if !service_is_package_managed(manifest.service_id) {
+        return rt::channel_send(control_handle, &reply);
+    }
+
+    let target_index = if let Some(index) = find_slot_index_checked(slots, *service_count, manifest.service_id) {
+        if !slots[index].dynamic {
+            return rt::channel_send(control_handle, &reply);
+        }
+        stop_service_slot(&mut slots[index])?;
+        index
+    } else {
+        allocate_slot(slots, service_count)?
+    };
+
+    slots[target_index] = ServiceSlot {
+        manifest,
+        occupied: true,
+        dynamic: true,
+        ..ServiceSlot::empty()
+    };
+
+    let result = start_service(slots, *service_count, target_index, None)
+        .and_then(|_| wait_until_ready(slots, service_count, manifest.service_id));
+
+    reply.words[0] = if result.is_ok() {
+        ManagerStatus::Ok as u32 as u64
+    } else {
+        let exit_code = rt::task_status(slots[target_index].task_handle)
+            .map(|status| status.exit_code)
+            .unwrap_or(0);
+        let _ = emit_manager_event(
+            slots,
+            *service_count,
+            LogSeverity::Error,
+            LogEvent::ServiceFailed,
+            manifest.service_id,
+            exit_code,
+        );
+        let _ = close_slot_for_failure(&mut slots[target_index]);
+        ManagerStatus::Failed as u32 as u64
+    };
+    rt::channel_send(control_handle, &reply)
+}
+
+fn handle_deactivate_request(
+    slots: &mut [ServiceSlot; MAX_SERVICE_SLOTS],
+    service_count: &mut usize,
+    service_index: usize,
+    requested_word: u64,
+) -> rt::Result<()> {
+    let control_handle = slots[service_index].control_handle;
+    let mut reply = RawMessage::empty(ManagerTag::DeactivateReply as u32);
+    reply.word_count = 1;
+    reply.words[0] = ManagerStatus::Denied as u32 as u64;
+
+    if slots[service_index].manifest.service_id != ServiceId::Package {
+        return rt::channel_send(control_handle, &reply);
+    }
+
+    let requested = service_id_from_word(requested_word);
+    let Some(target_index) = find_slot_index_checked(slots, *service_count, requested) else {
+        reply.words[0] = ManagerStatus::NotFound as u32 as u64;
+        return rt::channel_send(control_handle, &reply);
+    };
+    if !slots[target_index].dynamic {
+        return rt::channel_send(control_handle, &reply);
+    }
+
+    reply.words[0] = if stop_service_slot(&mut slots[target_index]).is_ok() {
+        slots[target_index] = ServiceSlot::empty();
+        compact_service_slots(slots, service_count);
+        ManagerStatus::Ok as u32 as u64
+    } else {
+        ManagerStatus::Failed as u32 as u64
+    };
+    rt::channel_send(control_handle, &reply)
+}
+
 fn launch_program(
     image_id: ServiceImageId,
     io_handle: Option<rt::Handle>,
@@ -697,6 +869,52 @@ fn launch_program(
     let _ = rt::handle_close(task_handle);
     let _ = rt::handle_close(bootstrap.first);
     Ok(task_view)
+}
+
+fn load_manifest_from_storage(
+    slots: &[ServiceSlot; MAX_SERVICE_SLOTS],
+    service_count: usize,
+    path: &str,
+) -> rt::Result<ServiceManifest> {
+    let storage_index = find_slot_index(slots, service_count, ServiceId::Storage)?;
+    let storage_handle = slots[storage_index].public_handle;
+    let (manifest_handle, manifest_len) = rt::storage_open(storage_handle, path)?;
+    let mut manifest_buffer = [0u8; MAX_MANIFEST_BYTES];
+    let requested = manifest_len.min(manifest_buffer.len());
+    let loaded = rt::storage_read_all(
+        manifest_handle,
+        &mut manifest_buffer,
+        requested,
+    )?;
+    let _ = rt::storage_blob_close(manifest_handle);
+    parse_manifest(&manifest_buffer[..loaded]).map_err(|_| rt::Error::InvalidArgument)
+}
+
+fn stop_service_slot(slot: &mut ServiceSlot) -> rt::Result<()> {
+    if slot.control_handle != rt::INVALID_HANDLE {
+        let _ = send_lifecycle(slot.control_handle, LifecycleEvent::Stopped);
+    }
+    if slot.task_handle != rt::INVALID_HANDLE {
+        loop {
+            match rt::task_status(slot.task_handle) {
+                Ok(status) if status.state == TaskStateCode::Exited => {
+                    slot.last_exit_code = status.exit_code;
+                    break;
+                }
+                Ok(_) => rt::yield_current()?,
+                Err(_) => break,
+            }
+        }
+    }
+    close_slot_handles(slot);
+    slot.phase = ServicePhase::Exited;
+    slot.restart_requested = false;
+    Ok(())
+}
+
+fn close_slot_for_failure(slot: &mut ServiceSlot) -> rt::Result<()> {
+    stop_service_slot(slot)?;
+    Ok(())
 }
 
 fn send_lifecycle(control_handle: rt::Handle, event: LifecycleEvent) -> rt::Result<()> {
@@ -774,6 +992,38 @@ fn lookup_rights(manifest: ServiceManifest, requested: ServiceId) -> Option<u64>
         .map(|entry| entry.rights)
 }
 
+fn allocate_slot(
+    slots: &mut [ServiceSlot; MAX_SERVICE_SLOTS],
+    service_count: &mut usize,
+) -> rt::Result<usize> {
+    if let Some(index) = (0..*service_count).find(|index| !slots[*index].occupied) {
+        return Ok(index);
+    }
+    if *service_count == slots.len() {
+        return Err(rt::Error::CapacityExceeded);
+    }
+    let index = *service_count;
+    *service_count += 1;
+    Ok(index)
+}
+
+fn compact_service_slots(slots: &mut [ServiceSlot; MAX_SERVICE_SLOTS], service_count: &mut usize) {
+    while *service_count > 0 && !slots[*service_count - 1].occupied {
+        *service_count -= 1;
+    }
+}
+
+fn occupied_service_count(slots: &[ServiceSlot; MAX_SERVICE_SLOTS], service_count: usize) -> usize {
+    slots[..service_count].iter().filter(|slot| slot.occupied).count()
+}
+
+fn ready_service_count(slots: &[ServiceSlot; MAX_SERVICE_SLOTS], service_count: usize) -> usize {
+    slots[..service_count]
+        .iter()
+        .filter(|slot| slot.occupied && slot.phase == ServicePhase::Ready)
+        .count()
+}
+
 fn close_slot_handles(slot: &mut ServiceSlot) {
     close_if_valid(&mut slot.task_handle);
     close_if_valid(&mut slot.control_handle);
@@ -791,8 +1041,8 @@ fn find_slot_index(
     slots: &[ServiceSlot; MAX_SERVICE_SLOTS],
     service_count: usize,
     service_id: ServiceId,
-) -> usize {
-    find_slot_index_checked(slots, service_count, service_id).unwrap_or(0)
+) -> rt::Result<usize> {
+    find_slot_index_checked(slots, service_count, service_id).ok_or(rt::Error::NotFound)
 }
 
 fn find_slot_index_checked(
@@ -800,7 +1050,29 @@ fn find_slot_index_checked(
     service_count: usize,
     service_id: ServiceId,
 ) -> Option<usize> {
-    (0..service_count).find(|index| slots[*index].manifest.service_id == service_id)
+    (0..service_count).find(|index| slots[*index].occupied && slots[*index].manifest.service_id == service_id)
+}
+
+fn service_is_package_managed(service_id: ServiceId) -> bool {
+    matches!(service_id, ServiceId::Announce)
+}
+
+fn unpack_bytes(words: &[u64], len: usize, destination: &mut [u8]) -> rt::Result<()> {
+    if len > destination.len() || len > words.len() * 8 {
+        return Err(rt::Error::BufferTooSmall);
+    }
+
+    let mut copied = 0usize;
+    for word in words.iter().copied() {
+        if copied >= len {
+            break;
+        }
+        let bytes = word.to_le_bytes();
+        let chunk = (len - copied).min(bytes.len());
+        destination[copied..copied + chunk].copy_from_slice(&bytes[..chunk]);
+        copied += chunk;
+    }
+    Ok(())
 }
 
 fn service_id_from_word(value: u64) -> ServiceId {
@@ -811,6 +1083,8 @@ fn service_id_from_word(value: u64) -> ServiceId {
         x if x == ServiceId::Log as u32 => ServiceId::Log,
         x if x == ServiceId::Status as u32 => ServiceId::Status,
         x if x == ServiceId::Shell as u32 => ServiceId::Shell,
+        x if x == ServiceId::Package as u32 => ServiceId::Package,
+        x if x == ServiceId::Announce as u32 => ServiceId::Announce,
         _ => ServiceId::RootManager,
     }
 }
@@ -824,6 +1098,8 @@ fn image_id_from_word(value: u64) -> ServiceImageId {
         x if x == ServiceImageId::StatusService as u32 => ServiceImageId::StatusService,
         x if x == ServiceImageId::ShellService as u32 => ServiceImageId::ShellService,
         x if x == ServiceImageId::SysinfoTool as u32 => ServiceImageId::SysinfoTool,
+        x if x == ServiceImageId::PackageService as u32 => ServiceImageId::PackageService,
+        x if x == ServiceImageId::AnnounceService as u32 => ServiceImageId::AnnounceService,
         _ => ServiceImageId::RootManager,
     }
 }
@@ -857,6 +1133,8 @@ fn service_name(service_id: ServiceId) -> &'static str {
         ServiceId::Log => "log-service",
         ServiceId::Status => "status-service",
         ServiceId::Shell => "shell-service",
+        ServiceId::Package => "package-service",
+        ServiceId::Announce => "announce-service",
     }
 }
 
@@ -888,6 +1166,12 @@ fn event_name(event: LogEvent) -> &'static str {
         LogEvent::SessionOpened => "session-opened",
         LogEvent::ShellCommand => "shell-command",
         LogEvent::ToolLaunched => "tool-launched",
+        LogEvent::PackageCatalogLoaded => "package-catalog-loaded",
+        LogEvent::PackageInstalled => "package-installed",
+        LogEvent::PackageUpdated => "package-updated",
+        LogEvent::PackageRemoved => "package-removed",
+        LogEvent::PackageRolledBack => "package-rolled-back",
+        LogEvent::PackageActivationFailed => "package-activation-failed",
     }
 }
 

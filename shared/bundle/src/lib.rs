@@ -11,6 +11,8 @@ pub const BOOT_STORE_MAX_DEPENDENCIES: usize = 6;
 pub const BOOT_STORE_MAX_GRANTS: usize = 4;
 pub const BOOT_STORE_MAX_LOOKUPS: usize = 6;
 pub const BOOT_STORE_MAX_RESOURCES: usize = 4;
+pub const BOOT_STORE_MAX_PACKAGE_CONTENTS: usize = 6;
+pub const BOOT_STORE_MAX_PACKAGE_DEPENDENCIES: usize = 4;
 
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -205,6 +207,12 @@ pub enum RestartPolicy {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PackageActivationMode {
+    Manual,
+    Auto,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ServiceGrant {
     pub target: ServiceId,
     pub rights: u64,
@@ -359,6 +367,128 @@ pub fn parse_manifest(bytes: &[u8]) -> Result<ServiceManifest, BootStoreError> {
     Ok(manifest)
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PackageManifest {
+    pub package: InlinePath,
+    pub version: InlinePath,
+    pub compatibility: InlinePath,
+    pub service_id: ServiceId,
+    pub service_manifest: InlinePath,
+    pub activation: PackageActivationMode,
+    pub dependencies: [ServiceId; BOOT_STORE_MAX_PACKAGE_DEPENDENCIES],
+    pub dependency_count: usize,
+    pub contents: [InlinePath; BOOT_STORE_MAX_PACKAGE_CONTENTS],
+    pub content_count: usize,
+    pub integrity: u64,
+}
+
+impl PackageManifest {
+    pub const fn empty() -> Self {
+        Self {
+            package: InlinePath::empty(),
+            version: InlinePath::empty(),
+            compatibility: InlinePath::empty(),
+            service_id: ServiceId::RootManager,
+            service_manifest: InlinePath::empty(),
+            activation: PackageActivationMode::Manual,
+            dependencies: [ServiceId::RootManager; BOOT_STORE_MAX_PACKAGE_DEPENDENCIES],
+            dependency_count: 0,
+            contents: [InlinePath::empty(); BOOT_STORE_MAX_PACKAGE_CONTENTS],
+            content_count: 0,
+            integrity: 0,
+        }
+    }
+}
+
+pub fn parse_package_manifest(bytes: &[u8]) -> Result<PackageManifest, BootStoreError> {
+    let text = str::from_utf8(bytes).map_err(|_| BootStoreError::InvalidManifest)?;
+    let mut manifest = PackageManifest::empty();
+    let mut have_package = false;
+    let mut have_version = false;
+    let mut have_service = false;
+    let mut have_service_manifest = false;
+    let mut have_integrity = false;
+
+    for raw_line in text.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = split_key_value(line) else {
+            return Err(BootStoreError::InvalidManifest);
+        };
+
+        match key {
+            "package" => {
+                manifest.package.set(value)?;
+                have_package = true;
+            }
+            "version" => {
+                manifest.version.set(value)?;
+                have_version = true;
+            }
+            "compat" => manifest.compatibility.set(value)?,
+            "service" => {
+                manifest.service_id = parse_service_id(value)?;
+                have_service = true;
+            }
+            "service_manifest" => {
+                manifest.service_manifest.set(value)?;
+                have_service_manifest = true;
+            }
+            "activation" => {
+                manifest.activation = match value {
+                    "manual" => PackageActivationMode::Manual,
+                    "auto" => PackageActivationMode::Auto,
+                    _ => return Err(BootStoreError::InvalidManifest),
+                };
+            }
+            "depends" => {
+                for entry in value.split(',').map(str::trim).filter(|v| !v.is_empty()) {
+                    if manifest.dependency_count == manifest.dependencies.len() {
+                        return Err(BootStoreError::CapacityExceeded);
+                    }
+                    manifest.dependencies[manifest.dependency_count] = parse_service_id(entry)?;
+                    manifest.dependency_count += 1;
+                }
+            }
+            "content" => {
+                if manifest.content_count == manifest.contents.len() {
+                    return Err(BootStoreError::CapacityExceeded);
+                }
+                manifest.contents[manifest.content_count].set(value)?;
+                manifest.content_count += 1;
+            }
+            "integrity" => {
+                manifest.integrity = parse_integrity(value)?;
+                have_integrity = true;
+            }
+            _ => return Err(BootStoreError::InvalidManifest),
+        }
+    }
+
+    if !have_package
+        || !have_version
+        || !have_service
+        || !have_service_manifest
+        || !have_integrity
+        || manifest.content_count == 0
+    {
+        return Err(BootStoreError::InvalidManifest);
+    }
+    if manifest
+        .compatibility
+        .as_str()
+        .ok()
+        .filter(|value| !value.is_empty())
+        .is_none()
+    {
+        manifest.compatibility.set("serviceos.bootstore.v1")?;
+    }
+
+    Ok(manifest)
+}
+
 fn parse_service_grant(value: &str) -> Result<ServiceGrant, BootStoreError> {
     let Some((service, rights)) = value.split_once(':') else {
         return Err(BootStoreError::InvalidManifest);
@@ -398,6 +528,8 @@ fn parse_service_id(value: &str) -> Result<ServiceId, BootStoreError> {
         "log-service" => Ok(ServiceId::Log),
         "status-service" => Ok(ServiceId::Status),
         "shell-service" => Ok(ServiceId::Shell),
+        "package-service" => Ok(ServiceId::Package),
+        "announce-service" => Ok(ServiceId::Announce),
         _ => Err(BootStoreError::InvalidManifest),
     }
 }
@@ -412,6 +544,8 @@ fn parse_image_id(value: &str) -> Result<ServiceImageId, BootStoreError> {
         "status-service" => Ok(ServiceImageId::StatusService),
         "shell-service" => Ok(ServiceImageId::ShellService),
         "sysinfo-tool" => Ok(ServiceImageId::SysinfoTool),
+        "package-service" => Ok(ServiceImageId::PackageService),
+        "announce-service" => Ok(ServiceImageId::AnnounceService),
         _ => Err(BootStoreError::InvalidManifest),
     }
 }
@@ -420,6 +554,13 @@ fn parse_u32(value: &str) -> Result<u32, BootStoreError> {
     value
         .parse::<u32>()
         .map_err(|_| BootStoreError::InvalidManifest)
+}
+
+fn parse_integrity(value: &str) -> Result<u64, BootStoreError> {
+    let Some(hex) = value.strip_prefix("fnv64:0x") else {
+        return Err(BootStoreError::InvalidManifest);
+    };
+    u64::from_str_radix(hex, 16).map_err(|_| BootStoreError::InvalidManifest)
 }
 
 fn split_key_value(line: &str) -> Option<(&str, &str)> {
@@ -505,5 +646,35 @@ resource=services/status-service/resources/banner.txt
             manifest.resources[0].as_str().expect("resource path"),
             "services/status-service/resources/banner.txt"
         );
+    }
+
+    #[test]
+    fn package_manifest_parser_accepts_repository_schema() {
+        let manifest = parse_package_manifest(
+            br#"
+package=announce-service
+version=1.1.0
+compat=serviceos.bootstore.v1
+service=announce-service
+service_manifest=packages/announce-service/1.1.0/service/manifest.svc
+activation=manual
+depends=log-service
+content=packages/announce-service/1.1.0/service/manifest.svc
+content=packages/announce-service/1.1.0/resources/message.txt
+integrity=fnv64:0x1234
+"#,
+        )
+        .expect("package manifest should parse");
+
+        assert_eq!(manifest.service_id, ServiceId::Announce);
+        assert_eq!(
+            manifest
+                .service_manifest
+                .as_str()
+                .expect("service manifest path"),
+            "packages/announce-service/1.1.0/service/manifest.svc"
+        );
+        assert_eq!(manifest.content_count, 2);
+        assert_eq!(manifest.integrity, 0x1234);
     }
 }

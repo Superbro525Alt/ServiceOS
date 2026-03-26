@@ -17,7 +17,7 @@ use spin::{Mutex, Once};
 
 const FLAT_IMAGE_MAGIC: [u8; 8] = *b"SOSUIMG\0";
 const FLAT_IMAGE_HEADER_LEN: usize = 48;
-const USER_STACK_PAGES: usize = 4;
+const USER_STACK_PAGES: usize = 16;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TaskExitStatus {

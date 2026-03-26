@@ -229,8 +229,13 @@ fn handle_open_request(
     };
 
     let Some(session) = sessions.iter_mut().find(|session| !session.occupied) else {
+        let mut reply = RawMessage::empty(StorageTag::OpenReply as u32);
+        reply.word_count = 2;
+        reply.words[0] = StorageStatus::Busy as u32 as u64;
+        reply.words[1] = 0;
+        let _ = rt::channel_send(reply_handle, &reply);
         let _ = rt::handle_close(reply_handle);
-        return Err(rt::Error::CapacityExceeded);
+        return Ok(());
     };
     let pair = rt::channel_create()?;
     session.endpoint = pair.first;
@@ -292,6 +297,10 @@ fn handle_read_request(
     session: &mut BlobSession,
     message: &RawMessage,
 ) -> rt::Result<()> {
+    if message.tag == StorageTag::CloseRequest as u32 {
+        release_session(session);
+        return Ok(());
+    }
     if message.tag != StorageTag::ReadRequest as u32 || message.word_count < 2 || message.handle_count < 1 {
         return Ok(());
     }

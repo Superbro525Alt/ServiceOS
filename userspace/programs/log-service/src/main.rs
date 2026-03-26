@@ -244,6 +244,8 @@ fn service_id_from_word(value: u64) -> ServiceId {
         x if x == ServiceId::Log as u32 => ServiceId::Log,
         x if x == ServiceId::Status as u32 => ServiceId::Status,
         x if x == ServiceId::Shell as u32 => ServiceId::Shell,
+        x if x == ServiceId::Package as u32 => ServiceId::Package,
+        x if x == ServiceId::Announce as u32 => ServiceId::Announce,
         _ => ServiceId::RootManager,
     }
 }
@@ -269,6 +271,7 @@ fn domain_from_word(value: u64) -> LogDomain {
         x if x == LogDomain::Status as u32 => LogDomain::Status,
         x if x == LogDomain::Ipc as u32 => LogDomain::Ipc,
         x if x == LogDomain::Shell as u32 => LogDomain::Shell,
+        x if x == LogDomain::Package as u32 => LogDomain::Package,
         _ => LogDomain::Service,
     }
 }
@@ -290,6 +293,12 @@ fn event_from_word(value: u64) -> LogEvent {
         x if x == LogEvent::SessionOpened as u32 => LogEvent::SessionOpened,
         x if x == LogEvent::ShellCommand as u32 => LogEvent::ShellCommand,
         x if x == LogEvent::ToolLaunched as u32 => LogEvent::ToolLaunched,
+        x if x == LogEvent::PackageCatalogLoaded as u32 => LogEvent::PackageCatalogLoaded,
+        x if x == LogEvent::PackageInstalled as u32 => LogEvent::PackageInstalled,
+        x if x == LogEvent::PackageUpdated as u32 => LogEvent::PackageUpdated,
+        x if x == LogEvent::PackageRemoved as u32 => LogEvent::PackageRemoved,
+        x if x == LogEvent::PackageRolledBack as u32 => LogEvent::PackageRolledBack,
+        x if x == LogEvent::PackageActivationFailed as u32 => LogEvent::PackageActivationFailed,
         _ => LogEvent::LookupGranted,
     }
 }

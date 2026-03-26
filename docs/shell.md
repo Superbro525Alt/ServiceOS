@@ -16,6 +16,9 @@ The current session stack is:
 shell-service
   -> console-service session
        -> raw serial console path
+session-service
+  -> graphics-service surfaces
+       -> kernel display-output object
 ```
 
 The shell opens a session by looking up `console-service` and requesting a
@@ -37,7 +40,8 @@ The shell is intentionally not all-powerful.
 It has:
 
 - lookup rights for `console-service`, `log-service`, `config-service`,
-  `storage-service`, `status-service`, and `package-service`
+  `storage-service`, `status-service`, `package-service`, `network-service`,
+  `graphics-service`, and `session-service`
 - its own bootstrap/control channel back to the root manager
 - manager authorization for service restart and transient tool launch
 
@@ -61,6 +65,10 @@ Current built-in commands:
 - `store ls [prefix]`
 - `cat <path>`
 - `status`
+- `gfx outputs`
+- `gfx surfaces`
+- `gfx sessions`
+- `gfx focus <surface-id>`
 - `pkg list`
 - `pkg info <name>`
 - `pkg install <name> [version]`
@@ -76,6 +84,10 @@ special shell-only backdoors.
 Package commands call the real `package-service`, which then coordinates with
 the root manager. The shell does not edit manifests or activate services by
 itself.
+
+Graphics commands call the real `graphics-service` and `session-service`.
+The shell can inspect and request focus changes because its manifest grants
+lookup access; it does not own display hardware directly.
 
 ## Tool launch model
 
@@ -103,3 +115,4 @@ long-running services and transient operator tools.
 - package-installed command discovery
 - richer package UX and operator history views
 - richer terminal emulation and graphical shells
+- richer graphical session tooling and window-management commands

@@ -27,10 +27,12 @@ userspace platform layer:
 - a package service with install, update, remove, and rollback coordination
 - a userspace networking platform service with explicit packet-interface,
   address, route, and name-resolution contracts
+- a userspace graphics/session platform layer with an explicit display-output
+  object, compositor service, and session/focus service
 - host-side unit tests for the core kernel semantics
 
-The system remains intentionally early. It does not attempt desktop,
-audio, graphics, or compatibility stacks yet.
+The system remains intentionally early. It does not attempt a polished desktop,
+audio stack, or compatibility layers yet.
 
 ## Initial target
 
@@ -123,6 +125,10 @@ The current platform layer provides:
 - a `network-service` that owns interface state, static IPv4 configuration,
   route reporting, static host resolution, and ICMP probe handling behind an
   explicit service contract
+- a `graphics-service` that owns output state, surface creation, and
+  framebuffer composition behind an explicit display-output capability
+- a `session-service` that owns graphical session identity and focus policy on
+  top of the compositor
 
 The current syscall surface is intentionally small, but it is now enough for a
 real service platform:
@@ -145,9 +151,12 @@ real service platform:
 - `15`: packet-interface status query
 - `16`: packet-interface frame receive
 - `17`: packet-interface frame transmit
+- `18`: display-output status query
+- `19`: display-output frame present
 
 See [docs/kernel-summary.md](/home/paulh/os-dev/docs/kernel-summary.md),
 [docs/boot-flow.md](/home/paulh/os-dev/docs/boot-flow.md),
+[docs/graphics.md](/home/paulh/os-dev/docs/graphics.md),
 [docs/networking.md](/home/paulh/os-dev/docs/networking.md),
 [docs/storage.md](/home/paulh/os-dev/docs/storage.md),
 [docs/userspace.md](/home/paulh/os-dev/docs/userspace.md),

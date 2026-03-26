@@ -16,13 +16,19 @@ root-manager
        depends on log-service, config-service
        consumes one startup-granted packet-interface capability
        consumes one startup-granted hosts resource
+  -> graphics-service
+       depends on log-service
+       consumes one startup-granted display-output capability
+  -> session-service
+       depends on graphics-service, log-service
   -> status-service
        depends on log-service, config-service
   -> package-service
        depends on storage-service, log-service
   -> shell-service
        depends on console-service, log-service, config-service,
-       storage-service, status-service, package-service, network-service
+       storage-service, network-service, graphics-service,
+       session-service, status-service, package-service
 ```
 
 The current repository-backed optional package graph is:
@@ -66,6 +72,8 @@ The system does not reintroduce ambient authority through storage.
 - The root manager opens specific resources through `storage-service` and
   transfers only those resource/blob capabilities to children that need them.
 - Service-to-service communication remains manager-mediated and rights-reduced.
+- Display ownership follows the same pattern: only `graphics-service` receives
+  the bootstrap display-output capability.
 
 Current startup grants:
 
@@ -83,6 +91,9 @@ Current startup grants:
   - one packet-interface capability from the root bootstrap path
   - send-only handle to `log-service`
   - one blob capability for `config/hosts.cfg`
+- `graphics-service`
+  - one display-output capability from the root bootstrap path
+  - send-only handle to `log-service`
 
 Current lookup permissions:
 
@@ -97,8 +108,12 @@ Current lookup permissions:
   - `status-service` with send-only rights
   - `package-service` with send-only rights
   - `network-service` with send-only rights
+  - `graphics-service` with send-only rights
+  - `session-service` with send-only rights
 - `package-service`
   - `storage-service` with send-only rights
+- `session-service`
+  - `graphics-service` with send-only rights
 
 ## Service roles
 
@@ -145,12 +160,31 @@ Current lookup permissions:
 - keeps the public contract generic so later VirtIO, additional virtual, and
   real-NIC backends can sit behind the same service boundary
 
+### `graphics-service`
+
+- owns display-output state in userspace
+- consumes the explicit kernel display-output capability
+- creates and tracks surfaces through per-surface handles
+- composes the current surface set into the active output
+- keeps compositor policy in userspace while leaving the kernel with only
+  display-output mechanism
+
+### `session-service`
+
+- owns graphical session identity and focus policy
+- looks up `graphics-service` rather than owning display hardware itself
+- proves the split between compositor mechanics and session/input policy
+- provides the initial basis for later login, desktop shell, and multi-session
+  work
+
 ### `shell-service`
 
 - owns the first operator/developer command environment
 - opens a console session through `console-service`
 - inspects services through the manager control channel
 - reads logs, config, and storage through explicit service lookups
+- inspects outputs, surfaces, and sessions through `graphics-service` and
+  `session-service`
 - launches transient tools through the manager rather than direct shell power
 
 ### `package-service`
@@ -209,7 +243,9 @@ This platform layer still does not implement:
 - directory capabilities for general applications
 - network-backed package repositories or signed update feeds
 - dynamic service installation
-- richer routing, DHCP, DNS, TCP/UDP socket services, graphics, audio, or
-  compatibility services
+- richer routing, DHCP, DNS, TCP/UDP socket services, audio, or compatibility
+  services
 - richer terminal features and login/session policy
 - signed repositories, writable install roots, and package-feed transport
+- input-device hosts, shared-memory presentation buffers, and richer desktop
+  shell policy

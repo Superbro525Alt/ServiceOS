@@ -31,10 +31,18 @@
 - `shell-service` operator environment
 - `package-service` install, update, rollback, and activation coordination
 
+## Graphics/session foundation completed
+
+- kernel display-output object
+- `graphics-service` output, surface, and composition ownership
+- `session-service` focus and graphical session ownership
+- shell/operator inspection of outputs, surfaces, and sessions
+
 ## Next
 
 - reclaim boot-services memory safely
-- evolve the boot-store bootstrap into richer executable-loading policy
+- evolve the flat-image bootstrap into a richer executable-loading model when
+  the current userspace service graph outgrows it
 - add writable storage and directory capabilities
 - extend terminate-on-fault isolation into richer user-fault upcalls and
   recovery policy
@@ -42,10 +50,13 @@
 - add dynamic IPv4 configuration and DNS-backed resolution behind the current
   network-service contract
 - grow the current ICMP/status path into a broader socket and transport surface
+- add shared graphical buffers and client-drawn content on top of the current
+  graphics-service contract
+- add physical input-device hosts and routing behind the current
+  session-service boundary
 
 ## Later
 
 - storage/filesystem services
-- graphics/compositor services
 - compatibility runtimes
 - desktop/session layers

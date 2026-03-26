@@ -81,17 +81,25 @@ Deferred work:
 
 ## Graphics and compositor
 
-The kernel is not a window system. For later graphics work it currently offers:
+The first graphics/session platform layer now exists in userspace. That is the
+intended direction: display and session policy stay outside the kernel except
+for low-level output objects and trap/memory mechanisms.
 
-- framebuffer discovery in `BootContext` for very early platform handoff
-- user task isolation
-- syscall and IPC paths suitable for a compositor/service split
+The current platform already has:
+
+- boot framebuffer discovery in `BootContext`
+- a kernel display-output object with explicit rights
+- a `graphics-service` that owns outputs, surfaces, and composition
+- a `session-service` that owns graphical session identity and focus policy
+- shell/operator commands that inspect the live graphics/session state through
+  the real service contracts
 
 Deferred work:
 
-- display device objects
-- shared-memory presentation buffers
-- input routing and compositor protocols
+- shared-memory presentation buffers and richer client rendering protocols
+- physical input-device hosts and routing policy
+- multiple outputs and multiple sessions
+- desktop-shell, window-management, and notification policy
 
 ## Package and update systems
 

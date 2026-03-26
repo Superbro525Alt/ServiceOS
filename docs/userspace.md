@@ -13,6 +13,8 @@ The userspace path now covers four layers:
 - the platform can host a real operator shell and launch transient tools
 - the platform can expose a real userspace networking service backed by an
   explicit kernel packet-interface object
+- the platform can expose a real userspace graphics/session layer backed by an
+  explicit kernel display-output object
 
 This is still intentionally early, but it is now a real service-composed
 platform substrate rather than a single bootstrap demo.
@@ -40,7 +42,10 @@ The flat-image header carries:
 - an ABI version
 - an image base
 - an entry offset
-- an image byte count
+- a file-backed image byte count
+- an executable span limit
+- a writable-data start offset
+- a total mapped image size
 - a user stack top
 
 This remains flat rather than ELF because the current priority is clean launch
@@ -56,8 +61,9 @@ The current user address space is built by:
 - mapping one flat user image region
 - mapping one bootstrap user stack region
 
-The loader still maps the flat image as one contiguous user region.
-Fine-grained segment permissions and user-visible VM policy remain deferred.
+The loader maps one contiguous user image region, but it now distinguishes the
+initial executable span from the writable data span carried by the flat-image
+header. It is still intentionally simpler than a full ELF loader.
 
 ## Syscall ABI
 
@@ -84,6 +90,8 @@ Current syscall numbers:
 - `15`: query packet-interface status
 - `16`: receive one packet frame from a packet-interface object
 - `17`: transmit one packet frame through a packet-interface object
+- `18`: query display-output status
+- `19`: present one frame to a display-output object
 
 This is enough for a real service manager and storage bootstrap without
 pretending the kernel already exposes a full general-purpose process API.
@@ -97,6 +105,8 @@ The root manager now brings up:
 - `config-service`
 - `log-service`
 - `network-service`
+- `graphics-service`
+- `session-service`
 - `status-service`
 - `shell-service`
 
@@ -110,6 +120,8 @@ That graph proves:
 - long-running service supervision
 - structured logging through userspace services
 - explicit networking authority routed through `network-service`
+- explicit display authority routed through `graphics-service`
+- session/focus policy split out into `session-service`
 - a text-first operator session layered on the service graph
 - manager-mediated transient program launch
 
@@ -138,3 +150,5 @@ The current userspace layer still does not include:
 - a richer VM syscall surface
 - richer terminal semantics, login/session policy, and the broader
   platform-service graph beyond the current foundations
+- shared graphical buffers, richer display backends, and physical input-device
+  hosts

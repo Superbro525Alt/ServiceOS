@@ -7,7 +7,7 @@ use serviceos_abi::{ControlTag, ServiceImageId};
 use serviceos_bundle::BootStore;
 use serviceos_kernel_arch_x86_64::{
     boot::exit_boot_services_and_capture_context,
-    cpu,
+    cpu, display,
     interrupts::{self, TIMER_TICK_HZ},
     network,
     paging::ActivePageTable,
@@ -110,6 +110,12 @@ fn kernel_main() -> Status {
 
     let bootstrap_network = network::initialize()
         .map(|backend| kernel.objects().registry().create_packet_interface(backend));
+    let bootstrap_display = kernel.boot_context().framebuffer.map(|framebuffer| {
+        kernel
+            .objects()
+            .registry()
+            .create_display_output(display::initialize(framebuffer))
+    });
 
     log(
         "memory",
@@ -173,8 +179,24 @@ fn kernel_main() -> Status {
     } else {
         log_line("network", "no packet interface detected");
     }
+    if let Some(framebuffer) = kernel.boot_context().framebuffer {
+        log(
+            "display",
+            format_args!(
+                "backend=BootFramebuffer {}x{} stride={} bpp={} bytes={} format={:?}",
+                framebuffer.width,
+                framebuffer.height,
+                framebuffer.stride,
+                framebuffer.bytes_per_pixel,
+                framebuffer.byte_len,
+                framebuffer.pixel_format,
+            ),
+        );
+    } else {
+        log_line("display", "no boot framebuffer detected");
+    }
 
-    let summary = match launch_root_manager(&kernel, bootstrap_network) {
+    let summary = match launch_root_manager(&kernel, bootstrap_network, bootstrap_display) {
         Ok(summary) => summary,
         Err(error) => {
             log(
@@ -240,6 +262,7 @@ fn panic(info: &PanicInfo<'_>) -> ! {
 fn launch_root_manager(
     kernel: &Kernel<'_>,
     bootstrap_network: Option<serviceos_kernel_core::object::KernelObjectRef>,
+    bootstrap_display: Option<serviceos_kernel_core::object::KernelObjectRef>,
 ) -> Result<RootBootstrapSummary, BootstrapError> {
     let ipc_kernel = ipc::kernel().ok_or(BootstrapError::MissingBootStore)?;
     let bootstrap_task = kernel
@@ -310,6 +333,20 @@ fn launch_root_manager(
     } else {
         None
     };
+    let display_transfer = if let Some(display_object) = bootstrap_display {
+        let display_handle = bootstrap_task.capability_space().install(
+            display_object,
+            CapabilityRights::display_output(),
+            None,
+        )?;
+        Some(bootstrap_task.capability_space().prepare_transfer(
+            display_handle,
+            CapabilityRights::display_output(),
+            TransferMode::Move,
+        )?)
+    } else {
+        None
+    };
 
     let root = kernel_user::spawn_builtin_task(
         ServiceImageId::RootManager as u32,
@@ -321,12 +358,16 @@ fn launch_root_manager(
         &[
             boot_store_bytes.len() as u64,
             u64::from(network_transfer.is_some()),
+            u64::from(display_transfer.is_some()),
         ],
     )?
     .add_transfer(boot_store_transfer)?
     .add_transfer(bootstrap_authority_transfer)?;
     if let Some(network_transfer) = network_transfer {
         startup = startup.add_transfer(network_transfer)?;
+    }
+    if let Some(display_transfer) = display_transfer {
+        startup = startup.add_transfer(display_transfer)?;
     }
     ipc_kernel.send(
         bootstrap_task.capability_space(),

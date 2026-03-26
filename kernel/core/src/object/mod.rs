@@ -6,6 +6,7 @@ use spin::{Mutex, Once};
 
 use crate::{
     capability::CapabilityRights,
+    display::{DisplayBackend, DisplayOutputObject},
     ipc::ChannelEndpointObject,
     network::{self, PacketBackend, PacketInterfaceObject},
     task::{
@@ -27,6 +28,7 @@ pub enum ObjectKind {
     MemoryObject,
     BootstrapCapability,
     PacketInterface,
+    DisplayOutput,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -52,6 +54,7 @@ pub enum KernelObject {
     MemoryObject(MemoryObject),
     BootstrapCapability(BootstrapCapabilityObject),
     PacketInterface(PacketInterfaceObject),
+    DisplayOutput(DisplayOutputObject),
 }
 
 impl KernelObjectRecord {
@@ -119,6 +122,13 @@ impl KernelObjectRecord {
     pub fn packet_interface(&self) -> Option<&PacketInterfaceObject> {
         match &self.body {
             KernelObject::PacketInterface(interface) => Some(interface),
+            _ => None,
+        }
+    }
+
+    pub fn display_output(&self) -> Option<&DisplayOutputObject> {
+        match &self.body {
+            KernelObject::DisplayOutput(output) => Some(output),
             _ => None,
         }
     }
@@ -452,6 +462,19 @@ impl ObjectRegistry {
             .backend();
         let _ = network::initialize().register_interface(object.id().0, packet);
         object
+    }
+
+    pub fn create_display_output(
+        &self,
+        backend: alloc::sync::Arc<dyn DisplayBackend>,
+    ) -> KernelObjectRef {
+        self.register(KernelObjectRecord {
+            header: ObjectHeader {
+                id: self.allocate_id(ObjectKind::DisplayOutput),
+                kind: ObjectKind::DisplayOutput,
+            },
+            body: KernelObject::DisplayOutput(DisplayOutputObject::new(backend)),
+        })
     }
 
     pub fn lookup(&self, id: ObjectId) -> Option<KernelObjectRef> {

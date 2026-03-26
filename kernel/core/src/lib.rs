@@ -4,6 +4,7 @@ extern crate alloc;
 
 pub mod bootstrap;
 pub mod capability;
+pub mod display;
 pub mod interrupts;
 pub mod ipc;
 pub mod memory;

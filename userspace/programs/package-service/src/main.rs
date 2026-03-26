@@ -790,6 +790,8 @@ fn service_id_from_word(value: u64) -> ServiceId {
         x if x == ServiceId::Package as u32 => ServiceId::Package,
         x if x == ServiceId::Announce as u32 => ServiceId::Announce,
         x if x == ServiceId::Network as u32 => ServiceId::Network,
+        x if x == ServiceId::Graphics as u32 => ServiceId::Graphics,
+        x if x == ServiceId::Session as u32 => ServiceId::Session,
         _ => ServiceId::RootManager,
     }
 }

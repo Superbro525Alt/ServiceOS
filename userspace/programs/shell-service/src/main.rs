@@ -118,6 +118,7 @@ fn execute_command(bootstrap: rt::Handle, session: rt::Handle, line: &str) -> rt
         },
         "status" => cmd_status(bootstrap, session),
         "net" => cmd_net(bootstrap, session, parts),
+        "gfx" => cmd_gfx(bootstrap, session, parts),
         "pkg" => cmd_pkg(bootstrap, session, parts),
         "run" => match parts.next() {
             Some("sysinfo") => cmd_run_sysinfo(bootstrap, session),
@@ -141,6 +142,10 @@ fn print_help(session: rt::Handle) -> rt::Result<()> {
     write_session_linef(session, format_args!("net route: show the default route"))?;
     write_session_linef(session, format_args!("net resolve <name>: resolve a host or literal"))?;
     write_session_linef(session, format_args!("net ping <name|ip>: run an ICMP reachability probe"))?;
+    write_session_linef(session, format_args!("gfx outputs: show graphics outputs"))?;
+    write_session_linef(session, format_args!("gfx surfaces: show compositor surfaces"))?;
+    write_session_linef(session, format_args!("gfx sessions: show graphical sessions"))?;
+    write_session_linef(session, format_args!("gfx focus <surface-id>: change focused session surface"))?;
     write_session_linef(session, format_args!("pkg list: list repository packages"))?;
     write_session_linef(session, format_args!("pkg info <name>: inspect one package"))?;
     write_session_linef(session, format_args!("pkg install <name> [version]: activate a package"))?;
@@ -409,6 +414,128 @@ fn cmd_net_ping(bootstrap: rt::Handle, session: rt::Handle, target: &str) -> rt:
     }
 }
 
+fn cmd_gfx<'a, I>(bootstrap: rt::Handle, session: rt::Handle, mut parts: I) -> rt::Result<()>
+where
+    I: Iterator<Item = &'a str>,
+{
+    match parts.next() {
+        Some("outputs") => cmd_gfx_outputs(bootstrap, session),
+        Some("surfaces") => cmd_gfx_surfaces(bootstrap, session),
+        Some("sessions") => cmd_gfx_sessions(bootstrap, session),
+        Some("focus") => match parts.next().and_then(|value| value.parse::<u32>().ok()) {
+            Some(surface_id) => cmd_gfx_focus(bootstrap, session, surface_id),
+            None => write_session_linef(session, format_args!("usage: gfx focus <surface-id>")),
+        },
+        _ => write_session_linef(
+            session,
+            format_args!("usage: gfx <outputs|surfaces|sessions|focus> ..."),
+        ),
+    }
+}
+
+fn cmd_gfx_outputs(bootstrap: rt::Handle, session: rt::Handle) -> rt::Result<()> {
+    let graphics_handle = rt::lookup_service(bootstrap, ServiceId::Graphics)?;
+    let count = rt::graphics_output_count(graphics_handle)?;
+    if count == 0 {
+        let _ = rt::handle_close(graphics_handle);
+        return write_session_linef(session, format_args!("no outputs"));
+    }
+
+    for index in 0..count {
+        if let Some(output) = rt::graphics_output_status(graphics_handle, index)? {
+            write_session_linef(
+                session,
+                format_args!(
+                    "out{} backend={} state={} mode={}x{} stride={} format={} surfaces={} presents={}",
+                    output.index,
+                    display_backend_name(output.backend),
+                    display_state_name(output.state),
+                    output.width,
+                    output.height,
+                    output.stride,
+                    pixel_format_name(output.pixel_format),
+                    output.surface_count,
+                    output.present_count,
+                ),
+            )?;
+        }
+    }
+
+    let _ = rt::handle_close(graphics_handle);
+    Ok(())
+}
+
+fn cmd_gfx_surfaces(bootstrap: rt::Handle, session: rt::Handle) -> rt::Result<()> {
+    let graphics_handle = rt::lookup_service(bootstrap, ServiceId::Graphics)?;
+    let mut surface_ids = [0u32; 8];
+    let count = rt::graphics_surface_list(graphics_handle, &mut surface_ids)?;
+    if count == 0 {
+        let _ = rt::handle_close(graphics_handle);
+        return write_session_linef(session, format_args!("no surfaces"));
+    }
+
+    for surface_id in surface_ids.iter().copied().take(count) {
+        if let Some(surface) = rt::graphics_surface_status(graphics_handle, surface_id)? {
+            write_session_linef(
+                session,
+                format_args!(
+                    "surface{} session={} pos=({}, {}) size={}x{} z={} color=#{:06x} visible={}",
+                    surface.surface_id,
+                    surface.owner_session,
+                    surface.x,
+                    surface.y,
+                    surface.width,
+                    surface.height,
+                    surface.z_order,
+                    surface.fill_rgb,
+                    surface.visible,
+                ),
+            )?;
+        }
+    }
+
+    let _ = rt::handle_close(graphics_handle);
+    Ok(())
+}
+
+fn cmd_gfx_sessions(bootstrap: rt::Handle, session: rt::Handle) -> rt::Result<()> {
+    let session_handle = rt::lookup_service(bootstrap, ServiceId::Session)?;
+    let mut session_ids = [0u32; 4];
+    let count = rt::session_list(session_handle, &mut session_ids)?;
+    if count == 0 {
+        let _ = rt::handle_close(session_handle);
+        return write_session_linef(session, format_args!("no sessions"));
+    }
+
+    for session_id in session_ids.iter().copied().take(count) {
+        if let Some(status) = rt::session_status(session_handle, session_id)? {
+            write_session_linef(
+                session,
+                format_args!(
+                    "session{} input={} focused-surface={} surfaces={}",
+                    status.session_id,
+                    session_input_source_name(status.input_source),
+                    status.focused_surface,
+                    status.surface_count,
+                ),
+            )?;
+        }
+    }
+
+    let _ = rt::handle_close(session_handle);
+    Ok(())
+}
+
+fn cmd_gfx_focus(bootstrap: rt::Handle, session: rt::Handle, surface_id: u32) -> rt::Result<()> {
+    let session_handle = rt::lookup_service(bootstrap, ServiceId::Session)?;
+    let focused_surface = rt::session_focus(session_handle, 1, surface_id)?;
+    let _ = rt::handle_close(session_handle);
+    write_session_linef(
+        session,
+        format_args!("focused graphical surface {}", focused_surface),
+    )
+}
+
 fn cmd_pkg<'a, I>(bootstrap: rt::Handle, session: rt::Handle, mut parts: I) -> rt::Result<()>
 where
     I: Iterator<Item = &'a str>,
@@ -618,6 +745,8 @@ fn parse_service_name(name: &str) -> Option<ServiceId> {
         "package" | "package-service" => Some(ServiceId::Package),
         "announce" | "announce-service" => Some(ServiceId::Announce),
         "network" | "network-service" => Some(ServiceId::Network),
+        "graphics" | "graphics-service" => Some(ServiceId::Graphics),
+        "session" | "session-service" => Some(ServiceId::Session),
         _ => None,
     }
 }
@@ -634,6 +763,8 @@ fn service_name(service_id: ServiceId) -> &'static str {
         ServiceId::Package => "package-service",
         ServiceId::Announce => "announce-service",
         ServiceId::Network => "network-service",
+        ServiceId::Graphics => "graphics-service",
+        ServiceId::Session => "session-service",
     }
 }
 
@@ -693,6 +824,8 @@ fn domain_name(domain: LogDomain) -> &'static str {
         LogDomain::Shell => "shell",
         LogDomain::Package => "package",
         LogDomain::Network => "network",
+        LogDomain::Graphics => "graphics",
+        LogDomain::Session => "session",
     }
 }
 
@@ -725,6 +858,12 @@ fn event_name(event: LogEvent) -> &'static str {
         LogEvent::NetworkResolveCompleted => "network-resolve-completed",
         LogEvent::NetworkProbeCompleted => "network-probe-completed",
         LogEvent::NetworkLinkChanged => "network-link-changed",
+        LogEvent::DisplayOutputReady => "display-output-ready",
+        LogEvent::SurfaceCreated => "surface-created",
+        LogEvent::SurfaceUpdated => "surface-updated",
+        LogEvent::CompositorPresented => "compositor-presented",
+        LogEvent::SessionReady => "session-ready",
+        LogEvent::SessionFocusChanged => "session-focus-changed",
     }
 }
 
@@ -794,6 +933,34 @@ fn write_log_record(session: rt::Handle, record: rt::LogRecord) -> rt::Result<()
                 record.arg1,
             ),
         ),
+        LogEvent::DisplayOutputReady => write_session_linef(
+            session,
+            format_args!(
+                "#{} {} {} {}/{} {}x{}",
+                record.sequence,
+                severity_name(record.severity),
+                service_name(record.source),
+                domain_name(record.domain),
+                event_name(record.event),
+                record.arg0,
+                record.arg1,
+            ),
+        ),
+        LogEvent::SurfaceCreated | LogEvent::SessionReady | LogEvent::SessionFocusChanged => {
+            write_session_linef(
+                session,
+                format_args!(
+                    "#{} {} {} {}/{} {} {}",
+                    record.sequence,
+                    severity_name(record.severity),
+                    service_name(record.source),
+                    domain_name(record.domain),
+                    event_name(record.event),
+                    record.arg0,
+                    record.arg1,
+                ),
+            )
+        }
         _ => write_session_linef(
             session,
             format_args!(
@@ -832,6 +999,35 @@ fn format_ipv4(value: u32) -> FixedValueText {
 
 fn format_mac(value: [u8; 6]) -> FixedValueText {
     FixedValueText::mac(value)
+}
+
+fn display_backend_name(backend: rt::DisplayOutputBackend) -> &'static str {
+    match backend {
+        rt::DisplayOutputBackend::BootFramebuffer => "boot-framebuffer",
+        rt::DisplayOutputBackend::Unknown => "unknown",
+    }
+}
+
+fn display_state_name(state: rt::DisplayOutputState) -> &'static str {
+    match state {
+        rt::DisplayOutputState::Connected => "connected",
+        rt::DisplayOutputState::Disconnected => "disconnected",
+    }
+}
+
+fn pixel_format_name(format: rt::DisplayPixelFormat) -> &'static str {
+    match format {
+        rt::DisplayPixelFormat::Xrgb8888 => "xrgb8888",
+        rt::DisplayPixelFormat::Bgrx8888 => "bgrx8888",
+        rt::DisplayPixelFormat::Unknown => "unknown",
+    }
+}
+
+fn session_input_source_name(source: rt::SessionInputSource) -> &'static str {
+    match source {
+        rt::SessionInputSource::ServiceControl => "service-control",
+        rt::SessionInputSource::None => "none",
+    }
 }
 
 fn unpack_mac(value: u64) -> [u8; 6] {

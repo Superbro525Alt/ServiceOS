@@ -1,0 +1,6 @@
+service=graphics-service
+image=graphics-service
+startup=eager
+restart=on-failure:1
+depends=log-service
+grant=log-service:send

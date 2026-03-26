@@ -6,14 +6,15 @@ use core::{
 };
 
 pub use serviceos_abi::{
-    ConfigKey, ConfigTag, ConfigValueKind, ConsoleTag, ControlTag, Handle, HandlePair,
-    IPC_FLAG_NONBLOCK, IPC_MAX_HANDLES, IPC_MAX_WORDS, INVALID_HANDLE, LifecycleEvent,
-    LogDomain, LogEvent, LogQueryStatus, LogSeverity, LogTag, LookupStatus, ManagerAction,
-    ManagerServicePhase, ManagerStatus, ManagerTag, NetworkStatus, NetworkTag,
+    ConfigKey, ConfigTag, ConfigValueKind, ConsoleTag, ControlTag, DisplayOutputBackend,
+    DisplayOutputInfo, DisplayOutputState, DisplayPixelFormat, GraphicsStatus, GraphicsTag,
+    Handle, HandlePair, IPC_FLAG_NONBLOCK, IPC_MAX_HANDLES, IPC_MAX_WORDS, INVALID_HANDLE,
+    LifecycleEvent, LogDomain, LogEvent, LogQueryStatus, LogSeverity, LogTag, LookupStatus,
+    ManagerAction, ManagerServicePhase, ManagerStatus, ManagerTag, NetworkStatus, NetworkTag,
     PACKET_INTERFACE_FLAG_NONBLOCK, PacketInterfaceBackend, PacketInterfaceInfo,
     PacketInterfaceLinkState, PackageStatus, PackageTag, RawMessage, ServiceId, ServiceImageId,
-    StatusTag, StorageStatus, StorageTag, SyscallErrorCode, SyscallNumber, TaskStateCode,
-    TaskStatus,
+    SessionInputSource, SessionStatus, SessionTag, StatusTag, StorageStatus, StorageTag,
+    SurfaceTag, SyscallErrorCode, SyscallNumber, TaskStateCode, TaskStatus,
 };
 pub use serviceos_abi::rights;
 
@@ -240,6 +241,37 @@ pub fn packet_interface_transmit(handle: Handle, frame: &[u8]) -> Result<usize> 
     .map(|value| value as usize)
 }
 
+pub fn display_output_info(handle: Handle) -> Result<DisplayOutputInfo> {
+    let mut info = DisplayOutputInfo {
+        backend: DisplayOutputBackend::Unknown as u32,
+        state: DisplayOutputState::Disconnected as u32,
+        pixel_format: DisplayPixelFormat::Unknown as u32,
+        reserved: 0,
+        width: 0,
+        height: 0,
+        stride: 0,
+        bytes_per_pixel: 0,
+        byte_len: 0,
+        present_count: 0,
+    };
+    syscall2(
+        SyscallNumber::DisplayOutputInfo,
+        handle as u64,
+        &mut info as *mut DisplayOutputInfo as u64,
+    )?;
+    Ok(info)
+}
+
+pub fn display_output_present(handle: Handle, frame: &[u8]) -> Result<usize> {
+    syscall3(
+        SyscallNumber::DisplayOutputPresent,
+        handle as u64,
+        frame.as_ptr() as u64,
+        frame.len() as u64,
+    )
+    .map(|value| value as usize)
+}
+
 pub fn wait_for_exit(task_handle: Handle) -> Result<TaskStatus> {
     loop {
         let status = task_status(task_handle)?;
@@ -304,6 +336,43 @@ pub struct NetworkInterfaceStatusInfo {
     pub rx_packets: u64,
     pub tx_packets: u64,
     pub dropped_packets: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GraphicsOutputStatusInfo {
+    pub index: u32,
+    pub backend: DisplayOutputBackend,
+    pub state: DisplayOutputState,
+    pub pixel_format: DisplayPixelFormat,
+    pub width: u32,
+    pub height: u32,
+    pub stride: u32,
+    pub bytes_per_pixel: u32,
+    pub byte_len: u64,
+    pub present_count: u64,
+    pub surface_count: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GraphicsSurfaceStatusInfo {
+    pub surface_id: u32,
+    pub output_index: u32,
+    pub owner_session: u32,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub z_order: u32,
+    pub fill_rgb: u32,
+    pub visible: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SessionStatusInfo {
+    pub session_id: u32,
+    pub input_source: SessionInputSource,
+    pub focused_surface: u32,
+    pub surface_count: u32,
 }
 
 pub fn register_service(bootstrap: Handle, service_id: ServiceId, public: Handle) -> Result<()> {
@@ -1198,6 +1267,355 @@ pub fn network_ping(network_handle: Handle, target: &str) -> Result<(u32, u64)> 
     Ok((response.words[1] as u32, response.words[2]))
 }
 
+pub fn graphics_output_count(graphics_handle: Handle) -> Result<usize> {
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(GraphicsTag::OutputListRequest as u32);
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(graphics_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != GraphicsTag::OutputListReply as u32 || response.word_count < 2 {
+        return Err(Error::InvalidArgument);
+    }
+
+    match graphics_status_from_word(response.words[0]) {
+        GraphicsStatus::Ok => Ok(response.words[1] as usize),
+        status => Err(graphics_status_error(status)),
+    }
+}
+
+pub fn graphics_output_status(
+    graphics_handle: Handle,
+    index: usize,
+) -> Result<Option<GraphicsOutputStatusInfo>> {
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(GraphicsTag::OutputStatusRequest as u32);
+    request.word_count = 1;
+    request.words[0] = index as u64;
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(graphics_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != GraphicsTag::OutputStatusReply as u32 || response.word_count < 12 {
+        return Err(Error::InvalidArgument);
+    }
+
+    let status = graphics_status_from_word(response.words[0]);
+    if status == GraphicsStatus::NotFound {
+        return Ok(None);
+    }
+    if status != GraphicsStatus::Ok {
+        return Err(graphics_status_error(status));
+    }
+
+    Ok(Some(GraphicsOutputStatusInfo {
+        index: response.words[1] as u32,
+        backend: display_backend_from_word(response.words[2]),
+        state: display_state_from_word(response.words[3]),
+        pixel_format: display_pixel_format_from_word(response.words[4]),
+        width: response.words[5] as u32,
+        height: response.words[6] as u32,
+        stride: response.words[7] as u32,
+        bytes_per_pixel: response.words[8] as u32,
+        byte_len: response.words[9],
+        present_count: response.words[10],
+        surface_count: response.words[11] as u32,
+    }))
+}
+
+pub fn graphics_surface_create(
+    graphics_handle: Handle,
+    owner_session: u32,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    z_order: u32,
+    fill_rgb: u32,
+    visible: bool,
+) -> Result<(u32, Handle)> {
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(GraphicsTag::SurfaceCreateRequest as u32);
+    request.word_count = 8;
+    request.words[0] = owner_session as u64;
+    request.words[1] = x as i64 as u64;
+    request.words[2] = y as i64 as u64;
+    request.words[3] = width as u64;
+    request.words[4] = height as u64;
+    request.words[5] = z_order as u64;
+    request.words[6] = fill_rgb as u64;
+    request.words[7] = u64::from(visible);
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(graphics_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != GraphicsTag::SurfaceCreateReply as u32
+        || response.word_count < 2
+        || response.handle_count < 1
+    {
+        return Err(Error::InvalidArgument);
+    }
+
+    match graphics_status_from_word(response.words[0]) {
+        GraphicsStatus::Ok => Ok((response.words[1] as u32, response.handles[0])),
+        status => Err(graphics_status_error(status)),
+    }
+}
+
+pub fn graphics_surface_list(graphics_handle: Handle, ids: &mut [u32]) -> Result<usize> {
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(GraphicsTag::SurfaceListRequest as u32);
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(graphics_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != GraphicsTag::SurfaceListReply as u32 || response.word_count < 2 {
+        return Err(Error::InvalidArgument);
+    }
+
+    let status = graphics_status_from_word(response.words[0]);
+    if status != GraphicsStatus::Ok {
+        return Err(graphics_status_error(status));
+    }
+    let count = response.words[1] as usize;
+    if count > ids.len() || (response.word_count as usize) < 2 + count {
+        return Err(Error::BufferTooSmall);
+    }
+    for (index, id) in ids.iter_mut().enumerate().take(count) {
+        *id = response.words[2 + index] as u32;
+    }
+    Ok(count)
+}
+
+pub fn graphics_surface_status(
+    graphics_handle: Handle,
+    surface_id: u32,
+) -> Result<Option<GraphicsSurfaceStatusInfo>> {
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(GraphicsTag::SurfaceStatusRequest as u32);
+    request.word_count = 1;
+    request.words[0] = surface_id as u64;
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(graphics_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != GraphicsTag::SurfaceStatusReply as u32 || response.word_count < 11 {
+        return Err(Error::InvalidArgument);
+    }
+
+    let status = graphics_status_from_word(response.words[0]);
+    if status == GraphicsStatus::NotFound {
+        return Ok(None);
+    }
+    if status != GraphicsStatus::Ok {
+        return Err(graphics_status_error(status));
+    }
+
+    Ok(Some(GraphicsSurfaceStatusInfo {
+        surface_id: response.words[1] as u32,
+        output_index: response.words[2] as u32,
+        owner_session: response.words[3] as u32,
+        x: response.words[4] as i64 as i32,
+        y: response.words[5] as i64 as i32,
+        width: response.words[6] as u32,
+        height: response.words[7] as u32,
+        z_order: response.words[8] as u32,
+        fill_rgb: response.words[9] as u32,
+        visible: response.words[10] != 0,
+    }))
+}
+
+pub fn surface_set_geometry(
+    surface_handle: Handle,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    z_order: u32,
+) -> Result<()> {
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(SurfaceTag::SetGeometryRequest as u32);
+    request.word_count = 5;
+    request.words[0] = x as i64 as u64;
+    request.words[1] = y as i64 as u64;
+    request.words[2] = width as u64;
+    request.words[3] = height as u64;
+    request.words[4] = z_order as u64;
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(surface_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != SurfaceTag::SetGeometryReply as u32 || response.word_count < 1 {
+        return Err(Error::InvalidArgument);
+    }
+    match graphics_status_from_word(response.words[0]) {
+        GraphicsStatus::Ok => Ok(()),
+        status => Err(graphics_status_error(status)),
+    }
+}
+
+pub fn surface_set_fill(surface_handle: Handle, fill_rgb: u32) -> Result<()> {
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(SurfaceTag::SetFillRequest as u32);
+    request.word_count = 1;
+    request.words[0] = fill_rgb as u64;
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(surface_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != SurfaceTag::SetFillReply as u32 || response.word_count < 1 {
+        return Err(Error::InvalidArgument);
+    }
+    match graphics_status_from_word(response.words[0]) {
+        GraphicsStatus::Ok => Ok(()),
+        status => Err(graphics_status_error(status)),
+    }
+}
+
+pub fn surface_set_visibility(surface_handle: Handle, visible: bool) -> Result<()> {
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(SurfaceTag::SetVisibilityRequest as u32);
+    request.word_count = 1;
+    request.words[0] = u64::from(visible);
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(surface_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != SurfaceTag::SetVisibilityReply as u32 || response.word_count < 1 {
+        return Err(Error::InvalidArgument);
+    }
+    match graphics_status_from_word(response.words[0]) {
+        GraphicsStatus::Ok => Ok(()),
+        status => Err(graphics_status_error(status)),
+    }
+}
+
+pub fn session_list(session_handle: Handle, ids: &mut [u32]) -> Result<usize> {
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(SessionTag::ListRequest as u32);
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(session_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != SessionTag::ListReply as u32 || response.word_count < 2 {
+        return Err(Error::InvalidArgument);
+    }
+    let status = session_status_from_word(response.words[0]);
+    if status != SessionStatus::Ok {
+        return Err(session_status_error(status));
+    }
+    let count = response.words[1] as usize;
+    if count > ids.len() || (response.word_count as usize) < 2 + count {
+        return Err(Error::BufferTooSmall);
+    }
+    for (index, id) in ids.iter_mut().enumerate().take(count) {
+        *id = response.words[2 + index] as u32;
+    }
+    Ok(count)
+}
+
+pub fn session_status(service_handle: Handle, session_id: u32) -> Result<Option<SessionStatusInfo>> {
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(SessionTag::StatusRequest as u32);
+    request.word_count = 1;
+    request.words[0] = session_id as u64;
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(service_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != SessionTag::StatusReply as u32 || response.word_count < 5 {
+        return Err(Error::InvalidArgument);
+    }
+    let status = session_status_from_word(response.words[0]);
+    if status == SessionStatus::NotFound {
+        return Ok(None);
+    }
+    if status != SessionStatus::Ok {
+        return Err(session_status_error(status));
+    }
+
+    Ok(Some(SessionStatusInfo {
+        session_id: response.words[1] as u32,
+        input_source: session_input_source_from_word(response.words[2]),
+        focused_surface: response.words[3] as u32,
+        surface_count: response.words[4] as u32,
+    }))
+}
+
+pub fn session_focus(service_handle: Handle, session_id: u32, surface_id: u32) -> Result<u32> {
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(SessionTag::FocusRequest as u32);
+    request.word_count = 2;
+    request.words[0] = session_id as u64;
+    request.words[1] = surface_id as u64;
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(service_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != SessionTag::FocusReply as u32 || response.word_count < 2 {
+        return Err(Error::InvalidArgument);
+    }
+    match session_status_from_word(response.words[0]) {
+        SessionStatus::Ok => Ok(response.words[1] as u32),
+        status => Err(session_status_error(status)),
+    }
+}
+
 pub fn storage_read_all(blob_handle: Handle, buffer: &mut [u8], expected_len: usize) -> Result<usize> {
     if expected_len > buffer.len() {
         return Err(Error::BufferTooSmall);
@@ -1474,6 +1892,77 @@ fn network_status_error(status: NetworkStatus) -> Error {
         NetworkStatus::Timeout => Error::QueueEmpty,
         NetworkStatus::End => Error::NotFound,
         NetworkStatus::Unsupported => Error::Unsupported,
+    }
+}
+
+fn graphics_status_from_word(value: u64) -> GraphicsStatus {
+    match value as u32 {
+        x if x == GraphicsStatus::Ok as u32 => GraphicsStatus::Ok,
+        x if x == GraphicsStatus::NotFound as u32 => GraphicsStatus::NotFound,
+        x if x == GraphicsStatus::Busy as u32 => GraphicsStatus::Busy,
+        x if x == GraphicsStatus::Denied as u32 => GraphicsStatus::Denied,
+        x if x == GraphicsStatus::CapacityExceeded as u32 => GraphicsStatus::CapacityExceeded,
+        _ => GraphicsStatus::Busy,
+    }
+}
+
+fn graphics_status_error(status: GraphicsStatus) -> Error {
+    match status {
+        GraphicsStatus::Ok => Error::InvalidArgument,
+        GraphicsStatus::NotFound => Error::NotFound,
+        GraphicsStatus::Busy => Error::Busy,
+        GraphicsStatus::Denied => Error::PermissionDenied,
+        GraphicsStatus::CapacityExceeded => Error::CapacityExceeded,
+    }
+}
+
+fn session_status_from_word(value: u64) -> SessionStatus {
+    match value as u32 {
+        x if x == SessionStatus::Ok as u32 => SessionStatus::Ok,
+        x if x == SessionStatus::NotFound as u32 => SessionStatus::NotFound,
+        x if x == SessionStatus::Busy as u32 => SessionStatus::Busy,
+        x if x == SessionStatus::Denied as u32 => SessionStatus::Denied,
+        _ => SessionStatus::Busy,
+    }
+}
+
+fn session_status_error(status: SessionStatus) -> Error {
+    match status {
+        SessionStatus::Ok => Error::InvalidArgument,
+        SessionStatus::NotFound => Error::NotFound,
+        SessionStatus::Busy => Error::Busy,
+        SessionStatus::Denied => Error::PermissionDenied,
+    }
+}
+
+fn display_backend_from_word(value: u64) -> DisplayOutputBackend {
+    match value as u32 {
+        x if x == DisplayOutputBackend::BootFramebuffer as u32 => {
+            DisplayOutputBackend::BootFramebuffer
+        }
+        _ => DisplayOutputBackend::Unknown,
+    }
+}
+
+fn display_state_from_word(value: u64) -> DisplayOutputState {
+    match value as u32 {
+        x if x == DisplayOutputState::Connected as u32 => DisplayOutputState::Connected,
+        _ => DisplayOutputState::Disconnected,
+    }
+}
+
+fn display_pixel_format_from_word(value: u64) -> DisplayPixelFormat {
+    match value as u32 {
+        x if x == DisplayPixelFormat::Xrgb8888 as u32 => DisplayPixelFormat::Xrgb8888,
+        x if x == DisplayPixelFormat::Bgrx8888 as u32 => DisplayPixelFormat::Bgrx8888,
+        _ => DisplayPixelFormat::Unknown,
+    }
+}
+
+fn session_input_source_from_word(value: u64) -> SessionInputSource {
+    match value as u32 {
+        x if x == SessionInputSource::ServiceControl as u32 => SessionInputSource::ServiceControl,
+        _ => SessionInputSource::None,
     }
 }
 

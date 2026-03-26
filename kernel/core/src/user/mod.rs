@@ -16,7 +16,7 @@ use crate::{
 use spin::{Mutex, Once};
 
 const FLAT_IMAGE_MAGIC: [u8; 8] = *b"SOSUIMG\0";
-const FLAT_IMAGE_HEADER_LEN: usize = 48;
+const FLAT_IMAGE_HEADER_LEN: usize = 72;
 const USER_STACK_PAGES: usize = 16;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -159,7 +159,10 @@ pub struct FlatImageHeader {
     pub abi_version: u32,
     pub image_base: VirtualAddress,
     pub entry_offset: u64,
-    pub code_size: usize,
+    pub file_size: usize,
+    pub executable_limit: usize,
+    pub writable_offset: usize,
+    pub memory_size: usize,
     pub user_stack_top: VirtualAddress,
 }
 
@@ -167,7 +170,8 @@ pub struct FlatImageHeader {
 pub struct LoadedUserImage {
     pub entry_point: VirtualAddress,
     pub image_base: VirtualAddress,
-    pub code_size: usize,
+    pub file_size: usize,
+    pub mapped_image_bytes: usize,
     pub user_stack_top: VirtualAddress,
     pub mapped_stack_bytes: usize,
 }
@@ -308,14 +312,25 @@ pub fn parse_flat_image(image: &[u8]) -> Result<FlatImageHeader, LoadError> {
 
     let image_base = VirtualAddress::new(read_u64_le(image, 16)?);
     let entry_offset = read_u64_le(image, 24)?;
-    let code_size = read_u64_le(image, 32)? as usize;
-    let user_stack_top = VirtualAddress::new(read_u64_le(image, 40)?);
+    let file_size = read_u64_le(image, 32)? as usize;
+    let executable_limit = read_u64_le(image, 40)? as usize;
+    let writable_offset = read_u64_le(image, 48)? as usize;
+    let memory_size = read_u64_le(image, 56)? as usize;
+    let user_stack_top = VirtualAddress::new(read_u64_le(image, 64)?);
 
     if image_base.as_u64() % PAGE_SIZE_BYTES != 0 || user_stack_top.as_u64() % PAGE_SIZE_BYTES != 0
     {
         return Err(LoadError::AddressAlignment);
     }
-    if image.len() < header_len + code_size {
+    if image.len() < header_len + file_size {
+        return Err(LoadError::Truncated);
+    }
+    if file_size == 0
+        || executable_limit == 0
+        || executable_limit > file_size
+        || writable_offset > memory_size
+        || file_size > memory_size
+    {
         return Err(LoadError::Truncated);
     }
 
@@ -323,7 +338,10 @@ pub fn parse_flat_image(image: &[u8]) -> Result<FlatImageHeader, LoadError> {
         abi_version,
         image_base,
         entry_offset,
-        code_size,
+        file_size,
+        executable_limit,
+        writable_offset,
+        memory_size,
         user_stack_top,
     })
 }
@@ -334,17 +352,32 @@ pub fn load_flat_image(
     frame_allocator: &mut EarlyFrameAllocator,
 ) -> Result<LoadedUserImage, LoadError> {
     let header = parse_flat_image(image)?;
-    let code = &image[FLAT_IMAGE_HEADER_LEN..FLAT_IMAGE_HEADER_LEN + header.code_size];
+    let payload = &image[FLAT_IMAGE_HEADER_LEN..FLAT_IMAGE_HEADER_LEN + header.file_size];
 
-    for (page_index, chunk) in code.chunks(PAGE_SIZE_BYTES as usize).enumerate() {
+    let page_size = PAGE_SIZE_BYTES as usize;
+    let image_pages = header.memory_size.div_ceil(page_size);
+    for page_index in 0..image_pages {
+        let page_offset = page_index * page_size;
+        let page_end = page_offset.saturating_add(page_size);
         let frame = allocate_zeroed_frame(frame_allocator)?;
-        copy_into_frame(frame.base, chunk);
+        if page_offset < payload.len() {
+            let copy_end = page_end.min(payload.len());
+            copy_into_frame(frame.base, &payload[page_offset..copy_end]);
+        }
+
+        let mut flags = MappingFlags::USER_ACCESSIBLE;
+        if page_offset < header.executable_limit {
+            flags |= MappingFlags::EXECUTABLE;
+        }
+        if page_end > header.writable_offset {
+            flags |= MappingFlags::WRITABLE;
+        }
         mapper.map_page(
             header
                 .image_base
                 .offset((page_index as u64) * PAGE_SIZE_BYTES),
             frame,
-            MappingFlags::EXECUTABLE | MappingFlags::USER_ACCESSIBLE,
+            flags,
             frame_allocator,
         )?;
     }
@@ -365,7 +398,8 @@ pub fn load_flat_image(
     Ok(LoadedUserImage {
         entry_point: header.image_base.offset(header.entry_offset),
         image_base: header.image_base,
-        code_size: header.code_size,
+        file_size: header.file_size,
+        mapped_image_bytes: header.memory_size,
         user_stack_top: header.user_stack_top,
         mapped_stack_bytes: USER_STACK_PAGES * PAGE_SIZE_BYTES as usize,
     })
@@ -414,7 +448,10 @@ mod tests {
         abi_version: u32,
         image_base: u64,
         entry_offset: u64,
-        code_size: u64,
+        file_size: u64,
+        executable_limit: u64,
+        writable_offset: u64,
+        memory_size: u64,
         user_stack_top: u64,
         code_bytes: &[u8],
     ) -> Vec<u8> {
@@ -424,7 +461,10 @@ mod tests {
         image.extend_from_slice(&(FLAT_IMAGE_HEADER_LEN as u32).to_le_bytes());
         image.extend_from_slice(&image_base.to_le_bytes());
         image.extend_from_slice(&entry_offset.to_le_bytes());
-        image.extend_from_slice(&code_size.to_le_bytes());
+        image.extend_from_slice(&file_size.to_le_bytes());
+        image.extend_from_slice(&executable_limit.to_le_bytes());
+        image.extend_from_slice(&writable_offset.to_le_bytes());
+        image.extend_from_slice(&memory_size.to_le_bytes());
         image.extend_from_slice(&user_stack_top.to_le_bytes());
         image.extend_from_slice(code_bytes);
         image
@@ -437,6 +477,9 @@ mod tests {
             0x4000_0000_0000,
             0x20,
             4,
+            4,
+            4,
+            4,
             0x7fff_ffff_f000,
             &[1, 2, 3, 4],
         );
@@ -445,28 +488,71 @@ mod tests {
         assert_eq!(header.abi_version, 1);
         assert_eq!(header.image_base, VirtualAddress::new(0x4000_0000_0000));
         assert_eq!(header.entry_offset, 0x20);
-        assert_eq!(header.code_size, 4);
+        assert_eq!(header.file_size, 4);
+        assert_eq!(header.executable_limit, 4);
+        assert_eq!(header.writable_offset, 4);
+        assert_eq!(header.memory_size, 4);
         assert_eq!(header.user_stack_top, VirtualAddress::new(0x7fff_ffff_f000));
     }
 
     #[test]
     fn parse_flat_image_rejects_misaligned_addresses() {
-        let image = build_image(1, 0x4000_0000_0001, 0, 4, 0x7fff_ffff_f000, &[1, 2, 3, 4]);
+        let image = build_image(
+            1,
+            0x4000_0000_0001,
+            0,
+            4,
+            4,
+            4,
+            4,
+            0x7fff_ffff_f000,
+            &[1, 2, 3, 4],
+        );
         assert_eq!(parse_flat_image(&image), Err(LoadError::AddressAlignment));
 
-        let image = build_image(1, 0x4000_0000_0000, 0, 4, 0x7fff_ffff_f001, &[1, 2, 3, 4]);
+        let image = build_image(
+            1,
+            0x4000_0000_0000,
+            0,
+            4,
+            4,
+            4,
+            4,
+            0x7fff_ffff_f001,
+            &[1, 2, 3, 4],
+        );
         assert_eq!(parse_flat_image(&image), Err(LoadError::AddressAlignment));
     }
 
     #[test]
     fn parse_flat_image_rejects_wrong_abi_and_truncation() {
-        let unsupported = build_image(2, 0x4000_0000_0000, 0, 4, 0x7fff_ffff_f000, &[1, 2, 3, 4]);
+        let unsupported = build_image(
+            2,
+            0x4000_0000_0000,
+            0,
+            4,
+            4,
+            4,
+            4,
+            0x7fff_ffff_f000,
+            &[1, 2, 3, 4],
+        );
         assert_eq!(
             parse_flat_image(&unsupported),
             Err(LoadError::UnsupportedAbi)
         );
 
-        let truncated = build_image(1, 0x4000_0000_0000, 0, 8, 0x7fff_ffff_f000, &[1, 2, 3, 4]);
+        let truncated = build_image(
+            1,
+            0x4000_0000_0000,
+            0,
+            8,
+            8,
+            8,
+            8,
+            0x7fff_ffff_f000,
+            &[1, 2, 3, 4],
+        );
         assert_eq!(parse_flat_image(&truncated), Err(LoadError::Truncated));
     }
 }

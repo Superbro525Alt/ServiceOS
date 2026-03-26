@@ -11,7 +11,7 @@ use rt::{
     IPC_MAX_WORDS,
 };
 
-const MAX_BOOTSTORE_ENTRIES: usize = 32;
+const MAX_BOOTSTORE_ENTRIES: usize = 64;
 const MAX_BLOB_SESSIONS: usize = 24;
 const BOOT_ENTRY_BYTES: usize = BootStoreEntryRecord::encoded_len();
 

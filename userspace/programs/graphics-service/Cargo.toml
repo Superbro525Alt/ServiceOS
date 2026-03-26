@@ -1,0 +1,11 @@
+[package]
+name = "serviceos-graphics-service"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+serviceos-userspace-runtime = { path = "../runtime" }
+
+[[bin]]
+name = "serviceos-graphics-service"
+path = "src/main.rs"

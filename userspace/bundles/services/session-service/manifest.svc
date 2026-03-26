@@ -1,0 +1,7 @@
+service=session-service
+image=session-service
+startup=eager
+restart=on-failure:1
+depends=graphics-service, log-service
+grant=log-service:send
+lookup=graphics-service:send

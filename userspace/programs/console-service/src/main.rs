@@ -279,6 +279,76 @@ fn handle_public_message(
                         message.words[5],
                     ),
                 ),
+                LogEvent::DisplayOutputReady => write_structured_line(
+                    sessions,
+                    "console",
+                    format_args!(
+                        "seq={} level={} source={} domain={} event={} mode={}x{}",
+                        message.words[6],
+                        severity_name(severity),
+                        service_name(source),
+                        domain_name(domain),
+                        event_name(event),
+                        message.words[4],
+                        message.words[5],
+                    ),
+                ),
+                LogEvent::SurfaceCreated => write_structured_line(
+                    sessions,
+                    "console",
+                    format_args!(
+                        "seq={} level={} source={} domain={} event={} surface={} session={}",
+                        message.words[6],
+                        severity_name(severity),
+                        service_name(source),
+                        domain_name(domain),
+                        event_name(event),
+                        message.words[4],
+                        message.words[5],
+                    ),
+                ),
+                LogEvent::CompositorPresented => write_structured_line(
+                    sessions,
+                    "console",
+                    format_args!(
+                        "seq={} level={} source={} domain={} event={} surfaces={} presents={}",
+                        message.words[6],
+                        severity_name(severity),
+                        service_name(source),
+                        domain_name(domain),
+                        event_name(event),
+                        message.words[4],
+                        message.words[5],
+                    ),
+                ),
+                LogEvent::SessionReady => write_structured_line(
+                    sessions,
+                    "console",
+                    format_args!(
+                        "seq={} level={} source={} domain={} event={} session={} surfaces={}",
+                        message.words[6],
+                        severity_name(severity),
+                        service_name(source),
+                        domain_name(domain),
+                        event_name(event),
+                        message.words[4],
+                        message.words[5],
+                    ),
+                ),
+                LogEvent::SessionFocusChanged => write_structured_line(
+                    sessions,
+                    "console",
+                    format_args!(
+                        "seq={} level={} source={} domain={} event={} session={} surface={}",
+                        message.words[6],
+                        severity_name(severity),
+                        service_name(source),
+                        domain_name(domain),
+                        event_name(event),
+                        message.words[4],
+                        message.words[5],
+                    ),
+                ),
                 _ => write_structured_line(
                     sessions,
                     "console",
@@ -513,6 +583,8 @@ fn service_id_from_word(value: u64) -> ServiceId {
         x if x == ServiceId::Package as u32 => ServiceId::Package,
         x if x == ServiceId::Announce as u32 => ServiceId::Announce,
         x if x == ServiceId::Network as u32 => ServiceId::Network,
+        x if x == ServiceId::Graphics as u32 => ServiceId::Graphics,
+        x if x == ServiceId::Session as u32 => ServiceId::Session,
         _ => ServiceId::RootManager,
     }
 }
@@ -540,6 +612,8 @@ fn domain_from_word(value: u64) -> LogDomain {
         x if x == LogDomain::Shell as u32 => LogDomain::Shell,
         x if x == LogDomain::Package as u32 => LogDomain::Package,
         x if x == LogDomain::Network as u32 => LogDomain::Network,
+        x if x == LogDomain::Graphics as u32 => LogDomain::Graphics,
+        x if x == LogDomain::Session as u32 => LogDomain::Session,
         _ => LogDomain::Service,
     }
 }
@@ -572,6 +646,12 @@ fn event_from_word(value: u64) -> LogEvent {
         x if x == LogEvent::NetworkResolveCompleted as u32 => LogEvent::NetworkResolveCompleted,
         x if x == LogEvent::NetworkProbeCompleted as u32 => LogEvent::NetworkProbeCompleted,
         x if x == LogEvent::NetworkLinkChanged as u32 => LogEvent::NetworkLinkChanged,
+        x if x == LogEvent::DisplayOutputReady as u32 => LogEvent::DisplayOutputReady,
+        x if x == LogEvent::SurfaceCreated as u32 => LogEvent::SurfaceCreated,
+        x if x == LogEvent::SurfaceUpdated as u32 => LogEvent::SurfaceUpdated,
+        x if x == LogEvent::CompositorPresented as u32 => LogEvent::CompositorPresented,
+        x if x == LogEvent::SessionReady as u32 => LogEvent::SessionReady,
+        x if x == LogEvent::SessionFocusChanged as u32 => LogEvent::SessionFocusChanged,
         _ => LogEvent::LookupGranted,
     }
 }
@@ -598,6 +678,8 @@ fn service_name(service_id: ServiceId) -> &'static str {
         ServiceId::Package => "package-service",
         ServiceId::Announce => "announce-service",
         ServiceId::Network => "network-service",
+        ServiceId::Graphics => "graphics-service",
+        ServiceId::Session => "session-service",
     }
 }
 
@@ -625,6 +707,8 @@ fn domain_name(domain: LogDomain) -> &'static str {
         LogDomain::Shell => "shell",
         LogDomain::Package => "package",
         LogDomain::Network => "network",
+        LogDomain::Graphics => "graphics",
+        LogDomain::Session => "session",
     }
 }
 
@@ -657,6 +741,12 @@ fn event_name(event: LogEvent) -> &'static str {
         LogEvent::NetworkResolveCompleted => "network-resolve-completed",
         LogEvent::NetworkProbeCompleted => "network-probe-completed",
         LogEvent::NetworkLinkChanged => "network-link-changed",
+        LogEvent::DisplayOutputReady => "display-output-ready",
+        LogEvent::SurfaceCreated => "surface-created",
+        LogEvent::SurfaceUpdated => "surface-updated",
+        LogEvent::CompositorPresented => "compositor-presented",
+        LogEvent::SessionReady => "session-ready",
+        LogEvent::SessionFocusChanged => "session-focus-changed",
     }
 }
 

@@ -41,6 +41,8 @@ pub enum SyscallNumber {
     PacketInterfaceInfo = 15,
     PacketInterfaceReceive = 16,
     PacketInterfaceTransmit = 17,
+    DisplayOutputInfo = 18,
+    DisplayOutputPresent = 19,
 }
 
 #[repr(u32)]
@@ -108,6 +110,8 @@ pub enum ServiceImageId {
     PackageService = 9,
     AnnounceService = 10,
     NetworkService = 11,
+    GraphicsService = 12,
+    SessionService = 13,
 }
 
 #[repr(u32)]
@@ -123,6 +127,8 @@ pub enum ServiceId {
     Package = 8,
     Announce = 9,
     Network = 10,
+    Graphics = 11,
+    Session = 12,
 }
 
 #[repr(u32)]
@@ -192,6 +198,8 @@ pub enum LogDomain {
     Shell = 10,
     Package = 11,
     Network = 12,
+    Graphics = 13,
+    Session = 14,
 }
 
 #[repr(u32)]
@@ -224,6 +232,12 @@ pub enum LogEvent {
     NetworkResolveCompleted = 25,
     NetworkProbeCompleted = 26,
     NetworkLinkChanged = 27,
+    DisplayOutputReady = 28,
+    SurfaceCreated = 29,
+    SurfaceUpdated = 30,
+    CompositorPresented = 31,
+    SessionReady = 32,
+    SessionFocusChanged = 33,
 }
 
 #[repr(u32)]
@@ -418,6 +432,43 @@ pub struct PacketInterfaceInfo {
 
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DisplayOutputBackend {
+    Unknown = 0,
+    BootFramebuffer = 1,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DisplayOutputState {
+    Disconnected = 0,
+    Connected = 1,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DisplayPixelFormat {
+    Unknown = 0,
+    Xrgb8888 = 1,
+    Bgrx8888 = 2,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DisplayOutputInfo {
+    pub backend: u32,
+    pub state: u32,
+    pub pixel_format: u32,
+    pub reserved: u32,
+    pub width: u32,
+    pub height: u32,
+    pub stride: u32,
+    pub bytes_per_pixel: u32,
+    pub byte_len: u64,
+    pub present_count: u64,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NetworkTag {
     InterfaceListRequest = 0x800,
     InterfaceListReply = 0x801,
@@ -439,4 +490,68 @@ pub enum NetworkStatus {
     Timeout = 4,
     End = 5,
     Unsupported = 6,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GraphicsTag {
+    OutputListRequest = 0x900,
+    OutputListReply = 0x901,
+    OutputStatusRequest = 0x902,
+    OutputStatusReply = 0x903,
+    SurfaceCreateRequest = 0x904,
+    SurfaceCreateReply = 0x905,
+    SurfaceListRequest = 0x906,
+    SurfaceListReply = 0x907,
+    SurfaceStatusRequest = 0x908,
+    SurfaceStatusReply = 0x909,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GraphicsStatus {
+    Ok = 0,
+    NotFound = 1,
+    Busy = 2,
+    Denied = 3,
+    CapacityExceeded = 4,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SurfaceTag {
+    SetGeometryRequest = 0x920,
+    SetGeometryReply = 0x921,
+    SetFillRequest = 0x922,
+    SetFillReply = 0x923,
+    SetVisibilityRequest = 0x924,
+    SetVisibilityReply = 0x925,
+    CloseRequest = 0x926,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SessionTag {
+    ListRequest = 0x980,
+    ListReply = 0x981,
+    StatusRequest = 0x982,
+    StatusReply = 0x983,
+    FocusRequest = 0x984,
+    FocusReply = 0x985,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SessionStatus {
+    Ok = 0,
+    NotFound = 1,
+    Busy = 2,
+    Denied = 3,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SessionInputSource {
+    None = 0,
+    ServiceControl = 1,
 }

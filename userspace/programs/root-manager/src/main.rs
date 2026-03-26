@@ -9,7 +9,7 @@ use rt::{
     TaskStateCode, IPC_MAX_HANDLES, IPC_MAX_WORDS, rights,
 };
 
-const MAX_SERVICE_SLOTS: usize = 12;
+const MAX_SERVICE_SLOTS: usize = 16;
 const MAX_INDEX_BYTES: usize = 512;
 const MAX_MANIFEST_BYTES: usize = 512;
 
@@ -17,12 +17,14 @@ const MAX_MANIFEST_BYTES: usize = 512;
 struct BootstrapResource {
     handle: rt::Handle,
     len: usize,
+    rights: u64,
 }
 
 #[derive(Clone, Copy)]
 struct BootstrapResources {
     bootstore: BootstrapResource,
     network: Option<BootstrapResource>,
+    display: Option<BootstrapResource>,
 }
 
 #[derive(Clone, Copy)]
@@ -84,6 +86,16 @@ fn main() -> u64 {
         Some(BootstrapResource {
             handle: startup.handles[2],
             len: 0,
+            rights: rights::READ | rights::WRITE | rights::WAIT,
+        })
+    } else {
+        None
+    };
+    let display_resource = if startup.handle_count > 3 {
+        Some(BootstrapResource {
+            handle: startup.handles[3],
+            len: 0,
+            rights: rights::READ | rights::WRITE,
         })
     } else {
         None
@@ -92,8 +104,10 @@ fn main() -> u64 {
         bootstore: BootstrapResource {
             handle: bootstore_handle,
             len: bootstore_len,
+            rights: rights::READ,
         },
         network: network_resource,
+        display: display_resource,
     };
 
     fallback_log("bootstrap started");
@@ -108,7 +122,11 @@ fn main() -> u64 {
         service_count,
         0,
         bootstrap_authority,
-        Some((bootstrap_resources.bootstore.handle, bootstrap_resources.bootstore.len)),
+        Some((
+            bootstrap_resources.bootstore.handle,
+            bootstrap_resources.bootstore.len,
+            bootstrap_resources.bootstore.rights,
+        )),
     )
     .is_err()
     {
@@ -255,7 +273,7 @@ fn start_service(
     service_count: usize,
     index: usize,
     bootstrap_authority: rt::Handle,
-    bootstrap_resource: Option<(rt::Handle, usize)>,
+    bootstrap_resource: Option<(rt::Handle, usize, u64)>,
 ) -> rt::Result<()> {
     let manifest = slots[index].manifest;
     if bootstrap_resource.is_none() && !dependencies_ready(slots, service_count, index) {
@@ -279,14 +297,16 @@ fn start_service(
     startup.words[1] = slots[index].attempts as u64;
     startup.words[2] = manifest.grant_count as u64;
     startup.words[3] = manifest.resource_count as u64;
-    startup.words[4] = bootstrap_resource.map(|(_, len)| len as u64).unwrap_or(0);
+    startup.words[4] = bootstrap_resource.map(|(_, len, _)| len as u64).unwrap_or(0);
 
     let mut handle_index = 0usize;
-    if let Some((handle, _)) = bootstrap_resource {
+    if let Some((handle, _, bootstrap_rights)) = bootstrap_resource {
         startup.handle_count = 1;
-        startup.handles[0] =
-            rt::handle_duplicate(handle, rights::READ | rights::DUPLICATE | rights::TRANSFER)?;
-        startup.handle_rights[0] = rights::READ | rights::DUPLICATE | rights::TRANSFER;
+        startup.handles[0] = rt::handle_duplicate(
+            handle,
+            bootstrap_rights | rights::DUPLICATE | rights::TRANSFER,
+        )?;
+        startup.handle_rights[0] = bootstrap_rights;
         handle_index = 1;
     }
 
@@ -477,13 +497,19 @@ fn supervision_loop(
 fn bootstrap_resource_for(
     service_id: ServiceId,
     bootstrap_resources: BootstrapResources,
-) -> Option<(rt::Handle, usize)> {
+) -> Option<(rt::Handle, usize, u64)> {
     match service_id {
         ServiceId::Storage => Some((
             bootstrap_resources.bootstore.handle,
             bootstrap_resources.bootstore.len,
+            bootstrap_resources.bootstore.rights,
         )),
-        ServiceId::Network => bootstrap_resources.network.map(|resource| (resource.handle, resource.len)),
+        ServiceId::Network => bootstrap_resources
+            .network
+            .map(|resource| (resource.handle, resource.len, resource.rights)),
+        ServiceId::Graphics => bootstrap_resources
+            .display
+            .map(|resource| (resource.handle, resource.len, resource.rights)),
         _ => None,
     }
 }
@@ -1182,6 +1208,8 @@ fn service_id_from_word(value: u64) -> ServiceId {
         x if x == ServiceId::Package as u32 => ServiceId::Package,
         x if x == ServiceId::Announce as u32 => ServiceId::Announce,
         x if x == ServiceId::Network as u32 => ServiceId::Network,
+        x if x == ServiceId::Graphics as u32 => ServiceId::Graphics,
+        x if x == ServiceId::Session as u32 => ServiceId::Session,
         _ => ServiceId::RootManager,
     }
 }
@@ -1198,6 +1226,8 @@ fn image_id_from_word(value: u64) -> ServiceImageId {
         x if x == ServiceImageId::PackageService as u32 => ServiceImageId::PackageService,
         x if x == ServiceImageId::AnnounceService as u32 => ServiceImageId::AnnounceService,
         x if x == ServiceImageId::NetworkService as u32 => ServiceImageId::NetworkService,
+        x if x == ServiceImageId::GraphicsService as u32 => ServiceImageId::GraphicsService,
+        x if x == ServiceImageId::SessionService as u32 => ServiceImageId::SessionService,
         _ => ServiceImageId::RootManager,
     }
 }
@@ -1234,6 +1264,8 @@ fn service_name(service_id: ServiceId) -> &'static str {
         ServiceId::Package => "package-service",
         ServiceId::Announce => "announce-service",
         ServiceId::Network => "network-service",
+        ServiceId::Graphics => "graphics-service",
+        ServiceId::Session => "session-service",
     }
 }
 
@@ -1276,6 +1308,12 @@ fn event_name(event: LogEvent) -> &'static str {
         LogEvent::NetworkResolveCompleted => "network-resolve-completed",
         LogEvent::NetworkProbeCompleted => "network-probe-completed",
         LogEvent::NetworkLinkChanged => "network-link-changed",
+        LogEvent::DisplayOutputReady => "display-output-ready",
+        LogEvent::SurfaceCreated => "surface-created",
+        LogEvent::SurfaceUpdated => "surface-updated",
+        LogEvent::CompositorPresented => "compositor-presented",
+        LogEvent::SessionReady => "session-ready",
+        LogEvent::SessionFocusChanged => "session-focus-changed",
     }
 }
 

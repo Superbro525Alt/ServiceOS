@@ -1,12 +1,16 @@
 use core::cell::UnsafeCell;
 use serviceos_kernel_core::{
-    bootstrap::{BootContext, BootMemoryRegion, BootMemoryRegionKind},
+    bootstrap::{
+        BootContext, BootMemoryRegion, BootMemoryRegionKind, FramebufferInfo,
+        FramebufferPixelFormat,
+    },
     memory::PhysicalAddress,
 };
 use uefi::{
     boot::{self, AllocateType, PAGE_SIZE},
     cstr16,
     mem::memory_map::{MemoryMap, MemoryType},
+    proto::console::gop::{GraphicsOutput, PixelFormat},
     proto::media::file::{File, FileAttribute, FileInfo, FileMode, FileType},
     system,
     table::cfg::{ACPI_GUID, ACPI2_GUID},
@@ -34,6 +38,7 @@ static BOOT_STORE: BootStoreBuffer = BootStoreBuffer {
 
 pub fn exit_boot_services_and_capture_context() -> BootContext<'static> {
     let boot_store = load_boot_store();
+    let framebuffer = capture_framebuffer();
     let rsdp_address = system::with_config_table(|entries| {
         entries
             .iter()
@@ -71,9 +76,33 @@ pub fn exit_boot_services_and_capture_context() -> BootContext<'static> {
         memory_map_truncated: truncated,
         physical_memory_offset: Some(0),
         rsdp_address,
-        framebuffer: None,
+        framebuffer,
         boot_store,
     }
+}
+
+fn capture_framebuffer() -> Option<FramebufferInfo> {
+    let handle = boot::get_handle_for_protocol::<GraphicsOutput>().ok()?;
+    let mut gop = boot::open_protocol_exclusive::<GraphicsOutput>(handle).ok()?;
+    let mode = gop.current_mode_info();
+    let pixel_format = match mode.pixel_format() {
+        PixelFormat::Rgb => FramebufferPixelFormat::Xrgb8888,
+        PixelFormat::Bgr => FramebufferPixelFormat::Bgrx8888,
+        _ => return None,
+    };
+    let (width, height) = mode.resolution();
+    let stride = mode.stride();
+    let mut framebuffer = gop.frame_buffer();
+
+    Some(FramebufferInfo {
+        physical_base: PhysicalAddress::new(framebuffer.as_mut_ptr() as u64),
+        byte_len: framebuffer.size(),
+        width,
+        height,
+        stride,
+        bytes_per_pixel: 4,
+        pixel_format,
+    })
 }
 
 fn load_boot_store() -> Option<&'static [u8]> {

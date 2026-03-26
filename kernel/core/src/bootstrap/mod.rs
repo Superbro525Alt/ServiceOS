@@ -28,6 +28,12 @@ pub enum BootMemoryRegionKind {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FramebufferPixelFormat {
+    Xrgb8888,
+    Bgrx8888,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FramebufferInfo {
     pub physical_base: PhysicalAddress,
     pub byte_len: usize,
@@ -35,6 +41,7 @@ pub struct FramebufferInfo {
     pub height: usize,
     pub stride: usize,
     pub bytes_per_pixel: usize,
+    pub pixel_format: FramebufferPixelFormat,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

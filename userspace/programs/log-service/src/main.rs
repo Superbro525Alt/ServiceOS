@@ -247,6 +247,8 @@ fn service_id_from_word(value: u64) -> ServiceId {
         x if x == ServiceId::Package as u32 => ServiceId::Package,
         x if x == ServiceId::Announce as u32 => ServiceId::Announce,
         x if x == ServiceId::Network as u32 => ServiceId::Network,
+        x if x == ServiceId::Graphics as u32 => ServiceId::Graphics,
+        x if x == ServiceId::Session as u32 => ServiceId::Session,
         _ => ServiceId::RootManager,
     }
 }
@@ -274,6 +276,8 @@ fn domain_from_word(value: u64) -> LogDomain {
         x if x == LogDomain::Shell as u32 => LogDomain::Shell,
         x if x == LogDomain::Package as u32 => LogDomain::Package,
         x if x == LogDomain::Network as u32 => LogDomain::Network,
+        x if x == LogDomain::Graphics as u32 => LogDomain::Graphics,
+        x if x == LogDomain::Session as u32 => LogDomain::Session,
         _ => LogDomain::Service,
     }
 }
@@ -306,6 +310,12 @@ fn event_from_word(value: u64) -> LogEvent {
         x if x == LogEvent::NetworkResolveCompleted as u32 => LogEvent::NetworkResolveCompleted,
         x if x == LogEvent::NetworkProbeCompleted as u32 => LogEvent::NetworkProbeCompleted,
         x if x == LogEvent::NetworkLinkChanged as u32 => LogEvent::NetworkLinkChanged,
+        x if x == LogEvent::DisplayOutputReady as u32 => LogEvent::DisplayOutputReady,
+        x if x == LogEvent::SurfaceCreated as u32 => LogEvent::SurfaceCreated,
+        x if x == LogEvent::SurfaceUpdated as u32 => LogEvent::SurfaceUpdated,
+        x if x == LogEvent::CompositorPresented as u32 => LogEvent::CompositorPresented,
+        x if x == LogEvent::SessionReady as u32 => LogEvent::SessionReady,
+        x if x == LogEvent::SessionFocusChanged as u32 => LogEvent::SessionFocusChanged,
         _ => LogEvent::LookupGranted,
     }
 }

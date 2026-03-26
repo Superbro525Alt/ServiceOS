@@ -45,7 +45,7 @@ fn main() -> u64 {
     let _ = rt::handle_close(public.second);
     let _ = rt::handle_close(console_handle);
 
-    let _ = emit_shell_log(bootstrap, LogEvent::SessionOpened, 1, 0);
+    let _ = emit_shell_log(bootstrap, LogSeverity::Info, LogEvent::SessionOpened, 1, 0);
     let _ = write_session_linef(
         session_handle,
         format_args!("serviceos shell ready; type 'help' for commands"),
@@ -67,9 +67,18 @@ fn main() -> u64 {
             continue;
         }
 
-        let _ = emit_shell_log(bootstrap, LogEvent::ShellCommand, line.len() as u64, 0);
-        if execute_command(bootstrap, session_handle, line).is_err() {
-            let _ = write_session_linef(session_handle, format_args!("command failed"));
+        let _ = emit_shell_log(
+            bootstrap,
+            LogSeverity::Debug,
+            LogEvent::ShellCommand,
+            line.len() as u64,
+            0,
+        );
+        if let Err(error) = execute_command(bootstrap, session_handle, line) {
+            let _ = write_session_linef(
+                session_handle,
+                format_args!("command failed: {}", error_name(error)),
+            );
         }
     }
 }
@@ -108,6 +117,7 @@ fn execute_command(bootstrap: rt::Handle, session: rt::Handle, line: &str) -> rt
             None => write_session_linef(session, format_args!("usage: cat <path>")),
         },
         "status" => cmd_status(bootstrap, session),
+        "net" => cmd_net(bootstrap, session, parts),
         "pkg" => cmd_pkg(bootstrap, session, parts),
         "run" => match parts.next() {
             Some("sysinfo") => cmd_run_sysinfo(bootstrap, session),
@@ -127,6 +137,10 @@ fn print_help(session: rt::Handle) -> rt::Result<()> {
     write_session_linef(session, format_args!("store ls [prefix]: list boot-store paths"))?;
     write_session_linef(session, format_args!("cat <path>: print a text resource"))?;
     write_session_linef(session, format_args!("status: show system heartbeat status"))?;
+    write_session_linef(session, format_args!("net ifaces: show network interfaces"))?;
+    write_session_linef(session, format_args!("net route: show the default route"))?;
+    write_session_linef(session, format_args!("net resolve <name>: resolve a host or literal"))?;
+    write_session_linef(session, format_args!("net ping <name|ip>: run an ICMP reachability probe"))?;
     write_session_linef(session, format_args!("pkg list: list repository packages"))?;
     write_session_linef(session, format_args!("pkg info <name>: inspect one package"))?;
     write_session_linef(session, format_args!("pkg install <name> [version]: activate a package"))?;
@@ -193,19 +207,7 @@ fn cmd_logs(bootstrap: rt::Handle, session: rt::Handle, count: usize) -> rt::Res
     let start = oldest.max(next.saturating_sub(count as u64));
     for sequence in start..next {
         if let Some(record) = rt::log_query_record(log_handle, sequence)? {
-            write_session_linef(
-                session,
-                format_args!(
-                    "#{} {} {} {}/{} {} {}",
-                    record.sequence,
-                    severity_name(record.severity),
-                    service_name(record.source),
-                    domain_name(record.domain),
-                    event_name(record.event),
-                    record.arg0,
-                    record.arg1,
-                ),
-            )?;
+            write_log_record(session, record)?;
         }
     }
 
@@ -220,11 +222,15 @@ fn cmd_config(bootstrap: rt::Handle, session: rt::Handle) -> rt::Result<()> {
         ConfigKey::StatusHeartbeatTicks,
         ConfigKey::StatusConsoleMirror,
         ConfigKey::StatusHeartbeatLogPeriod,
+        ConfigKey::NetworkIpv4Address,
+        ConfigKey::NetworkIpv4PrefixLength,
+        ConfigKey::NetworkIpv4Gateway,
+        ConfigKey::NetworkProbeTimeoutTicks,
     ] {
         let (_, value) = rt::config_read(config_handle, key)?;
         write_session_linef(
             session,
-            format_args!("{} = {}", config_key_name(key), value),
+            format_args!("{} = {}", config_key_name(key), config_value_text(key, value)),
         )?;
     }
     let _ = rt::handle_close(config_handle);
@@ -288,6 +294,119 @@ fn cmd_run_sysinfo(bootstrap: rt::Handle, session: rt::Handle) -> rt::Result<()>
         session,
         format_args!("sysinfo-tool exited with {:#x}", status.exit_code),
     )
+}
+
+fn cmd_net<'a, I>(bootstrap: rt::Handle, session: rt::Handle, mut parts: I) -> rt::Result<()>
+where
+    I: Iterator<Item = &'a str>,
+{
+    match parts.next() {
+        Some("ifaces") => cmd_net_ifaces(bootstrap, session),
+        Some("route") => cmd_net_route(bootstrap, session),
+        Some("resolve") => match parts.next() {
+            Some(target) => cmd_net_resolve(bootstrap, session, target),
+            None => write_session_linef(session, format_args!("usage: net resolve <name>")),
+        },
+        Some("ping") => match parts.next() {
+            Some(target) => cmd_net_ping(bootstrap, session, target),
+            None => write_session_linef(session, format_args!("usage: net ping <name|ip>")),
+        },
+        _ => write_session_linef(session, format_args!("usage: net <ifaces|route|resolve|ping> ...")),
+    }
+}
+
+fn cmd_net_ifaces(bootstrap: rt::Handle, session: rt::Handle) -> rt::Result<()> {
+    let network_handle = rt::lookup_service(bootstrap, ServiceId::Network)?;
+    let count = rt::network_interface_count(network_handle)?;
+    if count == 0 {
+        let _ = rt::handle_close(network_handle);
+        return write_session_linef(session, format_args!("no interfaces"));
+    }
+
+    for index in 0..count {
+        if let Some(info) = rt::network_interface_status(network_handle, index)? {
+            write_session_linef(
+                session,
+                format_args!(
+                    "net{} link={} addr={}/{} gw={} mac={} mtu={} rx={} tx={} drop={}",
+                    info.index,
+                    link_state_name(info.link_state),
+                    format_ipv4(info.address),
+                    info.prefix_len,
+                    format_ipv4(info.gateway),
+                    format_mac(info.mac),
+                    info.mtu,
+                    info.rx_packets,
+                    info.tx_packets,
+                    info.dropped_packets,
+                ),
+            )?;
+        }
+    }
+
+    let _ = rt::handle_close(network_handle);
+    Ok(())
+}
+
+fn cmd_net_route(bootstrap: rt::Handle, session: rt::Handle) -> rt::Result<()> {
+    let network_handle = rt::lookup_service(bootstrap, ServiceId::Network)?;
+    let info = rt::network_interface_status(network_handle, 0)?;
+    let _ = rt::handle_close(network_handle);
+    match info {
+        Some(info) => write_session_linef(
+            session,
+            format_args!("default via {} dev net{}", format_ipv4(info.gateway), info.index),
+        ),
+        None => write_session_linef(session, format_args!("no default route")),
+    }
+}
+
+fn cmd_net_resolve(bootstrap: rt::Handle, session: rt::Handle, target: &str) -> rt::Result<()> {
+    let network_handle = rt::lookup_service(bootstrap, ServiceId::Network)?;
+    let mut addresses = [0u32; 4];
+    let count = match rt::network_resolve(network_handle, target, &mut addresses) {
+        Ok(count) => count,
+        Err(rt::Error::NotFound) => {
+            let _ = rt::handle_close(network_handle);
+            return write_session_linef(session, format_args!("no address for {}", target));
+        }
+        Err(error) => {
+            let _ = rt::handle_close(network_handle);
+            return Err(error);
+        }
+    };
+    let _ = rt::handle_close(network_handle);
+    if count == 0 {
+        return write_session_linef(session, format_args!("no result"));
+    }
+    for address in addresses.iter().copied().take(count) {
+        write_session_linef(session, format_args!("{} -> {}", target, format_ipv4(address)))?;
+    }
+    Ok(())
+}
+
+fn cmd_net_ping(bootstrap: rt::Handle, session: rt::Handle, target: &str) -> rt::Result<()> {
+    let network_handle = rt::lookup_service(bootstrap, ServiceId::Network)?;
+    let result = rt::network_ping(network_handle, target);
+    let _ = rt::handle_close(network_handle);
+    match result {
+        Ok((resolved, elapsed_ms)) => write_session_linef(
+            session,
+            format_args!(
+                "ping {} ({}) ok {}ms",
+                target,
+                format_ipv4(resolved),
+                elapsed_ms,
+            ),
+        ),
+        Err(rt::Error::QueueEmpty) => {
+            write_session_linef(session, format_args!("ping {} timed out", target))
+        }
+        Err(rt::Error::NotFound) => {
+            write_session_linef(session, format_args!("ping target not found: {}", target))
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn cmd_pkg<'a, I>(bootstrap: rt::Handle, session: rt::Handle, mut parts: I) -> rt::Result<()>
@@ -460,6 +579,7 @@ fn cmd_pkg_history(
 
 fn emit_shell_log(
     bootstrap: rt::Handle,
+    severity: LogSeverity,
     event: LogEvent,
     arg0: u64,
     arg1: u64,
@@ -468,7 +588,7 @@ fn emit_shell_log(
     let result = rt::send_log_record(
         log_handle,
         ServiceId::Shell,
-        LogSeverity::Info,
+        severity,
         LogDomain::Shell,
         event,
         arg0,
@@ -497,6 +617,7 @@ fn parse_service_name(name: &str) -> Option<ServiceId> {
         "shell" | "shell-service" => Some(ServiceId::Shell),
         "package" | "package-service" => Some(ServiceId::Package),
         "announce" | "announce-service" => Some(ServiceId::Announce),
+        "network" | "network-service" => Some(ServiceId::Network),
         _ => None,
     }
 }
@@ -512,6 +633,7 @@ fn service_name(service_id: ServiceId) -> &'static str {
         ServiceId::Shell => "shell-service",
         ServiceId::Package => "package-service",
         ServiceId::Announce => "announce-service",
+        ServiceId::Network => "network-service",
     }
 }
 
@@ -540,6 +662,10 @@ fn config_key_name(key: ConfigKey) -> &'static str {
         ConfigKey::StatusHeartbeatTicks => "status.heartbeat_ticks",
         ConfigKey::StatusConsoleMirror => "status.console_mirror",
         ConfigKey::StatusHeartbeatLogPeriod => "status.heartbeat_log_period",
+        ConfigKey::NetworkIpv4Address => "network.ipv4_address",
+        ConfigKey::NetworkIpv4PrefixLength => "network.ipv4_prefix_length",
+        ConfigKey::NetworkIpv4Gateway => "network.ipv4_gateway",
+        ConfigKey::NetworkProbeTimeoutTicks => "network.probe_timeout_ticks",
     }
 }
 
@@ -566,6 +692,7 @@ fn domain_name(domain: LogDomain) -> &'static str {
         LogDomain::Ipc => "ipc",
         LogDomain::Shell => "shell",
         LogDomain::Package => "package",
+        LogDomain::Network => "network",
     }
 }
 
@@ -593,6 +720,207 @@ fn event_name(event: LogEvent) -> &'static str {
         LogEvent::PackageRemoved => "package-removed",
         LogEvent::PackageRolledBack => "package-rolled-back",
         LogEvent::PackageActivationFailed => "package-activation-failed",
+        LogEvent::NetworkInterfaceReady => "network-interface-ready",
+        LogEvent::NetworkAddressConfigured => "network-address-configured",
+        LogEvent::NetworkResolveCompleted => "network-resolve-completed",
+        LogEvent::NetworkProbeCompleted => "network-probe-completed",
+        LogEvent::NetworkLinkChanged => "network-link-changed",
+    }
+}
+
+fn write_log_record(session: rt::Handle, record: rt::LogRecord) -> rt::Result<()> {
+    match record.event {
+        LogEvent::ConfigLoaded => write_session_linef(
+            session,
+            format_args!(
+                "#{} {} {} {}/{} minimum-severity={}",
+                record.sequence,
+                severity_name(record.severity),
+                service_name(record.source),
+                domain_name(record.domain),
+                event_name(record.event),
+                record.arg0,
+            ),
+        ),
+        LogEvent::NetworkInterfaceReady => write_session_linef(
+            session,
+            format_args!(
+                "#{} {} {} {}/{} iface={} mac={}",
+                record.sequence,
+                severity_name(record.severity),
+                service_name(record.source),
+                domain_name(record.domain),
+                event_name(record.event),
+                record.arg0,
+                format_mac(unpack_mac(record.arg1)),
+            ),
+        ),
+        LogEvent::NetworkAddressConfigured => write_session_linef(
+            session,
+            format_args!(
+                "#{} {} {} {}/{} addr={} gateway={}",
+                record.sequence,
+                severity_name(record.severity),
+                service_name(record.source),
+                domain_name(record.domain),
+                event_name(record.event),
+                format_ipv4(record.arg0 as u32),
+                format_ipv4(record.arg1 as u32),
+            ),
+        ),
+        LogEvent::NetworkResolveCompleted => write_session_linef(
+            session,
+            format_args!(
+                "#{} {} {} {}/{} addr={} count={}",
+                record.sequence,
+                severity_name(record.severity),
+                service_name(record.source),
+                domain_name(record.domain),
+                event_name(record.event),
+                format_ipv4(record.arg0 as u32),
+                record.arg1,
+            ),
+        ),
+        LogEvent::NetworkProbeCompleted => write_session_linef(
+            session,
+            format_args!(
+                "#{} {} {} {}/{} addr={} elapsed-ms={}",
+                record.sequence,
+                severity_name(record.severity),
+                service_name(record.source),
+                domain_name(record.domain),
+                event_name(record.event),
+                format_ipv4(record.arg0 as u32),
+                record.arg1,
+            ),
+        ),
+        _ => write_session_linef(
+            session,
+            format_args!(
+                "#{} {} {} {}/{} {} {}",
+                record.sequence,
+                severity_name(record.severity),
+                service_name(record.source),
+                domain_name(record.domain),
+                event_name(record.event),
+                record.arg0,
+                record.arg1,
+            ),
+        ),
+    }
+}
+
+fn config_value_text(key: ConfigKey, value: u64) -> FixedValueText {
+    match key {
+        ConfigKey::NetworkIpv4Address | ConfigKey::NetworkIpv4Gateway => {
+            FixedValueText::ipv4(value as u32)
+        }
+        _ => FixedValueText::unsigned(value),
+    }
+}
+
+fn link_state_name(state: rt::PacketInterfaceLinkState) -> &'static str {
+    match state {
+        rt::PacketInterfaceLinkState::Up => "up",
+        rt::PacketInterfaceLinkState::Down => "down",
+    }
+}
+
+fn format_ipv4(value: u32) -> FixedValueText {
+    FixedValueText::ipv4(value)
+}
+
+fn format_mac(value: [u8; 6]) -> FixedValueText {
+    FixedValueText::mac(value)
+}
+
+fn unpack_mac(value: u64) -> [u8; 6] {
+    [
+        (value & 0xff) as u8,
+        ((value >> 8) & 0xff) as u8,
+        ((value >> 16) & 0xff) as u8,
+        ((value >> 24) & 0xff) as u8,
+        ((value >> 32) & 0xff) as u8,
+        ((value >> 40) & 0xff) as u8,
+    ]
+}
+
+fn error_name(error: rt::Error) -> &'static str {
+    match error {
+        rt::Error::Unsupported => "unsupported",
+        rt::Error::InvalidCall => "invalid-call",
+        rt::Error::PermissionDenied => "permission-denied",
+        rt::Error::NotInitialized => "not-initialized",
+        rt::Error::InvalidArgument => "invalid-argument",
+        rt::Error::BufferTooSmall => "buffer-too-small",
+        rt::Error::QueueEmpty => "timeout",
+        rt::Error::NotFound => "not-found",
+        rt::Error::Busy => "busy",
+        rt::Error::CapacityExceeded => "capacity-exceeded",
+        rt::Error::Unknown(_) => "unknown",
+    }
+}
+
+struct FixedValueText {
+    bytes: [u8; 32],
+    len: usize,
+}
+
+impl FixedValueText {
+    fn unsigned(value: u64) -> Self {
+        let mut text = Self {
+            bytes: [0; 32],
+            len: 0,
+        };
+        let _ = write!(&mut text, "{value}");
+        text
+    }
+
+    fn ipv4(value: u32) -> Self {
+        let mut text = Self {
+            bytes: [0; 32],
+            len: 0,
+        };
+        let _ = write!(
+            &mut text,
+            "{}.{}.{}.{}",
+            (value >> 24) & 0xff,
+            (value >> 16) & 0xff,
+            (value >> 8) & 0xff,
+            value & 0xff,
+        );
+        text
+    }
+
+    fn mac(value: [u8; 6]) -> Self {
+        let mut text = Self {
+            bytes: [0; 32],
+            len: 0,
+        };
+        let _ = write!(
+            &mut text,
+            "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+            value[0], value[1], value[2], value[3], value[4], value[5],
+        );
+        text
+    }
+}
+
+impl core::fmt::Display for FixedValueText {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let text = core::str::from_utf8(&self.bytes[..self.len]).map_err(|_| core::fmt::Error)?;
+        f.write_str(text)
+    }
+}
+
+impl Write for FixedValueText {
+    fn write_str(&mut self, value: &str) -> core::fmt::Result {
+        let bytes = value.as_bytes();
+        let remaining = self.bytes.len().saturating_sub(self.len);
+        let copy_len = remaining.min(bytes.len());
+        self.bytes[self.len..self.len + copy_len].copy_from_slice(&bytes[..copy_len]);
+        self.len += copy_len;
+        Ok(())
     }
 }
 

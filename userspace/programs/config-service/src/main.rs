@@ -39,7 +39,7 @@ fn main() -> u64 {
         key: ConfigKey::LogMinimumSeverity,
         kind: ConfigValueKind::Unsigned,
         value: 0,
-    }; 4];
+    }; 8];
     let entry_count = match parse_config_entries(&config_bytes[..loaded], &mut entries) {
         Ok(count) => count,
         Err(_) => return 0xf204,
@@ -112,6 +112,10 @@ fn parse_config_entries(bytes: &[u8], entries: &mut [ConfigEntry]) -> rt::Result
                 "status.heartbeat_ticks" => ConfigKey::StatusHeartbeatTicks,
                 "status.console_mirror" => ConfigKey::StatusConsoleMirror,
                 "status.heartbeat_log_period" => ConfigKey::StatusHeartbeatLogPeriod,
+                "network.ipv4_address" => ConfigKey::NetworkIpv4Address,
+                "network.ipv4_prefix_length" => ConfigKey::NetworkIpv4PrefixLength,
+                "network.ipv4_gateway" => ConfigKey::NetworkIpv4Gateway,
+                "network.probe_timeout_ticks" => ConfigKey::NetworkProbeTimeoutTicks,
                 _ => return Err(rt::Error::InvalidArgument),
             },
             kind: ConfigValueKind::Unsigned,
@@ -129,6 +133,10 @@ fn find_config(entries: &[ConfigEntry], key: ConfigKey) -> Option<ConfigEntry> {
 fn config_key_from_word(value: u64) -> ConfigKey {
     match value as u32 {
         x if x == ConfigKey::LogMinimumSeverity as u32 => ConfigKey::LogMinimumSeverity,
+        x if x == ConfigKey::NetworkIpv4Address as u32 => ConfigKey::NetworkIpv4Address,
+        x if x == ConfigKey::NetworkIpv4PrefixLength as u32 => ConfigKey::NetworkIpv4PrefixLength,
+        x if x == ConfigKey::NetworkIpv4Gateway as u32 => ConfigKey::NetworkIpv4Gateway,
+        x if x == ConfigKey::NetworkProbeTimeoutTicks as u32 => ConfigKey::NetworkProbeTimeoutTicks,
         x if x == ConfigKey::StatusConsoleMirror as u32 => ConfigKey::StatusConsoleMirror,
         x if x == ConfigKey::StatusHeartbeatLogPeriod as u32 => ConfigKey::StatusHeartbeatLogPeriod,
         _ => ConfigKey::StatusHeartbeatTicks,

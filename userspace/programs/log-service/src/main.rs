@@ -246,6 +246,7 @@ fn service_id_from_word(value: u64) -> ServiceId {
         x if x == ServiceId::Shell as u32 => ServiceId::Shell,
         x if x == ServiceId::Package as u32 => ServiceId::Package,
         x if x == ServiceId::Announce as u32 => ServiceId::Announce,
+        x if x == ServiceId::Network as u32 => ServiceId::Network,
         _ => ServiceId::RootManager,
     }
 }
@@ -272,6 +273,7 @@ fn domain_from_word(value: u64) -> LogDomain {
         x if x == LogDomain::Ipc as u32 => LogDomain::Ipc,
         x if x == LogDomain::Shell as u32 => LogDomain::Shell,
         x if x == LogDomain::Package as u32 => LogDomain::Package,
+        x if x == LogDomain::Network as u32 => LogDomain::Network,
         _ => LogDomain::Service,
     }
 }
@@ -299,6 +301,11 @@ fn event_from_word(value: u64) -> LogEvent {
         x if x == LogEvent::PackageRemoved as u32 => LogEvent::PackageRemoved,
         x if x == LogEvent::PackageRolledBack as u32 => LogEvent::PackageRolledBack,
         x if x == LogEvent::PackageActivationFailed as u32 => LogEvent::PackageActivationFailed,
+        x if x == LogEvent::NetworkInterfaceReady as u32 => LogEvent::NetworkInterfaceReady,
+        x if x == LogEvent::NetworkAddressConfigured as u32 => LogEvent::NetworkAddressConfigured,
+        x if x == LogEvent::NetworkResolveCompleted as u32 => LogEvent::NetworkResolveCompleted,
+        x if x == LogEvent::NetworkProbeCompleted as u32 => LogEvent::NetworkProbeCompleted,
+        x if x == LogEvent::NetworkLinkChanged as u32 => LogEvent::NetworkLinkChanged,
         _ => LogEvent::LookupGranted,
     }
 }

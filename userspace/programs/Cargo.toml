@@ -9,6 +9,7 @@ members = [
     "console-service",
     "status-service",
     "package-service",
+    "network-service",
     "shell-service",
     "announce-service",
     "sysinfo-tool",

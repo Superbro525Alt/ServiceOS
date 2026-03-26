@@ -85,6 +85,13 @@ const PROGRAMS: &[Program] = &[
         service_path: "services/announce-service/program.img",
         service_id: 9,
     },
+    Program {
+        package: "serviceos-network-service",
+        bin_name: "serviceos-network-service",
+        image_id: 11,
+        service_path: "services/network-service/program.img",
+        service_id: 10,
+    },
 ];
 
 struct Program {

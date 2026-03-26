@@ -9,9 +9,11 @@ pub use serviceos_abi::{
     ConfigKey, ConfigTag, ConfigValueKind, ConsoleTag, ControlTag, Handle, HandlePair,
     IPC_FLAG_NONBLOCK, IPC_MAX_HANDLES, IPC_MAX_WORDS, INVALID_HANDLE, LifecycleEvent,
     LogDomain, LogEvent, LogQueryStatus, LogSeverity, LogTag, LookupStatus, ManagerAction,
-    ManagerServicePhase, ManagerStatus, ManagerTag, PackageStatus, PackageTag, RawMessage,
-    ServiceId, ServiceImageId, StatusTag, StorageStatus, StorageTag, SyscallErrorCode,
-    SyscallNumber, TaskStateCode, TaskStatus,
+    ManagerServicePhase, ManagerStatus, ManagerTag, NetworkStatus, NetworkTag,
+    PACKET_INTERFACE_FLAG_NONBLOCK, PacketInterfaceBackend, PacketInterfaceInfo,
+    PacketInterfaceLinkState, PackageStatus, PackageTag, RawMessage, ServiceId, ServiceImageId,
+    StatusTag, StorageStatus, StorageTag, SyscallErrorCode, SyscallNumber, TaskStateCode,
+    TaskStatus,
 };
 pub use serviceos_abi::rights;
 
@@ -186,6 +188,58 @@ pub fn memory_read(handle: Handle, offset: usize, buffer: &mut [u8]) -> Result<u
     .map(|value| value as usize)
 }
 
+pub fn packet_interface_info(handle: Handle) -> Result<PacketInterfaceInfo> {
+    let mut info = PacketInterfaceInfo {
+        backend: PacketInterfaceBackend::Unknown as u32,
+        link_state: PacketInterfaceLinkState::Down as u32,
+        mtu: 0,
+        rx_ready: 0,
+        mac: [0; 6],
+        reserved: [0; 2],
+        rx_packets: 0,
+        tx_packets: 0,
+        dropped_packets: 0,
+    };
+    syscall2(
+        SyscallNumber::PacketInterfaceInfo,
+        handle as u64,
+        &mut info as *mut PacketInterfaceInfo as u64,
+    )?;
+    Ok(info)
+}
+
+pub fn packet_interface_receive(handle: Handle, buffer: &mut [u8]) -> Result<usize> {
+    syscall4(
+        SyscallNumber::PacketInterfaceReceive,
+        handle as u64,
+        buffer.as_mut_ptr() as u64,
+        buffer.len() as u64,
+        0,
+    )
+    .map(|value| value as usize)
+}
+
+pub fn packet_interface_receive_nonblocking(handle: Handle, buffer: &mut [u8]) -> Result<usize> {
+    syscall4(
+        SyscallNumber::PacketInterfaceReceive,
+        handle as u64,
+        buffer.as_mut_ptr() as u64,
+        buffer.len() as u64,
+        PACKET_INTERFACE_FLAG_NONBLOCK as u64,
+    )
+    .map(|value| value as usize)
+}
+
+pub fn packet_interface_transmit(handle: Handle, frame: &[u8]) -> Result<usize> {
+    syscall3(
+        SyscallNumber::PacketInterfaceTransmit,
+        handle as u64,
+        frame.as_ptr() as u64,
+        frame.len() as u64,
+    )
+    .map(|value| value as usize)
+}
+
 pub fn wait_for_exit(task_handle: Handle) -> Result<TaskStatus> {
     loop {
         let status = task_status(task_handle)?;
@@ -235,6 +289,21 @@ pub struct PackageInfo {
     pub active_version_len: usize,
     pub rollback_version_len: usize,
     pub latest_version_len: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NetworkInterfaceStatusInfo {
+    pub index: u32,
+    pub backend: PacketInterfaceBackend,
+    pub link_state: PacketInterfaceLinkState,
+    pub mtu: u32,
+    pub address: u32,
+    pub prefix_len: u8,
+    pub gateway: u32,
+    pub mac: [u8; 6],
+    pub rx_packets: u64,
+    pub tx_packets: u64,
+    pub dropped_packets: u64,
 }
 
 pub fn register_service(bootstrap: Handle, service_id: ServiceId, public: Handle) -> Result<()> {
@@ -987,6 +1056,148 @@ pub fn status_snapshot(status_handle: Handle) -> Result<(u64, u64)> {
     Ok((response.words[0], response.words[1]))
 }
 
+pub fn network_interface_count(network_handle: Handle) -> Result<usize> {
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(NetworkTag::InterfaceListRequest as u32);
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(network_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != NetworkTag::InterfaceListReply as u32 || response.word_count < 2 {
+        return Err(Error::InvalidArgument);
+    }
+    match network_status_from_word(response.words[0]) {
+        NetworkStatus::Ok => Ok(response.words[1] as usize),
+        NetworkStatus::Busy => Err(Error::Busy),
+        NetworkStatus::Unsupported => Err(Error::Unsupported),
+        _ => Err(Error::InvalidArgument),
+    }
+}
+
+pub fn network_interface_status(
+    network_handle: Handle,
+    index: usize,
+) -> Result<Option<NetworkInterfaceStatusInfo>> {
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(NetworkTag::InterfaceStatusRequest as u32);
+    request.word_count = 1;
+    request.words[0] = index as u64;
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(network_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != NetworkTag::InterfaceStatusReply as u32 || response.word_count < 12 {
+        return Err(Error::InvalidArgument);
+    }
+
+    let status = network_status_from_word(response.words[0]);
+    if status == NetworkStatus::NotFound {
+        return Ok(None);
+    }
+    if status != NetworkStatus::Ok {
+        return Err(network_status_error(status));
+    }
+
+    Ok(Some(NetworkInterfaceStatusInfo {
+        index: response.words[1] as u32,
+        backend: packet_backend_from_word(response.words[2]),
+        link_state: packet_link_state_from_word(response.words[3]),
+        mtu: response.words[4] as u32,
+        address: response.words[5] as u32,
+        prefix_len: response.words[6] as u8,
+        gateway: response.words[7] as u32,
+        mac: unpack_mac(response.words[8]),
+        rx_packets: response.words[9],
+        tx_packets: response.words[10],
+        dropped_packets: response.words[11],
+    }))
+}
+
+pub fn network_resolve(
+    network_handle: Handle,
+    name: &str,
+    addresses: &mut [u32],
+) -> Result<usize> {
+    let name_bytes = name.as_bytes();
+    let max_inline_bytes = (IPC_MAX_WORDS.saturating_sub(1)) * 8;
+    if name_bytes.len() > max_inline_bytes {
+        return Err(Error::BufferTooSmall);
+    }
+
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(NetworkTag::ResolveRequest as u32);
+    request.word_count = 1 + pack_bytes(name_bytes, &mut request.words[1..])?;
+    request.words[0] = name_bytes.len() as u64;
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(network_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != NetworkTag::ResolveReply as u32 || response.word_count < 2 {
+        return Err(Error::InvalidArgument);
+    }
+
+    let status = network_status_from_word(response.words[0]);
+    if status != NetworkStatus::Ok {
+        return Err(network_status_error(status));
+    }
+
+    let count = response.words[1] as usize;
+    if count > addresses.len() || (response.word_count as usize) < 2 + count {
+        return Err(Error::BufferTooSmall);
+    }
+    for (index, address) in addresses.iter_mut().enumerate().take(count) {
+        *address = response.words[2 + index] as u32;
+    }
+    Ok(count)
+}
+
+pub fn network_ping(network_handle: Handle, target: &str) -> Result<(u32, u64)> {
+    let target_bytes = target.as_bytes();
+    let max_inline_bytes = (IPC_MAX_WORDS.saturating_sub(1)) * 8;
+    if target_bytes.len() > max_inline_bytes {
+        return Err(Error::BufferTooSmall);
+    }
+
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(NetworkTag::PingRequest as u32);
+    request.word_count = 1 + pack_bytes(target_bytes, &mut request.words[1..])?;
+    request.words[0] = target_bytes.len() as u64;
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(network_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != NetworkTag::PingReply as u32 || response.word_count < 3 {
+        return Err(Error::InvalidArgument);
+    }
+
+    let status = network_status_from_word(response.words[0]);
+    if status != NetworkStatus::Ok {
+        return Err(network_status_error(status));
+    }
+
+    Ok((response.words[1] as u32, response.words[2]))
+}
+
 pub fn storage_read_all(blob_handle: Handle, buffer: &mut [u8], expected_len: usize) -> Result<usize> {
     if expected_len > buffer.len() {
         return Err(Error::BufferTooSmall);
@@ -1129,6 +1340,7 @@ fn service_id_from_word(value: u64) -> ServiceId {
         x if x == ServiceId::Shell as u32 => ServiceId::Shell,
         x if x == ServiceId::Package as u32 => ServiceId::Package,
         x if x == ServiceId::Announce as u32 => ServiceId::Announce,
+        x if x == ServiceId::Network as u32 => ServiceId::Network,
         _ => ServiceId::RootManager,
     }
 }
@@ -1155,6 +1367,7 @@ fn domain_from_word(value: u64) -> LogDomain {
         x if x == LogDomain::Ipc as u32 => LogDomain::Ipc,
         x if x == LogDomain::Shell as u32 => LogDomain::Shell,
         x if x == LogDomain::Package as u32 => LogDomain::Package,
+        x if x == LogDomain::Network as u32 => LogDomain::Network,
         _ => LogDomain::Service,
     }
 }
@@ -1182,6 +1395,11 @@ fn event_from_word(value: u64) -> LogEvent {
         x if x == LogEvent::PackageRemoved as u32 => LogEvent::PackageRemoved,
         x if x == LogEvent::PackageRolledBack as u32 => LogEvent::PackageRolledBack,
         x if x == LogEvent::PackageActivationFailed as u32 => LogEvent::PackageActivationFailed,
+        x if x == LogEvent::NetworkInterfaceReady as u32 => LogEvent::NetworkInterfaceReady,
+        x if x == LogEvent::NetworkAddressConfigured as u32 => LogEvent::NetworkAddressConfigured,
+        x if x == LogEvent::NetworkResolveCompleted as u32 => LogEvent::NetworkResolveCompleted,
+        x if x == LogEvent::NetworkProbeCompleted as u32 => LogEvent::NetworkProbeCompleted,
+        x if x == LogEvent::NetworkLinkChanged as u32 => LogEvent::NetworkLinkChanged,
         _ => LogEvent::LookupGranted,
     }
 }
@@ -1233,6 +1451,55 @@ fn package_status_error(status: PackageStatus) -> Error {
         PackageStatus::IntegrityFailed => Error::InvalidCall,
         PackageStatus::Ok => Error::InvalidArgument,
     }
+}
+
+fn network_status_from_word(value: u64) -> NetworkStatus {
+    match value as u32 {
+        x if x == NetworkStatus::Ok as u32 => NetworkStatus::Ok,
+        x if x == NetworkStatus::NotFound as u32 => NetworkStatus::NotFound,
+        x if x == NetworkStatus::Busy as u32 => NetworkStatus::Busy,
+        x if x == NetworkStatus::InvalidTarget as u32 => NetworkStatus::InvalidTarget,
+        x if x == NetworkStatus::Timeout as u32 => NetworkStatus::Timeout,
+        x if x == NetworkStatus::End as u32 => NetworkStatus::End,
+        x if x == NetworkStatus::Unsupported as u32 => NetworkStatus::Unsupported,
+        _ => NetworkStatus::Busy,
+    }
+}
+
+fn network_status_error(status: NetworkStatus) -> Error {
+    match status {
+        NetworkStatus::Ok => Error::InvalidArgument,
+        NetworkStatus::NotFound | NetworkStatus::InvalidTarget => Error::NotFound,
+        NetworkStatus::Busy => Error::Busy,
+        NetworkStatus::Timeout => Error::QueueEmpty,
+        NetworkStatus::End => Error::NotFound,
+        NetworkStatus::Unsupported => Error::Unsupported,
+    }
+}
+
+fn packet_backend_from_word(value: u64) -> PacketInterfaceBackend {
+    match value as u32 {
+        x if x == PacketInterfaceBackend::VirtioPci as u32 => PacketInterfaceBackend::VirtioPci,
+        _ => PacketInterfaceBackend::Unknown,
+    }
+}
+
+fn packet_link_state_from_word(value: u64) -> PacketInterfaceLinkState {
+    match value as u32 {
+        x if x == PacketInterfaceLinkState::Up as u32 => PacketInterfaceLinkState::Up,
+        _ => PacketInterfaceLinkState::Down,
+    }
+}
+
+fn unpack_mac(word: u64) -> [u8; 6] {
+    [
+        (word & 0xff) as u8,
+        ((word >> 8) & 0xff) as u8,
+        ((word >> 16) & 0xff) as u8,
+        ((word >> 24) & 0xff) as u8,
+        ((word >> 32) & 0xff) as u8,
+        ((word >> 40) & 0xff) as u8,
+    ]
 }
 
 fn decode_result(value: u64, error: u64) -> Result<u64> {

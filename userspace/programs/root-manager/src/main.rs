@@ -9,9 +9,21 @@ use rt::{
     TaskStateCode, IPC_MAX_HANDLES, IPC_MAX_WORDS, rights,
 };
 
-const MAX_SERVICE_SLOTS: usize = 10;
+const MAX_SERVICE_SLOTS: usize = 12;
 const MAX_INDEX_BYTES: usize = 512;
 const MAX_MANIFEST_BYTES: usize = 512;
+
+#[derive(Clone, Copy)]
+struct BootstrapResource {
+    handle: rt::Handle,
+    len: usize,
+}
+
+#[derive(Clone, Copy)]
+struct BootstrapResources {
+    bootstore: BootstrapResource,
+    network: Option<BootstrapResource>,
+}
 
 #[derive(Clone, Copy)]
 struct ServiceSlot {
@@ -68,6 +80,21 @@ fn main() -> u64 {
     let bootstore_handle = startup.handles[0];
     let bootstrap_authority = startup.handles[1];
     let bootstore_len = startup.words[0] as usize;
+    let network_resource = if startup.handle_count > 2 {
+        Some(BootstrapResource {
+            handle: startup.handles[2],
+            len: 0,
+        })
+    } else {
+        None
+    };
+    let bootstrap_resources = BootstrapResources {
+        bootstore: BootstrapResource {
+            handle: bootstore_handle,
+            len: bootstore_len,
+        },
+        network: network_resource,
+    };
 
     fallback_log("bootstrap started");
 
@@ -81,7 +108,7 @@ fn main() -> u64 {
         service_count,
         0,
         bootstrap_authority,
-        Some((bootstore_handle, bootstore_len)),
+        Some((bootstrap_resources.bootstore.handle, bootstrap_resources.bootstore.len)),
     )
     .is_err()
     {
@@ -101,7 +128,14 @@ fn main() -> u64 {
     if load_base_service_graph(&mut slots, &mut service_count).is_err() {
         return 0xf605;
     }
-    if activate_base_service_graph(&mut slots, &mut service_count, bootstrap_authority).is_err() {
+    if activate_base_service_graph(
+        &mut slots,
+        &mut service_count,
+        bootstrap_authority,
+        bootstrap_resources,
+    )
+    .is_err()
+    {
         return 0xf606;
     }
 
@@ -118,7 +152,7 @@ fn main() -> u64 {
         &mut slots,
         &mut service_count,
         bootstrap_authority,
-        (bootstore_handle, bootstore_len),
+        bootstrap_resources,
     )
 }
 
@@ -174,6 +208,7 @@ fn activate_base_service_graph(
     slots: &mut [ServiceSlot; MAX_SERVICE_SLOTS],
     service_count: &mut usize,
     bootstrap_authority: rt::Handle,
+    bootstrap_resources: BootstrapResources,
 ) -> rt::Result<()> {
     loop {
         let total = occupied_service_count(slots, *service_count);
@@ -192,7 +227,13 @@ fn activate_base_service_graph(
                     "activating {}",
                     service_name(slots[index].manifest.service_id)
                 ));
-                start_service(slots, *service_count, index, bootstrap_authority, None)?;
+                start_service(
+                    slots,
+                    *service_count,
+                    index,
+                    bootstrap_authority,
+                    bootstrap_resource_for(slots[index].manifest.service_id, bootstrap_resources),
+                )?;
                 wait_until_ready(
                     slots,
                     service_count,
@@ -338,7 +379,7 @@ fn supervision_loop(
     slots: &mut [ServiceSlot; MAX_SERVICE_SLOTS],
     service_count: &mut usize,
     bootstrap_authority: rt::Handle,
-    bootstrap_resource: (rt::Handle, usize),
+    bootstrap_resources: BootstrapResources,
 ) -> u64 {
     loop {
         if pump_control_channels(slots, service_count, bootstrap_authority).is_err() {
@@ -370,7 +411,7 @@ fn supervision_loop(
                     *service_count,
                     index,
                     bootstrap_authority,
-                    bootstrap_resource_for(service_id, bootstrap_resource),
+                    bootstrap_resource_for(service_id, bootstrap_resources),
                 )
                 .is_err()
                 {
@@ -416,7 +457,7 @@ fn supervision_loop(
                 *service_count,
                 index,
                 bootstrap_authority,
-                bootstrap_resource_for(service_id, bootstrap_resource),
+                bootstrap_resource_for(service_id, bootstrap_resources),
             )
             .is_err()
             {
@@ -435,12 +476,15 @@ fn supervision_loop(
 
 fn bootstrap_resource_for(
     service_id: ServiceId,
-    bootstrap_resource: (rt::Handle, usize),
+    bootstrap_resources: BootstrapResources,
 ) -> Option<(rt::Handle, usize)> {
-    if service_id == ServiceId::Storage {
-        Some(bootstrap_resource)
-    } else {
-        None
+    match service_id {
+        ServiceId::Storage => Some((
+            bootstrap_resources.bootstore.handle,
+            bootstrap_resources.bootstore.len,
+        )),
+        ServiceId::Network => bootstrap_resources.network.map(|resource| (resource.handle, resource.len)),
+        _ => None,
     }
 }
 
@@ -1137,6 +1181,7 @@ fn service_id_from_word(value: u64) -> ServiceId {
         x if x == ServiceId::Shell as u32 => ServiceId::Shell,
         x if x == ServiceId::Package as u32 => ServiceId::Package,
         x if x == ServiceId::Announce as u32 => ServiceId::Announce,
+        x if x == ServiceId::Network as u32 => ServiceId::Network,
         _ => ServiceId::RootManager,
     }
 }
@@ -1152,6 +1197,7 @@ fn image_id_from_word(value: u64) -> ServiceImageId {
         x if x == ServiceImageId::SysinfoTool as u32 => ServiceImageId::SysinfoTool,
         x if x == ServiceImageId::PackageService as u32 => ServiceImageId::PackageService,
         x if x == ServiceImageId::AnnounceService as u32 => ServiceImageId::AnnounceService,
+        x if x == ServiceImageId::NetworkService as u32 => ServiceImageId::NetworkService,
         _ => ServiceImageId::RootManager,
     }
 }
@@ -1187,6 +1233,7 @@ fn service_name(service_id: ServiceId) -> &'static str {
         ServiceId::Shell => "shell-service",
         ServiceId::Package => "package-service",
         ServiceId::Announce => "announce-service",
+        ServiceId::Network => "network-service",
     }
 }
 
@@ -1224,6 +1271,11 @@ fn event_name(event: LogEvent) -> &'static str {
         LogEvent::PackageRemoved => "package-removed",
         LogEvent::PackageRolledBack => "package-rolled-back",
         LogEvent::PackageActivationFailed => "package-activation-failed",
+        LogEvent::NetworkInterfaceReady => "network-interface-ready",
+        LogEvent::NetworkAddressConfigured => "network-address-configured",
+        LogEvent::NetworkResolveCompleted => "network-resolve-completed",
+        LogEvent::NetworkProbeCompleted => "network-probe-completed",
+        LogEvent::NetworkLinkChanged => "network-link-changed",
     }
 }
 

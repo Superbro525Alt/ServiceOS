@@ -1,0 +1,8 @@
+service=network-service
+image=network-service
+startup=eager
+restart=on-failure:2
+depends=log-service, config-service
+grant=log-service:send
+lookup=config-service:send
+resource=config/hosts.cfg

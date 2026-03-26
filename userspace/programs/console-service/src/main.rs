@@ -1,6 +1,8 @@
 #![no_std]
 #![no_main]
 
+use core::fmt::Write;
+
 use serviceos_userspace_runtime as rt;
 use rt::{
     rights, ConsoleTag, ControlTag, LifecycleEvent, LogDomain, LogEvent, LogSeverity, RawMessage,
@@ -218,6 +220,62 @@ fn handle_public_message(
                         domain_name(domain),
                         event_name(event),
                         message.words[4],
+                        message.words[5],
+                    ),
+                ),
+                LogEvent::NetworkInterfaceReady => write_structured_line(
+                    sessions,
+                    "console",
+                    format_args!(
+                        "seq={} level={} source={} domain={} event={} iface={} mac={}",
+                        message.words[6],
+                        severity_name(severity),
+                        service_name(source),
+                        domain_name(domain),
+                        event_name(event),
+                        message.words[4],
+                        format_mac(unpack_mac(message.words[5])),
+                    ),
+                ),
+                LogEvent::NetworkAddressConfigured => write_structured_line(
+                    sessions,
+                    "console",
+                    format_args!(
+                        "seq={} level={} source={} domain={} event={} addr={} gateway={}",
+                        message.words[6],
+                        severity_name(severity),
+                        service_name(source),
+                        domain_name(domain),
+                        event_name(event),
+                        format_ipv4(message.words[4] as u32),
+                        format_ipv4(message.words[5] as u32),
+                    ),
+                ),
+                LogEvent::NetworkResolveCompleted => write_structured_line(
+                    sessions,
+                    "console",
+                    format_args!(
+                        "seq={} level={} source={} domain={} event={} addr={} count={}",
+                        message.words[6],
+                        severity_name(severity),
+                        service_name(source),
+                        domain_name(domain),
+                        event_name(event),
+                        format_ipv4(message.words[4] as u32),
+                        message.words[5],
+                    ),
+                ),
+                LogEvent::NetworkProbeCompleted => write_structured_line(
+                    sessions,
+                    "console",
+                    format_args!(
+                        "seq={} level={} source={} domain={} event={} addr={} elapsed-ms={}",
+                        message.words[6],
+                        severity_name(severity),
+                        service_name(source),
+                        domain_name(domain),
+                        event_name(event),
+                        format_ipv4(message.words[4] as u32),
                         message.words[5],
                     ),
                 ),
@@ -454,6 +512,7 @@ fn service_id_from_word(value: u64) -> ServiceId {
         x if x == ServiceId::Shell as u32 => ServiceId::Shell,
         x if x == ServiceId::Package as u32 => ServiceId::Package,
         x if x == ServiceId::Announce as u32 => ServiceId::Announce,
+        x if x == ServiceId::Network as u32 => ServiceId::Network,
         _ => ServiceId::RootManager,
     }
 }
@@ -479,6 +538,8 @@ fn domain_from_word(value: u64) -> LogDomain {
         x if x == LogDomain::Status as u32 => LogDomain::Status,
         x if x == LogDomain::Ipc as u32 => LogDomain::Ipc,
         x if x == LogDomain::Shell as u32 => LogDomain::Shell,
+        x if x == LogDomain::Package as u32 => LogDomain::Package,
+        x if x == LogDomain::Network as u32 => LogDomain::Network,
         _ => LogDomain::Service,
     }
 }
@@ -506,6 +567,11 @@ fn event_from_word(value: u64) -> LogEvent {
         x if x == LogEvent::PackageRemoved as u32 => LogEvent::PackageRemoved,
         x if x == LogEvent::PackageRolledBack as u32 => LogEvent::PackageRolledBack,
         x if x == LogEvent::PackageActivationFailed as u32 => LogEvent::PackageActivationFailed,
+        x if x == LogEvent::NetworkInterfaceReady as u32 => LogEvent::NetworkInterfaceReady,
+        x if x == LogEvent::NetworkAddressConfigured as u32 => LogEvent::NetworkAddressConfigured,
+        x if x == LogEvent::NetworkResolveCompleted as u32 => LogEvent::NetworkResolveCompleted,
+        x if x == LogEvent::NetworkProbeCompleted as u32 => LogEvent::NetworkProbeCompleted,
+        x if x == LogEvent::NetworkLinkChanged as u32 => LogEvent::NetworkLinkChanged,
         _ => LogEvent::LookupGranted,
     }
 }
@@ -531,6 +597,7 @@ fn service_name(service_id: ServiceId) -> &'static str {
         ServiceId::Shell => "shell-service",
         ServiceId::Package => "package-service",
         ServiceId::Announce => "announce-service",
+        ServiceId::Network => "network-service",
     }
 }
 
@@ -557,6 +624,7 @@ fn domain_name(domain: LogDomain) -> &'static str {
         LogDomain::Ipc => "ipc",
         LogDomain::Shell => "shell",
         LogDomain::Package => "package",
+        LogDomain::Network => "network",
     }
 }
 
@@ -584,5 +652,83 @@ fn event_name(event: LogEvent) -> &'static str {
         LogEvent::PackageRemoved => "package-removed",
         LogEvent::PackageRolledBack => "package-rolled-back",
         LogEvent::PackageActivationFailed => "package-activation-failed",
+        LogEvent::NetworkInterfaceReady => "network-interface-ready",
+        LogEvent::NetworkAddressConfigured => "network-address-configured",
+        LogEvent::NetworkResolveCompleted => "network-resolve-completed",
+        LogEvent::NetworkProbeCompleted => "network-probe-completed",
+        LogEvent::NetworkLinkChanged => "network-link-changed",
+    }
+}
+
+fn format_ipv4(value: u32) -> FixedValueText {
+    FixedValueText::ipv4(value)
+}
+
+fn format_mac(value: [u8; 6]) -> FixedValueText {
+    FixedValueText::mac(value)
+}
+
+fn unpack_mac(value: u64) -> [u8; 6] {
+    [
+        (value & 0xff) as u8,
+        ((value >> 8) & 0xff) as u8,
+        ((value >> 16) & 0xff) as u8,
+        ((value >> 24) & 0xff) as u8,
+        ((value >> 32) & 0xff) as u8,
+        ((value >> 40) & 0xff) as u8,
+    ]
+}
+
+struct FixedValueText {
+    bytes: [u8; 32],
+    len: usize,
+}
+
+impl FixedValueText {
+    fn ipv4(value: u32) -> Self {
+        let mut text = Self {
+            bytes: [0; 32],
+            len: 0,
+        };
+        let _ = write!(
+            &mut text,
+            "{}.{}.{}.{}",
+            (value >> 24) & 0xff,
+            (value >> 16) & 0xff,
+            (value >> 8) & 0xff,
+            value & 0xff,
+        );
+        text
+    }
+
+    fn mac(value: [u8; 6]) -> Self {
+        let mut text = Self {
+            bytes: [0; 32],
+            len: 0,
+        };
+        let _ = write!(
+            &mut text,
+            "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+            value[0], value[1], value[2], value[3], value[4], value[5],
+        );
+        text
+    }
+}
+
+impl core::fmt::Display for FixedValueText {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let text = core::str::from_utf8(&self.bytes[..self.len]).map_err(|_| core::fmt::Error)?;
+        f.write_str(text)
+    }
+}
+
+impl Write for FixedValueText {
+    fn write_str(&mut self, value: &str) -> core::fmt::Result {
+        let bytes = value.as_bytes();
+        let remaining = self.bytes.len().saturating_sub(self.len);
+        let copy_len = remaining.min(bytes.len());
+        self.bytes[self.len..self.len + copy_len].copy_from_slice(&bytes[..copy_len]);
+        self.len += copy_len;
+        Ok(())
     }
 }

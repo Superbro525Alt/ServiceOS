@@ -25,10 +25,12 @@ userspace platform layer:
 - a text-first shell service and transient tool launch path for in-system
   operation
 - a package service with install, update, remove, and rollback coordination
+- a userspace networking platform service with explicit packet-interface,
+  address, route, and name-resolution contracts
 - host-side unit tests for the core kernel semantics
 
 The system remains intentionally early. It does not attempt desktop,
-networking, audio, graphics, or compatibility stacks yet.
+audio, graphics, or compatibility stacks yet.
 
 ## Initial target
 
@@ -118,6 +120,9 @@ The current platform layer provides:
   the root manager
 - a package repository format for versioned service bundles such as the current
   `announce-service` package
+- a `network-service` that owns interface state, static IPv4 configuration,
+  route reporting, static host resolution, and ICMP probe handling behind an
+  explicit service contract
 
 The current syscall surface is intentionally small, but it is now enough for a
 real service platform:
@@ -137,9 +142,13 @@ real service platform:
 - `12`: kernel memory-object read for boot-rooted storage hydration
 - `13`: raw debug-console byte read for console input polling
 - `14`: raw debug-console byte write for session output
+- `15`: packet-interface status query
+- `16`: packet-interface frame receive
+- `17`: packet-interface frame transmit
 
 See [docs/kernel-summary.md](/home/paulh/os-dev/docs/kernel-summary.md),
 [docs/boot-flow.md](/home/paulh/os-dev/docs/boot-flow.md),
+[docs/networking.md](/home/paulh/os-dev/docs/networking.md),
 [docs/storage.md](/home/paulh/os-dev/docs/storage.md),
 [docs/userspace.md](/home/paulh/os-dev/docs/userspace.md),
 [docs/services.md](/home/paulh/os-dev/docs/services.md),

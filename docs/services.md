@@ -12,13 +12,18 @@ root-manager
        depends on storage-backed config resource
   -> log-service
        depends on console-service, config-service
+  -> network-service
+       depends on log-service, config-service
+       consumes one startup-granted packet-interface capability
+       consumes one startup-granted hosts resource
   -> status-service
        depends on log-service, config-service
   -> package-service
        depends on storage-service, log-service
   -> shell-service
        depends on console-service, log-service, config-service,
-       storage-service, status-service, package-service
+       storage-service, status-service, package-service, network-service
+```
 
 The current repository-backed optional package graph is:
 
@@ -27,7 +32,6 @@ package-service
   -> announce-service package
        versioned at 1.0.0 and 1.1.0
        activated on operator request
-```
 ```
 
 The important change is that the graph now consumes persisted inputs. The root
@@ -75,6 +79,10 @@ Current startup grants:
 - `status-service`
   - send-only handle to `log-service`
   - one blob capability for `services/status-service/resources/banner.txt`
+- `network-service`
+  - one packet-interface capability from the root bootstrap path
+  - send-only handle to `log-service`
+  - one blob capability for `config/hosts.cfg`
 
 Current lookup permissions:
 
@@ -88,6 +96,7 @@ Current lookup permissions:
   - `storage-service` with send-only rights
   - `status-service` with send-only rights
   - `package-service` with send-only rights
+  - `network-service` with send-only rights
 - `package-service`
   - `storage-service` with send-only rights
 
@@ -123,6 +132,18 @@ Current lookup permissions:
 - is the first long-running dependent platform service
 - proves both manager-mediated lookup and startup-granted resource access
 - reads config, consumes a resource blob, and emits periodic heartbeats
+
+### `network-service`
+
+- owns interface state and IP-level networking policy in userspace
+- consumes an explicit packet-interface capability rather than ambient NIC
+  access
+- applies static IPv4 configuration from `config-service`
+- loads static host mappings from a storage-backed resource blob
+- exposes interface status, route reporting, host resolution, and ICMP probe
+  requests through a stable service contract
+- keeps the public contract generic so later VirtIO, additional virtual, and
+  real-NIC backends can sit behind the same service boundary
 
 ### `shell-service`
 
@@ -188,6 +209,7 @@ This platform layer still does not implement:
 - directory capabilities for general applications
 - network-backed package repositories or signed update feeds
 - dynamic service installation
-- richer terminal features, login/session policy, networking, graphics, audio,
-  or compatibility services
+- richer routing, DHCP, DNS, TCP/UDP socket services, graphics, audio, or
+  compatibility services
+- richer terminal features and login/session policy
 - signed repositories, writable install roots, and package-feed transport

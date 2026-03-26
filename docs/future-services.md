@@ -43,21 +43,26 @@ What remains deferred:
 
 ## Networking services
 
-Networking should remain outside the kernel except for low-level interrupt and
-memory mechanisms.
+The first networking platform layer now exists in userspace. That is the
+intended direction: networking policy stays outside the kernel except for
+low-level interrupt, memory, and packet-object mechanisms.
 
-The current kernel is already suitable for:
+The current platform already has:
 
-- dedicated network driver hosts
-- packet-service daemons
-- capability-scoped access to NIC-facing objects later
-- timer-based retransmit and timeout logic in userspace
+- a kernel packet-interface object with explicit capability rights
+- a userspace `network-service` that owns interface state and IPv4 policy
+- a generic service contract for interface status, static route reporting, host
+  resolution, and ICMP probes
+- a VirtIO PCI bring-up path that sits behind the packet-interface boundary
+  rather than defining it
 
 Deferred work:
 
-- NIC object model
-- packet buffer sharing strategy
-- socket-like userspace protocols
+- device-driven NIC wakeups instead of timer polling
+- additional virtual backends and real NIC driver hosts
+- DHCP, DNS, richer routing, and socket-like protocol services
+- packet-buffer sharing and zero-copy policy beyond the current copied-frame
+  path
 
 ## Audio services
 

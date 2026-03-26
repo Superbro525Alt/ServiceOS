@@ -11,6 +11,8 @@ The userspace path now covers four layers:
 - the root manager can start a small always-on platform graph from persisted
   manifests
 - the platform can host a real operator shell and launch transient tools
+- the platform can expose a real userspace networking service backed by an
+  explicit kernel packet-interface object
 
 This is still intentionally early, but it is now a real service-composed
 platform substrate rather than a single bootstrap demo.
@@ -79,6 +81,9 @@ Current syscall numbers:
 - `12`: read from a kernel memory object
 - `13`: read one byte from the raw debug console
 - `14`: write bytes directly to the raw debug console
+- `15`: query packet-interface status
+- `16`: receive one packet frame from a packet-interface object
+- `17`: transmit one packet frame through a packet-interface object
 
 This is enough for a real service manager and storage bootstrap without
 pretending the kernel already exposes a full general-purpose process API.
@@ -91,6 +96,7 @@ The root manager now brings up:
 - `console-service`
 - `config-service`
 - `log-service`
+- `network-service`
 - `status-service`
 - `shell-service`
 
@@ -103,6 +109,7 @@ That graph proves:
 - controlled service discovery
 - long-running service supervision
 - structured logging through userspace services
+- explicit networking authority routed through `network-service`
 - a text-first operator session layered on the service graph
 - manager-mediated transient program launch
 

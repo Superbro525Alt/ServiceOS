@@ -23,7 +23,13 @@
 - `config-service`
 - `log-service`
 - `status-service`
+- `network-service`
 - explicit lookup policy and per-handle transfer-right control
+
+## Platform tooling completed
+
+- `shell-service` operator environment
+- `package-service` install, update, rollback, and activation coordination
 
 ## Next
 
@@ -32,12 +38,14 @@
 - add writable storage and directory capabilities
 - extend terminate-on-fault isolation into richer user-fault upcalls and
   recovery policy
+- move packet I/O from timer polling to device-driven wakeups
+- add dynamic IPv4 configuration and DNS-backed resolution behind the current
+  network-service contract
+- grow the current ICMP/status path into a broader socket and transport surface
 
 ## Later
 
 - storage/filesystem services
-- networking services
-- package and update services
-- shell/session services
 - graphics/compositor services
 - compatibility runtimes
+- desktop/session layers

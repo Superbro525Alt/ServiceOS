@@ -41,7 +41,7 @@ It has:
 
 - lookup rights for `console-service`, `log-service`, `config-service`,
   `storage-service`, `status-service`, `package-service`, `network-service`,
-  `graphics-service`, and `session-service`
+  `graphics-service`, `session-service`, and `desktop-shell-service`
 - its own bootstrap/control channel back to the root manager
 - manager authorization for service restart and transient tool launch
 
@@ -69,6 +69,10 @@ Current built-in commands:
 - `gfx surfaces`
 - `gfx sessions`
 - `gfx focus <surface-id>`
+- `desktop status`
+- `desktop apps`
+- `desktop launch <settings|files|monitor>`
+- `desktop focus <settings|files|monitor>`
 - `pkg list`
 - `pkg info <name>`
 - `pkg install <name> [version]`
@@ -89,6 +93,11 @@ Graphics commands call the real `graphics-service` and `session-service`.
 The shell can inspect and request focus changes because its manifest grants
 lookup access; it does not own display hardware directly.
 
+Desktop commands call the real `desktop-shell-service`.
+The shell can inspect and request app launch/focus through that service, but it
+does not gain direct graphical app-spawn authority or shell-owned surface
+handles.
+
 ## Tool launch model
 
 Transient tools are launched through the root manager.
@@ -105,6 +114,18 @@ Current flow:
 
 This keeps launch policy in userspace and preserves a clean distinction between
 long-running services and transient operator tools.
+
+## Desktop coexistence
+
+The serial shell remains a first-class operator path even after the graphical
+desktop comes up.
+
+- the graphical desktop owns product UX
+- the serial shell owns low-level inspection and operator workflows
+- both sit on top of the same root-manager and service contracts
+
+That split is deliberate. The desktop can evolve without sacrificing bring-up
+and debugging access.
 
 ## Deferred
 

@@ -15,6 +15,8 @@ The userspace path now covers four layers:
   explicit kernel packet-interface object
 - the platform can expose a real userspace graphics/session layer backed by an
   explicit kernel display-output object
+- the platform can host a real desktop shell and launch capability-scoped
+  graphical apps on top of the same service graph
 
 This is still intentionally early, but it is now a real service-composed
 platform substrate rather than a single bootstrap demo.
@@ -107,6 +109,7 @@ The root manager now brings up:
 - `network-service`
 - `graphics-service`
 - `session-service`
+- `desktop-shell-service`
 - `status-service`
 - `shell-service`
 
@@ -122,6 +125,8 @@ That graph proves:
 - explicit networking authority routed through `network-service`
 - explicit display authority routed through `graphics-service`
 - session/focus policy split out into `session-service`
+- a product-layer desktop shell above the graphics/session platform boundary
+- manager-mediated graphical app launch with explicit per-app startup grants
 - a text-first operator session layered on the service graph
 - manager-mediated transient program launch
 
@@ -138,6 +143,13 @@ The shell does not get ambient kernel or filesystem power.
 - tools can inherit only the session handle or other explicit capabilities that
   the shell passes through the manager
 
+Graphical apps follow the same model:
+
+- `desktop-shell-service` creates the app surface through `graphics-service`
+- the desktop shell asks the root manager to launch a specific app image
+- the root manager injects only the app's explicit startup handles
+- the app renders into its assigned surface and remains a normal isolated task
+
 ## Still deferred
 
 The current userspace layer still does not include:
@@ -152,3 +164,5 @@ The current userspace layer still does not include:
   platform-service graph beyond the current foundations
 - shared graphical buffers, richer display backends, and physical input-device
   hosts
+- richer desktop product policy, notifications, and broader graphical app
+  platform work

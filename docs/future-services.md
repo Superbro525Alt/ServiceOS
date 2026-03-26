@@ -99,7 +99,8 @@ Deferred work:
 - shared-memory presentation buffers and richer client rendering protocols
 - physical input-device hosts and routing policy
 - multiple outputs and multiple sessions
-- desktop-shell, window-management, and notification policy
+- richer window-management, notification, and desktop-shell policy beyond the
+  current first shell
 
 ## Package and update systems
 
@@ -138,13 +139,15 @@ Deferred work:
 
 ## Shell and session stack
 
-A minimal text shell now exists as a normal userspace service. Later shell,
-session-manager, and application runtime work should build on that userspace
-boundary instead of pulling terminal or desktop policy back into the kernel.
+A minimal text shell and a first graphical desktop shell now exist as normal
+userspace services. Later shell, session-manager, and application runtime work
+should build on those userspace boundaries instead of pulling terminal or
+desktop policy back into the kernel.
 
 Deferred work:
 
 - multiple sessions and login policy
 - package-backed command discovery
 - richer terminal semantics and networking tools
-- graphical session management and desktop shell layers
+- polished desktop UX, notifications, and richer app/session policy
+- broader graphical app toolkit and runtime layers

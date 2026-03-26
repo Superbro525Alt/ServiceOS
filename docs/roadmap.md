@@ -38,6 +38,13 @@
 - `session-service` focus and graphical session ownership
 - shell/operator inspection of outputs, surfaces, and sessions
 
+## Desktop shell foundation completed
+
+- `desktop-shell-service` graphical shell chrome and launcher surface ownership
+- manager-mediated graphical app launch and focus handling
+- first core app set: `settings-app`, `files-app`, `monitor-app`
+- serial-shell inspection of desktop state through the desktop-shell contract
+
 ## Next
 
 - reclaim boot-services memory safely
@@ -54,9 +61,12 @@
   graphics-service contract
 - add physical input-device hosts and routing behind the current
   session-service boundary
+- grow the first desktop shell into richer task switching, notifications, and
+  permissions-aware desktop UX without collapsing it into platform services
 
 ## Later
 
-- storage/filesystem services
+- richer storage/filesystem services
+- audio/media stack
+- broader graphical application and toolkit ecosystem
 - compatibility runtimes
-- desktop/session layers

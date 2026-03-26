@@ -1,4 +1,4 @@
-# Foundational Userspace Services
+# Platform and Product Services
 
 ## Current graph
 
@@ -21,6 +21,9 @@ root-manager
        consumes one startup-granted display-output capability
   -> session-service
        depends on graphics-service, log-service
+  -> desktop-shell-service
+       depends on graphics-service, session-service, log-service,
+       network-service, status-service
   -> status-service
        depends on log-service, config-service
   -> package-service
@@ -28,7 +31,8 @@ root-manager
   -> shell-service
        depends on console-service, log-service, config-service,
        storage-service, network-service, graphics-service,
-       session-service, status-service, package-service
+       session-service, desktop-shell-service, status-service,
+       package-service
 ```
 
 The current repository-backed optional package graph is:
@@ -38,6 +42,18 @@ package-service
   -> announce-service package
        versioned at 1.0.0 and 1.1.0
        activated on operator request
+```
+
+The current transient graphical app graph is:
+
+```text
+desktop-shell-service
+  -> monitor-app
+       launched automatically on desktop bring-up
+  -> settings-app
+       launched on desktop request
+  -> files-app
+       launched on desktop request
 ```
 
 The important change is that the graph now consumes persisted inputs. The root
@@ -110,10 +126,16 @@ Current lookup permissions:
   - `network-service` with send-only rights
   - `graphics-service` with send-only rights
   - `session-service` with send-only rights
+  - `desktop-shell-service` with send-only rights
 - `package-service`
   - `storage-service` with send-only rights
 - `session-service`
   - `graphics-service` with send-only rights
+- `desktop-shell-service`
+  - `graphics-service` with send-only rights
+  - `session-service` with send-only rights
+  - `network-service` with send-only rights
+  - `status-service` with send-only rights
 
 ## Service roles
 
@@ -176,6 +198,25 @@ Current lookup permissions:
 - proves the split between compositor mechanics and session/input policy
 - provides the initial basis for later login, desktop shell, and multi-session
   work
+
+### `desktop-shell-service`
+
+- is the first graphical product shell built on top of the platform services
+- owns desktop chrome, launcher state, and app focus tracking
+- creates shell-owned surfaces through `graphics-service`
+- asks the root manager to launch graphical apps instead of spawning tasks
+  directly
+- keeps desktop product policy out of `graphics-service` and `session-service`
+
+### `settings-app`, `files-app`, and `monitor-app`
+
+- are transient graphical applications rather than long-running platform
+  services
+- receive one surface handle plus a small explicit service-handle set
+- validate the current platform contracts for config, storage, status, and
+  network access
+- stay replaceable and non-ambient: they do not inherit manager or compositor
+  authority
 
 ### `shell-service`
 
@@ -248,4 +289,4 @@ This platform layer still does not implement:
 - richer terminal features and login/session policy
 - signed repositories, writable install roots, and package-feed transport
 - input-device hosts, shared-memory presentation buffers, and richer desktop
-  shell policy
+  shell policy beyond the current launcher/status/app surface model

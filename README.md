@@ -29,10 +29,11 @@ userspace platform layer:
   address, route, and name-resolution contracts
 - a userspace graphics/session platform layer with an explicit display-output
   object, compositor service, and session/focus service
+- a replaceable desktop shell layer plus a first set of graphical core apps
 - host-side unit tests for the core kernel semantics
 
-The system remains intentionally early. It does not attempt a polished desktop,
-audio stack, or compatibility layers yet.
+The system remains intentionally early. It does not attempt a polished final
+desktop, audio stack, or compatibility layers yet.
 
 ## Initial target
 
@@ -129,6 +130,12 @@ The current platform layer provides:
   framebuffer composition behind an explicit display-output capability
 - a `session-service` that owns graphical session identity and focus policy on
   top of the compositor
+- a `desktop-shell-service` that owns desktop chrome, launcher state, and
+  manager-mediated graphical app launch
+- a first graphical core-app set:
+  - `settings-app`
+  - `files-app`
+  - `monitor-app`
 
 The current syscall surface is intentionally small, but it is now enough for a
 real service platform:
@@ -156,6 +163,7 @@ real service platform:
 
 See [docs/kernel-summary.md](/home/paulh/os-dev/docs/kernel-summary.md),
 [docs/boot-flow.md](/home/paulh/os-dev/docs/boot-flow.md),
+[docs/desktop.md](/home/paulh/os-dev/docs/desktop.md),
 [docs/graphics.md](/home/paulh/os-dev/docs/graphics.md),
 [docs/networking.md](/home/paulh/os-dev/docs/networking.md),
 [docs/storage.md](/home/paulh/os-dev/docs/storage.md),

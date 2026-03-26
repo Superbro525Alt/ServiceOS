@@ -97,6 +97,10 @@ impl CapabilityRights {
             .union(Self::DUPLICATE)
             .union(Self::TRANSFER)
     }
+
+    pub const fn bootstrap() -> Self {
+        Self::MANAGE
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

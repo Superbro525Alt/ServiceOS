@@ -3,6 +3,7 @@ use core::arch::global_asm;
 use serviceos_kernel_core::{
     interrupts::{self, ExceptionDetail, ExceptionReport, InterruptVector, TrapFrameView},
     syscall::{SyscallContext, SyscallNumber},
+    task,
 };
 use spin::Once;
 use x86_64::{
@@ -321,12 +322,39 @@ fn handle_exception(report: ExceptionReport) -> ! {
 
     if matches!(
         report.disposition,
-        serviceos_kernel_core::interrupts::FaultDisposition::DeliverToTask
+        serviceos_kernel_core::interrupts::FaultDisposition::TerminateTask
     ) {
-        serial::write_line("serviceos: interrupt: user fault delivery is not implemented");
+        terminate_faulting_user_task(report);
     }
 
     cpu::halt_loop()
+}
+
+fn terminate_faulting_user_task(report: ExceptionReport) -> ! {
+    serial::write_args(format_args!(
+        "serviceos: interrupt: terminating faulting userspace task exit={:#x}\n",
+        user_fault_exit_code(report)
+    ));
+    serviceos_kernel_core::user::mark_current_thread_exited(user_fault_exit_code(report));
+    if let Some(tasks) = task::system() {
+        let _ = tasks.scheduler().terminate_current();
+    }
+    crate::user::return_to_kernel()
+}
+
+fn user_fault_exit_code(report: ExceptionReport) -> u64 {
+    const USER_FAULT_EXIT_TAG: u64 = 0xf100_0000_0000_0000;
+
+    let detail = match report.detail {
+        ExceptionDetail::InvalidOpcode => 6,
+        ExceptionDetail::PageFault { error_code, .. } => 0x100 | (error_code & 0xff),
+        ExceptionDetail::GeneralProtection { error_code } => 0x200 | (error_code & 0xff),
+        ExceptionDetail::Unknown { vector, .. } => 0x300 | vector.0 as u64,
+        ExceptionDetail::DoubleFault { error_code } => 0x400 | (error_code & 0xff),
+        ExceptionDetail::Breakpoint => 3,
+    };
+
+    USER_FAULT_EXIT_TAG | detail
 }
 
 fn log_exception(report: ExceptionReport) {
@@ -538,6 +566,15 @@ extern "C" fn serviceos_x86_64_handle_syscall(frame: &mut SavedUserContext) -> u
                     crate::user::save_thread_context(thread_id, frame);
                 }
                 let _ = tasks.scheduler().yield_current();
+            }
+            1
+        }
+        serviceos_kernel_core::syscall::SyscallAction::BlockCurrentThreadOnReceive { endpoint } => {
+            if let Some(tasks) = serviceos_kernel_core::task::system() {
+                if let Some(thread_id) = tasks.scheduler().current_thread() {
+                    crate::user::save_thread_context(thread_id, frame);
+                }
+                let _ = tasks.scheduler().block_current_on_receive(endpoint);
             }
             1
         }

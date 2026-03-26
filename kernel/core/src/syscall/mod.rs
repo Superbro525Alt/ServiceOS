@@ -12,6 +12,7 @@ use crate::{
         CapabilityError, CapabilityHandle, CapabilityResolver, CapabilityRights, TransferMode,
     },
     ipc::{self, IpcError, MessageTag, OutgoingMessage},
+    object::ObjectId,
     task::TaskRole,
     time,
     user::{self, AddressSpacePreparationError, LoadError, SpawnError},
@@ -55,6 +56,14 @@ impl SyscallReturn {
         }
     }
 
+    pub const fn error_with_action(error: SyscallError, action: SyscallAction) -> Self {
+        Self {
+            value: 0,
+            error: Some(error),
+            action,
+        }
+    }
+
     pub const fn action(value: u64, action: SyscallAction) -> Self {
         Self {
             value,
@@ -83,6 +92,7 @@ impl SyscallReturn {
 pub enum SyscallAction {
     ReturnToCaller,
     YieldCurrentThread,
+    BlockCurrentThreadOnReceive { endpoint: ObjectId },
     ExitCurrentThread { status: u64 },
 }
 
@@ -411,7 +421,20 @@ fn handle_channel_receive(context: &SyscallContext) -> SyscallReturn {
         Err(IpcError::QueueEmpty) if message_out.flags & IPC_FLAG_NONBLOCK != 0 => {
             SyscallReturn::error(SyscallError::QueueEmpty)
         }
-        Err(IpcError::QueueEmpty) => SyscallReturn::error(SyscallError::QueueEmpty),
+        Err(IpcError::QueueEmpty) => {
+            let endpoint = match ipc_kernel.endpoint_object_id(
+                task.capability_space(),
+                CapabilityHandle(context.arguments[0] as Handle),
+                CapabilityRights::RECEIVE,
+            ) {
+                Ok(endpoint) => endpoint,
+                Err(error) => return SyscallReturn::error(map_ipc_error(error)),
+            };
+            SyscallReturn::error_with_action(
+                SyscallError::QueueEmpty,
+                SyscallAction::BlockCurrentThreadOnReceive { endpoint },
+            )
+        }
         Err(error) => SyscallReturn::error(map_ipc_error(error)),
     }
 }
@@ -451,20 +474,27 @@ fn handle_handle_close(context: &SyscallContext) -> SyscallReturn {
 }
 
 fn handle_service_spawn(context: &SyscallContext) -> SyscallReturn {
-    if user::current_task_role() != Some(TaskRole::BootstrapRoot) {
-        return SyscallReturn::error(SyscallError::PermissionDenied);
-    }
     let Some(current_task) = user::current_task() else {
         return SyscallReturn::error(SyscallError::NotInitialized);
     };
     let Some(task) = current_task.task() else {
         return SyscallReturn::error(SyscallError::NotInitialized);
     };
+    let authority = match task.capability_space().resolve(
+        CapabilityHandle(context.arguments[1] as Handle),
+        CapabilityRights::bootstrap(),
+    ) {
+        Ok(authority) => authority,
+        Err(error) => return SyscallReturn::error(map_capability_error(error)),
+    };
+    if authority.object.bootstrap_capability().is_none() {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    }
 
-    let bootstrap_transfer = if context.arguments[1] == 0 {
+    let bootstrap_transfer = if context.arguments[2] == 0 {
         None
     } else {
-        let handle = CapabilityHandle(context.arguments[1] as Handle);
+        let handle = CapabilityHandle(context.arguments[2] as Handle);
         let Some(descriptor) = task.capability_space().resolve_descriptor(handle) else {
             return SyscallReturn::error(SyscallError::NotFound);
         };

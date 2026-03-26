@@ -41,7 +41,7 @@ pub enum TrapOrigin {
 pub enum FaultDisposition {
     Fatal,
     Retry,
-    DeliverToTask,
+    TerminateTask,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -170,7 +170,7 @@ fn classify_exception(detail: ExceptionDetail, origin: TrapOrigin) -> FaultDispo
         | ExceptionDetail::GeneralProtection { .. }
         | ExceptionDetail::Unknown { .. } => match origin {
             TrapOrigin::Kernel => FaultDisposition::Fatal,
-            TrapOrigin::User => FaultDisposition::DeliverToTask,
+            TrapOrigin::User => FaultDisposition::TerminateTask,
         },
     }
 }

@@ -284,12 +284,6 @@ pub fn mark_current_thread_exited(code: u64) {
     }
 }
 
-pub fn current_task_role() -> Option<TaskRole> {
-    task::system()
-        .and_then(|tasks| tasks.current_task_object())
-        .and_then(|object| object.task().map(|task| task.role()))
-}
-
 pub fn current_task() -> Option<KernelObjectRef> {
     task::system().and_then(|tasks| tasks.current_task_object())
 }

@@ -31,9 +31,10 @@ The boundary remains explicit:
 
 ## Fault model
 
-Kernel faults are still fatal. The important distinction already in place is
-kernel-origin versus user-origin classification so later work can deliver user
-faults back to the owning task instead of halting the machine.
+Kernel faults are still fatal. User-origin faults now terminate only the
+faulting task and return control to the executor, which lets the root manager
+observe service failure and apply restart policy. Richer fault upcalls and
+recovery contracts remain later work.
 
 ## Syscall model
 
@@ -48,7 +49,7 @@ The current ABI is intentionally small:
 - debug log write
 - channel create/send/receive
 - handle duplicate and close
-- bootstrap-only service spawn
+- bootstrap-capability-gated service spawn
 - task status query
 
 This is enough for the root manager and foundational services without baking
@@ -71,5 +72,5 @@ That foundation now directly drives the long-running `status-service`.
 - LAPIC or HPET timer sources
 - SMP interrupt routing
 - fast `SYSCALL/SYSRET`
-- user fault recovery
+- richer user fault recovery or upcall policy
 - full preemption or CPU-local run queues

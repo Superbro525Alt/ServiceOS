@@ -41,11 +41,17 @@ serviceos_x86_64_resume_user:
     mov rax, [r11 + 0x70]
     mov r11, [r11 + 0x20]
     iretq
+
+.global serviceos_x86_64_return_to_kernel
+serviceos_x86_64_return_to_kernel:
+    mov rsp, [rip + serviceos_x86_64_user_return_stack]
+    ret
 "#
 );
 
 unsafe extern "C" {
     fn serviceos_x86_64_resume_user(context: *const SavedUserContext);
+    fn serviceos_x86_64_return_to_kernel() -> !;
 }
 
 #[repr(C)]
@@ -236,4 +242,8 @@ pub fn run_thread(thread_id: ThreadId) -> Result<(), UserLaunchError> {
     }
 
     Ok(())
+}
+
+pub fn return_to_kernel() -> ! {
+    unsafe { serviceos_x86_64_return_to_kernel() }
 }

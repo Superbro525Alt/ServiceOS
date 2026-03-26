@@ -27,13 +27,11 @@
 
 ## Next
 
-- replace the temporary bootstrap-root role gate with an explicit bootstrap
-  capability object
-- add user fault delivery instead of machine halt
-- integrate real kernel-backed blocking receive completion for userspace waits
 - reclaim boot-services memory safely
 - evolve the boot-store bootstrap into richer executable-loading policy
 - add writable storage and directory capabilities
+- extend terminate-on-fault isolation into richer user-fault upcalls and
+  recovery policy
 
 ## Later
 

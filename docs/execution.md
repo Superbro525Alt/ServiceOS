@@ -68,5 +68,6 @@ This model is now exercised by a real service platform:
 - actual CPU register context switching between unrelated kernel threads
 - preemptive time-slice enforcement
 - SMP scheduling
-- user fault delivery back into the owning task
+- richer user fault delivery or recovery beyond the current terminate-on-fault
+  isolation
 - richer executable loading

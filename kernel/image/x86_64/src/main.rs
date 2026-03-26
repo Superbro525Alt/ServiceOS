@@ -251,6 +251,11 @@ fn launch_root_manager(kernel: &Kernel<'_>) -> Result<RootBootstrapSummary, Boot
             .union(CapabilityRights::TRANSFER),
         None,
     )?;
+    let bootstrap_authority_handle = bootstrap_task.capability_space().install(
+        kernel.objects().bootstrap_capability().clone(),
+        CapabilityRights::bootstrap().union(CapabilityRights::TRANSFER),
+        None,
+    )?;
     let boot_store_transfer = bootstrap_task.capability_space().prepare_transfer(
         boot_store_handle,
         CapabilityRights::READ
@@ -258,17 +263,23 @@ fn launch_root_manager(kernel: &Kernel<'_>) -> Result<RootBootstrapSummary, Boot
             .union(CapabilityRights::TRANSFER),
         TransferMode::Copy,
     )?;
+    let bootstrap_authority_transfer = bootstrap_task.capability_space().prepare_transfer(
+        bootstrap_authority_handle,
+        CapabilityRights::bootstrap(),
+        TransferMode::Move,
+    )?;
 
     let root = kernel_user::spawn_builtin_task(
         ServiceImageId::RootManager as u32,
-        TaskRole::BootstrapRoot,
+        TaskRole::SystemService,
         Some(root_bootstrap_transfer),
     )?;
     let startup = OutgoingMessage::new(
         MessageTag(ControlTag::Startup as u32),
         &[boot_store_bytes.len() as u64],
     )?
-    .add_transfer(boot_store_transfer)?;
+    .add_transfer(boot_store_transfer)?
+    .add_transfer(bootstrap_authority_transfer)?;
     ipc_kernel.send(
         bootstrap_task.capability_space(),
         kernel_bootstrap_handle,

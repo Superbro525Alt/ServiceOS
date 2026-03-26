@@ -73,7 +73,8 @@ Current syscall numbers:
 - `7`: receive a channel message
 - `8`: duplicate a handle with rights reduction
 - `9`: close a handle
-- `10`: spawn a boot-store service image from the bootstrap root
+- `10`: spawn a boot-store service image with an explicit bootstrap authority
+  capability
 - `11`: query task exit status
 - `12`: read from a kernel memory object
 - `13`: read one byte from the raw debug console
@@ -123,11 +124,10 @@ The shell does not get ambient kernel or filesystem power.
 The current userspace layer still does not include:
 
 - ELF loading
-- user fault delivery back to the owning task
+- richer user-fault upcalls beyond the current terminate-on-fault isolation
 - a general process loader that accepts arbitrary user-supplied images
 - writable storage or user-owned files
 - directory capabilities for general applications
 - a richer VM syscall surface
-- kernel-mediated blocking receive completion for userspace threads
 - richer terminal semantics, login/session policy, and the broader
   platform-service graph beyond the current foundations

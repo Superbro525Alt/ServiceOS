@@ -127,9 +127,9 @@ pub fn channel_receive_nonblocking(endpoint: Handle, message: &mut RawMessage) -
 
 pub fn channel_receive_blocking(endpoint: Handle, message: &mut RawMessage) -> Result<()> {
     loop {
-        match channel_receive_nonblocking(endpoint, message) {
+        match channel_receive(endpoint, message) {
             Ok(()) => return Ok(()),
-            Err(Error::QueueEmpty) => yield_current()?,
+            Err(Error::QueueEmpty) => {}
             Err(error) => return Err(error),
         }
     }
@@ -148,10 +148,15 @@ pub fn handle_close(handle: Handle) -> Result<()> {
     syscall1(SyscallNumber::HandleClose, handle as u64).map(|_| ())
 }
 
-pub fn service_spawn(image_id: ServiceImageId, bootstrap_handle: Handle) -> Result<Handle> {
-    syscall2(
+pub fn service_spawn(
+    image_id: ServiceImageId,
+    bootstrap_authority: Handle,
+    bootstrap_handle: Handle,
+) -> Result<Handle> {
+    syscall3(
         SyscallNumber::ServiceSpawn,
         image_id as u32 as u64,
+        bootstrap_authority as u64,
         bootstrap_handle as u64,
     )
     .map(|value| value as Handle)
@@ -1070,6 +1075,11 @@ fn syscall1(number: SyscallNumber, arg0: u64) -> Result<u64> {
 
 fn syscall2(number: SyscallNumber, arg0: u64, arg1: u64) -> Result<u64> {
     let (value, error) = raw_syscall(number as u32 as u64, arg0, arg1, 0, 0, 0, 0);
+    decode_result(value, error)
+}
+
+fn syscall3(number: SyscallNumber, arg0: u64, arg1: u64, arg2: u64) -> Result<u64> {
+    let (value, error) = raw_syscall(number as u32 as u64, arg0, arg1, arg2, 0, 0, 0);
     decode_result(value, error)
 }
 

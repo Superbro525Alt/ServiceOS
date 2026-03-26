@@ -22,8 +22,6 @@ The current system already has:
 
 Later work should extend the root manager with:
 
-- an explicit bootstrap capability object instead of the temporary root-role
-  gate
 - persistent manifest sources and trust policy
 - richer supervision and health policy
 - fault-aware process isolation and recovery
@@ -122,7 +120,7 @@ The current kernel already supports that direction through:
 Deferred work:
 
 - richer memory-mapping syscalls
-- fault delivery to user processes
+- richer fault upcalls to user processes beyond terminate-on-fault isolation
 - executable-loader expansion beyond the boot-store bootstrap format
 
 ## Shell and session stack

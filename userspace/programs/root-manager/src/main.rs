@@ -60,12 +60,13 @@ fn main() -> u64 {
     if rt::channel_receive_blocking(bootstrap, &mut startup).is_err() {
         return 0xf601;
     }
-    if startup.tag != ControlTag::Startup as u32 || startup.handle_count < 1 || startup.word_count < 1
+    if startup.tag != ControlTag::Startup as u32 || startup.handle_count < 2 || startup.word_count < 1
     {
         return 0xf602;
     }
 
     let bootstore_handle = startup.handles[0];
+    let bootstrap_authority = startup.handles[1];
     let bootstore_len = startup.words[0] as usize;
 
     fallback_log("bootstrap started");
@@ -75,18 +76,32 @@ fn main() -> u64 {
     slots[0].occupied = true;
     let mut service_count = 1usize;
 
-    if start_service(&mut slots, service_count, 0, Some((bootstore_handle, bootstore_len))).is_err()
+    if start_service(
+        &mut slots,
+        service_count,
+        0,
+        bootstrap_authority,
+        Some((bootstore_handle, bootstore_len)),
+    )
+    .is_err()
     {
         return 0xf603;
     }
-    if wait_until_ready(&mut slots, &mut service_count, ServiceId::Storage).is_err() {
+    if wait_until_ready(
+        &mut slots,
+        &mut service_count,
+        bootstrap_authority,
+        ServiceId::Storage,
+    )
+    .is_err()
+    {
         return 0xf604;
     }
 
     if load_base_service_graph(&mut slots, &mut service_count).is_err() {
         return 0xf605;
     }
-    if activate_base_service_graph(&mut slots, &mut service_count).is_err() {
+    if activate_base_service_graph(&mut slots, &mut service_count, bootstrap_authority).is_err() {
         return 0xf606;
     }
 
@@ -102,6 +117,7 @@ fn main() -> u64 {
     supervision_loop(
         &mut slots,
         &mut service_count,
+        bootstrap_authority,
         (bootstore_handle, bootstore_len),
     )
 }
@@ -157,6 +173,7 @@ fn load_base_service_graph(
 fn activate_base_service_graph(
     slots: &mut [ServiceSlot; MAX_SERVICE_SLOTS],
     service_count: &mut usize,
+    bootstrap_authority: rt::Handle,
 ) -> rt::Result<()> {
     loop {
         let total = occupied_service_count(slots, *service_count);
@@ -175,8 +192,13 @@ fn activate_base_service_graph(
                     "activating {}",
                     service_name(slots[index].manifest.service_id)
                 ));
-                start_service(slots, *service_count, index, None)?;
-                wait_until_ready(slots, service_count, slots[index].manifest.service_id)?;
+                start_service(slots, *service_count, index, bootstrap_authority, None)?;
+                wait_until_ready(
+                    slots,
+                    service_count,
+                    bootstrap_authority,
+                    slots[index].manifest.service_id,
+                )?;
                 progress = true;
             }
         }
@@ -191,6 +213,7 @@ fn start_service(
     slots: &mut [ServiceSlot; MAX_SERVICE_SLOTS],
     service_count: usize,
     index: usize,
+    bootstrap_authority: rt::Handle,
     bootstrap_resource: Option<(rt::Handle, usize)>,
 ) -> rt::Result<()> {
     let manifest = slots[index].manifest;
@@ -201,7 +224,7 @@ fn start_service(
     close_slot_handles(&mut slots[index]);
 
     let channels = rt::channel_create()?;
-    let task_handle = rt::service_spawn(manifest.image_id, channels.second)?;
+    let task_handle = rt::service_spawn(manifest.image_id, bootstrap_authority, channels.second)?;
     slots[index].task_handle = task_handle;
     slots[index].control_handle = channels.first;
     slots[index].attempts = slots[index].attempts.saturating_add(1);
@@ -287,10 +310,11 @@ fn start_service(
 fn wait_until_ready(
     slots: &mut [ServiceSlot; MAX_SERVICE_SLOTS],
     service_count: &mut usize,
+    bootstrap_authority: rt::Handle,
     service_id: ServiceId,
 ) -> rt::Result<()> {
     loop {
-        pump_control_channels(slots, service_count)?;
+        pump_control_channels(slots, service_count, bootstrap_authority)?;
         let slot_index = find_slot_index(slots, *service_count, service_id)?;
         let slot = &slots[slot_index];
         if slot.phase == ServicePhase::Ready {
@@ -313,10 +337,11 @@ fn wait_until_ready(
 fn supervision_loop(
     slots: &mut [ServiceSlot; MAX_SERVICE_SLOTS],
     service_count: &mut usize,
+    bootstrap_authority: rt::Handle,
     bootstrap_resource: (rt::Handle, usize),
 ) -> u64 {
     loop {
-        if pump_control_channels(slots, service_count).is_err() {
+        if pump_control_channels(slots, service_count, bootstrap_authority).is_err() {
             return 0xf610;
         }
 
@@ -340,10 +365,18 @@ fn supervision_loop(
 
             if requested_restart {
                 slots[index].restart_requested = false;
-                if start_service(slots, *service_count, index, bootstrap_resource_for(service_id, bootstrap_resource)).is_err() {
+                if start_service(
+                    slots,
+                    *service_count,
+                    index,
+                    bootstrap_authority,
+                    bootstrap_resource_for(service_id, bootstrap_resource),
+                )
+                .is_err()
+                {
                     return 0xf620 + index as u64;
                 }
-                if wait_until_ready(slots, service_count, service_id).is_err() {
+                if wait_until_ready(slots, service_count, bootstrap_authority, service_id).is_err() {
                     return 0xf630 + index as u64;
                 }
                 continue;
@@ -378,10 +411,18 @@ fn supervision_loop(
                 slots[index].attempts as u64 + 1,
             );
 
-            if start_service(slots, *service_count, index, bootstrap_resource_for(service_id, bootstrap_resource)).is_err() {
+            if start_service(
+                slots,
+                *service_count,
+                index,
+                bootstrap_authority,
+                bootstrap_resource_for(service_id, bootstrap_resource),
+            )
+            .is_err()
+            {
                 return 0xf650 + index as u64;
             }
-            if wait_until_ready(slots, service_count, service_id).is_err() {
+            if wait_until_ready(slots, service_count, bootstrap_authority, service_id).is_err() {
                 return 0xf660 + index as u64;
             }
         }
@@ -406,6 +447,7 @@ fn bootstrap_resource_for(
 fn pump_control_channels(
     slots: &mut [ServiceSlot; MAX_SERVICE_SLOTS],
     service_count: &mut usize,
+    bootstrap_authority: rt::Handle,
 ) -> rt::Result<()> {
     let mut index = 0usize;
     while index < *service_count {
@@ -416,7 +458,9 @@ fn pump_control_channels(
 
         let mut message = RawMessage::empty(0);
         match rt::channel_receive_nonblocking(slots[index].control_handle, &mut message) {
-            Ok(()) => handle_control_message(slots, service_count, index, &message)?,
+            Ok(()) => {
+                handle_control_message(slots, service_count, index, bootstrap_authority, &message)?
+            }
             Err(rt::Error::QueueEmpty) => {}
             Err(error) => return Err(error),
         }
@@ -429,6 +473,7 @@ fn handle_control_message(
     slots: &mut [ServiceSlot; MAX_SERVICE_SLOTS],
     service_count: &mut usize,
     service_index: usize,
+    bootstrap_authority: rt::Handle,
     message: &RawMessage,
 ) -> rt::Result<()> {
     match message.tag {
@@ -477,10 +522,22 @@ fn handle_control_message(
             if message.word_count < 1 {
                 return Err(rt::Error::InvalidArgument);
             }
-            handle_launch_request(slots, *service_count, service_index, message)?;
+            handle_launch_request(
+                slots,
+                *service_count,
+                service_index,
+                bootstrap_authority,
+                message,
+            )?;
         }
         x if x == ManagerTag::ActivateRequest as u32 => {
-            handle_activate_request(slots, service_count, service_index, message)?;
+            handle_activate_request(
+                slots,
+                service_count,
+                service_index,
+                bootstrap_authority,
+                message,
+            )?;
         }
         x if x == ManagerTag::DeactivateRequest as u32 => {
             if message.word_count < 1 {
@@ -671,6 +728,7 @@ fn handle_launch_request(
     slots: &mut [ServiceSlot; MAX_SERVICE_SLOTS],
     service_count: usize,
     service_index: usize,
+    bootstrap_authority: rt::Handle,
     message: &RawMessage,
 ) -> rt::Result<()> {
     let mut reply = RawMessage::empty(ManagerTag::LaunchReply as u32);
@@ -691,7 +749,7 @@ fn handle_launch_request(
     } else {
         None
     };
-    let task_handle = match launch_program(image_id, io_handle) {
+    let task_handle = match launch_program(bootstrap_authority, image_id, io_handle) {
         Ok(task_handle) => task_handle,
         Err(rt::Error::NotFound) => {
             reply.words[0] = ManagerStatus::NotFound as u32 as u64;
@@ -728,6 +786,7 @@ fn handle_activate_request(
     slots: &mut [ServiceSlot; MAX_SERVICE_SLOTS],
     service_count: &mut usize,
     service_index: usize,
+    bootstrap_authority: rt::Handle,
     message: &RawMessage,
 ) -> rt::Result<()> {
     let control_handle = slots[service_index].control_handle;
@@ -784,8 +843,8 @@ fn handle_activate_request(
         ..ServiceSlot::empty()
     };
 
-    let result = start_service(slots, *service_count, target_index, None)
-        .and_then(|_| wait_until_ready(slots, service_count, manifest.service_id));
+    let result = start_service(slots, *service_count, target_index, bootstrap_authority, None)
+        .and_then(|_| wait_until_ready(slots, service_count, bootstrap_authority, manifest.service_id));
 
     reply.words[0] = if result.is_ok() {
         ManagerStatus::Ok as u32 as u64
@@ -842,11 +901,12 @@ fn handle_deactivate_request(
 }
 
 fn launch_program(
+    bootstrap_authority: rt::Handle,
     image_id: ServiceImageId,
     io_handle: Option<rt::Handle>,
 ) -> rt::Result<rt::Handle> {
     let bootstrap = rt::channel_create()?;
-    let task_handle = rt::service_spawn(image_id, bootstrap.second)?;
+    let task_handle = rt::service_spawn(image_id, bootstrap_authority, bootstrap.second)?;
     let task_view =
         rt::handle_duplicate(task_handle, rights::READ | rights::DUPLICATE | rights::TRANSFER)?;
 

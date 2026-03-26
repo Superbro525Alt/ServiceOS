@@ -105,8 +105,8 @@ platform and application layers remain deferred.
   Rust bring-up
 - channels are the first IPC primitive because they align with the long-term
   service graph and keep authority transfer explicit
-- the bootstrap root still uses a temporary kernel role gate for service spawn;
-  later work should replace that with an explicit bootstrap capability object
+- root userspace bootstrap authority is now an explicit kernel capability
+  object instead of an ambient role check
 - a single-core round-robin scheduler is the first execution policy because it
   is easy to reason about and leaves room for later preemption and SMP work
 

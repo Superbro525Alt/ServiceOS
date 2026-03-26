@@ -24,6 +24,7 @@ pub enum ObjectKind {
     Event,
     Timer,
     MemoryObject,
+    BootstrapCapability,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -47,6 +48,7 @@ pub enum KernelObject {
     Event(EventObject),
     Timer(TimerObject),
     MemoryObject(MemoryObject),
+    BootstrapCapability(BootstrapCapabilityObject),
 }
 
 impl KernelObjectRecord {
@@ -102,6 +104,21 @@ impl KernelObjectRecord {
             KernelObject::MemoryObject(memory) => Some(memory),
             _ => None,
         }
+    }
+
+    pub fn bootstrap_capability(&self) -> Option<&BootstrapCapabilityObject> {
+        match &self.body {
+            KernelObject::BootstrapCapability(authority) => Some(authority),
+            _ => None,
+        }
+    }
+}
+
+pub struct BootstrapCapabilityObject;
+
+impl BootstrapCapabilityObject {
+    pub const fn new() -> Self {
+        Self
     }
 }
 
@@ -398,6 +415,16 @@ impl ObjectRegistry {
         })
     }
 
+    pub fn create_bootstrap_capability(&self) -> KernelObjectRef {
+        self.register(KernelObjectRecord {
+            header: ObjectHeader {
+                id: self.allocate_id(ObjectKind::BootstrapCapability),
+                kind: ObjectKind::BootstrapCapability,
+            },
+            body: KernelObject::BootstrapCapability(BootstrapCapabilityObject::new()),
+        })
+    }
+
     pub fn lookup(&self, id: ObjectId) -> Option<KernelObjectRef> {
         self.state.lock().live.get(&id).and_then(Weak::upgrade)
     }
@@ -439,12 +466,14 @@ impl ObjectRegistry {
 pub struct KernelObjectModel {
     registry: ObjectRegistry,
     bootstrap_task: KernelObjectRef,
+    bootstrap_capability: KernelObjectRef,
 }
 
 impl KernelObjectModel {
     fn new() -> Self {
         let registry = ObjectRegistry::new();
         let bootstrap_task = registry.create_bootstrap_root_task();
+        let bootstrap_capability = registry.create_bootstrap_capability();
         bootstrap_task
             .task()
             .expect("bootstrap task object")
@@ -459,6 +488,7 @@ impl KernelObjectModel {
         Self {
             registry,
             bootstrap_task,
+            bootstrap_capability,
         }
     }
 
@@ -468,6 +498,10 @@ impl KernelObjectModel {
 
     pub fn bootstrap_task(&self) -> &KernelObjectRef {
         &self.bootstrap_task
+    }
+
+    pub fn bootstrap_capability(&self) -> &KernelObjectRef {
+        &self.bootstrap_capability
     }
 }
 
@@ -525,5 +559,14 @@ mod tests {
                 writable: true,
             }
         );
+    }
+
+    #[test]
+    fn bootstrap_capability_has_distinct_object_kind() {
+        let registry = ObjectRegistry::new();
+        let authority = registry.create_bootstrap_capability();
+
+        assert_eq!(authority.kind(), ObjectKind::BootstrapCapability);
+        assert!(authority.bootstrap_capability().is_some());
     }
 }

@@ -138,11 +138,24 @@ fn stage_efi_partition(artifacts: &BuildArtifacts) -> Result<PathBuf, Box<dyn Er
 fn run_qemu(esp_dir: &Path) -> Result<(), Box<dyn Error>> {
     let ovmf_code = find_ovmf_code().ok_or("no OVMF code firmware found")?;
     let ovmf_vars = create_ovmf_vars_copy(&workspace_root().join("target").join("ovmf"))?;
+    let headless = qemu_headless();
 
     let mut command = Command::new("qemu-system-x86_64");
     command.args(["-machine", "q35"]);
+    command.args(["-m", "512"]);
+    command.args(["-smp", "2"]);
+    command.args(["-cpu", "max"]);
+    if kvm_available() {
+        command.args(["-accel", "kvm"]);
+    } else {
+        command.args(["-accel", "tcg,thread=multi"]);
+    }
     command.args(["-serial", "stdio"]);
-    command.args(["-display", "none"]);
+    if headless {
+        command.args(["-display", "none"]);
+    } else {
+        command.args(["-display", "gtk,gl=off"]);
+    }
     command.args(["-netdev", "user,id=net0"]);
     command.args([
         "-device",
@@ -172,6 +185,17 @@ fn run_qemu(esp_dir: &Path) -> Result<(), Box<dyn Error>> {
     let status = command.status()?;
 
     ensure_success(status, "QEMU UEFI run failed")
+}
+
+fn qemu_headless() -> bool {
+    matches!(
+        env::var("QEMU_HEADLESS").ok().as_deref(),
+        Some("1") | Some("true") | Some("yes")
+    )
+}
+
+fn kvm_available() -> bool {
+    Path::new("/dev/kvm").exists()
 }
 
 fn create_ovmf_vars_copy(out_dir: &Path) -> Result<PathBuf, Box<dyn Error>> {

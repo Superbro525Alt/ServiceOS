@@ -15,6 +15,37 @@ const MAX_STORAGE_PATH: usize = 96;
 const MAX_CAT_CHUNK: usize = 96;
 const MAX_VERSION_BYTES: usize = 24;
 const MAX_DESKTOP_APPS: usize = 8;
+const MAX_SESSION_WRITE_BYTES: usize = rt::IPC_MAX_WORDS * 8;
+const HELP_TEXT: &str = "\
+help: show this command list\r\n\
+services: list managed services\r\n\
+service <name>: show one service state\r\n\
+restart <name>: request a service restart\r\n\
+logs [count]: show recent structured logs\r\n\
+config: show core configuration values\r\n\
+store ls [prefix]: list boot-store paths\r\n\
+cat <path>: print a text resource\r\n\
+status: show system heartbeat status\r\n\
+net ifaces: show network interfaces\r\n\
+net route: show the default route\r\n\
+net resolve <name>: resolve a host or literal\r\n\
+net ping <name|ip>: run an ICMP reachability probe\r\n\
+gfx outputs: show graphics outputs\r\n\
+gfx surfaces: show compositor surfaces\r\n\
+gfx sessions: show graphical sessions\r\n\
+gfx focus <surface-id>: change focused session surface\r\n\
+desktop status: show desktop shell status\r\n\
+desktop apps: list desktop app state\r\n\
+desktop launch <settings|files|monitor>: launch a desktop app\r\n\
+desktop focus <settings|files|monitor>: focus a desktop app\r\n\
+pkg list: list repository packages\r\n\
+pkg info <name>: inspect one package\r\n\
+pkg install <name> [version]: activate a package\r\n\
+pkg update <name> [version]: switch to a newer package version\r\n\
+pkg remove <name>: deactivate a package\r\n\
+pkg rollback <name>: restore the prior active version\r\n\
+pkg history <name>: show current and rollback versions\r\n\
+run sysinfo: launch a transient tool\r\n";
 
 rt::entry!(main);
 
@@ -131,36 +162,7 @@ fn execute_command(bootstrap: rt::Handle, session: rt::Handle, line: &str) -> rt
 }
 
 fn print_help(session: rt::Handle) -> rt::Result<()> {
-    write_session_linef(session, format_args!("help: show this command list"))?;
-    write_session_linef(session, format_args!("services: list managed services"))?;
-    write_session_linef(session, format_args!("service <name>: show one service state"))?;
-    write_session_linef(session, format_args!("restart <name>: request a service restart"))?;
-    write_session_linef(session, format_args!("logs [count]: show recent structured logs"))?;
-    write_session_linef(session, format_args!("config: show core configuration values"))?;
-    write_session_linef(session, format_args!("store ls [prefix]: list boot-store paths"))?;
-    write_session_linef(session, format_args!("cat <path>: print a text resource"))?;
-    write_session_linef(session, format_args!("status: show system heartbeat status"))?;
-    write_session_linef(session, format_args!("net ifaces: show network interfaces"))?;
-    write_session_linef(session, format_args!("net route: show the default route"))?;
-    write_session_linef(session, format_args!("net resolve <name>: resolve a host or literal"))?;
-    write_session_linef(session, format_args!("net ping <name|ip>: run an ICMP reachability probe"))?;
-    write_session_linef(session, format_args!("gfx outputs: show graphics outputs"))?;
-    write_session_linef(session, format_args!("gfx surfaces: show compositor surfaces"))?;
-    write_session_linef(session, format_args!("gfx sessions: show graphical sessions"))?;
-    write_session_linef(session, format_args!("gfx focus <surface-id>: change focused session surface"))?;
-    write_session_linef(session, format_args!("desktop status: show desktop shell status"))?;
-    write_session_linef(session, format_args!("desktop apps: list desktop app state"))?;
-    write_session_linef(session, format_args!("desktop launch <settings|files|monitor>: launch a desktop app"))?;
-    write_session_linef(session, format_args!("desktop focus <settings|files|monitor>: focus a desktop app"))?;
-    write_session_linef(session, format_args!("pkg list: list repository packages"))?;
-    write_session_linef(session, format_args!("pkg info <name>: inspect one package"))?;
-    write_session_linef(session, format_args!("pkg install <name> [version]: activate a package"))?;
-    write_session_linef(session, format_args!("pkg update <name> [version]: switch to a newer package version"))?;
-    write_session_linef(session, format_args!("pkg remove <name>: deactivate a package"))?;
-    write_session_linef(session, format_args!("pkg rollback <name>: restore the prior active version"))?;
-    write_session_linef(session, format_args!("pkg history <name>: show current and rollback versions"))?;
-    write_session_linef(session, format_args!("run sysinfo: launch a transient tool"))?;
-    Ok(())
+    write_session_text(session, HELP_TEXT)
 }
 
 fn cmd_services(bootstrap: rt::Handle, session: rt::Handle) -> rt::Result<()> {
@@ -839,6 +841,18 @@ fn write_session_linef(session: rt::Handle, args: core::fmt::Arguments<'_>) -> r
     let _ = buffer.write_str("\r\n");
     let text = core::str::from_utf8(buffer.as_bytes()).map_err(|_| rt::Error::InvalidArgument)?;
     rt::console_session_write(session, text)
+}
+
+fn write_session_text(session: rt::Handle, text: &str) -> rt::Result<()> {
+    let bytes = text.as_bytes();
+    let mut offset = 0usize;
+    while offset < bytes.len() {
+        let end = (offset + MAX_SESSION_WRITE_BYTES).min(bytes.len());
+        let chunk = core::str::from_utf8(&bytes[offset..end]).map_err(|_| rt::Error::InvalidArgument)?;
+        rt::console_session_write(session, chunk)?;
+        offset = end;
+    }
+    Ok(())
 }
 
 fn parse_service_name(name: &str) -> Option<ServiceId> {

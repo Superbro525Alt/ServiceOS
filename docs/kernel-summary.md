@@ -62,12 +62,14 @@ That is the correct architectural direction for the project.
 - `config-service`: serves typed values from a persisted config blob
 - `log-service`: filters and forwards structured logs
 - `status-service`: first dependent long-running platform service
+- `package-service`: owns package metadata, install/update/remove, and rollback
+  policy in userspace
 
 ## Deferred responsibilities
 
 The kernel is intentionally not doing the following yet:
 
-- package policy
+- package-feed trust and repository distribution policy
 - general-purpose filesystems
 - networking stacks
 - audio pipelines

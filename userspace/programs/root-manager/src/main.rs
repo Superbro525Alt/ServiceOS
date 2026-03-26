@@ -767,10 +767,6 @@ fn handle_activate_request(
     };
     reply.words[1] = manifest.service_id as u32 as u64;
 
-    if !service_is_package_managed(manifest.service_id) {
-        return rt::channel_send(control_handle, &reply);
-    }
-
     let target_index = if let Some(index) = find_slot_index_checked(slots, *service_count, manifest.service_id) {
         if !slots[index].dynamic {
             return rt::channel_send(control_handle, &reply);
@@ -1051,10 +1047,6 @@ fn find_slot_index_checked(
     service_id: ServiceId,
 ) -> Option<usize> {
     (0..service_count).find(|index| slots[*index].occupied && slots[*index].manifest.service_id == service_id)
-}
-
-fn service_is_package_managed(service_id: ServiceId) -> bool {
-    matches!(service_id, ServiceId::Announce)
 }
 
 fn unpack_bytes(words: &[u64], len: usize, destination: &mut [u8]) -> rt::Result<()> {

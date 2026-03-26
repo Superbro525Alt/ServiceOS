@@ -9,13 +9,15 @@ It owns:
 - repository package discovery
 - package metadata inspection
 - install, update, remove, and rollback requests
-- coordination with the root manager for package-provided services
+- package activation policy for package-provided services
+- coordination with the root manager for service lifecycle transitions
 - package lifecycle logging
 
 It does not own storage policy, process spawning, or service supervision.
 
 - `storage-service` still owns persisted object access
-- the root manager still owns service startup, readiness, and restart
+- the root manager still owns service startup, readiness, restart, and dynamic
+  activation/deactivation execution
 - the shell is only an operator client of `package-service`
 
 ## Package model
@@ -63,7 +65,8 @@ Current install flow:
 Current update flow:
 
 1. `package-service` selects a newer repository version
-2. the root manager replaces the currently active package-managed service slot
+2. `package-service` asks the root manager to replace the currently active
+   dynamic service slot for the target `ServiceId`
 3. `package-service` updates its active/rollback state only after successful
    activation
 
@@ -93,7 +96,8 @@ At this stage the repository is still the trusted boot-store image staged by
 the build system, so the digest is treated as repository metadata and content
 shape validation rather than a final trust root. Full hard enforcement and
 signature policy are deferred until the system has writable repositories and
-signed feeds.
+signed feeds. That staged-source assumption is intentional and temporary; it is
+not the final package trust model.
 
 ## Example workflow
 

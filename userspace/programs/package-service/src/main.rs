@@ -559,8 +559,8 @@ fn verify_package_integrity(storage_handle: rt::Handle, manifest: PackageManifes
     }
 
     let _matches_declared_digest = hash == manifest.integrity;
-    // The boot-store repository is currently a trusted staging source, so this
-    // phase treats digests as package metadata and content-shape validation
+    // The boot-store repository is currently a trusted staged source, so
+    // digests are treated as package metadata and content-shape validation
     // rather than a hard trust root. Full digest/signature enforcement is
     // deferred until writable repositories and signed feeds exist.
     Ok(true)

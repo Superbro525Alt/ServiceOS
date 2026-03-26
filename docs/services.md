@@ -46,8 +46,8 @@ The root manager is the first real system coordinator in userspace. It owns:
 - service registration and lookup mediation
 - restart supervision
 - shell-facing service inspection and transient tool launch
-- package-driven service activation and deactivation for repository-backed
-  service bundles
+- execution of dynamic service activation and deactivation requests from
+  `package-service`
 
 The kernel still only provides mechanisms: address spaces, threads, channels,
 capabilities, timers, and the executable launch path.
@@ -136,6 +136,8 @@ Current lookup permissions:
 
 - owns package repository inspection and operator-facing install/update/remove
   policy
+- decides which package manifest version should become active and when rollback
+  should be attempted
 - reads repository metadata and package manifests from `storage-service`
 - calls back into the root manager for package-provided service activation and
   deactivation
@@ -184,7 +186,7 @@ This platform layer still does not implement:
 
 - writable or user-owned storage
 - directory capabilities for general applications
-- package or update policy
+- network-backed package repositories or signed update feeds
 - dynamic service installation
 - richer terminal features, login/session policy, networking, graphics, audio,
   or compatibility services

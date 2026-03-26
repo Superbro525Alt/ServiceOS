@@ -10,6 +10,10 @@ use serviceos_kernel_core::{
 };
 use spin::Mutex;
 
+const MAX_FRAMEBUFFER_BYTES: usize = 8 * 1024 * 1024;
+
+static mut SHADOW_FRAME_BYTES: [u8; MAX_FRAMEBUFFER_BYTES] = [0; MAX_FRAMEBUFFER_BYTES];
+
 struct DisplayState {
     present_count: u64,
 }
@@ -47,20 +51,58 @@ impl DisplayBackend for BootFramebufferBackend {
     }
 
     fn present(&self, frame: &[u8]) -> Result<(), DisplayOutputError> {
-        if frame.len() > self.framebuffer.byte_len {
+        if frame.len() != self.framebuffer.byte_len || frame.len() > MAX_FRAMEBUFFER_BYTES {
             return Err(DisplayOutputError::BufferTooSmall);
         }
 
-        unsafe {
-            ptr::copy_nonoverlapping(
-                frame.as_ptr(),
-                self.framebuffer.physical_base.as_u64() as *mut u8,
-                frame.len(),
-            );
+        let mut state = self.state.lock();
+        let row_bytes = self.framebuffer.stride * self.framebuffer.bytes_per_pixel;
+        let framebuffer = self.framebuffer.physical_base.as_u64() as *mut u8;
+        let shadow_frame = shadow_frame_slice(frame.len());
+        for row in 0..self.framebuffer.height {
+            let start = row * row_bytes;
+            let end = start + row_bytes;
+            let previous = &mut shadow_frame[start..end];
+            let current = &frame[start..end];
+            let Some((dirty_start, dirty_end)) = dirty_span(previous, current) else {
+                continue;
+            };
+
+            unsafe {
+                ptr::copy_nonoverlapping(
+                    current.as_ptr().add(dirty_start),
+                    framebuffer.add(start + dirty_start),
+                    dirty_end - dirty_start,
+                );
+            }
+            previous[dirty_start..dirty_end].copy_from_slice(&current[dirty_start..dirty_end]);
         }
 
-        let mut state = self.state.lock();
         state.present_count = state.present_count.saturating_add(1);
         Ok(())
+    }
+}
+
+fn dirty_span(previous: &[u8], current: &[u8]) -> Option<(usize, usize)> {
+    if previous.len() != current.len() {
+        return Some((0, current.len()));
+    }
+
+    let start = previous
+        .iter()
+        .zip(current.iter())
+        .position(|(left, right)| left != right)?;
+    let end = previous
+        .iter()
+        .zip(current.iter())
+        .rposition(|(left, right)| left != right)
+        .map(|index| index + 1)
+        .unwrap_or(start + 1);
+    Some((start, end))
+}
+
+fn shadow_frame_slice(len: usize) -> &'static mut [u8] {
+    unsafe {
+        core::slice::from_raw_parts_mut(ptr::addr_of_mut!(SHADOW_FRAME_BYTES).cast::<u8>(), len)
     }
 }

@@ -1,59 +1,114 @@
-# ServiceOS Foundation
+# ServiceOS
 
-The repository now covers the early kernel foundation plus the first durable
-userspace platform layer:
+ServiceOS is an experimental service-oriented operating system built around a
+small capability-based kernel and a growing userspace platform.
+
+Repository: <https://github.com/Superbro525Alt/ServiceOS>
+
+The design direction is explicit:
+
+- kernel provides mechanisms, not high-level policy
+- services own platform behavior in userspace
+- capabilities and handles are the primary authority model
+- subsystems are kept modular so they can evolve without collapsing into a
+  monolith
+- early bring-up targets QEMU first, without locking long-term architecture to
+  VM-only assumptions
+
+The project is past pure kernel bring-up. It now boots a real service graph,
+starts a graphical session, exposes operator tooling, supports package-driven
+service activation, and has the first desktop shell and core apps.
+
+## What Exists Today
+
+Current foundation:
 
 - direct UEFI boot into Rust on `x86_64`
-- real UEFI memory-map capture
-- early physical frame allocation
-- initial x86_64 paging foundation
-- mapped kernel heap bootstrap
-- interrupt descriptor table and GDT/TSS bring-up
-- syscall dispatch on a dedicated software-interrupt vector
-- unified kernel object registry
-- per-task capability spaces and handle rights
-- channel-based IPC with explicit transfer rights
-- a schedulable thread model
-- user address-space construction and ring-3 entry
-- a staged boot-store image loaded from the EFI system partition
-- a root userspace service manager launched by the kernel
-- dependency-aware service startup from persisted manifests
-- explicit capability distribution from root into child services
-- a refined manager-mediated service registry
-- foundational userspace services for storage, logging, configuration, console
-  I/O, and system status
-- a text-first shell service and transient tool launch path for in-system
-  operation
-- a package service with install, update, remove, and rollback coordination
-- a userspace networking platform service with explicit packet-interface,
-  address, route, and name-resolution contracts
-- a userspace graphics/session platform layer with an explicit display-output
-  object, compositor service, and session/focus service
-- a replaceable desktop shell layer plus a first set of graphical core apps
-- host-side unit tests for the core kernel semantics
+- physical and virtual memory initialization
+- reusable kernel heap allocator
+- interrupt, exception, syscall, and timer foundations
+- kernel object registry with handle rights and capability spaces
+- channel-based IPC with explicit transfer rules
+- kernel-backed blocking/wakeup behavior
+- userspace process launch and flat-image loading
+- per-service fault isolation by terminating the faulting task instead of
+  halting the whole machine
 
-The system remains intentionally early. It does not attempt a polished final
-desktop, audio stack, or compatibility layers yet.
+Current userspace platform:
 
-## Initial target
+- root userspace bootstrap and service manager
+- persisted boot-store bundle loading from the EFI system partition
+- storage, log, config, console, and status services
+- text shell and operator tooling
+- package install, update, remove, and rollback foundation
+- networking service with interface/address/route/reporting contracts
+- graphics service, compositor foundation, and session service
+- desktop shell with initial graphical core apps
 
-- Architecture: `x86_64`
-- Bring-up environment: `QEMU`
-- Primary firmware path: `UEFI`
-- Primary implementation language: `Rust`
-- Toolchain: pinned `nightly` for `extern "x86-interrupt"` support in the
-  x86_64 trap path
+Current graphical/product layer:
 
-## Workspace layout
+- `desktop-shell-service`
+- `settings-app`
+- `files-app`
+- `monitor-app`
+
+## Architecture Snapshot
+
+ServiceOS is structured in layers:
+
+```text
+kernel
+  -> root-manager
+    -> foundational services
+      -> platform services
+        -> shell / desktop shell / apps / tools
+```
+
+Key boundaries:
+
+- kernel owns scheduling, memory, objects, capabilities, IPC, traps, syscalls,
+  and low-level device-facing primitives
+- `root-manager` owns service lifecycle coordination, dependency ordering, and
+  capability distribution
+- storage, package, network, graphics, session, and logging policy stay in
+  userspace services
+- desktop shell is a product-layer service on top of graphics/session, not part
+  of the compositor itself
+- apps are apps, not hidden privileged platform blobs
+
+## Current Status
+
+The repository currently supports a real end-to-end platform flow:
+
+1. UEFI loads the kernel image.
+2. The kernel initializes memory, interrupts, syscall entry, and core object
+   state.
+3. The kernel launches the root userspace manager with explicit bootstrap
+   authority.
+4. The root manager starts a dependency-ordered service graph from persisted
+   manifests.
+5. Foundational and platform services come up:
+   storage, config, log, console, status, package, network, graphics, session,
+   shell, and desktop shell.
+6. The desktop shell launches initial graphical apps through real service
+   contracts.
+
+This is still an early OS. It is not yet a polished consumer desktop, and it
+does not yet include a full filesystem stack, advanced networking, audio,
+compatibility runtimes, or a mature app ecosystem.
+
+## Repository Layout
 
 ```text
 .
 |-- docs/
-|-- shared/
 |-- kernel/
 |   |-- arch/x86_64/
 |   |-- core/
 |   `-- image/x86_64/
+|-- shared/
+|   |-- abi/
+|   `-- bundle/
 |-- support/xtask/
 |-- userspace/
 |   |-- bundles/
@@ -62,21 +117,28 @@ desktop, audio stack, or compatibility layers yet.
 `-- tests/
 ```
 
-- `shared/abi`: shared syscall, IPC, capability-transfer, and service identity
-  ABI
-- `shared/bundle`: boot-store archive and service-manifest schema
-- `kernel/core`: generic kernel bootstrap and subsystem foundations
-- `kernel/arch/x86_64`: x86_64 boot, CPU, serial, paging, trap, and user-entry
-  implementation
-- `kernel/image/x86_64`: bootable UEFI kernel image entry point
-- `support/xtask`: host-side build and QEMU runner logic
-- `userspace/bundles`: persisted manifests, config, and static resources packed
-  into the boot store
-- `userspace/catalog`: host-side boot-store builder and flat-image packer
-- `userspace/programs`: freestanding userspace runtime plus the root manager and
-  platform services
+Important directories:
 
-## Commands
+- `kernel/core`: generic kernel subsystems and object model
+- `kernel/arch/x86_64`: x86_64 boot, paging, interrupts, userspace entry, and
+  current device backends
+- `kernel/image/x86_64`: bootable UEFI kernel image
+- `shared/abi`: syscall, IPC, service, graphics, network, and package ABI
+- `shared/bundle`: service/package/boot-store bundle format support
+- `support/xtask`: build and QEMU orchestration
+- `userspace/bundles`: manifests, config, package metadata, and static
+  resources staged into the boot store
+- `userspace/programs`: userspace runtime, services, desktop shell, tools, and
+  apps
+
+## Building And Running
+
+Prerequisites:
+
+- Rust toolchain installed
+- QEMU with UEFI/OVMF available
+
+Common commands:
 
 ```bash
 cargo check --workspace
@@ -85,96 +147,95 @@ cargo xtask build
 cargo xtask qemu
 ```
 
-For smoke testing, keep `qemu` under a timeout because the system now stays
-alive under the service manager:
+Useful variants:
 
 ```bash
-timeout 20 cargo xtask qemu
+# Headless serial-only run
+QEMU_HEADLESS=1 cargo xtask qemu
+
+# Smoke run with timeout
+timeout 25 cargo xtask qemu
 ```
 
-## Current state
+Current `xtask qemu` defaults:
 
-The system boots under QEMU, exits UEFI boot services, captures the memory map,
-loads a boot-store image from the EFI system partition, initializes the memory
-substrate, installs an x86_64 GDT/TSS/IDT, enables PIC/PIT-driven timer
-interrupts, and then hands off to a real userspace root service manager.
+- opens a graphics window by default
+- uses more than the old minimal RAM/CPU settings
+- prefers KVM when available and falls back to multi-threaded TCG otherwise
 
-The current platform layer provides:
+## What The System Can Do Right Now
 
-- a registry-backed kernel object namespace
-- task-local capability spaces
-- channel endpoints as first-class kernel objects
-- per-handle transfer-right control during IPC
-- dedicated user address-space roots with shared kernel mappings
-- a flat-image loader backed by the staged boot store
-- a root service manager that starts a named dependency-ordered service graph
-  from persisted manifests
-- explicit startup grants from root into child services
-- manager-mediated lookup with per-service lookup permissions
-- a `storage-service` that opens persisted objects as explicit blob
-  capabilities
-- a structured `log-service` that forwards through a `console-service`
-- a `config-service` backed by persisted configuration data
-- a long-running `status-service` that depends on log, config, and console and
-  consumes a startup-granted resource blob
-- a `shell-service` that owns the first operator session and command surface
-- a manager-mediated transient tool launch path validated by `sysinfo-tool`
-- a `package-service` that activates repository-backed service packages through
-  the root manager
-- a package repository format for versioned service bundles such as the current
-  `announce-service` package
-- a `network-service` that owns interface state, static IPv4 configuration,
-  route reporting, static host resolution, and ICMP probe handling behind an
-  explicit service contract
-- a `graphics-service` that owns output state, surface creation, and
-  framebuffer composition behind an explicit display-output capability
-- a `session-service` that owns graphical session identity and focus policy on
-  top of the compositor
-- a `desktop-shell-service` that owns desktop chrome, launcher state, and
-  manager-mediated graphical app launch
-- a first graphical core-app set:
-  - `settings-app`
-  - `files-app`
-  - `monitor-app`
+From the operator shell:
 
-The current syscall surface is intentionally small, but it is now enough for a
-real service platform:
+- inspect services and service state
+- inspect logs
+- inspect stored bundle/config data
+- perform package operations
+- inspect network interfaces/routes/resolution state
+- inspect graphics/session state
+- launch desktop-aware tools and apps through the real manager/runtime path
 
-- `0`: ABI version probe
-- `1`: monotonic tick read
-- `2`: current-thread exit
-- `3`: cooperative yield
-- `4`: kernel-routed debug log write
-- `5`: channel creation
-- `6`: channel send
-- `7`: channel receive
-- `8`: handle duplication with rights reduction
-- `9`: handle close
-- `10`: bootstrap-only service spawn
-- `11`: task status query
-- `12`: kernel memory-object read for boot-rooted storage hydration
-- `13`: raw debug-console byte read for console input polling
-- `14`: raw debug-console byte write for session output
-- `15`: packet-interface status query
-- `16`: packet-interface frame receive
-- `17`: packet-interface frame transmit
-- `18`: display-output status query
-- `19`: display-output frame present
+From the graphical session:
 
-See [docs/kernel-summary.md](/home/paulh/os-dev/docs/kernel-summary.md),
-[docs/boot-flow.md](/home/paulh/os-dev/docs/boot-flow.md),
-[docs/desktop.md](/home/paulh/os-dev/docs/desktop.md),
-[docs/graphics.md](/home/paulh/os-dev/docs/graphics.md),
-[docs/networking.md](/home/paulh/os-dev/docs/networking.md),
-[docs/storage.md](/home/paulh/os-dev/docs/storage.md),
-[docs/userspace.md](/home/paulh/os-dev/docs/userspace.md),
-[docs/services.md](/home/paulh/os-dev/docs/services.md),
-[docs/shell.md](/home/paulh/os-dev/docs/shell.md),
-[docs/packages.md](/home/paulh/os-dev/docs/packages.md),
-[docs/manifests.md](/home/paulh/os-dev/docs/manifests.md),
-[docs/service-logging.md](/home/paulh/os-dev/docs/service-logging.md),
-[docs/service-config.md](/home/paulh/os-dev/docs/service-config.md),
-[docs/service-console.md](/home/paulh/os-dev/docs/service-console.md),
-[docs/service-status.md](/home/paulh/os-dev/docs/service-status.md),
-[docs/future-services.md](/home/paulh/os-dev/docs/future-services.md), and
-[docs/roadmap.md](/home/paulh/os-dev/docs/roadmap.md).
+- bring up a retained-scene desktop shell
+- launch the first small set of core system apps
+- exercise config, storage, status, and network-backed UI paths through real
+  service contracts
+
+## Deliberately Deferred
+
+Not built yet:
+
+- polished final desktop UX
+- richer window management and input stack
+- full filesystem/user storage semantics
+- DHCP, DNS, TCP/UDP, IPv6, and richer networking policy
+- audio/media stack
+- network-backed package repositories and signing/trust infrastructure
+- Linux or Windows compatibility layers
+- full third-party app platform/toolkit ecosystem
+
+Those are future layers on top of the current substrate, not things to force
+prematurely into the kernel or early platform services.
+
+## Documentation
+
+High-value entry points:
+
+- [Kernel Summary](docs/kernel-summary.md)
+- [Boot Flow](docs/boot-flow.md)
+- [Userspace Model](docs/userspace.md)
+- [Service Model](docs/services.md)
+- [Storage Foundation](docs/storage.md)
+- [Package Model](docs/packages.md)
+- [Networking Platform](docs/networking.md)
+- [Graphics And Session Platform](docs/graphics.md)
+- [Desktop Shell](docs/desktop.md)
+- [Shell And Operator Environment](docs/shell.md)
+- [Manifest And Bundle Schema](docs/manifests.md)
+- [Future Services](docs/future-services.md)
+- [Roadmap](docs/roadmap.md)
+
+Service-specific docs:
+
+- [Logging Service](docs/service-logging.md)
+- [Config Service](docs/service-config.md)
+- [Console Service](docs/service-console.md)
+- [Status Service](docs/service-status.md)
+
+## Contributing / Expectations
+
+The codebase is being shaped as a long-lived systems project, not a one-off OS
+toy. Changes should preserve these constraints:
+
+- keep kernel and userspace boundaries clean
+- prefer explicit capabilities over ambient authority
+- keep service contracts durable and replaceable
+- avoid baking bring-up shortcuts into long-term public interfaces
+- improve observability without leaking temporary milestone naming into runtime
+  behavior
+
+## License
+
+See the repository license metadata and workspace manifests for current license
+information.

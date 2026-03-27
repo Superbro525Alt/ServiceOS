@@ -22,6 +22,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             let esp_dir = stage_efi_partition(&artifacts)?;
             run_qemu(&esp_dir)?;
         }
+        CommandKind::Dist => {
+            stage_efi_partition(&artifacts)?;
+            create_disk_image(&artifacts)?;
+        }
     }
 
     Ok(())
@@ -31,6 +35,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 enum CommandKind {
     Build,
     Qemu,
+    Dist,
 }
 
 struct Options {
@@ -47,6 +52,7 @@ impl Options {
         let command = match command.as_str() {
             "build" => CommandKind::Build,
             "qemu" => CommandKind::Qemu,
+            "release" => CommandKind::Dist,
             _ => return Err(Box::new(UsageError)),
         };
 
@@ -185,6 +191,39 @@ fn run_qemu(esp_dir: &Path) -> Result<(), Box<dyn Error>> {
     let status = command.status()?;
 
     ensure_success(status, "QEMU UEFI run failed")
+}
+
+fn create_disk_image(artifacts: &BuildArtifacts) -> Result<PathBuf, Box<dyn Error>> {
+    let img_path = artifacts.esp_dir.parent().unwrap().join("serviceos.img");
+    let size_mb = 64;
+
+    println!("Creating bootable image at: {}", img_path.display());
+
+    let f = std::fs::File::create(&img_path)?;
+    f.set_len(size_mb * 1024 * 1024)?;
+
+    let status = Command::new("mformat")
+        .args(["-i", &img_path.to_string_lossy(), "-F", "::"])
+        .status()?;
+    ensure_success(status, "mformat failed")?;
+
+    let folders_to_copy = ["EFI", "serviceos"];
+
+    for folder in folders_to_copy {
+        let folder_path = artifacts.esp_dir.join(folder);
+        if folder_path.exists() {
+            let status = Command::new("mcopy")
+                .arg("-i")
+                .arg(&img_path)
+                .arg("-s")
+                .arg(&folder_path)
+                .arg("::")
+                .status()?;
+            ensure_success(status, &format!("mcopy failed for {}", folder))?;
+        }
+    }
+
+    Ok(img_path)
 }
 
 fn qemu_headless() -> bool {

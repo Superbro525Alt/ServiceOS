@@ -169,7 +169,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut entries = Vec::new();
     for program in PROGRAMS {
-        build_program(&programs_root, &target_dir, program)?;
+        build_program(&programs_root, &target_dir, &profile, program)?;
         let elf = target_dir
             .join("x86_64-unknown-none")
             .join(&profile)
@@ -231,31 +231,39 @@ struct BootStoreEntry {
 fn build_program(
     programs_root: &Path,
     target_dir: &Path,
+    profile: &str,
     program: &Program,
 ) -> Result<(), Box<dyn Error>> {
     let link_script = programs_root.join("link.ld");
-    let status = Command::new("cargo")
-        .current_dir(programs_root)
-        .env("CARGO_TARGET_DIR", target_dir)
-        .args([
-            "rustc",
-            "--target",
-            "x86_64-unknown-none",
-            "-p",
-            program.package,
-            "--bin",
-            program.bin_name,
-            "--",
-            "-C",
-            "relocation-model=static",
-            "-C",
-            "code-model=large",
-            "-C",
-            &format!("link-arg=-T{}", link_script.display()),
-            "-C",
-            "link-arg=--gc-sections",
-        ])
-        .status()?;
+    let mut command = Command::new("cargo");
+    command.current_dir(programs_root);
+    command.env("CARGO_TARGET_DIR", target_dir);
+    command.args([
+        "rustc",
+        "--target",
+        "x86_64-unknown-none",
+        "-p",
+        program.package,
+        "--bin",
+        program.bin_name,
+    ]);
+    if profile == "release" {
+        command.arg("--release");
+    }
+    command.args([
+        "--",
+        "-C",
+        "relocation-model=static",
+        "-C",
+        "code-model=large",
+        "-C",
+        "target-feature=-mmx,-sse,-sse2,+soft-float",
+        "-C",
+        &format!("link-arg=-T{}", link_script.display()),
+        "-C",
+        "link-arg=--gc-sections",
+    ]);
+    let status = command.status()?;
 
     if status.success() {
         Ok(())

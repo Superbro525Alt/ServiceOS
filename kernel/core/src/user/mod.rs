@@ -18,6 +18,9 @@ use spin::{Mutex, Once};
 const FLAT_IMAGE_MAGIC: [u8; 8] = *b"SOSUIMG\0";
 const FLAT_IMAGE_HEADER_LEN: usize = 72;
 const USER_STACK_PAGES: usize = 16;
+// Rust entry code pushes one register before calling `main`, so freestanding user entry
+// needs an 8-byte bias to preserve the SysV x86_64 stack alignment contract in optimized code.
+const USER_ENTRY_STACK_BIAS: u64 = 8;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TaskExitStatus {
@@ -176,6 +179,14 @@ pub struct LoadedUserImage {
     pub mapped_stack_bytes: usize,
 }
 
+impl LoadedUserImage {
+    pub fn initial_stack_pointer(&self) -> u64 {
+        self.user_stack_top
+            .as_u64()
+            .saturating_sub(USER_ENTRY_STACK_BIAS)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LoadError {
     Truncated,
@@ -247,7 +258,7 @@ pub fn spawn_builtin_task(
             mode: ThreadMode::User,
             scheduling_context: SchedulingContext::round_robin_default(),
             entry_instruction_pointer: Some(prepared.image.entry_point.as_u64()),
-            stack_pointer: Some(prepared.image.user_stack_top.as_u64()),
+            stack_pointer: Some(prepared.image.initial_stack_pointer()),
         },
     );
     let thread_id = thread.thread().expect("spawned thread object").id();
@@ -257,7 +268,7 @@ pub fn spawn_builtin_task(
         thread_id,
         page_table_root: prepared.page_table_root,
         entry_point: prepared.image.entry_point.as_u64(),
-        user_stack_pointer: prepared.image.user_stack_top.as_u64(),
+        user_stack_pointer: prepared.image.initial_stack_pointer(),
     });
     tasks.scheduler().register_thread(thread.clone())?;
     tasks

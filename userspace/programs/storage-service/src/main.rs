@@ -71,7 +71,10 @@ fn main() -> u64 {
     if rt::channel_receive_blocking(bootstrap, &mut startup).is_err() {
         return 0xf501;
     }
-    if startup.tag != rt::ControlTag::Startup as u32 || startup.handle_count < 1 || startup.word_count < 1 {
+    if startup.tag != rt::ControlTag::Startup as u32
+        || startup.handle_count < 1
+        || startup.word_count < 5
+    {
         return 0xf502;
     }
 

@@ -18,6 +18,14 @@ global_asm!(
     r#"
 .global serviceos_x86_64_resume_user
 serviceos_x86_64_resume_user:
+    push rbx
+    push rbp
+    push rdi
+    push rsi
+    push r12
+    push r13
+    push r14
+    push r15
     mov [rip + serviceos_x86_64_user_return_stack], rsp
     mov r11, rcx
     push qword ptr [r11 + 0x98]
@@ -45,6 +53,14 @@ serviceos_x86_64_resume_user:
 .global serviceos_x86_64_return_to_kernel
 serviceos_x86_64_return_to_kernel:
     mov rsp, [rip + serviceos_x86_64_user_return_stack]
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rsi
+    pop rdi
+    pop rbp
+    pop rbx
     ret
 "#
 );

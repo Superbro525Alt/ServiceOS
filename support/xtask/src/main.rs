@@ -19,10 +19,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             stage_efi_partition(&artifacts)?;
         }
         CommandKind::Qemu => {
-            let esp_dir = stage_efi_partition(&artifacts)?;
-            run_qemu(&esp_dir)?;
+            stage_efi_partition(&artifacts)?;
+            let disk_image = create_disk_image(&artifacts)?;
+            run_qemu(&disk_image)?;
         }
-        CommandKind::Dist => {
+        CommandKind::Image => {
             stage_efi_partition(&artifacts)?;
             create_disk_image(&artifacts)?;
         }
@@ -35,7 +36,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 enum CommandKind {
     Build,
     Qemu,
-    Dist,
+    Image,
 }
 
 struct Options {
@@ -52,7 +53,7 @@ impl Options {
         let command = match command.as_str() {
             "build" => CommandKind::Build,
             "qemu" => CommandKind::Qemu,
-            "release" => CommandKind::Dist,
+            "release" => CommandKind::Image,
             _ => return Err(Box::new(UsageError)),
         };
 
@@ -74,7 +75,7 @@ struct UsageError;
 
 impl fmt::Display for UsageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "usage: cargo xtask <build|qemu> [--release]")
+        write!(f, "usage: cargo xtask <build|qemu|release> [--release]")
     }
 }
 
@@ -141,7 +142,7 @@ fn stage_efi_partition(artifacts: &BuildArtifacts) -> Result<PathBuf, Box<dyn Er
     Ok(artifacts.esp_dir.clone())
 }
 
-fn run_qemu(esp_dir: &Path) -> Result<(), Box<dyn Error>> {
+fn run_qemu(disk_image: &Path) -> Result<(), Box<dyn Error>> {
     let ovmf_code = find_ovmf_code().ok_or("no OVMF code firmware found")?;
     let ovmf_vars = create_ovmf_vars_copy(&workspace_root().join("target").join("ovmf"))?;
     let headless = qemu_headless();
@@ -180,7 +181,7 @@ fn run_qemu(esp_dir: &Path) -> Result<(), Box<dyn Error>> {
     ]);
     command.args([
         "-drive",
-        &format!("format=raw,file=fat:rw:{}", esp_dir.display()),
+        &format!("format=raw,file={}", disk_image.display()),
     ]);
     if let Some(extra_args) = env::var_os("QEMU_EXTRA_ARGS") {
         for arg in extra_args.to_string_lossy().split_whitespace() {

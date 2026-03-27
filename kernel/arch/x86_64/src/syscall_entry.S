@@ -51,4 +51,12 @@ serviceos_x86_64_syscall_entry:
 
 serviceos_x86_64_syscall_exit_to_kernel:
     mov rsp, [rip + serviceos_x86_64_user_return_stack]
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rsi
+    pop rdi
+    pop rbp
+    pop rbx
     ret

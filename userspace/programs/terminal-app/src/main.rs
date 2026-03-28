@@ -25,6 +25,7 @@ const KEY_DOWN: u32 = 108;
 const KEY_PAGE_DOWN: u32 = 109;
 const MOD_CTRL: u32 = 1 << 2;
 const MOD_SHIFT: u32 = 1 << 0;
+const PIXEL_STRIDE: usize = BUFFER_WIDTH as usize;
 
 struct GlobalBuffer(UnsafeCell<[u8; BUFFER_BYTES]>);
 
@@ -505,9 +506,16 @@ fn draw_titlebar(bytes: &mut [u8], width: usize, focused: bool) {
         ui::STATUS_WARN,
     );
     if focused {
-        rt::draw_text_rgba8888(bytes, width, 10, 9, ui::TEXT_PRIMARY, "TERMINAL ACTIVE");
+        rt::draw_text_rgba8888(
+            bytes,
+            PIXEL_STRIDE,
+            10,
+            9,
+            ui::TEXT_PRIMARY,
+            "TERMINAL ACTIVE",
+        );
     } else {
-        rt::draw_text_rgba8888(bytes, width, 10, 9, ui::TEXT_PRIMARY, "TERMINAL");
+        rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, 10, 9, ui::TEXT_PRIMARY, "TERMINAL");
     }
 }
 
@@ -533,7 +541,14 @@ fn draw_terminal_contents(bytes: &mut [u8], width: usize, height: usize, state: 
                 break;
             }
             let ch = rt::normalize_bitmap_glyph(lines[grid_line][col]);
-            rt::draw_glyph_rgba8888(bytes, width, x as i32, y as i32, ui::TEXT_PRIMARY, ch);
+            rt::draw_glyph_rgba8888(
+                bytes,
+                PIXEL_STRIDE,
+                x as i32,
+                y as i32,
+                ui::TEXT_PRIMARY,
+                ch,
+            );
         }
     }
 
@@ -546,7 +561,14 @@ fn draw_terminal_contents(bytes: &mut [u8], width: usize, height: usize, state: 
         if let Ok(label) = core::str::from_utf8(status.as_bytes()) {
             let label_width = label.len() * rt::BITMAP_GLYPH_ADVANCE;
             let label_x = width.saturating_sub(label_width + CONTENT_PADDING_X);
-            rt::draw_text_rgba8888(bytes, width, label_x as i32, start_y as i32, ui::TEXT_MUTED, label);
+            rt::draw_text_rgba8888(
+                bytes,
+                PIXEL_STRIDE,
+                label_x as i32,
+                start_y as i32,
+                ui::TEXT_MUTED,
+                label,
+            );
         }
     }
 

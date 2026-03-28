@@ -71,7 +71,13 @@ fn main() -> u64 {
         }
 
         match poll_control(control_handle, &mut width, &mut height, &mut focused) {
-            Ok(ControlFlow::Continue) => {}
+            Ok(ControlFlow::Idle) => {}
+            Ok(ControlFlow::Worked) => {
+                if let Some(snapshot) = last_snapshot {
+                    let _ = render(surface_handle, buffer_handle, width, height, focused, snapshot);
+                }
+                continue;
+            }
             Ok(ControlFlow::Exit) => return 0,
             Err(_) => return 0xf205,
         }
@@ -144,7 +150,8 @@ fn render(
 }
 
 enum ControlFlow {
-    Continue,
+    Idle,
+    Worked,
     Exit,
 }
 
@@ -154,24 +161,33 @@ fn poll_control(
     height: &mut u32,
     focused: &mut bool,
 ) -> rt::Result<ControlFlow> {
+    let mut did_work = false;
     loop {
         let mut message = RawMessage::empty(0);
         match rt::channel_receive_nonblocking(control_handle, &mut message) {
             Ok(()) if message.tag == AppControlTag::FocusChanged as u32 && message.word_count > 0 => {
+                did_work = true;
                 *focused = message.words[0] != 0;
             }
             Ok(()) if message.tag == AppControlTag::Resize as u32 && message.word_count >= 2 => {
+                did_work = true;
                 *width = message.words[0] as u32;
                 *height = message.words[1] as u32;
             }
             Ok(()) if message.tag == AppControlTag::Close as u32 => return Ok(ControlFlow::Exit),
-            Ok(()) => {}
+            Ok(()) => {
+                did_work = true;
+            }
             Err(rt::Error::QueueEmpty) => break,
             Err(error) => return Err(error),
         }
     }
 
-    Ok(ControlFlow::Continue)
+    if did_work {
+        Ok(ControlFlow::Worked)
+    } else {
+        Ok(ControlFlow::Idle)
+    }
 }
 
 fn render_buffer(

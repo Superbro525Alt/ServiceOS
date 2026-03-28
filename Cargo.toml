@@ -8,7 +8,7 @@ members = [
     "arch/aarch64",
     "platform/x86_64/qemu_virtio",
     "platform/aarch64/raspi5",
-    "kernel/image/x86_64",
+    "platform/x86_64/qemu_virtio/image",
     "support/xtask",
     "userspace/catalog",
 ]

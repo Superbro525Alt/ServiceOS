@@ -111,6 +111,7 @@ compatibility runtimes, or a mature app ecosystem.
 |-- platform/
 |   |-- aarch64/raspi5/
 |   `-- x86_64/qemu_virtio/
+|       `-- image/
 |-- shared/
 |   |-- abi/
 |   `-- bundle/
@@ -127,9 +128,10 @@ Important directories:
 - `kernel/core`: generic kernel subsystems and object model
 - `arch/x86_64`: x86_64 CPU, MMU, trap, syscall, and user-transition code
 - `arch/aarch64`: aarch64 architecture scaffolding for the future Pi port
-- `kernel/image/x86_64`: bootable UEFI kernel image
 - `platform/x86_64/qemu_virtio`: UEFI, serial, framebuffer, input, and VirtIO
   backend wiring for the current QEMU target
+- `platform/x86_64/qemu_virtio/image`: bootable UEFI image crate for the
+  current QEMU/VirtIO platform
 - `platform/aarch64/raspi5`: Raspberry Pi 5 platform scaffolding and boot image
   layout contracts
 - `shared/abi`: syscall, IPC, service, graphics, network, and package ABI

@@ -15,7 +15,7 @@ The default bring-up path uses:
 QEMU
   -> OVMF / firmware
     -> EFI system partition
-      -> kernel/image/x86_64::BOOTX64.EFI
+      -> platform/x86_64/qemu_virtio/image::BOOTX64.EFI
         -> kernel_main()
           -> early serial init
           -> read \serviceos\bootstore.bin from the EFI system partition

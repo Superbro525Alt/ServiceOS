@@ -1,4 +1,4 @@
-use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
+use alloc::sync::Arc;
 use core::ptr::NonNull;
 
 use serviceos_abi::{PacketInterfaceBackend, PacketInterfaceInfo, PacketInterfaceLinkState};
@@ -103,10 +103,72 @@ struct VirtioPacketState {
     device: VirtIONet<KernelHal, PciTransport, NETWORK_QUEUE_SIZE>,
     mac: [u8; 6],
     mtu: u32,
-    receive_queue: VecDeque<Vec<u8>>,
+    receive_queue: ReceiveQueue,
     rx_packets: u64,
     tx_packets: u64,
     dropped_packets: u64,
+}
+
+struct ReceiveQueue {
+    slots: [[u8; NETWORK_BUFFER_BYTES]; MAX_RECEIVE_QUEUE],
+    lengths: [usize; MAX_RECEIVE_QUEUE],
+    head: usize,
+    tail: usize,
+    len: usize,
+}
+
+impl ReceiveQueue {
+    const fn new() -> Self {
+        Self {
+            slots: [[0; NETWORK_BUFFER_BYTES]; MAX_RECEIVE_QUEUE],
+            lengths: [0; MAX_RECEIVE_QUEUE],
+            head: 0,
+            tail: 0,
+            len: 0,
+        }
+    }
+
+    const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    const fn is_full(&self) -> bool {
+        self.len == MAX_RECEIVE_QUEUE
+    }
+
+    fn pop_front_into(&mut self, buffer: &mut [u8]) -> Result<usize, PacketInterfaceError> {
+        if self.is_empty() {
+            return Err(PacketInterfaceError::QueueEmpty);
+        }
+
+        let frame_len = self.lengths[self.head];
+        if frame_len > buffer.len() {
+            return Err(PacketInterfaceError::BufferTooSmall);
+        }
+
+        buffer[..frame_len].copy_from_slice(&self.slots[self.head][..frame_len]);
+        self.lengths[self.head] = 0;
+        self.head = (self.head + 1) % MAX_RECEIVE_QUEUE;
+        self.len -= 1;
+        Ok(frame_len)
+    }
+
+    fn push_copy(&mut self, frame: &[u8]) -> Result<(), PacketInterfaceError> {
+        if frame.len() > NETWORK_BUFFER_BYTES {
+            return Err(PacketInterfaceError::BufferTooSmall);
+        }
+
+        if self.is_full() {
+            self.head = (self.head + 1) % MAX_RECEIVE_QUEUE;
+            self.len -= 1;
+        }
+
+        self.slots[self.tail][..frame.len()].copy_from_slice(frame);
+        self.lengths[self.tail] = frame.len();
+        self.tail = (self.tail + 1) % MAX_RECEIVE_QUEUE;
+        self.len += 1;
+        Ok(())
+    }
 }
 
 impl VirtioPacketBackend {
@@ -116,7 +178,7 @@ impl VirtioPacketBackend {
                 device,
                 mac,
                 mtu: 1500,
-                receive_queue: VecDeque::new(),
+                receive_queue: ReceiveQueue::new(),
                 rx_packets: 0,
                 tx_packets: 0,
                 dropped_packets: 0,
@@ -163,15 +225,7 @@ impl PacketBackend for VirtioPacketBackend {
 
     fn receive(&self, buffer: &mut [u8]) -> Result<usize, PacketInterfaceError> {
         let mut state = self.state.lock();
-        let Some(frame) = state.receive_queue.pop_front() else {
-            return Err(PacketInterfaceError::QueueEmpty);
-        };
-        if frame.len() > buffer.len() {
-            state.receive_queue.push_front(frame);
-            return Err(PacketInterfaceError::BufferTooSmall);
-        }
-        buffer[..frame.len()].copy_from_slice(&frame);
-        Ok(frame.len())
+        state.receive_queue.pop_front_into(buffer)
     }
 
     fn poll(&self) -> bool {
@@ -181,16 +235,15 @@ impl PacketBackend for VirtioPacketBackend {
         while state.device.can_recv() {
             match state.device.receive() {
                 Ok(rx) => {
-                    let frame = rx.packet().to_vec();
-                    let _ = state.device.recycle_rx_buffer(rx);
                     if state.receive_queue.is_empty() {
                         became_ready = true;
                     }
-                    if state.receive_queue.len() == MAX_RECEIVE_QUEUE {
-                        state.receive_queue.pop_front();
+                    let queue_result = state.receive_queue.push_copy(rx.packet());
+                    let _ = state.device.recycle_rx_buffer(rx);
+                    if queue_result.is_err() {
                         state.dropped_packets = state.dropped_packets.saturating_add(1);
+                        continue;
                     }
-                    state.receive_queue.push_back(frame);
                     state.rx_packets = state.rx_packets.saturating_add(1);
                 }
                 Err(_) => break,

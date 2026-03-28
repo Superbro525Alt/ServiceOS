@@ -66,6 +66,8 @@
 - add writable storage and directory capabilities
 - extend terminate-on-fault isolation into richer user-fault upcalls and
   recovery policy
+- factor repeated capability/object resolution logic out of the syscall layer
+  before the syscall surface grows further
 - move packet I/O from timer polling to device-driven wakeups
 - add dynamic IPv4 configuration and DNS-backed resolution behind the current
   network-service contract

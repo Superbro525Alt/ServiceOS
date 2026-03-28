@@ -222,7 +222,7 @@ fn process_input_event(
         x if x == InputEventKind::PointerMotion as u32 => {
             state.pointer_x = scale_input_axis(event.value0, state.output_width);
             state.pointer_y = scale_input_axis(event.value1, state.output_height);
-            tolerate_input_backpressure(rt::desktop_pointer_input(
+            tolerate_input_backpressure(rt::desktop_pointer_input_async(
                 desktop_handle,
                 DesktopInputAction::PointerMove,
                 state.pointer_x,
@@ -234,7 +234,7 @@ fn process_input_event(
                 clamp_axis(state.pointer_x.saturating_add(event.value0), state.output_width);
             state.pointer_y =
                 clamp_axis(state.pointer_y.saturating_add(event.value1), state.output_height);
-            tolerate_input_backpressure(rt::desktop_pointer_input(
+            tolerate_input_backpressure(rt::desktop_pointer_input_async(
                 desktop_handle,
                 DesktopInputAction::PointerMove,
                 state.pointer_x,
@@ -248,7 +248,7 @@ fn process_input_event(
                 DesktopInputAction::PointerDown
             };
             if event.code == InputButton::Left as u32 {
-                tolerate_input_backpressure(rt::desktop_pointer_input(
+                tolerate_input_backpressure(rt::desktop_pointer_input_async(
                     desktop_handle,
                     action,
                     state.pointer_x,
@@ -263,7 +263,7 @@ fn process_input_event(
             } else {
                 DesktopInputAction::KeyDown
             };
-            tolerate_input_backpressure(rt::desktop_key_input(
+            tolerate_input_backpressure(rt::desktop_key_input_async(
                 desktop_handle,
                 key_action,
                 event.code,
@@ -271,7 +271,7 @@ fn process_input_event(
             ))?;
             if event.value0 != 0 {
                 if let Some(ch) = keycode_to_text(event.code, state.modifiers) {
-                    tolerate_input_backpressure(rt::desktop_key_input(
+                    tolerate_input_backpressure(rt::desktop_key_input_async(
                         desktop_handle,
                         DesktopInputAction::TextInput,
                         ch as u32,
@@ -323,9 +323,9 @@ fn clamp_axis(value: i32, limit: u32) -> i32 {
     value.clamp(0, limit.saturating_sub(1) as i32)
 }
 
-fn tolerate_input_backpressure(result: rt::Result<u32>) -> rt::Result<()> {
+fn tolerate_input_backpressure(result: rt::Result<()>) -> rt::Result<()> {
     match result {
-        Ok(_) => Ok(()),
+        Ok(()) => Ok(()),
         Err(rt::Error::Busy | rt::Error::CapacityExceeded) => Ok(()),
         Err(error) => Err(error),
     }

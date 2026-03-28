@@ -553,22 +553,24 @@ fn handle_request(state: &mut DesktopState, request: &RawMessage) -> rt::Result<
             let _ = rt::handle_close(reply_handle);
         }
         x if x == DesktopTag::InputRequest as u32 => {
-            if request.word_count < 3 || request.handle_count < 1 {
+            if request.word_count < 3 {
                 return Ok(());
             }
             let action = desktop_input_action_from_word(request.words[0]);
             let x = request.words[1] as i64 as i32;
             let y = request.words[2] as i64 as i32;
-            let reply_handle = request.handles[0];
-            let mut reply = RawMessage::empty(DesktopTag::InputReply as u32);
-            reply.word_count = 2;
             let result = match action {
                 Some(action) => handle_input(state, action, x, y),
                 None => Err(rt::Error::NotFound),
             };
-            reply_for_surface(&mut reply, result);
-            let _ = rt::channel_send(reply_handle, &reply);
-            let _ = rt::handle_close(reply_handle);
+            if request.handle_count >= 1 {
+                let reply_handle = request.handles[0];
+                let mut reply = RawMessage::empty(DesktopTag::InputReply as u32);
+                reply.word_count = 2;
+                reply_for_surface(&mut reply, result);
+                let _ = rt::channel_send(reply_handle, &reply);
+                let _ = rt::handle_close(reply_handle);
+            }
         }
         _ => {}
     }

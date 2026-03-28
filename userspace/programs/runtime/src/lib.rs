@@ -1228,24 +1228,33 @@ pub fn desktop_resize_app(
     )
 }
 
-pub fn desktop_pointer_input(
+fn desktop_input_request(
     desktop_handle: Handle,
     action: DesktopInputAction,
     x: i32,
     y: i32,
-) -> Result<u32> {
-    let reply = channel_create()?;
+    expect_reply: bool,
+) -> Result<Option<u32>> {
     let mut request = RawMessage::empty(DesktopTag::InputRequest as u32);
     request.word_count = 3;
     request.words[0] = action as u32 as u64;
     request.words[1] = x as i64 as u64;
     request.words[2] = y as i64 as u64;
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
+    let mut reply = None;
+    if expect_reply {
+        let pair = channel_create()?;
+        request.handle_count = 1;
+        request.handles[0] = pair.second;
+        request.handle_rights[0] = rights::SEND;
+        reply = Some(pair);
+    }
     channel_send(desktop_handle, &request)?;
-    let _ = handle_close(reply.second);
+    if !expect_reply {
+        return Ok(None);
+    }
 
+    let reply = reply.expect("reply pair for reply-expected desktop input");
+    let _ = handle_close(reply.second);
     let mut response = RawMessage::empty(0);
     channel_receive_blocking(reply.first, &mut response)?;
     let _ = handle_close(reply.first);
@@ -1253,9 +1262,27 @@ pub fn desktop_pointer_input(
         return Err(Error::InvalidArgument);
     }
     match desktop_status_from_word(response.words[0]) {
-        DesktopStatus::Ok => Ok(response.words[1] as u32),
+        DesktopStatus::Ok => Ok(Some(response.words[1] as u32)),
         status => Err(desktop_status_error(status)),
     }
+}
+
+pub fn desktop_pointer_input(
+    desktop_handle: Handle,
+    action: DesktopInputAction,
+    x: i32,
+    y: i32,
+) -> Result<u32> {
+    desktop_input_request(desktop_handle, action, x, y, true).map(|surface| surface.unwrap_or(0))
+}
+
+pub fn desktop_pointer_input_async(
+    desktop_handle: Handle,
+    action: DesktopInputAction,
+    x: i32,
+    y: i32,
+) -> Result<()> {
+    desktop_input_request(desktop_handle, action, x, y, false).map(|_| ())
 }
 
 pub fn desktop_pointer_click(desktop_handle: Handle, x: i32, y: i32) -> Result<u32> {
@@ -1269,6 +1296,15 @@ pub fn desktop_key_input(
     value: u32,
 ) -> Result<u32> {
     desktop_pointer_input(desktop_handle, action, key_code as i32, value as i32)
+}
+
+pub fn desktop_key_input_async(
+    desktop_handle: Handle,
+    action: DesktopInputAction,
+    key_code: u32,
+    value: u32,
+) -> Result<()> {
+    desktop_pointer_input_async(desktop_handle, action, key_code as i32, value as i32)
 }
 
 pub fn manager_activate_service(bootstrap: Handle, manifest_path: &str) -> Result<ServiceId> {

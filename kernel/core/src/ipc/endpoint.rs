@@ -1,4 +1,8 @@
-use alloc::sync::{Arc, Weak};
+use alloc::{
+    boxed::Box,
+    sync::{Arc, Weak},
+    vec,
+};
 use spin::Mutex;
 
 use crate::object::{KernelObjectRef, KernelObjectWeak};
@@ -15,7 +19,7 @@ pub(super) struct ChannelEndpointState {
 }
 
 pub(super) struct MessageQueue {
-    slots: [Option<MessageEnvelope>; MAX_QUEUED_MESSAGES_PER_ENDPOINT],
+    slots: Box<[Option<MessageEnvelope>]>,
     head: usize,
     len: usize,
 }
@@ -23,7 +27,7 @@ pub(super) struct MessageQueue {
 impl MessageQueue {
     fn new() -> Self {
         Self {
-            slots: core::array::from_fn(|_| None),
+            slots: vec![None; MAX_QUEUED_MESSAGES_PER_ENDPOINT].into_boxed_slice(),
             head: 0,
             len: 0,
         }

@@ -1,8 +1,7 @@
 use core::cell::UnsafeCell;
 use serviceos_kernel_core::{
     bootstrap::{
-        BootContext, BootMemoryRegion, BootMemoryRegionKind, FramebufferInfo,
-        FramebufferPixelFormat,
+        BootInfo, BootMemoryRegion, BootMemoryRegionKind, FramebufferInfo, FramebufferPixelFormat,
     },
     memory::PhysicalAddress,
 };
@@ -36,7 +35,7 @@ static BOOT_STORE: BootStoreBuffer = BootStoreBuffer {
     len: UnsafeCell::new(0),
 };
 
-pub fn exit_boot_services_and_capture_context() -> BootContext<'static> {
+pub fn capture_boot_info() -> BootInfo<'static> {
     let boot_store = load_boot_store();
     let framebuffer = capture_framebuffer();
     let rsdp_address = system::with_config_table(|entries| {
@@ -70,7 +69,7 @@ pub fn exit_boot_services_and_capture_context() -> BootContext<'static> {
         count += 1;
     }
 
-    BootContext {
+    BootInfo {
         memory_regions: &storage[..count],
         memory_map_available: true,
         memory_map_truncated: truncated,
@@ -79,6 +78,10 @@ pub fn exit_boot_services_and_capture_context() -> BootContext<'static> {
         framebuffer,
         boot_store,
     }
+}
+
+pub fn exit_boot_services_and_capture_context() -> BootInfo<'static> {
+    capture_boot_info()
 }
 
 fn capture_framebuffer() -> Option<FramebufferInfo> {

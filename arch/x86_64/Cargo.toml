@@ -12,9 +12,7 @@ test = false
 bench = false
 
 [dependencies]
-serviceos-abi = { path = "../../../shared/abi" }
-serviceos-kernel-core = { path = "../../core" }
+serviceos-abi = { path = "../../shared/abi" }
+serviceos-kernel-core = { path = "../../kernel/core" }
 spin = "0.9"
-uefi = { version = "0.33", default-features = false }
-virtio-drivers = { version = "0.13", default-features = false, features = ["alloc"] }
 x86_64 = { version = "0.15", default-features = false, features = ["instructions", "abi_x86_interrupt"] }

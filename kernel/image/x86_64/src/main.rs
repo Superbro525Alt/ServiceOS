@@ -6,12 +6,10 @@ use core::{fmt, panic::PanicInfo, str};
 use serviceos_abi::{ControlTag, ServiceImageId};
 use serviceos_bundle::BootStore;
 use serviceos_kernel_arch_x86_64::{
-    boot::exit_boot_services_and_capture_context,
-    cpu, display, input,
+    cpu,
     interrupts::{self, TIMER_TICK_HZ},
-    network,
     paging::ActivePageTable,
-    serial, user,
+    user,
 };
 use serviceos_kernel_core::{
     Kernel,
@@ -22,6 +20,7 @@ use serviceos_kernel_core::{
     task::{ExecutionState, SchedulerError, TaskRole, ThreadId, ThreadMode},
     user::{self as kernel_user, SpawnError, TaskExitStatus},
 };
+use serviceos_platform_qemu_virtio::{boot, display, input, network, serial};
 use spin::Once;
 use uefi::{Status, entry};
 
@@ -86,13 +85,13 @@ fn kernel_main() -> Status {
     serial::init();
     log_line("boot", "entered x86_64 UEFI kernel image");
 
-    let boot_context = exit_boot_services_and_capture_context();
-    let Some(boot_store) = boot_context.boot_store else {
+    let boot_info = boot::capture_boot_info();
+    let Some(boot_store) = boot_info.boot_store else {
         log_line("boot", "boot-store payload missing");
         cpu::halt_loop()
     };
     let mut mapper = unsafe { ActivePageTable::new_identity_mapped() };
-    let kernel = match Kernel::initialize(&boot_context, &mut mapper, TIMER_TICK_HZ as u64) {
+    let kernel = match Kernel::initialize(&boot_info, &mut mapper, TIMER_TICK_HZ as u64) {
         Ok(kernel) => kernel,
         Err(error) => {
             log("boot", format_args!("kernel init failed: {error:?}"));

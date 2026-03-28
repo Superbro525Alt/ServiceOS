@@ -1,22 +1,21 @@
 [package]
-name = "serviceos-kernel-x86_64"
+name = "serviceos-platform-qemu-virtio"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 
-[[bin]]
-name = "serviceos-kernel-x86_64"
-path = "src/main.rs"
+[lib]
+path = "src/lib.rs"
 test = false
 bench = false
 
 [dependencies]
 serviceos-abi = { path = "../../../shared/abi" }
-serviceos-bundle = { path = "../../../shared/bundle" }
+serviceos-kernel-core = { path = "../../../kernel/core" }
 serviceos-kernel-arch-x86_64 = { path = "../../../arch/x86_64" }
-serviceos-kernel-core = { path = "../../core" }
-serviceos-platform-qemu-virtio = { path = "../../../platform/x86_64/qemu_virtio" }
 spin = "0.9"
 uefi = { version = "0.33", default-features = false }
+virtio-drivers = { version = "0.13", default-features = false, features = ["alloc"] }
+x86_64 = { version = "0.15", default-features = false, features = ["instructions", "abi_x86_interrupt"] }

@@ -96,6 +96,7 @@ static DESCRIPTOR_TABLES: Once<DescriptorTables> = Once::new();
 static IDT: Once<InterruptDescriptorTable> = Once::new();
 static EXTERNAL_IRQ_HANDLERS: spin::Mutex<[Option<fn(u8)>; EXTERNAL_IRQ_LINES]> =
     spin::Mutex::new([None; EXTERNAL_IRQ_LINES]);
+static TIMER_TICK_HOOK: spin::Mutex<Option<fn()>> = spin::Mutex::new(None);
 
 unsafe extern "C" {
     fn serviceos_x86_64_syscall_entry();
@@ -131,6 +132,10 @@ pub fn arm_demo_wakeup(deadline_ticks_from_now: u64) {
             serviceos_kernel_core::time::TimerRequest::one_shot(deadline),
         );
     });
+}
+
+pub fn register_timer_tick_hook(hook: fn()) {
+    *TIMER_TICK_HOOK.lock() = Some(hook);
 }
 
 pub fn poll_wakeup() -> Option<serviceos_kernel_core::time::WakeEvent> {
@@ -476,7 +481,9 @@ fn fatal_unknown_exception(frame: InterruptStackFrame, vector: u8, error_code: O
 
 extern "x86-interrupt" fn timer_interrupt_handler(_frame: InterruptStackFrame) {
     let _ = interrupts::note_timer_interrupt(InterruptVector(TIMER_VECTOR as u16));
-    crate::input::poll_ready_sources();
+    if let Some(hook) = *TIMER_TICK_HOOK.lock() {
+        hook();
+    }
     acknowledge_pic(TIMER_VECTOR);
 }
 

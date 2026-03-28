@@ -2,6 +2,7 @@ use alloc::sync::Arc;
 use core::ptr::NonNull;
 
 use serviceos_abi::{PacketInterfaceBackend, PacketInterfaceInfo, PacketInterfaceLinkState};
+use serviceos_kernel_arch_x86_64::{interrupts, paging::ActivePageTable};
 use serviceos_kernel_core::{
     memory::{self, PageMapper, PhysicalAddress, VirtualAddress},
     network::{PacketBackend, PacketInterfaceError},
@@ -19,8 +20,6 @@ use virtio_drivers::{
     },
 };
 use x86_64::instructions::port::Port;
-
-use crate::paging::ActivePageTable;
 
 const PCI_CONFIG_ADDRESS_PORT: u16 = 0xCF8;
 const PCI_CONFIG_DATA_PORT: u16 = 0xCFC;
@@ -60,8 +59,7 @@ pub fn initialize() -> Option<Arc<dyn PacketBackend>> {
                     .ok()?;
             let mac = device.mac_address();
             let interrupt_line = read_interrupt_line(device_function)?;
-            if !crate::interrupts::register_external_irq_handler(interrupt_line, handle_network_irq)
-            {
+            if !interrupts::register_external_irq_handler(interrupt_line, handle_network_irq) {
                 return None;
             }
             let backend = Arc::new(VirtioPacketBackend::new(device, mac));

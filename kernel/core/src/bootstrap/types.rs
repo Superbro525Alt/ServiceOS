@@ -45,7 +45,7 @@ pub struct FramebufferInfo {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct BootContext<'boot> {
+pub struct BootInfo<'boot> {
     pub memory_regions: &'boot [BootMemoryRegion],
     pub memory_map_available: bool,
     pub memory_map_truncated: bool,
@@ -55,7 +55,7 @@ pub struct BootContext<'boot> {
     pub boot_store: Option<&'boot [u8]>,
 }
 
-impl<'boot> BootContext<'boot> {
+impl<'boot> BootInfo<'boot> {
     pub const fn memory_region_count(&self) -> usize {
         self.memory_regions.len()
     }
@@ -74,3 +74,5 @@ impl<'boot> BootContext<'boot> {
             .count()
     }
 }
+
+pub type BootContext<'boot> = BootInfo<'boot>;

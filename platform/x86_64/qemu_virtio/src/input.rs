@@ -5,6 +5,7 @@ use serviceos_abi::{
     InputButton, InputEventInfo, InputEventKind, InputSourceBackend, InputSourceInfo,
     input_capability,
 };
+use serviceos_kernel_arch_x86_64::paging::ActivePageTable;
 use serviceos_kernel_core::{
     input::{InputBackend, InputSourceError},
     memory::{self, PageMapper, PhysicalAddress, VirtualAddress},
@@ -22,8 +23,6 @@ use virtio_drivers::{
     },
 };
 use x86_64::instructions::port::Port;
-
-use crate::paging::ActivePageTable;
 
 const PCI_CONFIG_ADDRESS_PORT: u16 = 0xCF8;
 const PCI_CONFIG_DATA_PORT: u16 = 0xCFC;

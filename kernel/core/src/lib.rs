@@ -16,7 +16,7 @@ pub mod task;
 pub mod time;
 pub mod user;
 
-use bootstrap::{BootContext, BootstrapPlan};
+use bootstrap::{BootInfo, BootstrapPlan};
 use interrupts::InterruptState;
 use ipc::IpcKernel;
 use memory::{MemoryManager, PageMapper};
@@ -28,7 +28,7 @@ use time::TimeManager;
 /// Architecture-neutral kernel state constructed after early boot handoff
 /// normalization. Real subsystem initialization starts in later phases.
 pub struct Kernel<'boot> {
-    boot_context: &'boot BootContext<'boot>,
+    boot_info: &'boot BootInfo<'boot>,
     bootstrap_plan: BootstrapPlan,
     memory: &'static MemoryManager,
     interrupts: &'static InterruptState,
@@ -59,11 +59,11 @@ impl From<time::InitializationError> for KernelInitError {
 
 impl<'boot> Kernel<'boot> {
     pub fn initialize(
-        boot_context: &'boot BootContext<'boot>,
+        boot_info: &'boot BootInfo<'boot>,
         mapper: &mut impl PageMapper,
         timer_tick_hz: u64,
     ) -> Result<Self, KernelInitError> {
-        let memory = memory::initialize(boot_context, mapper)?;
+        let memory = memory::initialize(boot_info, mapper)?;
         let interrupts = interrupts::initialize();
         let _ = input::initialize();
         let syscalls = syscall::initialize();
@@ -75,7 +75,7 @@ impl<'boot> Kernel<'boot> {
         let tasks = task::initialize(objects);
 
         Ok(Self {
-            boot_context,
+            boot_info,
             bootstrap_plan: BootstrapPlan::userspace_bootstrap_ready(),
             memory,
             interrupts,
@@ -87,8 +87,12 @@ impl<'boot> Kernel<'boot> {
         })
     }
 
-    pub fn boot_context(&self) -> &'boot BootContext<'boot> {
-        self.boot_context
+    pub fn boot_info(&self) -> &'boot BootInfo<'boot> {
+        self.boot_info
+    }
+
+    pub fn boot_context(&self) -> &'boot BootInfo<'boot> {
+        self.boot_info
     }
 
     pub fn bootstrap_plan(&self) -> BootstrapPlan {

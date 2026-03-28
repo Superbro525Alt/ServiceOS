@@ -123,14 +123,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "serviceos-kernel-arch-aarch64"
+version = "0.1.0"
+dependencies = [
+ "serviceos-kernel-core",
+]
+
+[[package]]
 name = "serviceos-kernel-arch-x86_64"
 version = "0.1.0"
 dependencies = [
  "serviceos-abi",
  "serviceos-kernel-core",
  "spin",
- "uefi",
- "virtio-drivers",
  "x86_64",
 ]
 
@@ -150,8 +155,30 @@ dependencies = [
  "serviceos-bundle",
  "serviceos-kernel-arch-x86_64",
  "serviceos-kernel-core",
+ "serviceos-platform-qemu-virtio",
  "spin",
  "uefi",
+]
+
+[[package]]
+name = "serviceos-platform-qemu-virtio"
+version = "0.1.0"
+dependencies = [
+ "serviceos-abi",
+ "serviceos-kernel-arch-x86_64",
+ "serviceos-kernel-core",
+ "spin",
+ "uefi",
+ "virtio-drivers",
+ "x86_64",
+]
+
+[[package]]
+name = "serviceos-platform-raspi5"
+version = "0.1.0"
+dependencies = [
+ "serviceos-kernel-arch-aarch64",
+ "serviceos-kernel-core",
 ]
 
 [[package]]

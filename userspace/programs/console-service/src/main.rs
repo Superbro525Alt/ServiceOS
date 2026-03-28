@@ -12,6 +12,14 @@ use rt::{
 const MAX_SESSIONS: usize = 2;
 const MAX_LINE_BYTES: usize = 128;
 const MAX_DISPLAY_BYTES: usize = 192;
+const MAX_HISTORY: usize = 16;
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum EscapeState {
+    None,
+    Esc,
+    Csi,
+}
 
 #[derive(Clone, Copy)]
 struct Session {
@@ -19,8 +27,18 @@ struct Session {
     pending_reply: rt::Handle,
     line: [u8; MAX_LINE_BYTES],
     line_len: usize,
+    line_cursor: usize,
     display: [u8; MAX_DISPLAY_BYTES],
     display_len: usize,
+    prompt_len: usize,
+    history: [[u8; MAX_LINE_BYTES]; MAX_HISTORY],
+    history_lens: [usize; MAX_HISTORY],
+    history_count: usize,
+    history_head: usize,
+    history_view: Option<usize>,
+    history_stash: [u8; MAX_LINE_BYTES],
+    history_stash_len: usize,
+    escape_state: EscapeState,
     occupied: bool,
 }
 
@@ -31,8 +49,18 @@ impl Session {
             pending_reply: rt::INVALID_HANDLE,
             line: [0; MAX_LINE_BYTES],
             line_len: 0,
+            line_cursor: 0,
             display: [0; MAX_DISPLAY_BYTES],
             display_len: 0,
+            prompt_len: 0,
+            history: [[0; MAX_LINE_BYTES]; MAX_HISTORY],
+            history_lens: [0; MAX_HISTORY],
+            history_count: 0,
+            history_head: 0,
+            history_view: None,
+            history_stash: [0; MAX_LINE_BYTES],
+            history_stash_len: 0,
+            escape_state: EscapeState::None,
             occupied: false,
         }
     }
@@ -407,9 +435,7 @@ fn handle_public_message(
             if let Some(session) = sessions.iter_mut().find(|session| !session.occupied) {
                 let pair = rt::channel_create()?;
                 session.endpoint = pair.first;
-                session.pending_reply = rt::INVALID_HANDLE;
-                session.line_len = 0;
-                session.display_len = 0;
+                reset_input_state(session);
                 session.occupied = true;
 
                 reply.handle_count = 1;
@@ -451,7 +477,7 @@ fn handle_session_message(session: &mut Session, message: &RawMessage) -> rt::Re
                 return Ok(());
             }
             session.pending_reply = message.handles[0];
-            session.line_len = 0;
+            begin_input_session(session);
         }
         _ => {}
     }
@@ -466,38 +492,284 @@ fn handle_input_byte(sessions: &mut [Session; MAX_SESSIONS], byte: u8) -> rt::Re
         return Ok(());
     };
 
+    if byte == 0x03 {
+        let _ = rt::debug_console_write(b"^C\r\n");
+        reply_with_current_line(session, 0)?;
+        return Ok(());
+    }
+
+    match session.escape_state {
+        EscapeState::Esc => {
+            session.escape_state = if byte == b'[' {
+                EscapeState::Csi
+            } else {
+                EscapeState::None
+            };
+            return Ok(());
+        }
+        EscapeState::Csi => {
+            session.escape_state = EscapeState::None;
+            match byte {
+                b'A' => history_up(session)?,
+                b'B' => history_down(session)?,
+                b'C' => move_cursor_right(session)?,
+                b'D' => move_cursor_left(session)?,
+                _ => {}
+            }
+            return Ok(());
+        }
+        EscapeState::None => {}
+    }
+
     match byte {
+        0x1b => {
+            session.escape_state = EscapeState::Esc;
+        }
         b'\r' | b'\n' => {
             let _ = rt::debug_console_write(b"\r\n");
-            let mut reply = RawMessage::empty(ConsoleTag::SessionReadLineReply as u32);
-            reply.word_count = 1;
-            reply.words[0] = session.line_len as u64;
-            reply.word_count += pack_bytes(&session.line[..session.line_len], &mut reply.words[1..])?;
-            let _ = rt::channel_send(session.pending_reply, &reply);
-            let _ = rt::handle_close(session.pending_reply);
-            session.pending_reply = rt::INVALID_HANDLE;
-            session.line_len = 0;
-            session.display_len = 0;
+            let reply_len = session.line_len;
+            if reply_len > 0 {
+                append_history(session);
+            }
+            reply_with_current_line(session, reply_len)?;
         }
         0x08 | 0x7f => {
-            if session.line_len > 0 {
-                session.line_len -= 1;
-                let _ = rt::debug_console_write(b"\x08 \x08");
-                pop_display_byte(session);
-            }
+            backspace(session)?;
         }
         0x20..=0x7e => {
-            if session.line_len < session.line.len() {
-                session.line[session.line_len] = byte;
-                session.line_len += 1;
-                let _ = rt::debug_console_write(&[byte]);
-                push_display_byte(session, byte);
-            }
+            insert_byte(session, byte)?;
         }
         _ => {}
     }
 
     Ok(())
+}
+
+fn begin_input_session(session: &mut Session) {
+    session.line_len = 0;
+    session.line_cursor = 0;
+    session.prompt_len = session.display_len;
+    session.history_view = None;
+    session.history_stash_len = 0;
+    session.escape_state = EscapeState::None;
+}
+
+fn reset_input_state(session: &mut Session) {
+    if session.pending_reply != rt::INVALID_HANDLE {
+        let _ = rt::handle_close(session.pending_reply);
+    }
+    session.pending_reply = rt::INVALID_HANDLE;
+    session.line_len = 0;
+    session.line_cursor = 0;
+    session.prompt_len = 0;
+    session.display_len = 0;
+    session.history_view = None;
+    session.history_stash_len = 0;
+    session.escape_state = EscapeState::None;
+}
+
+fn reply_with_current_line(session: &mut Session, reply_len: usize) -> rt::Result<()> {
+    let mut reply = RawMessage::empty(ConsoleTag::SessionReadLineReply as u32);
+    reply.word_count = 1;
+    reply.words[0] = reply_len as u64;
+    reply.word_count += pack_bytes(&session.line[..reply_len], &mut reply.words[1..])?;
+    let _ = rt::channel_send(session.pending_reply, &reply);
+    let _ = rt::handle_close(session.pending_reply);
+    session.pending_reply = rt::INVALID_HANDLE;
+    session.line_len = 0;
+    session.line_cursor = 0;
+    session.prompt_len = 0;
+    session.display_len = 0;
+    session.history_view = None;
+    session.history_stash_len = 0;
+    session.escape_state = EscapeState::None;
+    Ok(())
+}
+
+fn insert_byte(session: &mut Session, byte: u8) -> rt::Result<()> {
+    if session.line_len >= session.line.len() {
+        return Ok(());
+    }
+    if session.line_cursor < session.line_len {
+        let mut index = session.line_len;
+        while index > session.line_cursor {
+            session.line[index] = session.line[index - 1];
+            index -= 1;
+        }
+    }
+    session.line[session.line_cursor] = byte;
+    session.line_len += 1;
+    session.line_cursor += 1;
+    redraw_input_line(session)
+}
+
+fn backspace(session: &mut Session) -> rt::Result<()> {
+    if session.line_cursor == 0 || session.line_len == 0 {
+        return Ok(());
+    }
+    let start = session.line_cursor - 1;
+    let mut index = start;
+    while index + 1 < session.line_len {
+        session.line[index] = session.line[index + 1];
+        index += 1;
+    }
+    session.line_len -= 1;
+    session.line_cursor -= 1;
+    redraw_input_line(session)
+}
+
+fn move_cursor_left(session: &mut Session) -> rt::Result<()> {
+    if session.line_cursor > 0 {
+        session.line_cursor -= 1;
+        redraw_input_line(session)?;
+    }
+    Ok(())
+}
+
+fn move_cursor_right(session: &mut Session) -> rt::Result<()> {
+    if session.line_cursor < session.line_len {
+        session.line_cursor += 1;
+        redraw_input_line(session)?;
+    }
+    Ok(())
+}
+
+fn history_up(session: &mut Session) -> rt::Result<()> {
+    if session.history_count == 0 {
+        return Ok(());
+    }
+    let next_view = match session.history_view {
+        None => {
+            session.history_stash[..session.line_len].copy_from_slice(&session.line[..session.line_len]);
+            session.history_stash_len = session.line_len;
+            session.history_count - 1
+        }
+        Some(0) => 0,
+        Some(index) => index - 1,
+    };
+    session.history_view = Some(next_view);
+    load_history_entry(session, next_view);
+    redraw_input_line(session)
+}
+
+fn history_down(session: &mut Session) -> rt::Result<()> {
+    let Some(current) = session.history_view else {
+        return Ok(());
+    };
+    if current + 1 >= session.history_count {
+        session.history_view = None;
+        session.line[..session.history_stash_len]
+            .copy_from_slice(&session.history_stash[..session.history_stash_len]);
+        session.line_len = session.history_stash_len;
+        session.line_cursor = session.line_len;
+        return redraw_input_line(session);
+    }
+    let next_view = current + 1;
+    session.history_view = Some(next_view);
+    load_history_entry(session, next_view);
+    redraw_input_line(session)
+}
+
+fn append_history(session: &mut Session) {
+    if session.line_len == 0 {
+        return;
+    }
+    if session.history_count > 0 {
+        let latest_order = session.history_count - 1;
+        let latest_slot = history_slot(session, latest_order);
+        let latest_len = session.history_lens[latest_slot];
+        if latest_len == session.line_len && session.history[latest_slot][..latest_len] == session.line[..session.line_len] {
+            return;
+        }
+    }
+
+    let slot = session.history_head;
+    session.history[slot][..session.line_len].copy_from_slice(&session.line[..session.line_len]);
+    session.history_lens[slot] = session.line_len;
+    session.history_head = (session.history_head + 1) % MAX_HISTORY;
+    if session.history_count < MAX_HISTORY {
+        session.history_count += 1;
+    }
+}
+
+fn load_history_entry(session: &mut Session, order_index: usize) {
+    let slot = history_slot(session, order_index);
+    let len = session.history_lens[slot];
+    session.line[..len].copy_from_slice(&session.history[slot][..len]);
+    session.line_len = len;
+    session.line_cursor = len;
+}
+
+fn history_slot(session: &Session, order_index: usize) -> usize {
+    (session.history_head + MAX_HISTORY - session.history_count + order_index) % MAX_HISTORY
+}
+
+fn redraw_input_line(session: &mut Session) -> rt::Result<()> {
+    rebuild_display(session);
+    render_session_line(session)
+}
+
+fn rebuild_display(session: &mut Session) {
+    let keep = session.prompt_len.min(session.display_len).min(session.display.len());
+    let prompt = session.display;
+    let mut next = [0u8; MAX_DISPLAY_BYTES];
+    next[..keep].copy_from_slice(&prompt[..keep]);
+    let line_copy = session.line_len.min(next.len().saturating_sub(keep));
+    next[keep..keep + line_copy].copy_from_slice(&session.line[..line_copy]);
+    session.display = next;
+    session.display_len = keep + line_copy;
+}
+
+fn render_session_line(session: &Session) -> rt::Result<()> {
+    rt::debug_console_write(b"\r\x1b[2K")?;
+    if session.display_len > 0 {
+        rt::debug_console_write(&session.display[..session.display_len])?;
+    }
+    let end_cursor = session.display_len.saturating_sub(session.prompt_len);
+    if end_cursor > session.line_cursor {
+        write_cursor_left(end_cursor - session.line_cursor)?;
+    }
+    Ok(())
+}
+
+fn write_cursor_left(count: usize) -> rt::Result<()> {
+    if count == 0 {
+        return Ok(());
+    }
+    let mut buffer = [0u8; 16];
+    let mut len = 0usize;
+    buffer[len] = 0x1b;
+    len += 1;
+    buffer[len] = b'[';
+    len += 1;
+    len += write_unsigned_ascii(count, &mut buffer[len..])?;
+    buffer[len] = b'D';
+    len += 1;
+    rt::debug_console_write(&buffer[..len])
+}
+
+fn write_unsigned_ascii(mut value: usize, out: &mut [u8]) -> rt::Result<usize> {
+    if out.is_empty() {
+        return Err(rt::Error::BufferTooSmall);
+    }
+    if value == 0 {
+        out[0] = b'0';
+        return Ok(1);
+    }
+    let mut scratch = [0u8; 20];
+    let mut digits = 0usize;
+    while value > 0 {
+        scratch[digits] = b'0' + (value % 10) as u8;
+        digits += 1;
+        value /= 10;
+    }
+    if digits > out.len() {
+        return Err(rt::Error::BufferTooSmall);
+    }
+    for index in 0..digits {
+        out[index] = scratch[digits - 1 - index];
+    }
+    Ok(digits)
 }
 
 fn pack_bytes(source: &[u8], words: &mut [u64]) -> rt::Result<u32> {
@@ -536,7 +808,10 @@ fn write_session_bytes(session: &mut Session, bytes: &[u8]) -> rt::Result<()> {
     rt::debug_console_write(bytes)?;
     for byte in bytes.iter().copied() {
         match byte {
-            b'\r' | b'\n' => session.display_len = 0,
+            b'\r' | b'\n' => {
+                session.display_len = 0;
+                session.prompt_len = 0;
+            }
             0x08 | 0x7f => pop_display_byte(session),
             _ => push_display_byte(session, byte),
         }
@@ -549,21 +824,24 @@ fn write_structured_line(
     domain: &str,
     args: core::fmt::Arguments<'_>,
 ) -> rt::Result<()> {
-    if active_display(sessions).is_some() {
+    if active_session(sessions).is_some() {
         let _ = rt::debug_console_write(b"\r\n");
     }
     rt::write_logf(domain, args)?;
-    if let Some(display) = active_display(sessions) {
-        let _ = rt::debug_console_write(display);
+    if let Some(session) = active_session(sessions) {
+        let _ = render_session_line(session);
     }
     Ok(())
 }
 
-fn active_display(sessions: &[Session; MAX_SESSIONS]) -> Option<&[u8]> {
+fn active_session(sessions: &[Session; MAX_SESSIONS]) -> Option<&Session> {
     sessions
         .iter()
-        .find(|session| session.occupied && session.display_len > 0)
-        .map(|session| &session.display[..session.display_len])
+        .find(|session| {
+            session.occupied
+                && session.pending_reply != rt::INVALID_HANDLE
+                && session.display_len > 0
+        })
 }
 
 fn push_display_byte(session: &mut Session, byte: u8) {
@@ -580,11 +858,10 @@ fn pop_display_byte(session: &mut Session) {
 }
 
 fn release_session(session: &mut Session) {
-    if session.pending_reply != rt::INVALID_HANDLE {
-        let _ = rt::handle_close(session.pending_reply);
-    }
-    if session.endpoint != rt::INVALID_HANDLE {
-        let _ = rt::handle_close(session.endpoint);
+    let endpoint = session.endpoint;
+    reset_input_state(session);
+    if endpoint != rt::INVALID_HANDLE {
+        let _ = rt::handle_close(endpoint);
     }
     *session = Session::empty();
 }

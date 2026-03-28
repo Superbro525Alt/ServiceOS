@@ -102,6 +102,14 @@ pub const IPC_FLAG_NONBLOCK: u32 = 1 << 0;
 
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BootstrapPlatform {
+    Unknown = 0,
+    QemuVirtio = 1,
+    Raspi5 = 2,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ServiceImageId {
     RootManager = 1,
     StorageService = 2,

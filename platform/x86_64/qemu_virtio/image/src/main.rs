@@ -391,8 +391,8 @@ fn launch_root_manager(
         MessageTag(ControlTag::Startup as u32),
         &[
             boot_store_bytes.len() as u64,
-            u64::from(network_transfer.is_some()),
-            u64::from(display_transfer.is_some()),
+            serviceos_abi::BootstrapPlatform::QemuVirtio as u32 as u64,
+            0,
         ],
     )?
     .add_transfer(boot_store_transfer)?

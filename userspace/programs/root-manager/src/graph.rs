@@ -16,10 +16,11 @@ use crate::util::{
 pub(crate) fn load_base_service_graph(
     slots: &mut [ServiceSlot; MAX_SERVICE_SLOTS],
     service_count: &mut usize,
+    index_path: &str,
 ) -> rt::Result<()> {
     let storage_index = find_slot_index(slots, *service_count, ServiceId::Storage)?;
     let storage_handle = slots[storage_index].public_handle;
-    let (index_handle, index_len) = rt::storage_open(storage_handle, "services/index.txt")?;
+    let (index_handle, index_len) = rt::storage_open(storage_handle, index_path)?;
     let mut index_buffer = [0u8; MAX_INDEX_BYTES];
     let requested = index_len.min(index_buffer.len());
     let loaded = rt::storage_read_all(index_handle, &mut index_buffer, requested)?;

@@ -1,0 +1,11 @@
+service=shell-service
+image=shell-service
+startup=eager
+restart=on-failure:1
+depends=console-service, log-service, config-service, storage-service, status-service, package-service
+lookup=console-service:send
+lookup=log-service:send
+lookup=config-service:send
+lookup=storage-service:send
+lookup=status-service:send
+lookup=package-service:send

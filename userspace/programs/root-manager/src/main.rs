@@ -13,7 +13,7 @@ use crate::graph::{
     activate_base_service_graph, start_service, supervision_loop, wait_until_ready,
 };
 use crate::state::{storage_manifest, BootstrapResource, BootstrapResources, ServiceSlot, MAX_SERVICE_SLOTS};
-use crate::util::{emit_manager_event, fallback_log};
+use crate::util::{emit_manager_event, fallback_log, service_index_path};
 
 rt::entry!(main);
 
@@ -31,6 +31,15 @@ fn main() -> u64 {
     let bootstore_handle = startup.handles[0];
     let bootstrap_authority = startup.handles[1];
     let bootstore_len = startup.words[0] as usize;
+    let platform = if startup.word_count > 1 {
+        match startup.words[1] as u32 {
+            x if x == rt::BootstrapPlatform::QemuVirtio as u32 => rt::BootstrapPlatform::QemuVirtio,
+            x if x == rt::BootstrapPlatform::Raspi5 as u32 => rt::BootstrapPlatform::Raspi5,
+            _ => rt::BootstrapPlatform::Unknown,
+        }
+    } else {
+        rt::BootstrapPlatform::Unknown
+    };
     let network_resource = if startup.handle_count > 2 {
         Some(BootstrapResource {
             handle: startup.handles[2],
@@ -102,7 +111,13 @@ fn main() -> u64 {
         return 0xf604;
     }
 
-    if graph::load_base_service_graph(&mut slots, &mut service_count).is_err() {
+    if graph::load_base_service_graph(
+        &mut slots,
+        &mut service_count,
+        service_index_path(platform),
+    )
+    .is_err()
+    {
         return 0xf605;
     }
     if activate_base_service_graph(

@@ -14,6 +14,8 @@ use serviceos_bundle::{
 const IMAGE_BASE: u64 = 0x0000_4000_0000_0000;
 const USER_STACK_TOP: u64 = 0x0000_7fff_ffff_0000;
 const FLAT_IMAGE_HEADER_LEN: usize = 72;
+const X86_64_USER_TARGET: &str = "x86_64-unknown-none";
+const AARCH64_USER_TARGET: &str = "aarch64-unknown-none-softfloat";
 
 const PROGRAMS: &[Program] = &[
     Program {
@@ -156,9 +158,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let programs_root = repo_root.join("userspace").join("programs");
     let bundles_root = repo_root.join("userspace").join("bundles");
     let profile = env::var("PROFILE")?;
+    let user_target =
+        env::var("SERVICEOS_USER_TARGET").unwrap_or_else(|_| X86_64_USER_TARGET.to_owned());
     let target_dir = repo_root.join("target").join("userspace-programs");
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").unwrap());
-    let bootstore_output = target_dir.join(&profile).join("bootstore.bin");
+    let bootstore_output = target_dir.join(&user_target).join(&profile).join("bootstore.bin");
 
     println!("cargo:rerun-if-changed={}", programs_root.display());
     println!("cargo:rerun-if-changed={}", bundles_root.display());
@@ -169,9 +173,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut entries = Vec::new();
     for program in PROGRAMS {
-        build_program(&programs_root, &target_dir, &profile, program)?;
+        build_program(&programs_root, &target_dir, &profile, &user_target, program)?;
         let elf = target_dir
-            .join("x86_64-unknown-none")
+            .join(&user_target)
             .join(&profile)
             .join(program.bin_name);
         let raw = out_dir.join(format!("{}.bin", program.bin_name));
@@ -232,6 +236,7 @@ fn build_program(
     programs_root: &Path,
     target_dir: &Path,
     profile: &str,
+    user_target: &str,
     program: &Program,
 ) -> Result<(), Box<dyn Error>> {
     let link_script = programs_root.join("link.ld");
@@ -241,7 +246,7 @@ fn build_program(
     command.args([
         "rustc",
         "--target",
-        "x86_64-unknown-none",
+        user_target,
         "-p",
         program.package,
         "--bin",
@@ -250,14 +255,14 @@ fn build_program(
     if profile == "release" {
         command.arg("--release");
     }
+    command.args(["--", "-C", "relocation-model=static"]);
+    if user_target == X86_64_USER_TARGET {
+        command.args(["-C", "code-model=large"]);
+        command.args(["-C", "target-feature=-mmx,-sse,-sse2,+soft-float"]);
+    } else if user_target != AARCH64_USER_TARGET {
+        return Err(format!("unsupported userspace target: {user_target}").into());
+    }
     command.args([
-        "--",
-        "-C",
-        "relocation-model=static",
-        "-C",
-        "code-model=large",
-        "-C",
-        "target-feature=-mmx,-sse,-sse2,+soft-float",
         "-C",
         &format!("link-arg=-T{}", link_script.display()),
         "-C",

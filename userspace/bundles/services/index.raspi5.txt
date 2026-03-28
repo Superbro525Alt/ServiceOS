@@ -1,0 +1,6 @@
+services/console-service/manifest.svc
+services/config-service/manifest.svc
+services/log-service/manifest.svc
+services/status-service/manifest.svc
+services/package-service/manifest.svc
+services/shell-service/manifest.raspi5.svc

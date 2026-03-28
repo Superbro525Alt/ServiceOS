@@ -22,9 +22,11 @@ pub fn build_for_platform(
 ) -> Result<BuildArtifacts, Box<dyn Error>> {
     let profile = if release { "release" } else { "debug" };
     let workspace_root = workspace_root();
+    let userspace_target = userspace_target(spec);
     let userspace_profile_dir = workspace_root
         .join("target")
         .join("userspace-programs")
+        .join(userspace_target)
         .join(profile);
 
     build_package(
@@ -33,6 +35,7 @@ pub fn build_for_platform(
         spec.rust_target,
         release,
         false,
+        &[("SERVICEOS_USER_TARGET", userspace_target)],
     )?;
     build_package(
         &workspace_root,
@@ -40,6 +43,7 @@ pub fn build_for_platform(
         spec.rust_target,
         release,
         false,
+        &[("SERVICEOS_USER_TARGET", userspace_target)],
     )?;
     if let Some(kernel_package) = spec.kernel_package {
         build_package(
@@ -48,6 +52,7 @@ pub fn build_for_platform(
             spec.rust_target,
             release,
             true,
+            &[("SERVICEOS_USER_TARGET", userspace_target)],
         )?;
     }
     build_package(
@@ -56,6 +61,7 @@ pub fn build_for_platform(
         None,
         release,
         false,
+        &[("SERVICEOS_USER_TARGET", userspace_target)],
     )?;
 
     let kernel_binary = spec.kernel_binary_path(&workspace_root, profile);
@@ -75,6 +81,7 @@ fn build_package(
     target: Option<&str>,
     release: bool,
     binary_target: bool,
+    extra_env: &[(&str, &str)],
 ) -> Result<(), Box<dyn Error>> {
     let mut command = Command::new("cargo");
     command.current_dir(workspace_root);
@@ -88,9 +95,19 @@ fn build_package(
     if !binary_target {
         command.arg("--lib");
     }
+    for (key, value) in extra_env {
+        command.env(key, value);
+    }
 
     let status = command.status()?;
     ensure_success(status, &format!("cargo build failed for {package}"))
+}
+
+fn userspace_target(spec: PlatformSpec) -> &'static str {
+    match spec.arch {
+        crate::platform::Arch::X86_64 => "x86_64-unknown-none",
+        crate::platform::Arch::Aarch64 => "aarch64-unknown-none-softfloat",
+    }
 }
 
 pub fn ensure_success(status: ExitStatus, context: &str) -> Result<(), Box<dyn Error>> {

@@ -6,7 +6,7 @@ use core::{
 };
 
 pub use serviceos_abi::{
-    AppControlTag, AppKeyAction, AppPointerAction, ConfigKey, ConfigTag, ConfigValueKind,
+    AppControlTag, AppKeyAction, AppPointerAction, BootstrapPlatform, ConfigKey, ConfigTag, ConfigValueKind,
     ConsoleTag, ControlTag, DesktopAppId, DesktopDragMode, DesktopInputAction, DesktopStatus,
     DesktopTag, DesktopWindowAction, DisplayOutputBackend, DisplayOutputInfo,
     DisplayOutputState, DisplayPixelFormat, GraphicsStatus, GraphicsTag, Handle, HandlePair,
@@ -525,6 +525,7 @@ fn decode_result(value: u64, error: u64) -> Result<u64> {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 fn raw_syscall(
     number: u64,
     arg0: u64,
@@ -538,17 +539,49 @@ fn raw_syscall(
     let mut arg2_inout = arg2;
 
     unsafe {
-        asm!(
-            "int 0x80",
-            inlateout("rax") value,
-            in("rdi") arg0,
-            in("rsi") arg1,
-            inlateout("rdx") arg2_inout,
-            in("r10") arg3,
-            in("r8") arg4,
-            in("r9") arg5,
-        );
+        asm!("", out("rax") value, out("rdx") arg2_inout);
     }
 
     (value, arg2_inout)
+}
+
+#[cfg(target_arch = "aarch64")]
+fn raw_syscall(
+    number: u64,
+    arg0: u64,
+    arg1: u64,
+    arg2: u64,
+    arg3: u64,
+    arg4: u64,
+    arg5: u64,
+) -> (u64, u64) {
+    let mut value = arg0;
+    let mut error = arg1;
+    unsafe {
+        asm!(
+            "svc #0",
+            in("x8") number,
+            inlateout("x0") value,
+            inlateout("x1") error,
+            in("x2") arg2,
+            in("x3") arg3,
+            in("x4") arg4,
+            in("x5") arg5,
+            options(nostack),
+        );
+    }
+    (value, error)
+}
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+fn raw_syscall(
+    _number: u64,
+    _arg0: u64,
+    _arg1: u64,
+    _arg2: u64,
+    _arg3: u64,
+    _arg4: u64,
+    _arg5: u64,
+) -> (u64, u64) {
+    (0, SyscallErrorCode::Unsupported as u64)
 }

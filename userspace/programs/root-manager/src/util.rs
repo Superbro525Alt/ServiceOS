@@ -72,6 +72,13 @@ pub(crate) fn bootstrap_resource_for(
     }
 }
 
+pub(crate) fn service_index_path(platform: rt::BootstrapPlatform) -> &'static str {
+    match platform {
+        rt::BootstrapPlatform::Raspi5 => "services/index.raspi5.txt",
+        _ => "services/index.txt",
+    }
+}
+
 pub(crate) fn dependencies_ready(
     slots: &[ServiceSlot; MAX_SERVICE_SLOTS],
     service_count: usize,

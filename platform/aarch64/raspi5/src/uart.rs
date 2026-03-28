@@ -5,6 +5,7 @@ use serviceos_kernel_core::memory::PhysicalAddress;
 
 const PL011_DR: usize = 0x00;
 const PL011_FR: usize = 0x18;
+const PL011_FR_RXFE: u32 = 1 << 4;
 const PL011_FR_TXFF: u32 = 1 << 5;
 
 static UART_BASE: AtomicU64 = AtomicU64::new(0);
@@ -50,6 +51,17 @@ pub fn write_byte(byte: u8) {
 
     while read_reg(base, PL011_FR) & PL011_FR_TXFF != 0 {}
     write_reg(base, PL011_DR, byte as u32);
+}
+
+pub fn try_read_byte() -> Option<u8> {
+    let base = UART_BASE.load(Ordering::Relaxed);
+    if base == 0 {
+        return None;
+    }
+    if read_reg(base, PL011_FR) & PL011_FR_RXFE != 0 {
+        return None;
+    }
+    Some((read_reg(base, PL011_DR) & 0xff) as u8)
 }
 
 fn read_reg(base: u64, offset: usize) -> u32 {

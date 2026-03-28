@@ -13,3 +13,4 @@ bench = false
 
 [dependencies]
 serviceos-kernel-core = { path = "../../kernel/core" }
+spin = "0.9"

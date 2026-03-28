@@ -133,6 +133,7 @@ name = "serviceos-kernel-arch-aarch64"
 version = "0.1.0"
 dependencies = [
  "serviceos-kernel-core",
+ "spin",
 ]
 
 [[package]]
@@ -157,9 +158,13 @@ dependencies = [
 name = "serviceos-kernel-raspi5"
 version = "0.1.0"
 dependencies = [
+ "serviceos-abi",
+ "serviceos-bundle",
  "serviceos-kernel-arch-aarch64",
  "serviceos-kernel-core",
  "serviceos-platform-raspi5",
+ "serviceos-userspace-catalog",
+ "spin",
 ]
 
 [[package]]

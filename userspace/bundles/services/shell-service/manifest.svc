@@ -14,3 +14,4 @@ lookup=graphics-service:send
 lookup=session-service:send
 lookup=desktop-shell-service:send
 lookup=audio-service:send
+lookup=runtime-service:send

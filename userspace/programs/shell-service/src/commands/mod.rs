@@ -4,6 +4,7 @@ mod desktop;
 mod graphics;
 mod network;
 mod package;
+mod runtime;
 
 use serviceos_userspace_runtime as rt;
 
@@ -55,6 +56,7 @@ pub(crate) fn execute_command(
         "gfx" => graphics::cmd_gfx(bootstrap, output, parts),
         "desktop" => desktop::cmd_desktop(bootstrap, output, parts),
         "pkg" => package::cmd_pkg(bootstrap, output, parts),
+        "runtime" => runtime::cmd_runtime(bootstrap, output, parts),
         "run" => match parts.next() {
             Some("sysinfo") => core::cmd_run_sysinfo(bootstrap, output),
             _ => write_output_linef(output, format_args!("usage: run sysinfo")),

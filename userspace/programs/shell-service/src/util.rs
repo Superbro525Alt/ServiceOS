@@ -48,6 +48,14 @@ net http <host> [path]: fetch a URL over TCP through network-service\r\n\
 audio endpoints: show audio endpoints\r\n\
 audio streams: show active audio streams\r\n\
 audio tone <hz> [ms]: play a diagnostic tone through audio-service\r\n\
+runtime envs: list compatibility/runtime environments\r\n\
+runtime create posix: create a posix-like runtime environment\r\n\
+runtime inspect <env-id>: show one runtime environment\r\n\
+runtime mounts <env-id>: list mapped runtime mounts\r\n\
+runtime vars <env-id>: list runtime environment variables\r\n\
+runtime runs: list runtime-backed workloads\r\n\
+runtime launch <env-id> <inspect|env|mounts|cat> [path]: launch a runtime-backed workload\r\n\
+runtime destroy <env-id>: destroy an idle runtime environment\r\n\
 gfx outputs: show graphics outputs\r\n\
 gfx surfaces: show compositor surfaces\r\n\
 gfx sessions: show graphical sessions\r\n\
@@ -137,6 +145,7 @@ pub(crate) fn parse_service_name(name: &str) -> Option<ServiceId> {
         "session" | "session-service" => Some(ServiceId::Session),
         "desktop" | "desktop-shell" | "desktop-shell-service" => Some(ServiceId::DesktopShell),
         "audio" | "audio-service" => Some(ServiceId::Audio),
+        "runtime" | "runtime-service" => Some(ServiceId::Runtime),
         _ => None,
     }
 }
@@ -168,6 +177,7 @@ pub(crate) fn service_name(service_id: ServiceId) -> &'static str {
         ServiceId::DesktopShell => "desktop-shell-service",
         ServiceId::Terminal => "terminal-service",
         ServiceId::Audio => "audio-service",
+        ServiceId::Runtime => "runtime-service",
     }
 }
 
@@ -255,6 +265,7 @@ pub(crate) fn domain_name(domain: LogDomain) -> &'static str {
         LogDomain::Desktop => "desktop",
         LogDomain::App => "app",
         LogDomain::Audio => "audio",
+        LogDomain::Runtime => "runtime",
     }
 }
 
@@ -310,6 +321,11 @@ pub(crate) fn event_name(event: LogEvent) -> &'static str {
         LogEvent::AudioStreamStarted => "audio-stream-started",
         LogEvent::AudioStreamStopped => "audio-stream-stopped",
         LogEvent::AudioStreamClosed => "audio-stream-closed",
+        LogEvent::RuntimeEnvironmentCreated => "runtime-environment-created",
+        LogEvent::RuntimeEnvironmentDestroyed => "runtime-environment-destroyed",
+        LogEvent::RuntimeLaunchStarted => "runtime-launch-started",
+        LogEvent::RuntimeLaunchExited => "runtime-launch-exited",
+        LogEvent::RuntimeMappedRead => "runtime-mapped-read",
     }
 }
 

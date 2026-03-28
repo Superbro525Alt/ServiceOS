@@ -821,16 +821,6 @@ fn move_app(state: &mut DesktopState, app_id: DesktopAppId, x: i32, y: i32) -> r
     state.apps[index].window.x = clamp_window_x(state.chrome.output_width, state.apps[index].window.width, x);
     state.apps[index].window.y = clamp_window_y(state.chrome.output_height, state.apps[index].window.height, y);
     apply_window_geometry(&state.apps[index])?;
-    render_desktop(state)?;
-    let _ = emit_text_log(
-        "desktop",
-        format_args!(
-            "window moved app={} x={} y={}",
-            app_title(app_id),
-            state.apps[index].window.x,
-            state.apps[index].window.y
-        ),
-    );
     Ok(state.apps[index].window.surface_id)
 }
 
@@ -1072,11 +1062,7 @@ fn handle_input(
     }?;
     sync_cursor(state)?;
     match action {
-        DesktopInputAction::PointerMove => {
-            if state.drag_state.is_some() || state.content_capture.is_some() {
-                render_desktop(state)?;
-            }
-        }
+        DesktopInputAction::PointerMove => {}
         _ => render_desktop(state)?,
     }
     Ok(result)

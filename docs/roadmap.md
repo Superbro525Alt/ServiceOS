@@ -60,22 +60,18 @@
 
 ## Next
 
-- reclaim boot-services memory safely
 - evolve the flat-image bootstrap into a richer executable-loading model when
   the current userspace service graph outgrows it
 - add writable storage and directory capabilities
 - extend terminate-on-fault isolation into richer user-fault upcalls and
   recovery policy
-- factor repeated capability/object resolution logic out of the syscall layer
-  before the syscall surface grows further
-- move packet I/O from timer polling to device-driven wakeups
 - add dynamic IPv4 configuration and DNS-backed resolution behind the current
   network-service contract
 - grow the current ICMP/status path into a broader socket and transport surface
-- add shared graphical buffers and client-drawn content on top of the current
-  graphics-service contract
-- reduce or eliminate remaining heap-backed IPC message allocation in hot
-  runtime paths
+- move input delivery from PIT polling to device-driven wakeups, mirroring the
+  packet-interface path
+- grow the current shared-buffer graphics path into mapped or zero-copy
+  presentation buffers and a broader client-render protocol
 - grow the first desktop shell into richer task switching, broader shortcut and
   gesture policy, notifications, and permissions-aware desktop UX without
   collapsing it into platform services

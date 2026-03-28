@@ -5,11 +5,14 @@ use core::{fmt::Write, str};
 
 use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
-use rt::{
-    AppControlTag, ControlTag, FixedLogBuffer, LifecycleEvent, RawMessage,
-};
+use rt::{AppControlTag, ControlTag, FixedLogBuffer, LifecycleEvent, RawMessage};
 
 const REFRESH_TICKS: u64 = 100;
+const BUFFER_WIDTH: u32 = 640;
+const BUFFER_HEIGHT: u32 = 480;
+const BUFFER_BYTES: usize = BUFFER_WIDTH as usize * BUFFER_HEIGHT as usize * 4;
+
+static mut BUFFER: [u8; BUFFER_BYTES] = [0; BUFFER_BYTES];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct MonitorSnapshot {
@@ -41,6 +44,23 @@ fn main() -> u64 {
     let mut width = width;
     let mut height = height;
 
+    let buffer_handle = match rt::memory_create(BUFFER_BYTES, true) {
+        Ok(handle) => handle,
+        Err(_) => return 0xf206,
+    };
+    if rt::surface_attach_buffer(
+        surface_handle,
+        buffer_handle,
+        BUFFER_WIDTH,
+        BUFFER_HEIGHT,
+        BUFFER_WIDTH,
+    )
+    .is_err()
+    {
+        let _ = rt::handle_close(buffer_handle);
+        return 0xf207;
+    }
+
     let mut next_refresh = 0u64;
     let mut last_snapshot: Option<MonitorSnapshot> = None;
     loop {
@@ -60,7 +80,7 @@ fn main() -> u64 {
         if now >= next_refresh {
             let snapshot = sample_snapshot(status_handle, network_handle);
             if last_snapshot != Some(snapshot) {
-                let _ = render(surface_handle, width, height, focused, snapshot);
+                let _ = render(surface_handle, buffer_handle, width, height, focused, snapshot);
                 last_snapshot = Some(snapshot);
             }
             next_refresh = now.saturating_add(REFRESH_TICKS);
@@ -74,11 +94,14 @@ fn main() -> u64 {
 
 fn render(
     surface_handle: rt::Handle,
+    buffer_handle: rt::Handle,
     width: u32,
     height: u32,
     focused: bool,
     snapshot: MonitorSnapshot,
 ) -> rt::Result<()> {
+    render_buffer(buffer_handle, width, height, snapshot)?;
+
     let mut line0 = FixedLogBuffer::<48>::new();
     let _ = write!(&mut line0, "HEARTBEAT {}", snapshot.heartbeat_count);
     let mut line1 = FixedLogBuffer::<48>::new();
@@ -149,6 +172,68 @@ fn poll_control(
     }
 
     Ok(ControlFlow::Continue)
+}
+
+fn render_buffer(
+    buffer_handle: rt::Handle,
+    width: u32,
+    height: u32,
+    snapshot: MonitorSnapshot,
+) -> rt::Result<()> {
+    let width = width.min(BUFFER_WIDTH) as usize;
+    let height = height.min(BUFFER_HEIGHT) as usize;
+    if width == 0 || height == 0 {
+        return Ok(());
+    }
+
+    let bytes = unsafe { &mut BUFFER[..BUFFER_BYTES] };
+    for y in 0..height {
+        let blue = 0x18 + ((y * 20) / height.max(1)) as u32;
+        let rgb = (0x16 << 16) | (0x21 << 8) | blue;
+        for x in 0..width {
+            set_pixel(bytes, x, y, rgb);
+        }
+    }
+
+    fill_rect(bytes, 12, 52, width.saturating_sub(24), 14, if snapshot.link_up { ui::STATUS_OK } else { ui::STATUS_WARN });
+    fill_rect(bytes, 18, 84, width.saturating_sub(36), 18, 0x24334a);
+
+    let meter_width = width.saturating_sub(36);
+    let heartbeat_fill = ((snapshot.heartbeat_count as usize) % meter_width.max(1)) + 1;
+    fill_rect(bytes, 18, 84, heartbeat_fill.min(meter_width), 18, ui::ACCENT);
+
+    let octets = [
+        ((snapshot.ipv4_address >> 24) & 0xff) as usize,
+        ((snapshot.ipv4_address >> 16) & 0xff) as usize,
+        ((snapshot.ipv4_address >> 8) & 0xff) as usize,
+        (snapshot.ipv4_address & 0xff) as usize,
+    ];
+    for (index, octet) in octets.iter().copied().enumerate() {
+        let bar_height = 12 + (octet * 56 / 255);
+        let x = 24 + (index * 28);
+        let y = height.saturating_sub(32 + bar_height);
+        fill_rect(bytes, x, y, 18, bar_height, ui::STATUS_OK);
+    }
+
+    rt::memory_write(buffer_handle, 0, &bytes[..BUFFER_BYTES]).map(|_| ())
+}
+
+fn fill_rect(bytes: &mut [u8], x: usize, y: usize, width: usize, height: usize, rgb: u32) {
+    let end_x = (x + width).min(BUFFER_WIDTH as usize);
+    let end_y = (y + height).min(BUFFER_HEIGHT as usize);
+    for py in y..end_y {
+        for px in x..end_x {
+            set_pixel(bytes, px, py, rgb);
+        }
+    }
+}
+
+fn set_pixel(bytes: &mut [u8], x: usize, y: usize, rgb: u32) {
+    let index = ((y * BUFFER_WIDTH as usize) + x) * 4;
+    if index + 4 > bytes.len() {
+        return;
+    }
+    bytes[index..index + 4].copy_from_slice(&(rgb & 0x00ff_ffff).to_le_bytes());
 }
 
 fn sample_snapshot(status_handle: rt::Handle, network_handle: rt::Handle) -> MonitorSnapshot {

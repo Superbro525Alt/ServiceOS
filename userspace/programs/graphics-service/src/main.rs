@@ -14,6 +14,7 @@ const MAX_FRAMEBUFFER_BYTES: usize = 8 * 1024 * 1024;
 const MAX_SURFACE_RECTS: usize = 16;
 const MAX_SURFACE_LABELS: usize = 16;
 const MAX_LABEL_BYTES: usize = 56;
+const MAX_BUFFER_ROW_BYTES: usize = 8192;
 const DEFAULT_BACKGROUND_RGB: u32 = 0x10151d;
 const PRESENT_COALESCE_TICKS: u64 = 2;
 const CURSOR_SURFACE_Z_ORDER_MIN: u32 = 4_096;
@@ -24,6 +25,7 @@ const GLYPH_HEIGHT: usize = 7;
 
 static mut FRAMEBUFFER_BYTES: [u8; MAX_FRAMEBUFFER_BYTES] = [0; MAX_FRAMEBUFFER_BYTES];
 static mut BASE_FRAMEBUFFER_BYTES: [u8; MAX_FRAMEBUFFER_BYTES] = [0; MAX_FRAMEBUFFER_BYTES];
+static mut BLIT_ROW_BYTES: [u8; MAX_BUFFER_ROW_BYTES] = [0; MAX_BUFFER_ROW_BYTES];
 
 #[derive(Clone, Copy)]
 struct RectSlot {
@@ -74,6 +76,29 @@ impl LabelSlot {
 }
 
 #[derive(Clone, Copy)]
+struct BufferBinding {
+    handle: rt::Handle,
+    width: u32,
+    height: u32,
+    stride_pixels: u32,
+}
+
+impl BufferBinding {
+    const fn empty() -> Self {
+        Self {
+            handle: rt::INVALID_HANDLE,
+            width: 0,
+            height: 0,
+            stride_pixels: 0,
+        }
+    }
+
+    const fn attached(self) -> bool {
+        self.handle != rt::INVALID_HANDLE
+    }
+}
+
+#[derive(Clone, Copy)]
 struct SurfaceSlot {
     id: u32,
     owner_session: u32,
@@ -86,6 +111,7 @@ struct SurfaceSlot {
     fill_rgb: u32,
     visible: bool,
     occupied: bool,
+    buffer: BufferBinding,
     rects: [RectSlot; MAX_SURFACE_RECTS],
     labels: [LabelSlot; MAX_SURFACE_LABELS],
 }
@@ -104,6 +130,7 @@ impl SurfaceSlot {
             fill_rgb: 0,
             visible: false,
             occupied: false,
+            buffer: BufferBinding::empty(),
             rects: [RectSlot::empty(); MAX_SURFACE_RECTS],
             labels: [LabelSlot::empty(); MAX_SURFACE_LABELS],
         }
@@ -657,6 +684,42 @@ fn handle_surface_request(
                 status,
             );
         }
+        x if x == SurfaceTag::AttachBufferRequest as u32 => {
+            if message.word_count < 3 || message.handle_count < 2 {
+                return Ok(());
+            }
+            let width = message.words[0] as u32;
+            let height = message.words[1] as u32;
+            let stride_pixels = message.words[2] as u32;
+            let status = if width == 0
+                || height == 0
+                || stride_pixels < width
+                || width as usize * 4 > MAX_BUFFER_ROW_BYTES
+            {
+                GraphicsStatus::CapacityExceeded
+            } else {
+                if surface.buffer.attached() {
+                    let _ = rt::handle_close(surface.buffer.handle);
+                }
+                surface.buffer = BufferBinding {
+                    handle: message.handles[1],
+                    width,
+                    height,
+                    stride_pixels,
+                };
+                *dirty = DirtyState::Full { immediate: true };
+                GraphicsStatus::Ok
+            };
+            if status != GraphicsStatus::Ok {
+                let _ = rt::handle_close(message.handles[1]);
+            }
+            reply_surface_status(
+                message.handles,
+                1,
+                SurfaceTag::AttachBufferReply,
+                status,
+            );
+        }
         x if x == SurfaceTag::CloseRequest as u32 => {
             release_surface(surface);
             *dirty = DirtyState::Full { immediate: true };
@@ -816,6 +879,9 @@ fn draw_surface(frame: &mut [u8], output: rt::DisplayOutputInfo, surface: &Surfa
         surface.height,
         surface.fill_rgb,
     );
+    if surface.buffer.attached() {
+        draw_surface_buffer(frame, output, surface);
+    }
     for rect in surface.rects.iter().filter(|rect| rect.occupied && rect.visible) {
         draw_rect(
             frame,
@@ -836,6 +902,46 @@ fn draw_surface(frame: &mut [u8], output: rt::DisplayOutputInfo, surface: &Surfa
             label.color_rgb,
             &label.bytes[..label.len],
         );
+    }
+}
+
+fn draw_surface_buffer(frame: &mut [u8], output: rt::DisplayOutputInfo, surface: &SurfaceSlot) {
+    let buffer = surface.buffer;
+    let width = surface.width.min(buffer.width);
+    let height = surface.height.min(buffer.height);
+    if width == 0 || height == 0 {
+        return;
+    }
+
+    let row_bytes = width as usize * 4;
+    if row_bytes > MAX_BUFFER_ROW_BYTES {
+        return;
+    }
+
+    let start_x = surface.x.max(0) as usize;
+    let start_y = surface.y.max(0) as usize;
+    let end_x = ((surface.x + width as i32).max(0) as usize).min(output.width as usize);
+    let end_y = ((surface.y + height as i32).max(0) as usize).min(output.height as usize);
+    if start_x >= end_x || start_y >= end_y {
+        return;
+    }
+
+    let clip_left = if surface.x < 0 { (-surface.x) as usize } else { 0 };
+    let clip_top = if surface.y < 0 { (-surface.y) as usize } else { 0 };
+    let visible_width = end_x - start_x;
+    let row = blit_row_slice(row_bytes);
+
+    for row_index in 0..(end_y - start_y) {
+        let source_y = clip_top + row_index;
+        let source_offset = ((source_y * buffer.stride_pixels as usize) + clip_left) * 4;
+        if rt::memory_read(buffer.handle, source_offset, &mut row[..row_bytes]).is_err() {
+            break;
+        }
+        for column in 0..visible_width {
+            let base = column * 4;
+            let rgb = u32::from_le_bytes([row[base], row[base + 1], row[base + 2], row[base + 3]]);
+            write_pixel(frame, output, start_x + column, start_y + row_index, rgb & 0x00ff_ffff);
+        }
     }
 }
 
@@ -1015,6 +1121,10 @@ fn base_framebuffer_slice(len: usize) -> &'static mut [u8] {
     }
 }
 
+fn blit_row_slice(len: usize) -> &'static mut [u8] {
+    unsafe { core::slice::from_raw_parts_mut(ptr::addr_of_mut!(BLIT_ROW_BYTES).cast::<u8>(), len) }
+}
+
 fn active_surface_count(surfaces: &[SurfaceSlot; MAX_SURFACES]) -> usize {
     surfaces.iter().filter(|surface| surface.occupied).count()
 }
@@ -1031,6 +1141,9 @@ fn find_surface(
 fn release_surface(surface: &mut SurfaceSlot) {
     if surface.endpoint != rt::INVALID_HANDLE {
         let _ = rt::handle_close(surface.endpoint);
+    }
+    if surface.buffer.attached() {
+        let _ = rt::handle_close(surface.buffer.handle);
     }
     *surface = SurfaceSlot::empty();
 }

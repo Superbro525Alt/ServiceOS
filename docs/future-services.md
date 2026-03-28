@@ -58,7 +58,8 @@ The current platform already has:
 
 Deferred work:
 
-- device-driven NIC wakeups instead of timer polling
+- richer NIC interrupt models such as MSI/MSI-X and broader multi-device
+  routing
 - additional virtual backends and real NIC driver hosts
 - DHCP, DNS, richer routing, and socket-like protocol services
 - packet-buffer sharing and zero-copy policy beyond the current copied-frame

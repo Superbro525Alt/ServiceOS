@@ -51,7 +51,7 @@ contract so the public architecture is not QEMU-specific.
 Current backend facts:
 
 - tested under QEMU with `virtio-net-pci`
-- polled from the timer path today rather than driven by NIC interrupts
+- uses legacy PCI interrupt delivery to wake packet waiters
 - copies frames between kernel queues and userspace buffers
 
 Later backends can add:
@@ -117,7 +117,6 @@ The current networking layer intentionally defers:
 - IPv6
 - firewalling and richer network policy
 - zero-copy buffer sharing
-- NIC interrupt-driven wakeups
 - multiple active interfaces and richer routing policy
 
 Those are next-layer concerns on top of the current service and packet

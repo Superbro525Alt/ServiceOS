@@ -38,6 +38,7 @@ const DOUBLE_FAULT_IST_INDEX: u16 = 0;
 const DOUBLE_FAULT_STACK_SIZE: usize = 16 * 1024;
 const PRIVILEGE_STACK_INDEX: usize = 0;
 const PRIVILEGE_STACK_SIZE: usize = 16 * 1024;
+const EXTERNAL_IRQ_LINES: usize = 16;
 
 pub const PIC_PRIMARY_OFFSET: u8 = 0x20;
 pub const PIC_SECONDARY_OFFSET: u8 = 0x28;
@@ -93,6 +94,8 @@ static PRIVILEGE_STACK: InterruptStack<PRIVILEGE_STACK_SIZE> =
 static TSS: Once<TaskStateSegment> = Once::new();
 static DESCRIPTOR_TABLES: Once<DescriptorTables> = Once::new();
 static IDT: Once<InterruptDescriptorTable> = Once::new();
+static EXTERNAL_IRQ_HANDLERS: spin::Mutex<[Option<fn(u8)>; EXTERNAL_IRQ_LINES]> =
+    spin::Mutex::new([None; EXTERNAL_IRQ_LINES]);
 
 unsafe extern "C" {
     fn serviceos_x86_64_syscall_entry();
@@ -213,6 +216,21 @@ fn install_interrupt_table() {
             .set_handler_fn(security_exception_handler);
         unsafe {
             idt[TIMER_VECTOR].set_handler_fn(timer_interrupt_handler);
+            idt[PIC_PRIMARY_OFFSET + 1].set_handler_fn(external_irq1_handler);
+            idt[PIC_PRIMARY_OFFSET + 2].set_handler_fn(external_irq2_handler);
+            idt[PIC_PRIMARY_OFFSET + 3].set_handler_fn(external_irq3_handler);
+            idt[PIC_PRIMARY_OFFSET + 4].set_handler_fn(external_irq4_handler);
+            idt[PIC_PRIMARY_OFFSET + 5].set_handler_fn(external_irq5_handler);
+            idt[PIC_PRIMARY_OFFSET + 6].set_handler_fn(external_irq6_handler);
+            idt[PIC_PRIMARY_OFFSET + 7].set_handler_fn(external_irq7_handler);
+            idt[PIC_SECONDARY_OFFSET].set_handler_fn(external_irq8_handler);
+            idt[PIC_SECONDARY_OFFSET + 1].set_handler_fn(external_irq9_handler);
+            idt[PIC_SECONDARY_OFFSET + 2].set_handler_fn(external_irq10_handler);
+            idt[PIC_SECONDARY_OFFSET + 3].set_handler_fn(external_irq11_handler);
+            idt[PIC_SECONDARY_OFFSET + 4].set_handler_fn(external_irq12_handler);
+            idt[PIC_SECONDARY_OFFSET + 5].set_handler_fn(external_irq13_handler);
+            idt[PIC_SECONDARY_OFFSET + 6].set_handler_fn(external_irq14_handler);
+            idt[PIC_SECONDARY_OFFSET + 7].set_handler_fn(external_irq15_handler);
             idt[SYSCALL_VECTOR]
                 .set_handler_addr(VirtAddr::from_ptr(
                     serviceos_x86_64_syscall_entry as *const (),
@@ -305,6 +323,42 @@ fn acknowledge_pic(vector: u8) {
         }
 
         pic1_command.write(PIC_EOI);
+    }
+}
+
+fn unmask_pic_irq_line(irq_line: u8) {
+    let mut pic1_data = Port::<u8>::new(PIC1_DATA_PORT);
+    let mut pic2_data = Port::<u8>::new(PIC2_DATA_PORT);
+
+    unsafe {
+        if irq_line < 8 {
+            let mask = pic1_data.read() & !(1u8 << irq_line);
+            pic1_data.write(mask);
+            return;
+        }
+
+        let cascade_mask = pic1_data.read() & !(1u8 << 2);
+        pic1_data.write(cascade_mask);
+        let secondary_line = irq_line - 8;
+        let mask = pic2_data.read() & !(1u8 << secondary_line);
+        pic2_data.write(mask);
+    }
+}
+
+pub fn register_external_irq_handler(irq_line: u8, handler: fn(u8)) -> bool {
+    if irq_line as usize >= EXTERNAL_IRQ_LINES || irq_line == 0 {
+        return false;
+    }
+
+    let mut handlers = EXTERNAL_IRQ_HANDLERS.lock();
+    match handlers[irq_line as usize] {
+        Some(existing) if !core::ptr::fn_addr_eq(existing, handler) => false,
+        _ => {
+            handlers[irq_line as usize] = Some(handler);
+            drop(handlers);
+            unmask_pic_irq_line(irq_line);
+            true
+        }
     }
 }
 
@@ -422,10 +476,42 @@ fn fatal_unknown_exception(frame: InterruptStackFrame, vector: u8, error_code: O
 
 extern "x86-interrupt" fn timer_interrupt_handler(_frame: InterruptStackFrame) {
     let _ = interrupts::note_timer_interrupt(InterruptVector(TIMER_VECTOR as u16));
-    crate::network::poll_ready_interfaces();
     crate::input::poll_ready_sources();
     acknowledge_pic(TIMER_VECTOR);
 }
+
+fn dispatch_external_irq(irq_line: u8) {
+    let vector = PIC_PRIMARY_OFFSET + irq_line;
+    interrupts::note_external_interrupt(InterruptVector(vector as u16));
+    if let Some(handler) = EXTERNAL_IRQ_HANDLERS.lock()[irq_line as usize] {
+        handler(irq_line);
+    }
+    acknowledge_pic(vector);
+}
+
+macro_rules! external_irq_handler {
+    ($name:ident, $line:expr) => {
+        extern "x86-interrupt" fn $name(_frame: InterruptStackFrame) {
+            dispatch_external_irq($line);
+        }
+    };
+}
+
+external_irq_handler!(external_irq1_handler, 1);
+external_irq_handler!(external_irq2_handler, 2);
+external_irq_handler!(external_irq3_handler, 3);
+external_irq_handler!(external_irq4_handler, 4);
+external_irq_handler!(external_irq5_handler, 5);
+external_irq_handler!(external_irq6_handler, 6);
+external_irq_handler!(external_irq7_handler, 7);
+external_irq_handler!(external_irq8_handler, 8);
+external_irq_handler!(external_irq9_handler, 9);
+external_irq_handler!(external_irq10_handler, 10);
+external_irq_handler!(external_irq11_handler, 11);
+external_irq_handler!(external_irq12_handler, 12);
+external_irq_handler!(external_irq13_handler, 13);
+external_irq_handler!(external_irq14_handler, 14);
+external_irq_handler!(external_irq15_handler, 15);
 
 extern "x86-interrupt" fn breakpoint_handler(frame: InterruptStackFrame) {
     let report = interrupts::handle_exception(ExceptionDetail::Breakpoint, frame_view(&frame));

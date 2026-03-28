@@ -134,7 +134,7 @@ fn kernel_main() -> Status {
     log(
         "memory",
         format_args!(
-            "root-page-table={:#x} heap={:#x}..{:#x} usable-mib={} remaining-mib={}",
+            "root-page-table={:#x} heap={:#x}..{:#x} usable-mib={} reclaimed-boot-mib={} remaining-mib={}",
             kernel
                 .memory()
                 .kernel_address_space()
@@ -144,6 +144,7 @@ fn kernel_main() -> Status {
             kernel.memory().heap().range.start.as_u64(),
             kernel.memory().heap().range.end.as_u64(),
             kernel.memory().stats().usable_bytes / (1024 * 1024),
+            kernel.memory().stats().reclaimed_boot_services_bytes / (1024 * 1024),
             kernel.memory().stats().remaining_usable_bytes / (1024 * 1024),
         ),
     );
@@ -164,11 +165,12 @@ fn kernel_main() -> Status {
         log(
             "network",
             format_args!(
-                "backend={:?} pci={:02x}:{:02x}.{} mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} mtu={}",
+                "backend={:?} pci={:02x}:{:02x}.{} irq={} mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} mtu={}",
                 summary.backend,
                 summary.pci_bus,
                 summary.pci_device,
                 summary.pci_function,
+                summary.interrupt_line,
                 summary.mac[0],
                 summary.mac[1],
                 summary.mac[2],

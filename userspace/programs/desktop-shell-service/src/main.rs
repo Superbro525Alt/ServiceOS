@@ -299,8 +299,6 @@ fn main() -> u64 {
         output.width as u64,
     );
 
-    let _ = launch_or_focus_app(&mut state, DesktopAppId::Monitor);
-
     loop {
         match poll_lifecycle(bootstrap) {
             Ok(true) => return 0,

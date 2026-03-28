@@ -255,7 +255,8 @@ the graphical product layer matures.
 The current desktop layer is real, but still early:
 
 - shell chrome is intentionally simple
-- apps use compositor scene primitives instead of shared buffers
+- most apps still use compositor scene primitives; `monitor-app` now exercises
+  the shared-buffer client-draw path
 - there is no notification center, dock, settings editor, or file-opening
   workflow yet
 - there is no snap, tiling, or animation layer yet

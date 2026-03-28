@@ -59,6 +59,7 @@ The current compositor is deliberately simple:
 
 - one output
 - solid-fill rectangular surfaces
+- optional shared-buffer surface content
 - full-frame recomposition on change
 - userspace-owned z-order
 
@@ -73,15 +74,25 @@ The first surface contract includes:
 - per-surface capability handles
 - geometry updates
 - fill-color updates
+- shared-buffer attachment through a transferred memory-object capability
 - visibility updates
 - surface status queries
 
 Surface handles are explicit capabilities. Clients do not gain ambient access
 to all graphical objects just because they can talk to the graphics service.
 
-The current surface implementation does not yet expose shared buffers, image
-uploads, or application-defined drawing protocols. Those are later extensions
-to the same object model, not reasons to change it.
+The current surface implementation now supports two composition styles behind
+the same surface contract:
+
+- retained-scene primitives (`fill`, `rect`, `label`) owned by
+  `graphics-service`
+- client-owned shared buffers backed by writable kernel memory objects
+
+The first client-drawn path is intentionally modest: `monitor-app` can attach a
+shared pixel buffer and draw directly into it, while the service still
+composites retained shell/app chrome above that content. This is enough to
+prove the contract needed for later media, richer app rendering, and broader
+desktop growth without forcing a full GPU or toolkit redesign now.
 
 ## Session model
 
@@ -155,7 +166,7 @@ contracts.
 
 Still intentionally deferred:
 
-- shared-memory or zero-copy presentation buffers
+- mapped or zero-copy presentation buffers
 - multiple outputs
 - multiple graphical sessions
 - window management policy

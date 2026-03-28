@@ -34,6 +34,7 @@ pub struct NetworkBringupSummary {
     pub pci_bus: u8,
     pub pci_device: u8,
     pub pci_function: u8,
+    pub interrupt_line: u8,
     pub mtu: u32,
     pub mac: [u8; 6],
 }
@@ -58,12 +59,18 @@ pub fn initialize() -> Option<Arc<dyn PacketBackend>> {
                 VirtIONet::<KernelHal, _, NETWORK_QUEUE_SIZE>::new(transport, NETWORK_BUFFER_BYTES)
                     .ok()?;
             let mac = device.mac_address();
+            let interrupt_line = read_interrupt_line(device_function)?;
+            if !crate::interrupts::register_external_irq_handler(interrupt_line, handle_network_irq)
+            {
+                return None;
+            }
             let backend = Arc::new(VirtioPacketBackend::new(device, mac));
             let _ = BRINGUP_SUMMARY.call_once(|| NetworkBringupSummary {
                 backend: PacketInterfaceBackend::VirtioPci,
                 pci_bus: device_function.bus,
                 pci_device: device_function.device,
                 pci_function: device_function.function,
+                interrupt_line,
                 mtu: 1500,
                 mac,
             });
@@ -78,7 +85,7 @@ pub fn bringup_summary() -> Option<NetworkBringupSummary> {
     BRINGUP_SUMMARY.get().copied()
 }
 
-pub fn poll_ready_interfaces() {
+fn handle_network_irq(_irq_line: u8) {
     if let Some(manager) = serviceos_kernel_core::network::manager() {
         manager.poll_ready(|object_id| {
             let _ = task::notify_packet_ready(ObjectId(object_id));
@@ -231,6 +238,15 @@ fn pci_config_address(device_function: DeviceFunction, register_offset: u8) -> u
         | ((device_function.device as u32) << 11)
         | ((device_function.function as u32) << 8)
         | (register_offset as u32 & 0xfc)
+}
+
+fn read_interrupt_line(device_function: DeviceFunction) -> Option<u8> {
+    let value = IoPortPciConfigAccess.read_word(device_function, 0x3c) as u8;
+    if value == 0 || value == 0xff {
+        None
+    } else {
+        Some(value)
+    }
 }
 
 struct KernelHal;

@@ -1,0 +1,386 @@
+use crate::{
+    channel_create, channel_receive_blocking, channel_send, desktop_app_id_from_word,
+    desktop_drag_mode_from_word, desktop_status_error, desktop_status_from_word, handle_close,
+    rights, unpack_i32_pair, unpack_u32_pair, DesktopAppId, DesktopAppInfo, DesktopDragMode,
+    DesktopInputAction, DesktopShellStatusInfo, DesktopStatus, DesktopTag, DesktopWindowAction,
+    DesktopWindowInfo, Error, Handle, RawMessage, Result,
+};
+
+pub fn desktop_status(desktop_handle: Handle) -> Result<DesktopShellStatusInfo> {
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(DesktopTag::StatusRequest as u32);
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(desktop_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != DesktopTag::StatusReply as u32 || response.word_count < 4 {
+        return Err(Error::InvalidArgument);
+    }
+    match desktop_status_from_word(response.words[0]) {
+        DesktopStatus::Ok => Ok(DesktopShellStatusInfo {
+            session_id: response.words[1] as u32,
+            focused_app: desktop_app_id_from_word(response.words[2]).ok(),
+            running_apps: response.words[3] as u32,
+            focused_surface: response.words.get(4).copied().unwrap_or(0) as u32,
+            drag_mode: response
+                .words
+                .get(5)
+                .copied()
+                .map(desktop_drag_mode_from_word)
+                .unwrap_or(DesktopDragMode::None),
+            pointer_x: response
+                .words
+                .get(6)
+                .copied()
+                .map(|value| unpack_i32_pair(value).0)
+                .unwrap_or(0),
+            pointer_y: response
+                .words
+                .get(6)
+                .copied()
+                .map(|value| unpack_i32_pair(value).1)
+                .unwrap_or(0),
+        }),
+        status => Err(desktop_status_error(status)),
+    }
+}
+
+pub fn desktop_list_apps(desktop_handle: Handle, apps: &mut [DesktopAppInfo]) -> Result<usize> {
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(DesktopTag::ListAppsRequest as u32);
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(desktop_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != DesktopTag::ListAppsReply as u32 || response.word_count < 2 {
+        return Err(Error::InvalidArgument);
+    }
+    match desktop_status_from_word(response.words[0]) {
+        DesktopStatus::Ok => {}
+        status => return Err(desktop_status_error(status)),
+    }
+    let count = response.words[1] as usize;
+    if count > apps.len() || response.word_count as usize != 2 + count * 4 {
+        return Err(Error::BufferTooSmall);
+    }
+    for (index, app) in apps.iter_mut().enumerate().take(count) {
+        let base = 2 + index * 4;
+        *app = DesktopAppInfo {
+            app_id: desktop_app_id_from_word(response.words[base])
+                .map_err(|_| Error::InvalidArgument)?,
+            running: response.words[base + 1] != 0,
+            focused: response.words[base + 2] != 0,
+            surface_id: response.words[base + 3] as u32,
+        };
+    }
+    Ok(count)
+}
+
+pub fn desktop_launch_app(desktop_handle: Handle, app_id: DesktopAppId) -> Result<u32> {
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(DesktopTag::LaunchAppRequest as u32);
+    request.word_count = 1;
+    request.words[0] = app_id as u32 as u64;
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(desktop_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != DesktopTag::LaunchAppReply as u32 || response.word_count < 2 {
+        return Err(Error::InvalidArgument);
+    }
+    match desktop_status_from_word(response.words[0]) {
+        DesktopStatus::Ok => Ok(response.words[1] as u32),
+        status => Err(desktop_status_error(status)),
+    }
+}
+
+pub fn desktop_focus_app(desktop_handle: Handle, app_id: DesktopAppId) -> Result<u32> {
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(DesktopTag::FocusAppRequest as u32);
+    request.word_count = 1;
+    request.words[0] = app_id as u32 as u64;
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(desktop_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != DesktopTag::FocusAppReply as u32 || response.word_count < 2 {
+        return Err(Error::InvalidArgument);
+    }
+    match desktop_status_from_word(response.words[0]) {
+        DesktopStatus::Ok => Ok(response.words[1] as u32),
+        status => Err(desktop_status_error(status)),
+    }
+}
+
+pub fn desktop_list_windows(
+    desktop_handle: Handle,
+    windows: &mut [DesktopWindowInfo],
+) -> Result<usize> {
+    let mut filled = 0usize;
+    let mut start = 0u32;
+
+    loop {
+        let reply = channel_create()?;
+        let mut request = RawMessage::empty(DesktopTag::ListWindowsRequest as u32);
+        request.word_count = 1;
+        request.words[0] = start as u64;
+        request.handle_count = 1;
+        request.handles[0] = reply.second;
+        request.handle_rights[0] = rights::SEND;
+        channel_send(desktop_handle, &request)?;
+        let _ = handle_close(reply.second);
+
+        let mut response = RawMessage::empty(0);
+        channel_receive_blocking(reply.first, &mut response)?;
+        let _ = handle_close(reply.first);
+        if response.tag != DesktopTag::ListWindowsReply as u32 || response.word_count < 3 {
+            return Err(Error::InvalidArgument);
+        }
+        match desktop_status_from_word(response.words[0]) {
+            DesktopStatus::Ok => {}
+            status => return Err(desktop_status_error(status)),
+        }
+
+        let count = response.words[1] as usize;
+        let next_start = response.words[2] as u32;
+        if response.word_count as usize != 3 + count * 5 {
+            return Err(Error::InvalidArgument);
+        }
+        if filled + count > windows.len() {
+            return Err(Error::BufferTooSmall);
+        }
+
+        for index in 0..count {
+            let base = 3 + index * 5;
+            let flags = response.words[base + 2];
+            let (x, y) = unpack_i32_pair(response.words[base + 3]);
+            let (width, height) = unpack_u32_pair(response.words[base + 4]);
+            windows[filled + index] = DesktopWindowInfo {
+                app_id: desktop_app_id_from_word(response.words[base])
+                    .map_err(|_| Error::InvalidArgument)?,
+                surface_id: response.words[base + 1] as u32,
+                x,
+                y,
+                width,
+                height,
+                z_order: (flags >> 32) as u32,
+                focused: (flags & 0x1) != 0,
+                minimized: (flags & 0x2) != 0,
+                visible: (flags & 0x4) != 0,
+            };
+        }
+        filled += count;
+        if next_start == u32::MAX {
+            break;
+        }
+        start = next_start;
+    }
+
+    Ok(filled)
+}
+
+pub fn desktop_window_action(
+    desktop_handle: Handle,
+    action: DesktopWindowAction,
+    app_id: Option<DesktopAppId>,
+    arg0: u64,
+    arg1: u64,
+) -> Result<u32> {
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(DesktopTag::WindowActionRequest as u32);
+    request.word_count = 4;
+    request.words[0] = action as u32 as u64;
+    request.words[1] = app_id.map(|value| value as u32 as u64).unwrap_or(0);
+    request.words[2] = arg0;
+    request.words[3] = arg1;
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(desktop_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != DesktopTag::WindowActionReply as u32 || response.word_count < 2 {
+        return Err(Error::InvalidArgument);
+    }
+    match desktop_status_from_word(response.words[0]) {
+        DesktopStatus::Ok => Ok(response.words[1] as u32),
+        status => Err(desktop_status_error(status)),
+    }
+}
+
+pub fn desktop_focus_next(desktop_handle: Handle) -> Result<u32> {
+    desktop_window_action(desktop_handle, DesktopWindowAction::FocusNext, None, 0, 0)
+}
+
+pub fn desktop_close_app(desktop_handle: Handle, app_id: DesktopAppId) -> Result<()> {
+    let _ = desktop_window_action(
+        desktop_handle,
+        DesktopWindowAction::Close,
+        Some(app_id),
+        0,
+        0,
+    )?;
+    Ok(())
+}
+
+pub fn desktop_minimize_app(desktop_handle: Handle, app_id: DesktopAppId) -> Result<u32> {
+    desktop_window_action(
+        desktop_handle,
+        DesktopWindowAction::Minimize,
+        Some(app_id),
+        0,
+        0,
+    )
+}
+
+pub fn desktop_restore_app(desktop_handle: Handle, app_id: DesktopAppId) -> Result<u32> {
+    desktop_window_action(
+        desktop_handle,
+        DesktopWindowAction::Restore,
+        Some(app_id),
+        0,
+        0,
+    )
+}
+
+pub fn desktop_maximize_app(desktop_handle: Handle, app_id: DesktopAppId) -> Result<u32> {
+    desktop_window_action(
+        desktop_handle,
+        DesktopWindowAction::Maximize,
+        Some(app_id),
+        0,
+        0,
+    )
+}
+
+pub fn desktop_move_app(
+    desktop_handle: Handle,
+    app_id: DesktopAppId,
+    x: i32,
+    y: i32,
+) -> Result<u32> {
+    desktop_window_action(
+        desktop_handle,
+        DesktopWindowAction::Move,
+        Some(app_id),
+        x as i64 as u64,
+        y as i64 as u64,
+    )
+}
+
+pub fn desktop_resize_app(
+    desktop_handle: Handle,
+    app_id: DesktopAppId,
+    width: u32,
+    height: u32,
+) -> Result<u32> {
+    desktop_window_action(
+        desktop_handle,
+        DesktopWindowAction::Resize,
+        Some(app_id),
+        width as u64,
+        height as u64,
+    )
+}
+
+fn desktop_input_request(
+    desktop_handle: Handle,
+    action: DesktopInputAction,
+    x: i32,
+    y: i32,
+    expect_reply: bool,
+) -> Result<Option<u32>> {
+    let mut request = RawMessage::empty(DesktopTag::InputRequest as u32);
+    request.word_count = 3;
+    request.words[0] = action as u32 as u64;
+    request.words[1] = x as i64 as u64;
+    request.words[2] = y as i64 as u64;
+    let mut reply = None;
+    if expect_reply {
+        let pair = channel_create()?;
+        request.handle_count = 1;
+        request.handles[0] = pair.second;
+        request.handle_rights[0] = rights::SEND;
+        reply = Some(pair);
+    }
+    channel_send(desktop_handle, &request)?;
+    if !expect_reply {
+        return Ok(None);
+    }
+
+    let reply = reply.expect("reply pair for reply-expected desktop input");
+    let _ = handle_close(reply.second);
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != DesktopTag::InputReply as u32 || response.word_count < 2 {
+        return Err(Error::InvalidArgument);
+    }
+    match desktop_status_from_word(response.words[0]) {
+        DesktopStatus::Ok => Ok(Some(response.words[1] as u32)),
+        status => Err(desktop_status_error(status)),
+    }
+}
+
+pub fn desktop_pointer_input(
+    desktop_handle: Handle,
+    action: DesktopInputAction,
+    x: i32,
+    y: i32,
+) -> Result<u32> {
+    desktop_input_request(desktop_handle, action, x, y, true).map(|surface| surface.unwrap_or(0))
+}
+
+pub fn desktop_pointer_input_async(
+    desktop_handle: Handle,
+    action: DesktopInputAction,
+    x: i32,
+    y: i32,
+) -> Result<()> {
+    desktop_input_request(desktop_handle, action, x, y, false).map(|_| ())
+}
+
+pub fn desktop_pointer_click(desktop_handle: Handle, x: i32, y: i32) -> Result<u32> {
+    desktop_pointer_input(desktop_handle, DesktopInputAction::Click, x, y)
+}
+
+pub fn desktop_key_input(
+    desktop_handle: Handle,
+    action: DesktopInputAction,
+    key_code: u32,
+    value: u32,
+) -> Result<u32> {
+    desktop_pointer_input(desktop_handle, action, key_code as i32, value as i32)
+}
+
+pub fn desktop_key_input_async(
+    desktop_handle: Handle,
+    action: DesktopInputAction,
+    key_code: u32,
+    value: u32,
+) -> Result<()> {
+    desktop_pointer_input_async(desktop_handle, action, key_code as i32, value as i32)
+}

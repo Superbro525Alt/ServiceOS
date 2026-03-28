@@ -339,13 +339,15 @@ fn launcher_hit_app(state: &DesktopState, x: i32, y: i32) -> Option<DesktopAppId
     }
 
     let local_y = y - launcher_y;
-    let row = (local_y - crate::LAUNCHER_ITEM_START_Y) / crate::LAUNCHER_ITEM_STEP;
-    match row {
-        0 => Some(state.apps[0].app_id),
-        1 => Some(state.apps[1].app_id),
-        2 => Some(state.apps[2].app_id),
-        _ => None,
+    for index in 0..APP_COUNT {
+        let line_y = ui::PANEL_LINE_START_Y + ((index as i32 + 1) * ui::PANEL_LINE_STEP);
+        let line_top = line_y - 2;
+        let line_bottom = line_top + ui::PANEL_LINE_STEP;
+        if local_y >= line_top && local_y < line_bottom {
+            return Some(state.apps[index].app_id);
+        }
     }
+    None
 }
 
 pub(crate) fn focus_next_app(state: &mut DesktopState) -> rt::Result<u32> {

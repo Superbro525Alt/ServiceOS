@@ -21,6 +21,8 @@ pub const WINDOW_BUTTON_GAP: i32 = 8;
 pub const WINDOW_BORDER_THICKNESS: i32 = 6;
 pub const CURSOR_OUTLINE: u32 = 0x0b1220;
 pub const CURSOR_FILL: u32 = 0xf3f8ff;
+pub const PANEL_LINE_START_Y: i32 = 42;
+pub const PANEL_LINE_STEP: i32 = 14;
 
 pub fn render_window(
     surface: rt::Handle,
@@ -109,7 +111,7 @@ pub fn render_window_state(
             surface,
             (index + 1 + 4) as u32,
             12,
-            42 + (index as i32 * 14),
+            PANEL_LINE_START_Y + (index as i32 * PANEL_LINE_STEP),
             if index == 0 { TEXT_PRIMARY } else { TEXT_SECONDARY },
             line,
         )?;
@@ -139,7 +141,14 @@ pub fn render_status_panel(
     rt::surface_set_rect(surface, 0, 0, 0, width, 24, ACCENT_DIM, true)?;
     rt::surface_set_label(surface, 0, 8, 8, TEXT_PRIMARY, title)?;
     for (index, (line, color)) in lines.iter().copied().enumerate() {
-        rt::surface_set_label(surface, (index + 1) as u32, 10, 34 + (index as i32 * 14), color, line)?;
+        rt::surface_set_label(
+            surface,
+            (index + 1) as u32,
+            10,
+            34 + (index as i32 * PANEL_LINE_STEP),
+            color,
+            line,
+        )?;
     }
     let _ = height;
     Ok(())

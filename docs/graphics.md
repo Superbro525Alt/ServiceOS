@@ -145,7 +145,7 @@ Bring-up-specific parts:
 - UEFI GOP framebuffer discovery
 - one boot framebuffer backend
 - full-frame copies on presentation
-- service-controlled focus with no physical input device host yet
+- one VirtIO input bring-up path for pointer and keyboard delivery
 
 This is intentionally QEMU-friendly but not QEMU-locked. Later work can add
 real display, GPU, and input backends without redefining the public service
@@ -156,7 +156,6 @@ contracts.
 Still intentionally deferred:
 
 - shared-memory or zero-copy presentation buffers
-- physical input device hosts and routing
 - multiple outputs
 - multiple graphical sessions
 - window management policy

@@ -50,7 +50,11 @@
 
 - window focus, z-order, move, resize, minimize, restore, and close handling in
   `desktop-shell-service`
-- app-control channel for desktop-driven focus, resize, and close events
+- maximize handling in `desktop-shell-service`
+- app-control channel for desktop-driven focus, resize, close, pointer, key,
+  and text events
+- physical input routing from the kernel input-source object through
+  `session-service` into the desktop interaction contract
 - shell/operator inspection and control of desktop windows through the
   desktop-shell contract
 
@@ -68,10 +72,8 @@
 - grow the current ICMP/status path into a broader socket and transport surface
 - add shared graphical buffers and client-drawn content on top of the current
   graphics-service contract
-- add physical input-device hosts and routing behind the current
-  session-service boundary
-- grow the first desktop shell into richer task switching, notifications,
-  keyboard-driven interaction, and permissions-aware desktop UX without
+- grow the first desktop shell into richer task switching, broader shortcut and
+  gesture policy, notifications, and permissions-aware desktop UX without
   collapsing it into platform services
 
 ## Later

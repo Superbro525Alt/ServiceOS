@@ -194,8 +194,11 @@ Current lookup permissions:
 ### `session-service`
 
 - owns graphical session identity and focus policy
+- owns the physical input ingress path for the active graphical session
+- consumes the explicit bootstrap input-source capability
 - looks up `graphics-service` rather than owning display hardware itself
-- proves the split between compositor mechanics and session/input policy
+- forwards physical pointer and keyboard events into the desktop interaction
+  contract without absorbing product-layer window policy
 - provides the initial basis for later login, desktop shell, and multi-session
   work
 
@@ -206,10 +209,12 @@ Current lookup permissions:
   tracking
 - creates shell-owned surfaces through `graphics-service`
 - retains the authoritative surface handle for each app window
-- creates one app-control channel per launched app for focus, resize, and close
-  delivery
-- owns move, resize, minimize, restore, and close policy for desktop windows
-- accepts desktop interaction requests for hit testing and pointer-style actions
+- creates one app-control channel per launched app for focus, resize, close,
+  pointer, key, and text delivery
+- owns move, resize, minimize, maximize, restore, and close policy for desktop
+  windows
+- accepts desktop interaction requests for hit testing, pointer actions, and
+  keyboard routing
 - asks the root manager to launch graphical apps instead of spawning tasks
   directly
 - keeps desktop product policy out of `graphics-service` and `session-service`

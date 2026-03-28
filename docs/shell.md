@@ -78,6 +78,7 @@ Current built-in commands:
 - `desktop close <settings|files|monitor>`
 - `desktop minimize <settings|files|monitor>`
 - `desktop restore <settings|files|monitor>`
+- `desktop maximize <settings|files|monitor>`
 - `desktop move <settings|files|monitor> <x> <y>`
 - `desktop resize <settings|files|monitor> <width> <height>`
 - `desktop click <x> <y>`

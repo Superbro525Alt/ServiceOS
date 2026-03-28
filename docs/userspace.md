@@ -162,7 +162,6 @@ The current userspace layer still does not include:
 - a richer VM syscall surface
 - richer terminal semantics, login/session policy, and the broader
   platform-service graph beyond the current foundations
-- shared graphical buffers, richer display backends, and physical input-device
-  hosts
+- shared graphical buffers and richer display backends
 - richer desktop product policy, notifications, and broader graphical app
   platform work

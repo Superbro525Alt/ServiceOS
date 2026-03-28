@@ -49,8 +49,9 @@ handles.
 - launcher and status presentation
 - retained per-window state
 - app list, focused-app state, and z-order
-- move, resize, minimize, restore, and close policy
+- move, edge or corner resize, minimize, maximize, restore, and close policy
 - pointer hit testing for launcher, titlebar, controls, and content regions
+- keyboard focus and app-target routing on top of session focus
 - app launch and window-action requests over the desktop-shell contract
 - manager-mediated app launch requests
 
@@ -118,6 +119,7 @@ Per-window state includes:
 - position and size
 - focused or unfocused state
 - minimized or visible state
+- maximized or restored state
 - z-order
 
 Current interaction rules:
@@ -125,9 +127,11 @@ Current interaction rules:
 - launching or restoring an app focuses it and raises it to the top
 - only one desktop app is focused at a time
 - titlebar drag moves the window
-- bottom-right grip drag resizes the window
-- close and minimize buttons are explicit titlebar hit targets
+- any window edge or corner drag resizes the window
+- close, minimize, and maximize buttons are explicit titlebar hit targets
 - minimizing removes the window from normal hit testing and focus rotation
+- maximizing expands the window to the session work area and restore returns it
+  to its prior geometry
 - closing notifies the app through the app-control channel and then cleans up
   the retained surface/task state
 
@@ -137,15 +141,27 @@ window.
 
 ## Input and focus model
 
-The current input path is intentionally simple but real.
+The current input path is now physical and session-routed.
 
-- `desktop-shell-service` accepts pointer-style desktop interaction messages
-- it hit-tests desktop chrome, launcher entries, window titlebars, controls,
-  resize grips, and window content rectangles
-- it updates focused-app state and requests focused-surface changes through
-  `session-service`
-- it routes only app-control events to apps; apps do not receive global input
-  authority
+- the kernel exposes one explicit input-source capability
+- `session-service` receives that capability from the root bootstrap path
+- `session-service` translates hardware pointer and keyboard events into the
+  desktop interaction contract
+- `desktop-shell-service` hit-tests shell chrome versus window content,
+  updates focus, and applies window-management policy
+- focused-window keyboard events and app-content pointer events go out over the
+  app-control channel; apps still do not receive global input authority
+
+Current behavior:
+
+- pointer click focuses and raises the target window
+- titlebar drag moves a window
+- edge and corner drags resize a window
+- titlebar controls close, minimize, and maximize or restore a window
+- app-content pointer events are routed only to the owning app window
+- `Alt+Tab` cycles focused windows
+- `Alt+F4` requests close on the focused app
+- text input reaches the focused app when that app chooses to consume it
 
 This establishes durable interaction boundaries:
 
@@ -214,6 +230,11 @@ Each app now also proves a piece of desktop lifecycle behavior:
 - repaint on desktop-driven resize events
 - clean exit on desktop close
 
+`settings-app` now also provides the first real app-local text entry path. The
+desktop shell forwards pointer, key, and text events over the app-control
+channel, and the app updates its own note field without gaining session-global
+input authority.
+
 ## Operator coexistence
 
 The graphical desktop does not replace the serial/operator path.
@@ -222,7 +243,7 @@ The graphical desktop does not replace the serial/operator path.
 - shell commands can inspect desktop status, windows, and app state through
   `desktop-shell-service`
 - the serial shell can request launch, focus, move, resize, minimize, restore,
-  close, and pointer-click actions through the same desktop contract
+  maximize, close, and pointer-click actions through the same desktop contract
 - the desktop shell and serial shell remain separate product/operator layers
   over the same platform
 
@@ -234,18 +255,19 @@ the graphical product layer matures.
 The current desktop layer is real, but still early:
 
 - shell chrome is intentionally simple
-- pointer interaction is synthetic and operator-driven; there is not yet a
-  physical input-device host feeding the desktop
-- keyboard delivery into apps is not implemented yet
 - apps use compositor scene primitives instead of shared buffers
 - there is no notification center, dock, settings editor, or file-opening
   workflow yet
-- there is no maximize, snap, tiling, or animation layer yet
+- there is no snap, tiling, or animation layer yet
+- there is only one physical input source and one graphical session today
+- global shortcuts are intentionally minimal and app text input is still
+  primitive
 
 ## Deferred
 
-- physical input-device hosts and richer routed pointer and keyboard input
-- richer task switching, maximize, snap, and animation policy
+- richer pointer gestures, multiple buttons, and broader keyboard shortcut
+  policy
+- richer task switching, snap, and animation policy
 - notifications and richer system-status UX
 - package/software-center UI
 - richer file workflows and open-with policy

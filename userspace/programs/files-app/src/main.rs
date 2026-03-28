@@ -22,7 +22,7 @@ const PIXEL_STRIDE: usize = BUFFER_WIDTH as usize;
 const MAX_STORAGE_PATH: usize = 96;
 const MAX_ENTRIES: usize = 64;
 const LIST_X: usize = 12;
-const LIST_Y: usize = ui::TITLEBAR_HEIGHT as usize + 52;
+const LIST_Y: usize = ui::TITLEBAR_HEIGHT as usize + 34;
 const LIST_BOTTOM_MARGIN: usize = 18;
 const ROW_HEIGHT: usize = 14;
 const KEY_BACKSPACE: u32 = 14;
@@ -146,8 +146,15 @@ fn main() -> u64 {
             Err(_) => return 0xf105,
         }
 
-        match poll_control(control_handle, surface_handle, buffer_handle, storage_handle, &mut state) {
-            Ok(ControlFlow::Continue) => {}
+        match poll_control(
+            control_handle,
+            surface_handle,
+            buffer_handle,
+            storage_handle,
+            &mut state,
+        ) {
+            Ok(ControlFlow::Idle) => {}
+            Ok(ControlFlow::Worked) => continue,
             Ok(ControlFlow::Exit) => break,
             Err(_) => return 0xf106,
         }
@@ -162,7 +169,8 @@ fn main() -> u64 {
 }
 
 enum ControlFlow {
-    Continue,
+    Idle,
+    Worked,
     Exit,
 }
 
@@ -174,20 +182,24 @@ fn poll_control(
     state: &mut ExplorerState,
 ) -> rt::Result<ControlFlow> {
     let mut changed = false;
+    let mut did_work = false;
     loop {
         let mut message = RawMessage::empty(0);
         match rt::channel_receive_nonblocking(control_handle, &mut message) {
             Ok(()) if message.tag == AppControlTag::FocusChanged as u32 && message.word_count > 0 => {
+                did_work = true;
                 state.focused = message.words[0] != 0;
                 changed = true;
             }
             Ok(()) if message.tag == AppControlTag::Resize as u32 && message.word_count >= 2 => {
+                did_work = true;
                 state.width = message.words[0] as u32;
                 state.height = message.words[1] as u32;
                 clamp_view(state);
                 changed = true;
             }
             Ok(()) if message.tag == AppControlTag::Pointer as u32 && message.word_count >= 5 => {
+                did_work = true;
                 let action = pointer_action_from_word(message.words[0]);
                 let x = message.words[1] as i64 as i32;
                 let y = message.words[2] as i64 as i32;
@@ -209,6 +221,7 @@ fn poll_control(
                 }
             }
             Ok(()) if message.tag == AppControlTag::Key as u32 && message.word_count >= 2 => {
+                did_work = true;
                 if matches!(key_action_from_word(message.words[0]), Some(AppKeyAction::Down)) {
                     changed |= handle_key_down(
                         state,
@@ -219,7 +232,9 @@ fn poll_control(
                 }
             }
             Ok(()) if message.tag == AppControlTag::Close as u32 => return Ok(ControlFlow::Exit),
-            Ok(()) => {}
+            Ok(()) => {
+                did_work = true;
+            }
             Err(rt::Error::QueueEmpty) => break,
             Err(error) => return Err(error),
         }
@@ -227,9 +242,14 @@ fn poll_control(
 
     if changed {
         render(surface_handle, buffer_handle, state)?;
+        return Ok(ControlFlow::Worked);
     }
 
-    Ok(ControlFlow::Continue)
+    if did_work {
+        Ok(ControlFlow::Worked)
+    } else {
+        Ok(ControlFlow::Idle)
+    }
 }
 
 fn handle_pointer_down(
@@ -382,6 +402,30 @@ fn draw_titlebar(bytes: &mut [u8], width: usize, focused: bool) {
         ui::WINDOW_BUTTON_SIZE as usize,
         ui::STATUS_WARN,
     );
+    fill_rect(
+        bytes,
+        (maximize_x + 3).max(0) as usize,
+        (ui::WINDOW_BUTTON_TOP + 3).max(0) as usize,
+        6,
+        6,
+        ui::BG_PANEL,
+    );
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        minimize_x + 3,
+        ui::WINDOW_BUTTON_TOP + 2,
+        ui::BG_PANEL,
+        "_",
+    );
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        close_x + 3,
+        ui::WINDOW_BUTTON_TOP + 2,
+        ui::BG_PANEL,
+        "X",
+    );
     let title = if focused { "FILES ACTIVE" } else { "FILES" };
     rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, 10, 9, ui::TEXT_PRIMARY, title);
 }
@@ -396,11 +440,6 @@ fn draw_header(bytes: &mut [u8], state: &ExplorerState) {
     } else {
         let _ = write!(&mut path_line, "/INVALID");
     }
-    let mut hint_line = FixedLogBuffer::<128>::new();
-    let _ = write!(
-        &mut hint_line,
-        "ENTER OPEN  BKSP UP  CLICK DIR  WHEEL SCROLL"
-    );
     rt::draw_text_rgba8888(
         bytes,
         PIXEL_STRIDE,
@@ -408,14 +447,6 @@ fn draw_header(bytes: &mut [u8], state: &ExplorerState) {
         ui::TITLEBAR_HEIGHT as i32 + 10,
         ui::TEXT_PRIMARY,
         str::from_utf8(path_line.as_bytes()).unwrap_or("PATH /"),
-    );
-    rt::draw_text_rgba8888(
-        bytes,
-        PIXEL_STRIDE,
-        LIST_X as i32,
-        ui::TITLEBAR_HEIGHT as i32 + 24,
-        ui::TEXT_SECONDARY,
-        str::from_utf8(hint_line.as_bytes()).unwrap_or("OPEN"),
     );
 }
 

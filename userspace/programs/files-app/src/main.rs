@@ -1,11 +1,92 @@
 #![no_std]
 #![no_main]
 
-use core::str;
+use core::{
+    cell::UnsafeCell,
+    cmp::Ordering,
+    fmt::Write,
+    str,
+};
 
 use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
-use rt::{AppControlTag, ControlTag, LifecycleEvent, RawMessage};
+use rt::{
+    AppControlTag, AppKeyAction, AppPointerAction, ControlTag, FixedLogBuffer, LifecycleEvent,
+    RawMessage,
+};
+
+const BUFFER_WIDTH: u32 = 1024;
+const BUFFER_HEIGHT: u32 = 768;
+const BUFFER_BYTES: usize = BUFFER_WIDTH as usize * BUFFER_HEIGHT as usize * 4;
+const PIXEL_STRIDE: usize = BUFFER_WIDTH as usize;
+const MAX_STORAGE_PATH: usize = 96;
+const MAX_ENTRIES: usize = 64;
+const LIST_X: usize = 12;
+const LIST_Y: usize = ui::TITLEBAR_HEIGHT as usize + 52;
+const LIST_BOTTOM_MARGIN: usize = 18;
+const ROW_HEIGHT: usize = 14;
+const KEY_BACKSPACE: u32 = 14;
+const KEY_ENTER: u32 = 28;
+const KEY_UP: u32 = 103;
+const KEY_PAGE_UP: u32 = 104;
+const KEY_LEFT: u32 = 105;
+const KEY_RIGHT: u32 = 106;
+const KEY_DOWN: u32 = 108;
+const KEY_PAGE_DOWN: u32 = 109;
+const MOD_SHIFT: u32 = 1 << 0;
+
+struct GlobalBuffer(UnsafeCell<[u8; BUFFER_BYTES]>);
+
+unsafe impl Sync for GlobalBuffer {}
+
+impl GlobalBuffer {
+    const fn new() -> Self {
+        Self(UnsafeCell::new([0; BUFFER_BYTES]))
+    }
+
+    unsafe fn as_mut(&self) -> &mut [u8; BUFFER_BYTES] {
+        unsafe { &mut *self.0.get() }
+    }
+}
+
+static BUFFER: GlobalBuffer = GlobalBuffer::new();
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EntryKind {
+    Parent,
+    Directory,
+    File,
+}
+
+#[derive(Clone, Copy)]
+struct ExplorerEntry {
+    kind: EntryKind,
+    path: [u8; MAX_STORAGE_PATH],
+    path_len: usize,
+}
+
+impl ExplorerEntry {
+    const fn empty() -> Self {
+        Self {
+            kind: EntryKind::File,
+            path: [0; MAX_STORAGE_PATH],
+            path_len: 0,
+        }
+    }
+}
+
+struct ExplorerState {
+    width: u32,
+    height: u32,
+    focused: bool,
+    current_path: [u8; MAX_STORAGE_PATH],
+    current_path_len: usize,
+    entries: [ExplorerEntry; MAX_ENTRIES],
+    entry_count: usize,
+    selected_index: usize,
+    scroll_offset: usize,
+    load_failed: bool,
+}
 
 rt::entry!(main);
 
@@ -15,88 +96,69 @@ fn main() -> u64 {
     if rt::channel_receive_blocking(bootstrap, &mut startup).is_err() {
         return 0xf101;
     }
-    if startup.tag != ControlTag::Startup as u32 || startup.handle_count < 3 || startup.word_count < 4 {
+    if startup.tag != ControlTag::Startup as u32
+        || startup.handle_count < 3
+        || startup.word_count < 4
+    {
         return 0xf102;
     }
 
     let surface_handle = startup.handles[0];
     let control_handle = startup.handles[1];
     let storage_handle = startup.handles[2];
-    let width = startup.words[1] as u32;
-    let height = startup.words[2] as u32;
-    let mut focused = startup.words[3] != 0;
-    let mut width = width;
-    let mut height = height;
+    let mut state = ExplorerState {
+        width: startup.words[1] as u32,
+        height: startup.words[2] as u32,
+        focused: startup.words[3] != 0,
+        current_path: [0; MAX_STORAGE_PATH],
+        current_path_len: 0,
+        entries: [ExplorerEntry::empty(); MAX_ENTRIES],
+        entry_count: 0,
+        selected_index: 0,
+        scroll_offset: 0,
+        load_failed: false,
+    };
 
-    if render(surface_handle, width, height, focused, storage_handle).is_err() {
-        return 0xf103;
+    let buffer_handle = match rt::memory_create(BUFFER_BYTES, true) {
+        Ok(handle) => handle,
+        Err(_) => return 0xf103,
+    };
+    if rt::surface_attach_buffer(
+        surface_handle,
+        buffer_handle,
+        BUFFER_WIDTH,
+        BUFFER_HEIGHT,
+        BUFFER_WIDTH,
+    )
+    .is_err()
+    {
+        let _ = rt::handle_close(buffer_handle);
+        return 0xf104;
     }
+
+    let _ = reload_directory(&mut state, storage_handle);
+    let _ = render(surface_handle, buffer_handle, &state);
+
     loop {
         match poll_lifecycle(bootstrap) {
-            Ok(true) => return 0,
+            Ok(true) => break,
             Ok(false) => {}
-            Err(_) => return 0xf104,
+            Err(_) => return 0xf105,
         }
-        match poll_control(
-            control_handle,
-            surface_handle,
-            &mut width,
-            &mut height,
-            &mut focused,
-            storage_handle,
-        ) {
+
+        match poll_control(control_handle, surface_handle, buffer_handle, storage_handle, &mut state) {
             Ok(ControlFlow::Continue) => {}
-            Ok(ControlFlow::Exit) => return 0,
+            Ok(ControlFlow::Exit) => break,
             Err(_) => return 0xf106,
         }
+
         if rt::yield_current().is_err() {
-            return 0xf105;
-        }
-    }
-}
-
-fn render(
-    surface_handle: rt::Handle,
-    width: u32,
-    height: u32,
-    focused: bool,
-    storage_handle: rt::Handle,
-) -> rt::Result<()> {
-    let mut path_bytes = [[0u8; 64]; 4];
-    let mut path_lens = [0usize; 4];
-    let mut line_states = [FileLine::Pending; 4];
-    for index in 0..4 {
-        match rt::storage_list(storage_handle, "", index, &mut path_bytes[index]) {
-            Ok(Some((_status, len))) => {
-                path_lens[index] = len;
-                line_states[index] = FileLine::Path;
-            }
-            Ok(None) => {
-                line_states[index] = FileLine::End;
-                break;
-            }
-            Err(_) => {
-                line_states[index] = FileLine::Failed;
-                break;
-            }
+            return 0xf107;
         }
     }
 
-    let line0 = file_line_text(line_states[0], &path_bytes[0], path_lens[0]);
-    let line1 = file_line_text(line_states[1], &path_bytes[1], path_lens[1]);
-    let line2 = file_line_text(line_states[2], &path_bytes[2], path_lens[2]);
-    let line3 = file_line_text(line_states[3], &path_bytes[3], path_lens[3]);
-
-    ui::render_window_state(
-        surface_handle,
-        width,
-        height,
-        ui::BG_WINDOW_ALT,
-        ui::ACCENT_DIM,
-        "FILES",
-        &[line0, line1, line2, line3],
-        focused,
-    )
+    let _ = rt::handle_close(buffer_handle);
+    0
 }
 
 enum ControlFlow {
@@ -107,23 +169,54 @@ enum ControlFlow {
 fn poll_control(
     control_handle: rt::Handle,
     surface_handle: rt::Handle,
-    width: &mut u32,
-    height: &mut u32,
-    focused: &mut bool,
+    buffer_handle: rt::Handle,
     storage_handle: rt::Handle,
+    state: &mut ExplorerState,
 ) -> rt::Result<ControlFlow> {
     let mut changed = false;
     loop {
         let mut message = RawMessage::empty(0);
         match rt::channel_receive_nonblocking(control_handle, &mut message) {
             Ok(()) if message.tag == AppControlTag::FocusChanged as u32 && message.word_count > 0 => {
-                *focused = message.words[0] != 0;
+                state.focused = message.words[0] != 0;
                 changed = true;
             }
             Ok(()) if message.tag == AppControlTag::Resize as u32 && message.word_count >= 2 => {
-                *width = message.words[0] as u32;
-                *height = message.words[1] as u32;
+                state.width = message.words[0] as u32;
+                state.height = message.words[1] as u32;
+                clamp_view(state);
                 changed = true;
+            }
+            Ok(()) if message.tag == AppControlTag::Pointer as u32 && message.word_count >= 5 => {
+                let action = pointer_action_from_word(message.words[0]);
+                let x = message.words[1] as i64 as i32;
+                let y = message.words[2] as i64 as i32;
+                let detail = message.words[4] as i64 as i32;
+                match action {
+                    Some(AppPointerAction::Down) => {
+                        changed |= handle_pointer_down(state, storage_handle, x, y)?;
+                    }
+                    Some(AppPointerAction::Scroll) => {
+                        if detail > 0 {
+                            scroll_up(state, detail as usize);
+                            changed = true;
+                        } else if detail < 0 {
+                            scroll_down(state, (-detail) as usize);
+                            changed = true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Ok(()) if message.tag == AppControlTag::Key as u32 && message.word_count >= 2 => {
+                if matches!(key_action_from_word(message.words[0]), Some(AppKeyAction::Down)) {
+                    changed |= handle_key_down(
+                        state,
+                        storage_handle,
+                        message.words[1] as u32,
+                        message.words.get(2).copied().unwrap_or(0) as u32,
+                    )?;
+                }
             }
             Ok(()) if message.tag == AppControlTag::Close as u32 => return Ok(ControlFlow::Exit),
             Ok(()) => {}
@@ -133,26 +226,599 @@ fn poll_control(
     }
 
     if changed {
-        render(surface_handle, *width, *height, *focused, storage_handle)?;
+        render(surface_handle, buffer_handle, state)?;
     }
 
     Ok(ControlFlow::Continue)
 }
 
-#[derive(Clone, Copy)]
-enum FileLine {
-    Pending,
-    Path,
-    End,
-    Failed,
+fn handle_pointer_down(
+    state: &mut ExplorerState,
+    storage_handle: rt::Handle,
+    x: i32,
+    y: i32,
+) -> rt::Result<bool> {
+    if x < LIST_X as i32 || y < LIST_Y as i32 {
+        return Ok(false);
+    }
+    let visible_rows = visible_row_count(state);
+    if visible_rows == 0 {
+        return Ok(false);
+    }
+    let row = ((y as usize).saturating_sub(LIST_Y)) / ROW_HEIGHT;
+    if row >= visible_rows {
+        return Ok(false);
+    }
+    let index = state.scroll_offset + row;
+    if index >= state.entry_count {
+        return Ok(false);
+    }
+
+    state.selected_index = index;
+    ensure_selected_visible(state);
+    if matches!(
+        state.entries[index].kind,
+        EntryKind::Parent | EntryKind::Directory
+    ) {
+        open_selected(state, storage_handle)?;
+    }
+    Ok(true)
 }
 
-fn file_line_text<'a>(state: FileLine, bytes: &'a [u8], len: usize) -> &'a str {
-    match state {
-        FileLine::Pending => "BOOT STORE",
-        FileLine::Path => str::from_utf8(&bytes[..len]).unwrap_or("INVALID"),
-        FileLine::End => "END",
-        FileLine::Failed => "LIST FAILED",
+fn handle_key_down(
+    state: &mut ExplorerState,
+    storage_handle: rt::Handle,
+    key_code: u32,
+    modifiers: u32,
+) -> rt::Result<bool> {
+    let visible_rows = visible_row_count(state).max(1);
+    match key_code {
+        KEY_UP => {
+            if state.selected_index > 0 {
+                state.selected_index -= 1;
+                ensure_selected_visible(state);
+                return Ok(true);
+            }
+        }
+        KEY_DOWN => {
+            if state.selected_index + 1 < state.entry_count {
+                state.selected_index += 1;
+                ensure_selected_visible(state);
+                return Ok(true);
+            }
+        }
+        KEY_PAGE_UP => {
+            let amount = visible_rows.saturating_sub(1).max(1);
+            state.selected_index = state.selected_index.saturating_sub(amount);
+            ensure_selected_visible(state);
+            return Ok(true);
+        }
+        KEY_PAGE_DOWN => {
+            let amount = visible_rows.saturating_sub(1).max(1);
+            state.selected_index = (state.selected_index + amount).min(state.entry_count.saturating_sub(1));
+            ensure_selected_visible(state);
+            return Ok(true);
+        }
+        KEY_ENTER | KEY_RIGHT => {
+            return open_selected(state, storage_handle).map(|_| true);
+        }
+        KEY_LEFT | KEY_BACKSPACE => {
+            if modifiers & MOD_SHIFT != 0 {
+                state.scroll_offset = 0;
+                state.selected_index = 0;
+                return Ok(true);
+            }
+            if state.current_path_len != 0 {
+                navigate_parent(state);
+                reload_directory(state, storage_handle)?;
+                return Ok(true);
+            }
+        }
+        _ => {}
+    }
+    Ok(false)
+}
+
+fn render(
+    surface_handle: rt::Handle,
+    buffer_handle: rt::Handle,
+    state: &ExplorerState,
+) -> rt::Result<()> {
+    let width = state.width.min(BUFFER_WIDTH) as usize;
+    let height = state.height.min(BUFFER_HEIGHT) as usize;
+    let bytes = unsafe { &mut BUFFER.as_mut()[..BUFFER_BYTES] };
+
+    fill_rect(bytes, 0, 0, width, height, ui::BG_WINDOW_ALT);
+    fill_rect(
+        bytes,
+        0,
+        0,
+        width,
+        ui::TITLEBAR_HEIGHT as usize,
+        if state.focused { ui::ACCENT_DIM } else { ui::TEXT_MUTED },
+    );
+    fill_rect(
+        bytes,
+        0,
+        ui::TITLEBAR_HEIGHT as usize,
+        width,
+        height.saturating_sub(ui::TITLEBAR_HEIGHT as usize),
+        ui::BG_WINDOW_ALT,
+    );
+    draw_titlebar(bytes, width, state.focused);
+    draw_header(bytes, state);
+    draw_list(bytes, state);
+    draw_footer(bytes, state);
+
+    rt::memory_write(buffer_handle, 0, &bytes[..BUFFER_BYTES]).map(|_| ())?;
+    rt::surface_clear_scene(surface_handle)
+}
+
+fn draw_titlebar(bytes: &mut [u8], width: usize, focused: bool) {
+    let close_x = width as i32 - ui::WINDOW_BUTTON_RIGHT_MARGIN - ui::WINDOW_BUTTON_SIZE as i32;
+    let minimize_x = close_x - ui::WINDOW_BUTTON_GAP - ui::WINDOW_BUTTON_SIZE as i32;
+    let maximize_x = minimize_x - ui::WINDOW_BUTTON_GAP - ui::WINDOW_BUTTON_SIZE as i32;
+    fill_rect(
+        bytes,
+        maximize_x.max(0) as usize,
+        ui::WINDOW_BUTTON_TOP.max(0) as usize,
+        ui::WINDOW_BUTTON_SIZE as usize,
+        ui::WINDOW_BUTTON_SIZE as usize,
+        ui::ACCENT,
+    );
+    fill_rect(
+        bytes,
+        minimize_x.max(0) as usize,
+        ui::WINDOW_BUTTON_TOP.max(0) as usize,
+        ui::WINDOW_BUTTON_SIZE as usize,
+        ui::WINDOW_BUTTON_SIZE as usize,
+        ui::TEXT_MUTED,
+    );
+    fill_rect(
+        bytes,
+        close_x.max(0) as usize,
+        ui::WINDOW_BUTTON_TOP.max(0) as usize,
+        ui::WINDOW_BUTTON_SIZE as usize,
+        ui::WINDOW_BUTTON_SIZE as usize,
+        ui::STATUS_WARN,
+    );
+    let title = if focused { "FILES ACTIVE" } else { "FILES" };
+    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, 10, 9, ui::TEXT_PRIMARY, title);
+}
+
+fn draw_header(bytes: &mut [u8], state: &ExplorerState) {
+    let mut path_line = FixedLogBuffer::<128>::new();
+    let _ = write!(&mut path_line, "PATH ");
+    if state.current_path_len == 0 {
+        let _ = write!(&mut path_line, "/");
+    } else if let Ok(path) = str::from_utf8(&state.current_path[..state.current_path_len]) {
+        let _ = write!(&mut path_line, "/{}", path);
+    } else {
+        let _ = write!(&mut path_line, "/INVALID");
+    }
+    let mut hint_line = FixedLogBuffer::<128>::new();
+    let _ = write!(
+        &mut hint_line,
+        "ENTER OPEN  BKSP UP  CLICK DIR  WHEEL SCROLL"
+    );
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        LIST_X as i32,
+        ui::TITLEBAR_HEIGHT as i32 + 10,
+        ui::TEXT_PRIMARY,
+        str::from_utf8(path_line.as_bytes()).unwrap_or("PATH /"),
+    );
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        LIST_X as i32,
+        ui::TITLEBAR_HEIGHT as i32 + 24,
+        ui::TEXT_SECONDARY,
+        str::from_utf8(hint_line.as_bytes()).unwrap_or("OPEN"),
+    );
+}
+
+fn draw_list(bytes: &mut [u8], state: &ExplorerState) {
+    let width = state.width.min(BUFFER_WIDTH) as usize;
+    let height = state.height.min(BUFFER_HEIGHT) as usize;
+    let list_height = height.saturating_sub(LIST_Y + LIST_BOTTOM_MARGIN);
+    fill_rect(
+        bytes,
+        LIST_X,
+        LIST_Y,
+        width.saturating_sub(LIST_X * 2),
+        list_height,
+        ui::BG_WINDOW,
+    );
+
+    if state.load_failed {
+        rt::draw_text_rgba8888(
+            bytes,
+            PIXEL_STRIDE,
+            LIST_X as i32 + 6,
+            LIST_Y as i32 + 8,
+            ui::STATUS_WARN,
+            "LIST FAILED",
+        );
+        return;
+    }
+
+    if state.entry_count == 0 {
+        rt::draw_text_rgba8888(
+            bytes,
+            PIXEL_STRIDE,
+            LIST_X as i32 + 6,
+            LIST_Y as i32 + 8,
+            ui::TEXT_MUTED,
+            "EMPTY",
+        );
+        return;
+    }
+
+    let visible = visible_row_count(state);
+    for row in 0..visible {
+        let index = state.scroll_offset + row;
+        if index >= state.entry_count {
+            break;
+        }
+        let y = LIST_Y + row * ROW_HEIGHT;
+        let selected = index == state.selected_index;
+        if selected {
+            fill_rect(
+                bytes,
+                LIST_X + 4,
+                y + 1,
+                width.saturating_sub(LIST_X * 2 + 8),
+                ROW_HEIGHT.saturating_sub(1),
+                ui::ACCENT_DIM,
+            );
+        }
+
+        let entry = state.entries[index];
+        let color = match entry.kind {
+            EntryKind::Parent => ui::STATUS_WARN,
+            EntryKind::Directory => ui::ACCENT,
+            EntryKind::File => {
+                if selected { ui::TEXT_PRIMARY } else { ui::TEXT_SECONDARY }
+            }
+        };
+        draw_entry_label(bytes, entry, (LIST_X + 8) as i32, (y + 4) as i32, color);
+    }
+}
+
+fn draw_footer(bytes: &mut [u8], state: &ExplorerState) {
+    let height = state.height.min(BUFFER_HEIGHT) as usize;
+    let footer_y = height.saturating_sub(14);
+    let mut footer = FixedLogBuffer::<128>::new();
+    if state.entry_count == 0 {
+        let _ = write!(&mut footer, "0 entries");
+    } else {
+        let selected = state.entries[state.selected_index.min(state.entry_count - 1)];
+        let _ = write!(
+            &mut footer,
+            "{} of {}  ",
+            state.selected_index.min(state.entry_count - 1) + 1,
+            state.entry_count,
+        );
+        push_selected_path(&mut footer, selected);
+    }
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        LIST_X as i32,
+        footer_y as i32,
+        ui::TEXT_MUTED,
+        str::from_utf8(footer.as_bytes()).unwrap_or("FILES"),
+    );
+}
+
+fn fill_rect(bytes: &mut [u8], x: usize, y: usize, width: usize, height: usize, rgb: u32) {
+    let end_x = (x + width).min(BUFFER_WIDTH as usize);
+    let end_y = (y + height).min(BUFFER_HEIGHT as usize);
+    for py in y..end_y {
+        for px in x..end_x {
+            rt::set_pixel_rgba8888(bytes, PIXEL_STRIDE, px, py, rgb);
+        }
+    }
+}
+
+fn visible_row_count(state: &ExplorerState) -> usize {
+    let height = state.height.min(BUFFER_HEIGHT) as usize;
+    height
+        .saturating_sub(LIST_Y + LIST_BOTTOM_MARGIN)
+        .checked_div(ROW_HEIGHT)
+        .unwrap_or(0)
+}
+
+fn reload_directory(state: &mut ExplorerState, storage_handle: rt::Handle) -> rt::Result<()> {
+    state.entry_count = 0;
+    state.scroll_offset = 0;
+    state.selected_index = 0;
+    state.load_failed = false;
+
+    if state.current_path_len != 0 {
+        let parent_len = parent_path_bytes(&state.current_path[..state.current_path_len], &mut state.entries[0].path);
+        state.entries[0].kind = EntryKind::Parent;
+        state.entries[0].path_len = parent_len;
+        state.entry_count = 1;
+    }
+
+    let mut prefix_bytes = [0u8; MAX_STORAGE_PATH];
+    prefix_bytes[..state.current_path_len]
+        .copy_from_slice(&state.current_path[..state.current_path_len]);
+    let prefix = str::from_utf8(&prefix_bytes[..state.current_path_len]).unwrap_or("");
+    let mut index = 0usize;
+    let mut path_buffer = [0u8; MAX_STORAGE_PATH];
+    loop {
+        match rt::storage_list(storage_handle, prefix, index, &mut path_buffer) {
+            Ok(Some((_status, path_len))) => {
+                collect_entry(state, &path_buffer[..path_len]);
+                index += 1;
+            }
+            Ok(None) => break,
+            Err(error) => {
+                state.load_failed = true;
+                return Err(error);
+            }
+        }
+    }
+
+    sort_entries(state);
+    clamp_view(state);
+    Ok(())
+}
+
+fn collect_entry(state: &mut ExplorerState, full_path: &[u8]) {
+    let prefix_len = state.current_path_len;
+    if full_path.len() < prefix_len || full_path[..prefix_len] != state.current_path[..prefix_len] {
+        return;
+    }
+    let relative = &full_path[prefix_len..];
+    if relative.is_empty() {
+        return;
+    }
+
+    if let Some(separator) = relative.iter().position(|byte| *byte == b'/') {
+        if separator == 0 {
+            return;
+        }
+        let child_name = &relative[..separator];
+        let mut child_path = [0u8; MAX_STORAGE_PATH];
+        let mut path_len = 0usize;
+        child_path[..prefix_len].copy_from_slice(&state.current_path[..prefix_len]);
+        path_len += prefix_len;
+        if path_len + child_name.len() + 1 > MAX_STORAGE_PATH {
+            return;
+        }
+        child_path[path_len..path_len + child_name.len()].copy_from_slice(child_name);
+        path_len += child_name.len();
+        child_path[path_len] = b'/';
+        path_len += 1;
+        insert_unique_entry(state, EntryKind::Directory, &child_path[..path_len]);
+    } else {
+        insert_unique_entry(state, EntryKind::File, full_path);
+    }
+}
+
+fn insert_unique_entry(state: &mut ExplorerState, kind: EntryKind, path: &[u8]) {
+    if state.entry_count >= MAX_ENTRIES {
+        return;
+    }
+    for entry in state.entries.iter().take(state.entry_count) {
+        if entry.kind == kind && entry.path_len == path.len() && entry.path[..entry.path_len] == *path {
+            return;
+        }
+    }
+    let entry = &mut state.entries[state.entry_count];
+    entry.kind = kind;
+    entry.path_len = path.len();
+    entry.path[..path.len()].copy_from_slice(path);
+    state.entry_count += 1;
+}
+
+fn sort_entries(state: &mut ExplorerState) {
+    let start = if state.entry_count > 0 && state.entries[0].kind == EntryKind::Parent {
+        1
+    } else {
+        0
+    };
+    let mut index = start + 1;
+    while index < state.entry_count {
+        let current = state.entries[index];
+        let mut scan = index;
+        while scan > start {
+            let previous = state.entries[scan - 1];
+            if compare_entries(previous, current) != Ordering::Greater {
+                break;
+            }
+            state.entries[scan] = previous;
+            scan -= 1;
+        }
+        state.entries[scan] = current;
+        index += 1;
+    }
+}
+
+fn compare_entries(left: ExplorerEntry, right: ExplorerEntry) -> Ordering {
+    match (left.kind, right.kind) {
+        (EntryKind::Directory, EntryKind::File) => Ordering::Less,
+        (EntryKind::File, EntryKind::Directory) => Ordering::Greater,
+        _ => compare_case_fold(entry_name_bytes(&left), entry_name_bytes(&right)),
+    }
+}
+
+fn compare_case_fold(left: &[u8], right: &[u8]) -> Ordering {
+    let shared = left.len().min(right.len());
+    for index in 0..shared {
+        let left_byte = left[index].to_ascii_lowercase();
+        let right_byte = right[index].to_ascii_lowercase();
+        match left_byte.cmp(&right_byte) {
+            Ordering::Equal => {}
+            other => return other,
+        }
+    }
+    left.len().cmp(&right.len())
+}
+
+fn entry_name_bytes(entry: &ExplorerEntry) -> &[u8] {
+    if entry.kind == EntryKind::Parent {
+        return b"..";
+    }
+    let path = &entry.path[..entry.path_len];
+    let end = if entry.kind == EntryKind::Directory && entry.path_len > 0 {
+        entry.path_len - 1
+    } else {
+        entry.path_len
+    };
+    let start = path[..end]
+        .iter()
+        .rposition(|byte| *byte == b'/')
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    &path[start..end]
+}
+
+fn draw_entry_label(
+    bytes: &mut [u8],
+    entry: ExplorerEntry,
+    x: i32,
+    y: i32,
+    color: u32,
+) {
+    let mut label = FixedLogBuffer::<96>::new();
+    if entry.kind == EntryKind::Parent {
+        let _ = write!(&mut label, "UP   ..");
+    } else {
+        match entry.kind {
+            EntryKind::Directory => {
+                let _ = write!(&mut label, "DIR  ");
+            }
+            EntryKind::File => {
+                let _ = write!(&mut label, "FILE ");
+            }
+            EntryKind::Parent => {}
+        }
+        if let Ok(name) = str::from_utf8(entry_name_bytes(&entry)) {
+            let _ = write!(&mut label, "{name}");
+            if entry.kind == EntryKind::Directory {
+                let _ = write!(&mut label, "/");
+            }
+        } else {
+            let _ = write!(&mut label, "INVALID");
+        }
+    }
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        x,
+        y,
+        color,
+        str::from_utf8(label.as_bytes()).unwrap_or("INVALID"),
+    );
+}
+
+fn push_selected_path(buffer: &mut FixedLogBuffer<128>, entry: ExplorerEntry) {
+    if entry.kind == EntryKind::Parent {
+        let _ = write!(buffer, "UP /");
+        return;
+    }
+    if let Ok(path) = str::from_utf8(&entry.path[..entry.path_len]) {
+        let _ = write!(buffer, "/{path}");
+    } else {
+        let _ = write!(buffer, "INVALID");
+    }
+}
+
+fn open_selected(state: &mut ExplorerState, storage_handle: rt::Handle) -> rt::Result<()> {
+    if state.entry_count == 0 {
+        return Ok(());
+    }
+    let selected = state.entries[state.selected_index.min(state.entry_count - 1)];
+    match selected.kind {
+        EntryKind::Parent | EntryKind::Directory => {
+            state.current_path_len = selected.path_len;
+            state.current_path[..selected.path_len]
+                .copy_from_slice(&selected.path[..selected.path_len]);
+            reload_directory(state, storage_handle)
+        }
+        EntryKind::File => Ok(()),
+    }
+}
+
+fn navigate_parent(state: &mut ExplorerState) {
+    let mut parent = [0u8; MAX_STORAGE_PATH];
+    let len = parent_path_bytes(&state.current_path[..state.current_path_len], &mut parent);
+    state.current_path[..len].copy_from_slice(&parent[..len]);
+    state.current_path_len = len;
+}
+
+fn parent_path_bytes(path: &[u8], output: &mut [u8; MAX_STORAGE_PATH]) -> usize {
+    if path.is_empty() {
+        return 0;
+    }
+    let trimmed = &path[..path.len().saturating_sub(1)];
+    let Some(separator) = trimmed.iter().rposition(|byte| *byte == b'/') else {
+        return 0;
+    };
+    let len = separator + 1;
+    output[..len].copy_from_slice(&trimmed[..len]);
+    len
+}
+
+fn ensure_selected_visible(state: &mut ExplorerState) {
+    let visible = visible_row_count(state).max(1);
+    if state.selected_index < state.scroll_offset {
+        state.scroll_offset = state.selected_index;
+    } else if state.selected_index >= state.scroll_offset + visible {
+        state.scroll_offset = state.selected_index + 1 - visible;
+    }
+}
+
+fn clamp_view(state: &mut ExplorerState) {
+    if state.entry_count == 0 {
+        state.selected_index = 0;
+        state.scroll_offset = 0;
+        return;
+    }
+    state.selected_index = state.selected_index.min(state.entry_count - 1);
+    let visible = visible_row_count(state).max(1);
+    let max_scroll = state.entry_count.saturating_sub(visible);
+    state.scroll_offset = state.scroll_offset.min(max_scroll);
+    ensure_selected_visible(state);
+}
+
+fn scroll_up(state: &mut ExplorerState, amount: usize) {
+    state.scroll_offset = state.scroll_offset.saturating_sub(amount);
+    if state.selected_index > state.scroll_offset + visible_row_count(state).saturating_sub(1) {
+        state.selected_index = state.scroll_offset;
+    }
+}
+
+fn scroll_down(state: &mut ExplorerState, amount: usize) {
+    let visible = visible_row_count(state).max(1);
+    let max_scroll = state.entry_count.saturating_sub(visible);
+    state.scroll_offset = (state.scroll_offset + amount).min(max_scroll);
+    if state.selected_index < state.scroll_offset {
+        state.selected_index = state.scroll_offset;
+    }
+}
+
+fn pointer_action_from_word(value: u64) -> Option<AppPointerAction> {
+    match value as u32 {
+        x if x == AppPointerAction::Down as u32 => Some(AppPointerAction::Down),
+        x if x == AppPointerAction::Move as u32 => Some(AppPointerAction::Move),
+        x if x == AppPointerAction::Up as u32 => Some(AppPointerAction::Up),
+        x if x == AppPointerAction::Scroll as u32 => Some(AppPointerAction::Scroll),
+        _ => None,
+    }
+}
+
+fn key_action_from_word(value: u64) -> Option<AppKeyAction> {
+    match value as u32 {
+        x if x == AppKeyAction::Down as u32 => Some(AppKeyAction::Down),
+        x if x == AppKeyAction::Up as u32 => Some(AppKeyAction::Up),
+        _ => None,
     }
 }
 

@@ -2,8 +2,8 @@ use serviceos_userspace_runtime as rt;
 use rt::{NetworkSocketInfo, NetworkSocketKind, NetworkSocketState, ServiceId};
 
 use crate::util::{
-    format_ipv4, format_mac, link_state_name, network_config_mode_name, network_config_state_name,
-    network_socket_state_name, write_session_linef, write_session_text,
+    ShellOutput, format_ipv4, format_mac, link_state_name, network_config_mode_name,
+    network_config_state_name, network_socket_state_name, shell_output_write, write_output_linef,
 };
 
 const MAX_NETWORK_SOCKETS: usize = 2;
@@ -13,47 +13,47 @@ const HTTP_CHUNK_BYTES: usize = (rt::IPC_MAX_WORDS - 2) * 8;
 
 pub(crate) fn cmd_net<'a, I>(
     bootstrap: rt::Handle,
-    session: rt::Handle,
+    output: ShellOutput,
     mut parts: I,
 ) -> rt::Result<()>
 where
     I: Iterator<Item = &'a str>,
 {
     match parts.next() {
-        Some("ifaces") => cmd_net_ifaces(bootstrap, session),
-        Some("route") => cmd_net_route(bootstrap, session),
-        Some("sockets") => cmd_net_sockets(bootstrap, session),
+        Some("ifaces") => cmd_net_ifaces(bootstrap, output),
+        Some("route") => cmd_net_route(bootstrap, output),
+        Some("sockets") => cmd_net_sockets(bootstrap, output),
         Some("resolve") => match parts.next() {
-            Some(target) => cmd_net_resolve(bootstrap, session, target),
-            None => write_session_linef(session, format_args!("usage: net resolve <name>")),
+            Some(target) => cmd_net_resolve(bootstrap, output, target),
+            None => write_output_linef(output, format_args!("usage: net resolve <name>")),
         },
         Some("ping") => match parts.next() {
-            Some(target) => cmd_net_ping(bootstrap, session, target),
-            None => write_session_linef(session, format_args!("usage: net ping <name|ip>")),
+            Some(target) => cmd_net_ping(bootstrap, output, target),
+            None => write_output_linef(output, format_args!("usage: net ping <name|ip>")),
         },
         Some("http") => match parts.next() {
-            Some(host) => cmd_net_http(bootstrap, session, host, parts.next().unwrap_or("/")),
-            None => write_session_linef(session, format_args!("usage: net http <host> [path]")),
+            Some(host) => cmd_net_http(bootstrap, output, host, parts.next().unwrap_or("/")),
+            None => write_output_linef(output, format_args!("usage: net http <host> [path]")),
         },
-        _ => write_session_linef(
-            session,
+        _ => write_output_linef(
+            output,
             format_args!("usage: net <ifaces|route|sockets|resolve|ping|http> ..."),
         ),
     }
 }
 
-fn cmd_net_ifaces(bootstrap: rt::Handle, session: rt::Handle) -> rt::Result<()> {
+fn cmd_net_ifaces(bootstrap: rt::Handle, output: ShellOutput) -> rt::Result<()> {
     let network_handle = rt::lookup_service(bootstrap, ServiceId::Network)?;
     let count = rt::network_interface_count(network_handle)?;
     if count == 0 {
         let _ = rt::handle_close(network_handle);
-        return write_session_linef(session, format_args!("no interfaces"));
+        return write_output_linef(output, format_args!("no interfaces"));
     }
 
     for index in 0..count {
         if let Some(info) = rt::network_interface_status(network_handle, index)? {
-            write_session_linef(
-                session,
+            write_output_linef(
+                output,
                 format_args!(
                     "net{} link={} cfg={}/{} mtu={} mac={}",
                     info.index,
@@ -64,8 +64,8 @@ fn cmd_net_ifaces(bootstrap: rt::Handle, session: rt::Handle) -> rt::Result<()> 
                     format_mac(info.mac),
                 ),
             )?;
-            write_session_linef(
-                session,
+            write_output_linef(
+                output,
                 format_args!(
                     "  addr={}/{} gw={} dns={} rx={} tx={} drop={}",
                     format_ipv4(info.address),
@@ -84,13 +84,13 @@ fn cmd_net_ifaces(bootstrap: rt::Handle, session: rt::Handle) -> rt::Result<()> 
     Ok(())
 }
 
-fn cmd_net_route(bootstrap: rt::Handle, session: rt::Handle) -> rt::Result<()> {
+fn cmd_net_route(bootstrap: rt::Handle, output: ShellOutput) -> rt::Result<()> {
     let network_handle = rt::lookup_service(bootstrap, ServiceId::Network)?;
     let info = rt::network_interface_status(network_handle, 0)?;
     let _ = rt::handle_close(network_handle);
     match info {
-        Some(info) => write_session_linef(
-            session,
+        Some(info) => write_output_linef(
+            output,
             format_args!(
                 "default via {} dev net{} cfg={}/{}",
                 format_ipv4(info.gateway),
@@ -99,11 +99,11 @@ fn cmd_net_route(bootstrap: rt::Handle, session: rt::Handle) -> rt::Result<()> {
                 network_config_state_name(info.config_state),
             ),
         ),
-        None => write_session_linef(session, format_args!("no default route")),
+        None => write_output_linef(output, format_args!("no default route")),
     }
 }
 
-fn cmd_net_sockets(bootstrap: rt::Handle, session: rt::Handle) -> rt::Result<()> {
+fn cmd_net_sockets(bootstrap: rt::Handle, output: ShellOutput) -> rt::Result<()> {
     let network_handle = rt::lookup_service(bootstrap, ServiceId::Network)?;
     let mut sockets = [NetworkSocketInfo {
         slot: 0,
@@ -119,12 +119,12 @@ fn cmd_net_sockets(bootstrap: rt::Handle, session: rt::Handle) -> rt::Result<()>
     let _ = rt::handle_close(network_handle);
 
     if count == 0 {
-        return write_session_linef(session, format_args!("no active sockets"));
+        return write_output_linef(output, format_args!("no active sockets"));
     }
 
     for socket in sockets.iter().take(count) {
-        write_session_linef(
-            session,
+        write_output_linef(
+            output,
             format_args!(
                 "sock{} tcp state={} remote={}:{} local={} rx={} tx={}",
                 socket.slot,
@@ -140,14 +140,14 @@ fn cmd_net_sockets(bootstrap: rt::Handle, session: rt::Handle) -> rt::Result<()>
     Ok(())
 }
 
-fn cmd_net_resolve(bootstrap: rt::Handle, session: rt::Handle, target: &str) -> rt::Result<()> {
+fn cmd_net_resolve(bootstrap: rt::Handle, output: ShellOutput, target: &str) -> rt::Result<()> {
     let network_handle = rt::lookup_service(bootstrap, ServiceId::Network)?;
     let mut addresses = [0u32; 4];
     let count = match rt::network_resolve(network_handle, target, &mut addresses) {
         Ok(count) => count,
         Err(rt::Error::NotFound) => {
             let _ = rt::handle_close(network_handle);
-            return write_session_linef(session, format_args!("no address for {}", target));
+            return write_output_linef(output, format_args!("no address for {}", target));
         }
         Err(error) => {
             let _ = rt::handle_close(network_handle);
@@ -156,21 +156,21 @@ fn cmd_net_resolve(bootstrap: rt::Handle, session: rt::Handle, target: &str) -> 
     };
     let _ = rt::handle_close(network_handle);
     if count == 0 {
-        return write_session_linef(session, format_args!("no result"));
+        return write_output_linef(output, format_args!("no result"));
     }
     for address in addresses.iter().copied().take(count) {
-        write_session_linef(session, format_args!("{} -> {}", target, format_ipv4(address)))?;
+        write_output_linef(output, format_args!("{} -> {}", target, format_ipv4(address)))?;
     }
     Ok(())
 }
 
-fn cmd_net_ping(bootstrap: rt::Handle, session: rt::Handle, target: &str) -> rt::Result<()> {
+fn cmd_net_ping(bootstrap: rt::Handle, output: ShellOutput, target: &str) -> rt::Result<()> {
     let network_handle = rt::lookup_service(bootstrap, ServiceId::Network)?;
     let result = rt::network_ping(network_handle, target);
     let _ = rt::handle_close(network_handle);
     match result {
-        Ok((resolved, elapsed_ms)) => write_session_linef(
-            session,
+        Ok((resolved, elapsed_ms)) => write_output_linef(
+            output,
             format_args!(
                 "ping {} ({}) ok {}ms",
                 target,
@@ -178,11 +178,9 @@ fn cmd_net_ping(bootstrap: rt::Handle, session: rt::Handle, target: &str) -> rt:
                 elapsed_ms,
             ),
         ),
-        Err(rt::Error::QueueEmpty) => {
-            write_session_linef(session, format_args!("ping {} timed out", target))
-        }
+        Err(rt::Error::QueueEmpty) => write_output_linef(output, format_args!("ping {} timed out", target)),
         Err(rt::Error::NotFound) => {
-            write_session_linef(session, format_args!("ping target not found: {}", target))
+            write_output_linef(output, format_args!("ping target not found: {}", target))
         }
         Err(error) => Err(error),
     }
@@ -190,36 +188,32 @@ fn cmd_net_ping(bootstrap: rt::Handle, session: rt::Handle, target: &str) -> rt:
 
 fn cmd_net_http(
     bootstrap: rt::Handle,
-    session: rt::Handle,
+    output: ShellOutput,
     host: &str,
     path: &str,
 ) -> rt::Result<()> {
     let network_handle = rt::lookup_service(bootstrap, ServiceId::Network)?;
-    let socket_handle = match rt::network_socket_open(
-        network_handle,
-        NetworkSocketKind::TcpStream,
-        host,
-        80,
-    ) {
-        Ok(handle) => handle,
-        Err(error) => {
-            let _ = rt::handle_close(network_handle);
-            return write_session_linef(
-                session,
-                format_args!("http connect failed: {}", crate::util::error_name(error)),
-            );
-        }
-    };
+    let socket_handle =
+        match rt::network_socket_open(network_handle, NetworkSocketKind::TcpStream, host, 80) {
+            Ok(handle) => handle,
+            Err(error) => {
+                let _ = rt::handle_close(network_handle);
+                return write_output_linef(
+                    output,
+                    format_args!("http connect failed: {}", crate::util::error_name(error)),
+                );
+            }
+        };
     let _ = rt::handle_close(network_handle);
 
-    let result = http_fetch(session, socket_handle, host, path);
+    let result = http_fetch(output, socket_handle, host, path);
     let _ = rt::network_socket_close(socket_handle);
     let _ = rt::handle_close(socket_handle);
     result
 }
 
 fn http_fetch(
-    session: rt::Handle,
+    output: ShellOutput,
     socket_handle: rt::Handle,
     host: &str,
     path: &str,
@@ -246,18 +240,15 @@ fn http_fetch(
             Ok(count) if count > 0 => {
                 received_any = true;
                 last_progress = rt::monotonic_now()?;
-                let text = core::str::from_utf8(&buffer[..count])
-                    .map_err(|_| rt::Error::InvalidArgument)?;
-                write_session_text(session, text)?;
+                let text =
+                    core::str::from_utf8(&buffer[..count]).map_err(|_| rt::Error::InvalidArgument)?;
+                shell_output_write(output, text)?;
             }
             Ok(_) => {}
             Err(rt::Error::Busy) => {}
             Err(rt::Error::NotFound) => {
                 let status = rt::network_socket_status(socket_handle)?;
-                if matches!(
-                    status.state,
-                    NetworkSocketState::Closed | NetworkSocketState::Failed
-                ) {
+                if matches!(status.state, NetworkSocketState::Closed | NetworkSocketState::Failed) {
                     break;
                 }
             }
@@ -272,7 +263,7 @@ fn http_fetch(
             if received_any {
                 break;
             }
-            return write_session_linef(session, format_args!("\r\nhttp read timed out"));
+            return write_output_linef(output, format_args!("\r\nhttp read timed out"));
         }
         rt::yield_current()?;
     }
@@ -281,7 +272,7 @@ fn http_fetch(
         rt::network_socket_status(socket_handle)?.state,
         NetworkSocketState::Closed | NetworkSocketState::Failed
     ) {
-        write_session_linef(session, format_args!("\r\nhttp done"))?;
+        write_output_linef(output, format_args!("\r\nhttp done"))?;
     }
     Ok(())
 }

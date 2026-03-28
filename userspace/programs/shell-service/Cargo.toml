@@ -3,6 +3,9 @@ name = "serviceos-shell-service"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "serviceos-shell-service"
 path = "src/main.rs"

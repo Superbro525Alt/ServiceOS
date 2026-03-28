@@ -2,48 +2,49 @@ use serviceos_userspace_runtime as rt;
 use rt::ServiceId;
 
 use crate::util::{
-    parse_service_name, printable_version, service_name, write_session_linef, MAX_VERSION_BYTES,
+    parse_service_name, printable_version, service_name, write_output_linef, ShellOutput,
+    MAX_VERSION_BYTES,
 };
 
 pub(crate) fn cmd_pkg<'a, I>(
     bootstrap: rt::Handle,
-    session: rt::Handle,
+    output: ShellOutput,
     mut parts: I,
 ) -> rt::Result<()>
 where
     I: Iterator<Item = &'a str>,
 {
     match parts.next() {
-        Some("list") => cmd_pkg_list(bootstrap, session),
+        Some("list") => cmd_pkg_list(bootstrap, output),
         Some("info") => match parts.next().and_then(parse_service_name) {
-            Some(service_id) => cmd_pkg_info(bootstrap, session, service_id),
-            None => write_session_linef(session, format_args!("usage: pkg info <name>")),
+            Some(service_id) => cmd_pkg_info(bootstrap, output, service_id),
+            None => write_output_linef(output, format_args!("usage: pkg info <name>")),
         },
         Some("install") => match parts.next().and_then(parse_service_name) {
-            Some(service_id) => cmd_pkg_install(bootstrap, session, service_id, parts.next()),
-            None => write_session_linef(session, format_args!("usage: pkg install <name> [version]")),
+            Some(service_id) => cmd_pkg_install(bootstrap, output, service_id, parts.next()),
+            None => write_output_linef(output, format_args!("usage: pkg install <name> [version]")),
         },
         Some("update") => match parts.next().and_then(parse_service_name) {
-            Some(service_id) => cmd_pkg_update(bootstrap, session, service_id, parts.next()),
-            None => write_session_linef(session, format_args!("usage: pkg update <name> [version]")),
+            Some(service_id) => cmd_pkg_update(bootstrap, output, service_id, parts.next()),
+            None => write_output_linef(output, format_args!("usage: pkg update <name> [version]")),
         },
         Some("remove") => match parts.next().and_then(parse_service_name) {
-            Some(service_id) => cmd_pkg_remove(bootstrap, session, service_id),
-            None => write_session_linef(session, format_args!("usage: pkg remove <name>")),
+            Some(service_id) => cmd_pkg_remove(bootstrap, output, service_id),
+            None => write_output_linef(output, format_args!("usage: pkg remove <name>")),
         },
         Some("rollback") => match parts.next().and_then(parse_service_name) {
-            Some(service_id) => cmd_pkg_rollback(bootstrap, session, service_id),
-            None => write_session_linef(session, format_args!("usage: pkg rollback <name>")),
+            Some(service_id) => cmd_pkg_rollback(bootstrap, output, service_id),
+            None => write_output_linef(output, format_args!("usage: pkg rollback <name>")),
         },
         Some("history") => match parts.next().and_then(parse_service_name) {
-            Some(service_id) => cmd_pkg_history(bootstrap, session, service_id),
-            None => write_session_linef(session, format_args!("usage: pkg history <name>")),
+            Some(service_id) => cmd_pkg_history(bootstrap, output, service_id),
+            None => write_output_linef(output, format_args!("usage: pkg history <name>")),
         },
-        _ => write_session_linef(session, format_args!("usage: pkg <list|info|install|update|remove|rollback|history> ...")),
+        _ => write_output_linef(output, format_args!("usage: pkg <list|info|install|update|remove|rollback|history> ...")),
     }
 }
 
-fn cmd_pkg_list(bootstrap: rt::Handle, session: rt::Handle) -> rt::Result<()> {
+fn cmd_pkg_list(bootstrap: rt::Handle, output: ShellOutput) -> rt::Result<()> {
     let package_handle = rt::lookup_service(bootstrap, ServiceId::Package)?;
     let mut installed = [0u8; MAX_VERSION_BYTES];
     let mut active = [0u8; MAX_VERSION_BYTES];
@@ -54,8 +55,8 @@ fn cmd_pkg_list(bootstrap: rt::Handle, session: rt::Handle) -> rt::Result<()> {
             .map_err(|_| rt::Error::InvalidArgument)?;
         let active_version = core::str::from_utf8(&active[..entry.active_version_len])
             .map_err(|_| rt::Error::InvalidArgument)?;
-        write_session_linef(
-            session,
+        write_output_linef(
+            output,
             format_args!(
                 "{:<16} repo={} installed={} active={} rollback={}",
                 service_name(entry.service_id),
@@ -70,13 +71,13 @@ fn cmd_pkg_list(bootstrap: rt::Handle, session: rt::Handle) -> rt::Result<()> {
 
     let _ = rt::handle_close(package_handle);
     if index == 0 {
-        write_session_linef(session, format_args!("no packages"))
+        write_output_linef(output, format_args!("no packages"))
     } else {
         Ok(())
     }
 }
 
-fn cmd_pkg_info(bootstrap: rt::Handle, session: rt::Handle, service_id: ServiceId) -> rt::Result<()> {
+fn cmd_pkg_info(bootstrap: rt::Handle, output: ShellOutput, service_id: ServiceId) -> rt::Result<()> {
     let package_handle = rt::lookup_service(bootstrap, ServiceId::Package)?;
     let mut installed = [0u8; MAX_VERSION_BYTES];
     let mut active = [0u8; MAX_VERSION_BYTES];
@@ -92,8 +93,8 @@ fn cmd_pkg_info(bootstrap: rt::Handle, session: rt::Handle, service_id: ServiceI
     )?;
     let _ = rt::handle_close(package_handle);
 
-    write_session_linef(
-        session,
+    write_output_linef(
+        output,
         format_args!(
             "{} repo={} installed={} active={} rollback={} latest={}",
             service_name(service_id),
@@ -108,7 +109,7 @@ fn cmd_pkg_info(bootstrap: rt::Handle, session: rt::Handle, service_id: ServiceI
 
 fn cmd_pkg_install(
     bootstrap: rt::Handle,
-    session: rt::Handle,
+    output: ShellOutput,
     service_id: ServiceId,
     version: Option<&str>,
 ) -> rt::Result<()> {
@@ -116,12 +117,12 @@ fn cmd_pkg_install(
     let result = rt::package_install(package_handle, service_id, version);
     let _ = rt::handle_close(package_handle);
     result?;
-    write_session_linef(session, format_args!("installed {}", service_name(service_id)))
+    write_output_linef(output, format_args!("installed {}", service_name(service_id)))
 }
 
 fn cmd_pkg_update(
     bootstrap: rt::Handle,
-    session: rt::Handle,
+    output: ShellOutput,
     service_id: ServiceId,
     version: Option<&str>,
 ) -> rt::Result<()> {
@@ -129,32 +130,32 @@ fn cmd_pkg_update(
     let result = rt::package_update(package_handle, service_id, version);
     let _ = rt::handle_close(package_handle);
     result?;
-    write_session_linef(session, format_args!("updated {}", service_name(service_id)))
+    write_output_linef(output, format_args!("updated {}", service_name(service_id)))
 }
 
-fn cmd_pkg_remove(bootstrap: rt::Handle, session: rt::Handle, service_id: ServiceId) -> rt::Result<()> {
+fn cmd_pkg_remove(bootstrap: rt::Handle, output: ShellOutput, service_id: ServiceId) -> rt::Result<()> {
     let package_handle = rt::lookup_service(bootstrap, ServiceId::Package)?;
     let result = rt::package_remove(package_handle, service_id);
     let _ = rt::handle_close(package_handle);
     result?;
-    write_session_linef(session, format_args!("removed {}", service_name(service_id)))
+    write_output_linef(output, format_args!("removed {}", service_name(service_id)))
 }
 
 fn cmd_pkg_rollback(
     bootstrap: rt::Handle,
-    session: rt::Handle,
+    output: ShellOutput,
     service_id: ServiceId,
 ) -> rt::Result<()> {
     let package_handle = rt::lookup_service(bootstrap, ServiceId::Package)?;
     let result = rt::package_rollback(package_handle, service_id);
     let _ = rt::handle_close(package_handle);
     result?;
-    write_session_linef(session, format_args!("rolled back {}", service_name(service_id)))
+    write_output_linef(output, format_args!("rolled back {}", service_name(service_id)))
 }
 
 fn cmd_pkg_history(
     bootstrap: rt::Handle,
-    session: rt::Handle,
+    output: ShellOutput,
     service_id: ServiceId,
 ) -> rt::Result<()> {
     let package_handle = rt::lookup_service(bootstrap, ServiceId::Package)?;
@@ -163,8 +164,8 @@ fn cmd_pkg_history(
     let (current_len, previous_len) =
         rt::package_history(package_handle, service_id, &mut current, &mut previous)?;
     let _ = rt::handle_close(package_handle);
-    write_session_linef(
-        session,
+    write_output_linef(
+        output,
         format_args!(
             "{} current={} rollback={}",
             service_name(service_id),

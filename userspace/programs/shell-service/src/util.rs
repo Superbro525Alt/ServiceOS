@@ -14,7 +14,22 @@ pub(crate) const MAX_DESKTOP_APPS: usize = 8;
 pub(crate) const MAX_DESKTOP_WINDOWS: usize = 8;
 pub(crate) const MAX_SESSION_WRITE_BYTES: usize = (rt::IPC_MAX_WORDS - 1) * 8;
 
-pub(crate) const HELP_TEXT: &str = "\
+#[derive(Clone, Copy)]
+pub struct ShellOutput {
+    pub handle: rt::Handle,
+    pub write: fn(rt::Handle, &str) -> rt::Result<()>,
+}
+
+impl ShellOutput {
+    pub const fn new(
+        handle: rt::Handle,
+        write: fn(rt::Handle, &str) -> rt::Result<()>,
+    ) -> Self {
+        Self { handle, write }
+    }
+}
+
+pub const HELP_TEXT: &str = "\
 help: show this command list\r\n\
 services: list managed services\r\n\
 service <name>: show one service state\r\n\
@@ -47,6 +62,7 @@ desktop maximize <settings|files|monitor>: maximize or restore a window\r\n\
 desktop move <settings|files|monitor> <x> <y>: move a window\r\n\
 desktop resize <settings|files|monitor> <width> <height>: resize a window\r\n\
 desktop click <x> <y>: inject a pointer click into the desktop session\r\n\
+desktop launch terminal: open the graphical terminal app\r\n\
 pkg list: list repository packages\r\n\
 pkg info <name>: inspect one package\r\n\
 pkg install <name> [version]: activate a package\r\n\
@@ -56,8 +72,9 @@ pkg rollback <name>: restore the prior active version\r\n\
 pkg history <name>: show current and rollback versions\r\n\
 run sysinfo: launch a transient tool\r\n";
 
-pub(crate) fn emit_shell_log(
+pub fn emit_shell_log(
     bootstrap: rt::Handle,
+    source_service: ServiceId,
     severity: LogSeverity,
     event: LogEvent,
     arg0: u64,
@@ -66,7 +83,7 @@ pub(crate) fn emit_shell_log(
     let log_handle = rt::lookup_service(bootstrap, ServiceId::Log)?;
     let result = rt::send_log_record(
         log_handle,
-        ServiceId::Shell,
+        source_service,
         severity,
         LogDomain::Shell,
         event,
@@ -77,25 +94,25 @@ pub(crate) fn emit_shell_log(
     result
 }
 
-pub(crate) fn write_session_linef(
-    session: rt::Handle,
+pub fn write_output_linef(
+    output: ShellOutput,
     args: core::fmt::Arguments<'_>,
 ) -> rt::Result<()> {
     let mut buffer = FixedLogBuffer::<256>::new();
     let _ = buffer.write_fmt(args);
     let _ = buffer.write_str("\r\n");
     let text = core::str::from_utf8(buffer.as_bytes()).map_err(|_| rt::Error::InvalidArgument)?;
-    rt::console_session_write(session, text)
+    shell_output_write(output, text)
 }
 
-pub(crate) fn write_session_text(session: rt::Handle, text: &str) -> rt::Result<()> {
+pub fn shell_output_write(output: ShellOutput, text: &str) -> rt::Result<()> {
     let bytes = text.as_bytes();
     let mut offset = 0usize;
     while offset < bytes.len() {
         let end = (offset + MAX_SESSION_WRITE_BYTES).min(bytes.len());
         let chunk =
             core::str::from_utf8(&bytes[offset..end]).map_err(|_| rt::Error::InvalidArgument)?;
-        rt::console_session_write(session, chunk)?;
+        (output.write)(output.handle, chunk)?;
         offset = end;
     }
     Ok(())
@@ -125,6 +142,7 @@ pub(crate) fn parse_desktop_app_name(name: &str) -> Option<DesktopAppId> {
         "settings" => Some(DesktopAppId::Settings),
         "files" => Some(DesktopAppId::Files),
         "monitor" => Some(DesktopAppId::Monitor),
+        "terminal" => Some(DesktopAppId::Terminal),
         _ => None,
     }
 }
@@ -144,6 +162,7 @@ pub(crate) fn service_name(service_id: ServiceId) -> &'static str {
         ServiceId::Graphics => "graphics-service",
         ServiceId::Session => "session-service",
         ServiceId::DesktopShell => "desktop-shell-service",
+        ServiceId::Terminal => "terminal-service",
     }
 }
 
@@ -152,6 +171,7 @@ pub(crate) fn desktop_app_name(app_id: DesktopAppId) -> &'static str {
         DesktopAppId::Settings => "settings",
         DesktopAppId::Files => "files",
         DesktopAppId::Monitor => "monitor",
+        DesktopAppId::Terminal => "terminal",
     }
 }
 
@@ -277,13 +297,15 @@ pub(crate) fn event_name(event: LogEvent) -> &'static str {
         LogEvent::AppRendered => "app-rendered",
         LogEvent::InputSourceReady => "input-source-ready",
         LogEvent::InputKeyDelivered => "input-key-delivered",
+        LogEvent::TerminalSessionOpened => "terminal-session-opened",
+        LogEvent::TerminalSessionClosed => "terminal-session-closed",
     }
 }
 
-pub(crate) fn write_log_record(session: rt::Handle, record: rt::LogRecord) -> rt::Result<()> {
+pub(crate) fn write_log_record(output: ShellOutput, record: rt::LogRecord) -> rt::Result<()> {
     match record.event {
-        LogEvent::ConfigLoaded => write_session_linef(
-            session,
+        LogEvent::ConfigLoaded => write_output_linef(
+            output,
             format_args!(
                 "#{} {} {} {}/{} minimum-severity={}",
                 record.sequence,
@@ -294,8 +316,8 @@ pub(crate) fn write_log_record(session: rt::Handle, record: rt::LogRecord) -> rt
                 record.arg0,
             ),
         ),
-        LogEvent::NetworkInterfaceReady => write_session_linef(
-            session,
+        LogEvent::NetworkInterfaceReady => write_output_linef(
+            output,
             format_args!(
                 "#{} {} {} {}/{} iface={} mac={}",
                 record.sequence,
@@ -307,8 +329,8 @@ pub(crate) fn write_log_record(session: rt::Handle, record: rt::LogRecord) -> rt
                 format_mac(unpack_mac(record.arg1)),
             ),
         ),
-        LogEvent::NetworkAddressConfigured => write_session_linef(
-            session,
+        LogEvent::NetworkAddressConfigured => write_output_linef(
+            output,
             format_args!(
                 "#{} {} {} {}/{} addr={} gateway={}",
                 record.sequence,
@@ -320,8 +342,8 @@ pub(crate) fn write_log_record(session: rt::Handle, record: rt::LogRecord) -> rt
                 format_ipv4(record.arg1 as u32),
             ),
         ),
-        LogEvent::NetworkResolveCompleted => write_session_linef(
-            session,
+        LogEvent::NetworkResolveCompleted => write_output_linef(
+            output,
             format_args!(
                 "#{} {} {} {}/{} addr={} count={}",
                 record.sequence,
@@ -333,8 +355,8 @@ pub(crate) fn write_log_record(session: rt::Handle, record: rt::LogRecord) -> rt
                 record.arg1,
             ),
         ),
-        LogEvent::NetworkProbeCompleted => write_session_linef(
-            session,
+        LogEvent::NetworkProbeCompleted => write_output_linef(
+            output,
             format_args!(
                 "#{} {} {} {}/{} addr={} elapsed-ms={}",
                 record.sequence,
@@ -346,8 +368,8 @@ pub(crate) fn write_log_record(session: rt::Handle, record: rt::LogRecord) -> rt
                 record.arg1,
             ),
         ),
-        LogEvent::DisplayOutputReady => write_session_linef(
-            session,
+        LogEvent::DisplayOutputReady => write_output_linef(
+            output,
             format_args!(
                 "#{} {} {} {}/{} {}x{}",
                 record.sequence,
@@ -360,8 +382,8 @@ pub(crate) fn write_log_record(session: rt::Handle, record: rt::LogRecord) -> rt
             ),
         ),
         LogEvent::SurfaceCreated | LogEvent::SessionReady | LogEvent::SessionFocusChanged => {
-            write_session_linef(
-                session,
+            write_output_linef(
+                output,
                 format_args!(
                     "#{} {} {} {}/{} {} {}",
                     record.sequence,
@@ -374,8 +396,8 @@ pub(crate) fn write_log_record(session: rt::Handle, record: rt::LogRecord) -> rt
                 ),
             )
         }
-        _ => write_session_linef(
-            session,
+        _ => write_output_linef(
+            output,
             format_args!(
                 "#{} {} {} {}/{} {} {}",
                 record.sequence,
@@ -483,7 +505,7 @@ fn unpack_mac(value: u64) -> [u8; 6] {
     ]
 }
 
-pub(crate) fn error_name(error: rt::Error) -> &'static str {
+pub fn error_name(error: rt::Error) -> &'static str {
     match error {
         rt::Error::Unsupported => "unsupported",
         rt::Error::InvalidCall => "invalid-call",

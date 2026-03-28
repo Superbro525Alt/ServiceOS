@@ -1,13 +1,13 @@
 #![no_std]
 #![no_main]
 
-mod commands;
-mod util;
-
+use serviceos_shell_service::{
+    SHELL_PROMPT, SHELL_READY_TEXT, ShellOutput, execute_command, write_output_linef,
+};
 use serviceos_userspace_runtime as rt;
 use rt::{LogEvent, LogSeverity, RawMessage, ServiceId};
 
-const MAX_LINE_BYTES: usize = 128;
+const MAX_LINE_BYTES: usize = serviceos_shell_service::MAX_LINE_BYTES;
 
 rt::entry!(main);
 
@@ -39,21 +39,27 @@ fn main() -> u64 {
     let _ = rt::handle_close(public.second);
     let _ = rt::handle_close(console_handle);
 
-    let _ = util::emit_shell_log(bootstrap, LogSeverity::Info, LogEvent::SessionOpened, 1, 0);
-    let _ = util::write_session_linef(
-        session_handle,
-        format_args!("serviceos shell ready; type 'help' for commands"),
+    let output = ShellOutput::new(session_handle, rt::console_session_write);
+
+    let _ = serviceos_shell_service::util::emit_shell_log(
+        bootstrap,
+        ServiceId::Shell,
+        LogSeverity::Info,
+        LogEvent::SessionOpened,
+        1,
+        0,
     );
+    let _ = write_output_linef(output, format_args!("{SHELL_READY_TEXT}"));
 
     let mut line_buffer = [0u8; MAX_LINE_BYTES];
     loop {
-        let _ = rt::console_session_write(session_handle, "serviceos> ");
+        let _ = rt::console_session_write(session_handle, SHELL_PROMPT);
         let line_len = match rt::console_session_read_line(session_handle, &mut line_buffer) {
             Ok(len) => len,
             Err(_) => return 0xf707,
         };
         let Ok(raw_line) = core::str::from_utf8(&line_buffer[..line_len]) else {
-            let _ = util::write_session_linef(session_handle, format_args!("invalid utf-8 input"));
+            let _ = write_output_linef(output, format_args!("invalid utf-8 input"));
             continue;
         };
         let line = raw_line.trim();
@@ -61,17 +67,10 @@ fn main() -> u64 {
             continue;
         }
 
-        let _ = util::emit_shell_log(
-            bootstrap,
-            LogSeverity::Debug,
-            LogEvent::ShellCommand,
-            line.len() as u64,
-            0,
-        );
-        if let Err(error) = commands::execute_command(bootstrap, session_handle, line) {
-            let _ = util::write_session_linef(
-                session_handle,
-                format_args!("command failed: {}", util::error_name(error)),
+        if let Err(error) = execute_command(bootstrap, output, line) {
+            let _ = write_output_linef(
+                output,
+                format_args!("command failed: {}", serviceos_shell_service::util::error_name(error)),
             );
         }
     }

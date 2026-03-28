@@ -45,12 +45,13 @@ pub(crate) fn render_desktop(state: &mut DesktopState) -> rt::Result<()> {
         launcher_line(state.apps[2]),
         launcher_line(state.apps[3]),
     ];
-    ui::render_panel(
+    ui::render_panel_uniform(
         state.chrome.launcher_handle,
         LAUNCHER_WIDTH,
         LAUNCHER_HEIGHT,
         "APPS",
         &launcher_lines,
+        ui::TEXT_PRIMARY,
     )?;
 
     let mut hb_buf = FixedLogBuffer::<32>::new();

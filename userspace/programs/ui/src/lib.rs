@@ -129,6 +129,32 @@ pub fn render_panel(
     render_window_state(surface, width, height, BG_PANEL, ACCENT_DIM, title, lines, true)
 }
 
+pub fn render_panel_uniform(
+    surface: rt::Handle,
+    width: u32,
+    height: u32,
+    title: &str,
+    lines: &[&str],
+    color: u32,
+) -> rt::Result<()> {
+    rt::surface_set_fill(surface, BG_PANEL)?;
+    rt::surface_clear_scene(surface)?;
+    rt::surface_set_rect(surface, 0, 0, 0, width, TITLEBAR_HEIGHT, ACCENT_DIM, true)?;
+    rt::surface_set_label(surface, 0, 10, 9, TEXT_PRIMARY, title)?;
+    for (index, line) in lines.iter().copied().enumerate() {
+        rt::surface_set_label(
+            surface,
+            (index + 5) as u32,
+            12,
+            PANEL_LINE_START_Y + (index as i32 * PANEL_LINE_STEP),
+            color,
+            line,
+        )?;
+    }
+    let _ = height;
+    Ok(())
+}
+
 pub fn render_status_panel(
     surface: rt::Handle,
     width: u32,

@@ -101,11 +101,16 @@ compatibility runtimes, or a mature app ecosystem.
 
 ```text
 .
+|-- arch/
+|   |-- aarch64/
+|   `-- x86_64/
 |-- docs/
 |-- kernel/
-|   |-- arch/x86_64/
 |   |-- core/
 |   `-- image/x86_64/
+|-- platform/
+|   |-- aarch64/raspi5/
+|   `-- x86_64/qemu_virtio/
 |-- shared/
 |   |-- abi/
 |   `-- bundle/
@@ -120,12 +125,16 @@ compatibility runtimes, or a mature app ecosystem.
 Important directories:
 
 - `kernel/core`: generic kernel subsystems and object model
-- `kernel/arch/x86_64`: x86_64 boot, paging, interrupts, userspace entry, and
-  current device backends
+- `arch/x86_64`: x86_64 CPU, MMU, trap, syscall, and user-transition code
+- `arch/aarch64`: aarch64 architecture scaffolding for the future Pi port
 - `kernel/image/x86_64`: bootable UEFI kernel image
+- `platform/x86_64/qemu_virtio`: UEFI, serial, framebuffer, input, and VirtIO
+  backend wiring for the current QEMU target
+- `platform/aarch64/raspi5`: Raspberry Pi 5 platform scaffolding and boot image
+  layout contracts
 - `shared/abi`: syscall, IPC, service, graphics, network, and package ABI
 - `shared/bundle`: service/package/boot-store bundle format support
-- `support/xtask`: build and QEMU orchestration
+- `support/xtask`: platform-aware build, image, and run orchestration
 - `userspace/bundles`: manifests, config, package metadata, and static
   resources staged into the boot store
 - `userspace/programs`: userspace runtime, services, desktop shell, tools, and
@@ -143,25 +152,36 @@ Common commands:
 ```bash
 cargo check --workspace
 cargo test --workspace
-cargo xtask build
-cargo xtask qemu
+cargo xtask build --platform qemu-virtio
+cargo xtask run --platform qemu-virtio
+cargo xtask image --platform raspi5
 ```
 
 Useful variants:
 
 ```bash
 # Headless serial-only run
-QEMU_HEADLESS=1 cargo xtask qemu
+QEMU_HEADLESS=1 cargo xtask run --platform qemu-virtio
 
 # Smoke run with timeout
-timeout 25 cargo xtask qemu
+timeout 25 cargo xtask run --platform qemu-virtio
+
+# Historical alias kept for convenience
+cargo xtask qemu
 ```
 
-Current `xtask qemu` defaults:
+Current `qemu-virtio` run defaults:
 
 - opens a graphics window by default
 - uses more than the old minimal RAM/CPU settings
 - prefers KVM when available and falls back to multi-threaded TCG otherwise
+
+Current `raspi5` image behavior:
+
+- builds the new `arch/aarch64` and `platform/aarch64/raspi5` crates
+- stages `serviceos/bootstore.bin`
+- writes a Raspberry Pi boot-partition scaffold with `config.txt`
+- does not claim a working native Pi kernel image yet
 
 ## What The System Can Do Right Now
 

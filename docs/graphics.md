@@ -21,7 +21,7 @@ root-manager
 
 The kernel still provides only mechanism:
 
-- boot-time framebuffer discovery from UEFI GOP
+- boot-time framebuffer discovery from the current platform boot parser
 - a `DisplayOutput` kernel object with explicit rights
 - syscalls to query output state and present a frame
 
@@ -44,6 +44,13 @@ Public display state currently includes:
 The public service contract is intentionally backend-neutral. It describes
 outputs and presentation state, not GOP-specific behavior, so later display
 hosts can sit behind the same userspace boundary.
+
+Backend placement now looks like this:
+
+- `kernel/core/display`: display-output object contract
+- `platform/x86_64/qemu_virtio/display`: current boot-framebuffer backend
+- `platform/aarch64/raspi5/framebuffer`: Raspberry Pi 5 display scaffold only
+- `userspace/programs/graphics-service`: surface ownership and composition
 
 ## Graphics service
 
@@ -153,7 +160,7 @@ Generic and durable parts of the current design:
 
 Bring-up-specific parts:
 
-- UEFI GOP framebuffer discovery
+- `platform/x86_64/qemu_virtio::boot` UEFI framebuffer discovery
 - one boot framebuffer backend
 - full-frame copies on presentation
 - one VirtIO input bring-up path for pointer and keyboard delivery

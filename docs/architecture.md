@@ -18,6 +18,18 @@ The current code now implements the first userspace layer of that structure:
 the root service manager plus a very small bootstrap service graph. The broader
 platform and application layers remain deferred.
 
+## Repository layers
+
+The kernel now explicitly trends toward three layers:
+
+- `kernel/core`: architecture-independent kernel semantics
+- `arch/<isa>`: ISA-local CPU, MMU, trap, syscall, and user-transition code
+- `platform/<platform>`: firmware, board, and device wiring
+
+That split exists so the service-oriented OS model can survive a hardware port
+without dragging QEMU- or Pi-specific details into generic kernel code or
+userspace service contracts.
+
 ## What the kernel owns now
 
 - firmware handoff normalization
@@ -60,11 +72,16 @@ platform and application layers remain deferred.
 
 ## Current architectural choices
 
-- `x86_64` + UEFI + QEMU is the primary bring-up path
+- `x86_64` + `qemu-virtio` is the current working bring-up path
+- `aarch64` + `raspi5` now exists as a first-class structural target, but it is
+  still boot-scaffold-only
 - generic kernel code owns abstract memory and address-space concepts
 - generic kernel code also owns objects, capabilities, IPC semantics, and
   lifetime rules
-- the x86_64 crate owns UEFI boot parsing and page-table mutation details
+- `arch/x86_64` owns CPU-local page-table mutation, trap entry, syscall entry,
+  and user-transition details
+- `platform/x86_64/qemu_virtio` owns UEFI boot parsing plus the current serial,
+  framebuffer, input, and VirtIO network backends
 - the active firmware page tables are reused during early bring-up instead of
   being replaced immediately
 - the kernel reserves a future high-half layout even though only the heap is
@@ -88,6 +105,21 @@ platform and application layers remain deferred.
 - the first user syscall ABI stays on interrupt vector `0x80`; the priority is
   a clean privilege boundary before any fast-path syscall work
 
+## Boot information model
+
+Generic boot handoff now centers on `BootInfo` in `kernel/core/bootstrap`.
+
+`BootInfo` intentionally carries only normalized facts:
+
+- memory regions and reclaimability
+- framebuffer presence and format
+- optional boot-store bytes
+- physical memory offset
+- optional ACPI root pointer
+
+Platform boot parsers are expected to translate firmware-specific structures
+into that model before generic kernel initialization begins.
+
 ## Temporary but explicit assumptions
 
 - the early x86_64 bring-up uses the firmware’s flat physical mapping with
@@ -100,6 +132,9 @@ platform and application layers remain deferred.
 - syscalls use interrupt vector `0x80` as the initial entry point instead of a
   faster `SYSCALL/SYSRET` path because the kernel is still proving out the
   first user ABI and wants the most explicit control-flow path
+- parts of the current x86 PC interrupt stack still live in `arch/x86_64` even
+  though PIC/PIT are really platform details; that split will tighten further
+  if another x86 platform target is added
 - the kernel object registry currently uses `Arc` ownership and a weak-indexed
   live-object table because it is simple, explicit, and a good fit for early
   Rust bring-up

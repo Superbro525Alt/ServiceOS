@@ -24,10 +24,17 @@ CPU event
 
 The boundary remains explicit:
 
-- `kernel/arch/x86_64` owns descriptor tables, PIC/PIT programming, IRQ
-  acknowledgement, and low-level entry mechanics
+- `arch/x86_64` owns descriptor tables, low-level x86 entry mechanics, and the
+  current syscall/trap ABI
 - `kernel/core` owns trap accounting, fault disposition, syscall dispatch,
   timer queue state, and deferred scheduler wake handling
+
+Temporary detail:
+
+- PIC/PIT programming and IRQ acknowledgement still live in `arch/x86_64`
+  today because the current x86 target is only `qemu-virtio`; that
+  platform-specific part is now explicitly documented and can move down into a
+  future x86 platform crate without changing `kernel/core`
 
 ## Fault model
 

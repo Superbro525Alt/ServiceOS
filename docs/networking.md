@@ -48,6 +48,13 @@ The current x86_64 bring-up path implements that object with a VirtIO PCI
 backend. That backend is intentionally hidden behind the packet-interface
 contract so the public architecture is not QEMU-specific.
 
+Backend placement now looks like this:
+
+- `kernel/core/network`: packet-interface contracts and object semantics
+- `platform/x86_64/qemu_virtio/net`: VirtIO PCI packet backend and IRQ wiring
+- `userspace/programs/network-service`: address, route, and name-resolution
+  policy
+
 Current backend facts:
 
 - tested under QEMU with `virtio-net-pci`
@@ -61,6 +68,10 @@ Later backends can add:
 - alternate packet-buffer strategies
 
 without redesigning the public `network-service` contract.
+
+The current Raspberry Pi 5 target only has scaffolding under
+`platform/aarch64/raspi5/net` and `platform/aarch64/raspi5/rp1`. No real Pi
+packet backend exists yet, and the docs are explicit about that.
 
 ## Interface and address model
 

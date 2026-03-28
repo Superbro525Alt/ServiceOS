@@ -32,6 +32,17 @@
 - `shell-service` operator environment
 - `package-service` install, update, rollback, and activation coordination
 
+## Architecture and platform abstraction completed
+
+- explicit `kernel/core`, `arch/<isa>`, and `platform/<platform>` layering
+- `arch/x86_64` as the active ISA crate
+- `platform/x86_64/qemu_virtio` for UEFI, serial, framebuffer, input, and
+  VirtIO backend wiring
+- `arch/aarch64` and `platform/aarch64/raspi5` as first-class structural
+  targets
+- platform-first `xtask` build, image, and run selection
+- normalized `BootInfo` handoff into generic kernel initialization
+
 ## Graphics/session foundation completed
 
 - kernel display-output object
@@ -60,6 +71,9 @@
 
 ## Next
 
+- implement native Raspberry Pi 5 firmware handoff, DTB parsing, and a bootable
+  `aarch64` kernel image on top of the new `arch/aarch64` and
+  `platform/aarch64/raspi5` scaffolding
 - evolve the flat-image bootstrap into a richer executable-loading model when
   the current userspace service graph outgrows it
 - add writable storage and directory capabilities
@@ -70,6 +84,8 @@
 - grow the current ICMP/status path into a broader socket and transport surface
 - move input delivery from PIT polling to device-driven wakeups, mirroring the
   packet-interface path
+- split the remaining x86 PC interrupt-controller details out of `arch/x86_64`
+  if a second x86 platform target is added
 - grow the current shared-buffer graphics path into mapped or zero-copy
   presentation buffers and a broader client-render protocol
 - grow the first desktop shell into richer task switching, broader shortcut and

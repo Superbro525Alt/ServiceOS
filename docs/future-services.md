@@ -88,7 +88,7 @@ for low-level output objects and trap/memory mechanisms.
 
 The current platform already has:
 
-- boot framebuffer discovery in `BootContext`
+- boot framebuffer discovery in `BootInfo`
 - a kernel display-output object with explicit rights
 - a `graphics-service` that owns outputs, surfaces, and composition
 - a `session-service` that owns graphical session identity and focus policy

@@ -19,16 +19,18 @@ pub use serviceos_abi::{
     NetworkSocketKind, NetworkSocketState, NetworkSocketTag, NetworkStatus, NetworkTag,
     PACKET_INTERFACE_FLAG_NONBLOCK, PacketInterfaceBackend, PacketInterfaceInfo,
     PacketInterfaceLinkState, PackageStatus, PackageTag, RawMessage, ServiceId, ServiceImageId,
-    SessionInputSource, SessionStatus, SessionTag, StatusTag, StorageEntryKind, StorageStatus, StorageTag,
-    SurfaceTag, SyscallErrorCode, SyscallNumber, TaskStateCode, TaskStatus, TerminalStatus,
-    TerminalTag,
+    RuntimeEnvState, RuntimeKind, RuntimeRunState, RuntimeStatus, RuntimeTag, RuntimeWorkloadKind,
+    SessionInputSource, SessionStatus, SessionTag, StatusTag, StorageEntryKind, StorageStatus,
+    StorageTag, SurfaceTag, SyscallErrorCode, SyscallNumber, TaskStateCode, TaskStatus,
+    TerminalStatus, TerminalTag,
 };
-pub use serviceos_abi::{audio_capability, input_capability, rights};
+pub use serviceos_abi::{audio_capability, input_capability, rights, runtime_capability};
 
 mod app_control;
 mod audio;
 mod bootstrap;
 mod config;
+mod compat;
 mod console;
 mod desktop;
 mod devices;
@@ -41,6 +43,7 @@ mod manager;
 mod memory;
 mod network;
 mod package;
+mod relay;
 mod session;
 mod status;
 mod storage;
@@ -51,6 +54,7 @@ pub use app_control::*;
 pub use audio::*;
 pub use bootstrap::*;
 pub use config::*;
+pub use compat::*;
 pub use console::*;
 pub use desktop::*;
 pub use devices::*;
@@ -63,6 +67,7 @@ pub use manager::*;
 pub use memory::*;
 pub use network::*;
 pub use package::*;
+pub use relay::*;
 pub use session::*;
 pub use status::*;
 pub use storage::*;
@@ -189,7 +194,7 @@ fn syscall4(number: SyscallNumber, arg0: u64, arg1: u64, arg2: u64, arg3: u64) -
     decode_result(value, error)
 }
 
-fn pack_bytes(source: &[u8], words: &mut [u64]) -> Result<u32> {
+pub fn pack_bytes(source: &[u8], words: &mut [u64]) -> Result<u32> {
     let required_words = source.len().div_ceil(8);
     if required_words > words.len() {
         return Err(Error::BufferTooSmall);
@@ -202,7 +207,7 @@ fn pack_bytes(source: &[u8], words: &mut [u64]) -> Result<u32> {
     Ok(required_words as u32)
 }
 
-fn unpack_bytes(words: &[u64], len: usize, destination: &mut [u8]) -> Result<()> {
+pub fn unpack_bytes(words: &[u64], len: usize, destination: &mut [u8]) -> Result<()> {
     if len > destination.len() || len > words.len() * 8 {
         return Err(Error::BufferTooSmall);
     }
@@ -236,6 +241,7 @@ fn service_id_from_word(value: u64) -> ServiceId {
         x if x == ServiceId::DesktopShell as u32 => ServiceId::DesktopShell,
         x if x == ServiceId::Terminal as u32 => ServiceId::Terminal,
         x if x == ServiceId::Audio as u32 => ServiceId::Audio,
+        x if x == ServiceId::Runtime as u32 => ServiceId::Runtime,
         _ => ServiceId::RootManager,
     }
 }
@@ -268,6 +274,7 @@ fn domain_from_word(value: u64) -> LogDomain {
         x if x == LogDomain::Desktop as u32 => LogDomain::Desktop,
         x if x == LogDomain::App as u32 => LogDomain::App,
         x if x == LogDomain::Audio as u32 => LogDomain::Audio,
+        x if x == LogDomain::Runtime as u32 => LogDomain::Runtime,
         _ => LogDomain::Service,
     }
 }
@@ -323,6 +330,13 @@ fn event_from_word(value: u64) -> LogEvent {
         x if x == LogEvent::AudioStreamStarted as u32 => LogEvent::AudioStreamStarted,
         x if x == LogEvent::AudioStreamStopped as u32 => LogEvent::AudioStreamStopped,
         x if x == LogEvent::AudioStreamClosed as u32 => LogEvent::AudioStreamClosed,
+        x if x == LogEvent::RuntimeEnvironmentCreated as u32 => LogEvent::RuntimeEnvironmentCreated,
+        x if x == LogEvent::RuntimeEnvironmentDestroyed as u32 => {
+            LogEvent::RuntimeEnvironmentDestroyed
+        }
+        x if x == LogEvent::RuntimeLaunchStarted as u32 => LogEvent::RuntimeLaunchStarted,
+        x if x == LogEvent::RuntimeLaunchExited as u32 => LogEvent::RuntimeLaunchExited,
+        x if x == LogEvent::RuntimeMappedRead as u32 => LogEvent::RuntimeMappedRead,
         _ => LogEvent::LookupGranted,
     }
 }
@@ -467,6 +481,63 @@ fn audio_stream_state_from_word(value: u64) -> AudioStreamState {
         x if x == AudioStreamState::Closed as u32 => AudioStreamState::Closed,
         x if x == AudioStreamState::Failed as u32 => AudioStreamState::Failed,
         _ => AudioStreamState::Idle,
+    }
+}
+
+fn runtime_status_from_word(value: u64) -> RuntimeStatus {
+    match value as u32 {
+        x if x == RuntimeStatus::Ok as u32 => RuntimeStatus::Ok,
+        x if x == RuntimeStatus::NotFound as u32 => RuntimeStatus::NotFound,
+        x if x == RuntimeStatus::Busy as u32 => RuntimeStatus::Busy,
+        x if x == RuntimeStatus::Denied as u32 => RuntimeStatus::Denied,
+        x if x == RuntimeStatus::InvalidPath as u32 => RuntimeStatus::InvalidPath,
+        x if x == RuntimeStatus::Unsupported as u32 => RuntimeStatus::Unsupported,
+        x if x == RuntimeStatus::Closed as u32 => RuntimeStatus::Closed,
+        _ => RuntimeStatus::Busy,
+    }
+}
+
+fn runtime_status_error(status: RuntimeStatus) -> Error {
+    match status {
+        RuntimeStatus::Ok => Error::InvalidArgument,
+        RuntimeStatus::NotFound | RuntimeStatus::Closed => Error::NotFound,
+        RuntimeStatus::Busy => Error::Busy,
+        RuntimeStatus::Denied => Error::PermissionDenied,
+        RuntimeStatus::InvalidPath => Error::InvalidArgument,
+        RuntimeStatus::Unsupported => Error::Unsupported,
+    }
+}
+
+fn runtime_kind_from_word(value: u64) -> RuntimeKind {
+    match value as u32 {
+        x if x == RuntimeKind::Windows as u32 => RuntimeKind::Windows,
+        _ => RuntimeKind::Posix,
+    }
+}
+
+fn runtime_env_state_from_word(value: u64) -> RuntimeEnvState {
+    match value as u32 {
+        x if x == RuntimeEnvState::Busy as u32 => RuntimeEnvState::Busy,
+        x if x == RuntimeEnvState::Destroyed as u32 => RuntimeEnvState::Destroyed,
+        _ => RuntimeEnvState::Ready,
+    }
+}
+
+fn runtime_run_state_from_word(value: u64) -> RuntimeRunState {
+    match value as u32 {
+        x if x == RuntimeRunState::Running as u32 => RuntimeRunState::Running,
+        x if x == RuntimeRunState::Exited as u32 => RuntimeRunState::Exited,
+        x if x == RuntimeRunState::Failed as u32 => RuntimeRunState::Failed,
+        _ => RuntimeRunState::Launching,
+    }
+}
+
+fn runtime_workload_kind_from_word(value: u64) -> RuntimeWorkloadKind {
+    match value as u32 {
+        x if x == RuntimeWorkloadKind::Env as u32 => RuntimeWorkloadKind::Env,
+        x if x == RuntimeWorkloadKind::Mounts as u32 => RuntimeWorkloadKind::Mounts,
+        x if x == RuntimeWorkloadKind::Cat as u32 => RuntimeWorkloadKind::Cat,
+        _ => RuntimeWorkloadKind::Inspect,
     }
 }
 

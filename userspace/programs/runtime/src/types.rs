@@ -3,7 +3,8 @@ use crate::{
     AudioStreamState, DesktopAppId, DesktopDragMode, DisplayOutputBackend, DisplayOutputState,
     DisplayPixelFormat, LogDomain, LogEvent, LogSeverity, ManagerServicePhase,
     NetworkConfigMode, NetworkConfigState, NetworkSocketKind, NetworkSocketState,
-    PacketInterfaceBackend, PacketInterfaceLinkState, ServiceId, SessionInputSource,
+    PacketInterfaceBackend, PacketInterfaceLinkState, RuntimeEnvState, RuntimeKind,
+    RuntimeRunState, RuntimeWorkloadKind, ServiceId, SessionInputSource,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -101,6 +102,26 @@ pub struct AudioStreamInfo {
     pub endpoint_index: u32,
     pub frequency_hz: u32,
     pub remaining_ticks: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RuntimeEnvInfo {
+    pub env_id: u32,
+    pub kind: RuntimeKind,
+    pub state: RuntimeEnvState,
+    pub capabilities: u32,
+    pub mount_count: u32,
+    pub var_count: u32,
+    pub active_runs: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RuntimeRunInfo {
+    pub run_id: u32,
+    pub env_id: u32,
+    pub workload: RuntimeWorkloadKind,
+    pub state: RuntimeRunState,
+    pub exit_code: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

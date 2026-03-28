@@ -18,6 +18,7 @@ pub const WINDOW_BUTTON_SIZE: u32 = 12;
 pub const WINDOW_BUTTON_TOP: i32 = 8;
 pub const WINDOW_BUTTON_RIGHT_MARGIN: i32 = 10;
 pub const WINDOW_BUTTON_GAP: i32 = 8;
+pub const WINDOW_BORDER_THICKNESS: i32 = 6;
 
 pub fn render_window(
     surface: rt::Handle,
@@ -67,6 +68,17 @@ pub fn render_window_state(
     rt::surface_set_label(surface, 0, 10, 9, TEXT_PRIMARY, title)?;
     let close_x = width as i32 - WINDOW_BUTTON_RIGHT_MARGIN - WINDOW_BUTTON_SIZE as i32;
     let minimize_x = close_x - WINDOW_BUTTON_GAP - WINDOW_BUTTON_SIZE as i32;
+    let maximize_x = minimize_x - WINDOW_BUTTON_GAP - WINDOW_BUTTON_SIZE as i32;
+    rt::surface_set_rect(
+        surface,
+        5,
+        maximize_x,
+        WINDOW_BUTTON_TOP,
+        WINDOW_BUTTON_SIZE,
+        WINDOW_BUTTON_SIZE,
+        ACCENT,
+        true,
+    )?;
     rt::surface_set_rect(
         surface,
         2,
@@ -87,6 +99,7 @@ pub fn render_window_state(
         STATUS_WARN,
         true,
     )?;
+    rt::surface_set_rect(surface, 6, maximize_x + 3, WINDOW_BUTTON_TOP + 3, 6, 6, BG_PANEL, true)?;
     rt::surface_set_label(surface, 14, minimize_x + 3, WINDOW_BUTTON_TOP + 2, BG_PANEL, "_")?;
     rt::surface_set_label(surface, 15, close_x + 3, WINDOW_BUTTON_TOP + 2, BG_PANEL, "X")?;
     for (index, line) in lines.iter().copied().enumerate() {

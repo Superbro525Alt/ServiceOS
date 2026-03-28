@@ -4,7 +4,7 @@ pub type Handle = u32;
 
 pub const INVALID_HANDLE: Handle = 0;
 pub const IPC_MAX_WORDS: usize = 16;
-pub const IPC_MAX_HANDLES: usize = 4;
+pub const IPC_MAX_HANDLES: usize = 8;
 
 pub mod rights {
     pub const NONE: u64 = 0;
@@ -43,6 +43,8 @@ pub enum SyscallNumber {
     PacketInterfaceTransmit = 17,
     DisplayOutputInfo = 18,
     DisplayOutputPresent = 19,
+    InputSourceInfo = 20,
+    InputSourceReceive = 21,
 }
 
 #[repr(u32)]
@@ -250,6 +252,8 @@ pub enum LogEvent {
     DesktopAppExited = 36,
     DesktopFocusChanged = 37,
     AppRendered = 38,
+    InputSourceReady = 39,
+    InputKeyDelivered = 40,
 }
 
 #[repr(u32)]
@@ -479,6 +483,54 @@ pub struct DisplayOutputInfo {
     pub present_count: u64,
 }
 
+pub const INPUT_SOURCE_FLAG_NONBLOCK: u32 = 1 << 0;
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InputSourceBackend {
+    Unknown = 0,
+    VirtioPci = 1,
+}
+
+pub mod input_capability {
+    pub const POINTER: u32 = 1 << 0;
+    pub const KEYBOARD: u32 = 1 << 1;
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InputSourceInfo {
+    pub backend: u32,
+    pub capabilities: u32,
+    pub device_count: u32,
+    pub pending_events: u32,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InputEventKind {
+    PointerMotion = 1,
+    PointerButton = 2,
+    Key = 3,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InputButton {
+    Left = 1,
+    Right = 2,
+    Middle = 3,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InputEventInfo {
+    pub kind: u32,
+    pub code: u32,
+    pub value0: i32,
+    pub value1: i32,
+}
+
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NetworkTag {
@@ -565,6 +617,7 @@ pub enum DesktopWindowAction {
     Move = 5,
     Resize = 6,
     FocusNext = 7,
+    Maximize = 8,
 }
 
 #[repr(u32)]
@@ -574,6 +627,9 @@ pub enum DesktopInputAction {
     PointerMove = 2,
     PointerUp = 3,
     Click = 4,
+    KeyDown = 5,
+    KeyUp = 6,
+    TextInput = 7,
 }
 
 #[repr(u32)]
@@ -637,6 +693,7 @@ pub enum SessionStatus {
 pub enum SessionInputSource {
     None = 0,
     ServiceControl = 1,
+    Hardware = 2,
 }
 
 #[repr(u32)]
@@ -645,4 +702,22 @@ pub enum AppControlTag {
     FocusChanged = 0xac0,
     Resize = 0xac1,
     Close = 0xac2,
+    Pointer = 0xac3,
+    Key = 0xac4,
+    Text = 0xac5,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AppPointerAction {
+    Down = 1,
+    Move = 2,
+    Up = 3,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AppKeyAction {
+    Down = 1,
+    Up = 2,
 }

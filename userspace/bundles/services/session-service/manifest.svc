@@ -5,3 +5,4 @@ restart=on-failure:1
 depends=graphics-service, log-service
 grant=log-service:send
 lookup=graphics-service:send
+lookup=desktop-shell-service:send

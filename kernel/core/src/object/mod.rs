@@ -7,6 +7,7 @@ use spin::{Mutex, Once};
 use crate::{
     capability::CapabilityRights,
     display::{DisplayBackend, DisplayOutputObject},
+    input::{self, InputBackend, InputSourceObject},
     ipc::ChannelEndpointObject,
     network::{self, PacketBackend, PacketInterfaceObject},
     task::{
@@ -29,6 +30,7 @@ pub enum ObjectKind {
     BootstrapCapability,
     PacketInterface,
     DisplayOutput,
+    InputSource,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -55,6 +57,7 @@ pub enum KernelObject {
     BootstrapCapability(BootstrapCapabilityObject),
     PacketInterface(PacketInterfaceObject),
     DisplayOutput(DisplayOutputObject),
+    InputSource(InputSourceObject),
 }
 
 impl KernelObjectRecord {
@@ -129,6 +132,13 @@ impl KernelObjectRecord {
     pub fn display_output(&self) -> Option<&DisplayOutputObject> {
         match &self.body {
             KernelObject::DisplayOutput(output) => Some(output),
+            _ => None,
+        }
+    }
+
+    pub fn input_source(&self) -> Option<&InputSourceObject> {
+        match &self.body {
+            KernelObject::InputSource(source) => Some(source),
             _ => None,
         }
     }
@@ -475,6 +485,25 @@ impl ObjectRegistry {
             },
             body: KernelObject::DisplayOutput(DisplayOutputObject::new(backend)),
         })
+    }
+
+    pub fn create_input_source(
+        &self,
+        backend: alloc::sync::Arc<dyn InputBackend>,
+    ) -> KernelObjectRef {
+        let object = self.register(KernelObjectRecord {
+            header: ObjectHeader {
+                id: self.allocate_id(ObjectKind::InputSource),
+                kind: ObjectKind::InputSource,
+            },
+            body: KernelObject::InputSource(InputSourceObject::new(backend)),
+        });
+        let source = object
+            .input_source()
+            .expect("input source object must be an input source")
+            .backend();
+        let _ = input::initialize().register_source(object.id().0, source);
+        object
     }
 
     pub fn lookup(&self, id: ObjectId) -> Option<KernelObjectRef> {

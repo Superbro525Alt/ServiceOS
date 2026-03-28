@@ -45,6 +45,7 @@ desktop next: focus the next visible window\r\n\
 desktop close <settings|files|monitor>: close a desktop app window\r\n\
 desktop minimize <settings|files|monitor>: minimize a desktop app window\r\n\
 desktop restore <settings|files|monitor>: restore a minimized app window\r\n\
+desktop maximize <settings|files|monitor>: maximize or restore a window\r\n\
 desktop move <settings|files|monitor> <x> <y>: move a window\r\n\
 desktop resize <settings|files|monitor> <width> <height>: resize a window\r\n\
 desktop click <x> <y>: inject a pointer click into the desktop session\r\n\
@@ -598,6 +599,13 @@ where
                 format_args!("usage: desktop restore <settings|files|monitor>"),
             ),
         },
+        Some("maximize") => match parts.next().and_then(parse_desktop_app_name) {
+            Some(app_id) => cmd_desktop_maximize(bootstrap, session, app_id),
+            None => write_session_linef(
+                session,
+                format_args!("usage: desktop maximize <settings|files|monitor>"),
+            ),
+        },
         Some("move") => match (
             parts.next().and_then(parse_desktop_app_name),
             parts.next().and_then(|value| value.parse::<i32>().ok()),
@@ -632,7 +640,7 @@ where
         _ => write_session_linef(
             session,
             format_args!(
-                "usage: desktop <status|apps|windows|launch|focus|next|close|minimize|restore|move|resize|click> ..."
+                "usage: desktop <status|apps|windows|launch|focus|next|close|minimize|restore|maximize|move|resize|click> ..."
             ),
         ),
     }
@@ -805,6 +813,20 @@ fn cmd_desktop_restore(
     write_session_linef(
         session,
         format_args!("restored {} on surface {}", desktop_app_name(app_id), surface_id),
+    )
+}
+
+fn cmd_desktop_maximize(
+    bootstrap: rt::Handle,
+    session: rt::Handle,
+    app_id: DesktopAppId,
+) -> rt::Result<()> {
+    let desktop_handle = rt::lookup_service(bootstrap, ServiceId::DesktopShell)?;
+    let surface_id = rt::desktop_maximize_app(desktop_handle, app_id)?;
+    let _ = rt::handle_close(desktop_handle);
+    write_session_linef(
+        session,
+        format_args!("maximized {} on surface {}", desktop_app_name(app_id), surface_id),
     )
 }
 
@@ -1241,6 +1263,8 @@ fn event_name(event: LogEvent) -> &'static str {
         LogEvent::DesktopAppExited => "desktop-app-exited",
         LogEvent::DesktopFocusChanged => "desktop-focus-changed",
         LogEvent::AppRendered => "app-rendered",
+        LogEvent::InputSourceReady => "input-source-ready",
+        LogEvent::InputKeyDelivered => "input-key-delivered",
     }
 }
 
@@ -1403,6 +1427,7 @@ fn pixel_format_name(format: rt::DisplayPixelFormat) -> &'static str {
 fn session_input_source_name(source: rt::SessionInputSource) -> &'static str {
     match source {
         rt::SessionInputSource::ServiceControl => "service-control",
+        rt::SessionInputSource::Hardware => "hardware",
         rt::SessionInputSource::None => "none",
     }
 }

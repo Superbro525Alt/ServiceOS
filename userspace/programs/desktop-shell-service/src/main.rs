@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use core::{fmt::Write, str};
+use core::{char, fmt::Write, str};
 
 use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
@@ -25,6 +25,9 @@ const LAUNCHER_ITEM_STEP: i32 = 18;
 const WINDOW_MIN_WIDTH: u32 = 280;
 const WINDOW_MIN_HEIGHT: u32 = 160;
 const RESIZE_GRIP_SIZE: i32 = 20;
+const MOD_ALT: u32 = 1 << 1;
+const KEY_TAB: u32 = 15;
+const KEY_F4: u32 = 62;
 
 #[derive(Clone, Copy)]
 struct Chrome {
@@ -47,6 +50,11 @@ struct WindowState {
     height: u32,
     z_order: u32,
     minimized: bool,
+    maximized: bool,
+    restore_x: i32,
+    restore_y: i32,
+    restore_width: u32,
+    restore_height: u32,
 }
 
 impl WindowState {
@@ -61,6 +69,11 @@ impl WindowState {
             height: 0,
             z_order: 0,
             minimized: false,
+            maximized: false,
+            restore_x: 0,
+            restore_y: 0,
+            restore_width: 0,
+            restore_height: 0,
         }
     }
 
@@ -111,8 +124,11 @@ enum DragState {
     },
     Resize {
         app_id: DesktopAppId,
-        origin_x: i32,
-        origin_y: i32,
+        edges: ResizeEdges,
+        origin_pointer_x: i32,
+        origin_pointer_y: i32,
+        start_x: i32,
+        start_y: i32,
         start_width: u32,
         start_height: u32,
     },
@@ -127,6 +143,31 @@ impl DragState {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ResizeEdges(u8);
+
+impl ResizeEdges {
+    const NONE: Self = Self(0);
+    const LEFT: Self = Self(1 << 0);
+    const RIGHT: Self = Self(1 << 1);
+    const TOP: Self = Self(1 << 2);
+    const BOTTOM: Self = Self(1 << 3);
+
+    fn contains(self, other: Self) -> bool {
+        self.0 & other.0 != 0
+    }
+
+    fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+}
+
+impl core::ops::BitOrAssign for ResizeEdges {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
+    }
+}
+
 enum HitTarget {
     Background,
     Launcher(DesktopAppId),
@@ -138,11 +179,17 @@ enum HitTarget {
     },
     WindowResize {
         app_id: DesktopAppId,
-        origin_x: i32,
-        origin_y: i32,
+        edges: ResizeEdges,
     },
     WindowClose(DesktopAppId),
     WindowMinimize(DesktopAppId),
+    WindowMaximize(DesktopAppId),
+}
+
+#[derive(Clone, Copy)]
+struct ContentCapture {
+    app_id: DesktopAppId,
+    button: u32,
 }
 
 struct DesktopState {
@@ -161,6 +208,7 @@ struct DesktopState {
     pointer_x: i32,
     pointer_y: i32,
     drag_state: Option<DragState>,
+    content_capture: Option<ContentCapture>,
 }
 
 rt::entry!(main);
@@ -231,6 +279,7 @@ fn main() -> u64 {
         pointer_x: 0,
         pointer_y: 0,
         drag_state: None,
+        content_capture: None,
     };
 
     if render_desktop(&mut state).is_err() {
@@ -474,6 +523,9 @@ fn handle_request(state: &mut DesktopState, request: &RawMessage) -> rt::Result<
                         request.words[3] as u32,
                     )
                 }),
+                Some(DesktopWindowAction::Maximize) => app_id
+                    .ok_or(rt::Error::NotFound)
+                    .and_then(|app| maximize_app(state, app)),
                 Some(DesktopWindowAction::FocusNext) => focus_next_app(state),
                 None => Err(rt::Error::NotFound),
             };
@@ -582,6 +634,11 @@ fn launch_or_focus_app(state: &mut DesktopState, app_id: DesktopAppId) -> rt::Re
         height,
         z_order,
         minimized: false,
+        maximized: false,
+        restore_x: x,
+        restore_y: y,
+        restore_width: width,
+        restore_height: height,
     };
     state.apps[index].running = true;
     sync_window_surface(&state.apps[index])?;
@@ -669,8 +726,68 @@ fn restore_app(state: &mut DesktopState, app_id: DesktopAppId) -> rt::Result<u32
     if !state.apps[index].running {
         return Err(rt::Error::NotFound);
     }
+    if state.apps[index].window.maximized {
+        let restore_x = state.apps[index].window.restore_x;
+        let restore_y = state.apps[index].window.restore_y;
+        let restore_width = state.apps[index].window.restore_width.max(WINDOW_MIN_WIDTH);
+        let restore_height = state.apps[index].window.restore_height.max(WINDOW_MIN_HEIGHT);
+        state.apps[index].window.x =
+            clamp_window_x(state.chrome.output_width, restore_width, restore_x);
+        state.apps[index].window.y =
+            clamp_window_y(state.chrome.output_height, restore_height, restore_y);
+        state.apps[index].window.width = restore_width;
+        state.apps[index].window.height = restore_height;
+        state.apps[index].window.maximized = false;
+        apply_window_geometry(&state.apps[index])?;
+        if state.apps[index].window.control_handle != rt::INVALID_HANDLE {
+            let _ = rt::app_control_resize(
+                state.apps[index].window.control_handle,
+                restore_width,
+                restore_height,
+            );
+        }
+    }
     state.apps[index].window.minimized = false;
     sync_window_surface(&state.apps[index])?;
+    focus_app(state, app_id)
+}
+
+fn maximize_app(state: &mut DesktopState, app_id: DesktopAppId) -> rt::Result<u32> {
+    let Some(index) = app_slot_index(&state.apps, app_id) else {
+        return Err(rt::Error::NotFound);
+    };
+    if !state.apps[index].running {
+        return Err(rt::Error::NotFound);
+    }
+    if state.apps[index].window.maximized {
+        return restore_app(state, app_id);
+    }
+
+    state.apps[index].window.restore_x = state.apps[index].window.x;
+    state.apps[index].window.restore_y = state.apps[index].window.y;
+    state.apps[index].window.restore_width = state.apps[index].window.width;
+    state.apps[index].window.restore_height = state.apps[index].window.height;
+    state.apps[index].window.maximized = true;
+    state.apps[index].window.minimized = false;
+    state.apps[index].window.x = PANEL_MARGIN as i32;
+    state.apps[index].window.y = (TOPBAR_HEIGHT + PANEL_MARGIN) as i32;
+    state.apps[index].window.width = state
+        .chrome
+        .output_width
+        .saturating_sub(PANEL_MARGIN * 2);
+    state.apps[index].window.height = state
+        .chrome
+        .output_height
+        .saturating_sub(TOPBAR_HEIGHT + PANEL_MARGIN * 2);
+    apply_window_geometry(&state.apps[index])?;
+    if state.apps[index].window.control_handle != rt::INVALID_HANDLE {
+        let _ = rt::app_control_resize(
+            state.apps[index].window.control_handle,
+            state.apps[index].window.width,
+            state.apps[index].window.height,
+        );
+    }
+    render_desktop(state)?;
     focus_app(state, app_id)
 }
 
@@ -681,6 +798,7 @@ fn move_app(state: &mut DesktopState, app_id: DesktopAppId, x: i32, y: i32) -> r
     if !state.apps[index].running {
         return Err(rt::Error::NotFound);
     }
+    state.apps[index].window.maximized = false;
     state.apps[index].window.x = clamp_window_x(state.chrome.output_width, state.apps[index].window.width, x);
     state.apps[index].window.y = clamp_window_y(state.chrome.output_height, state.apps[index].window.height, y);
     apply_window_geometry(&state.apps[index])?;
@@ -709,6 +827,7 @@ fn resize_app(
     if !state.apps[index].running {
         return Err(rt::Error::NotFound);
     }
+    state.apps[index].window.maximized = false;
     let width = width.clamp(WINDOW_MIN_WIDTH, state.chrome.output_width.saturating_sub(PANEL_MARGIN));
     let height = height.clamp(
         WINDOW_MIN_HEIGHT,
@@ -913,20 +1032,40 @@ fn handle_input(
     x: i32,
     y: i32,
 ) -> rt::Result<u32> {
-    state.pointer_x = x;
-    state.pointer_y = y;
     let result = match action {
-        DesktopInputAction::PointerDown => handle_pointer_down(state, x, y),
-        DesktopInputAction::PointerMove => handle_pointer_move(state, x, y),
+        DesktopInputAction::PointerDown => {
+            state.pointer_x = x;
+            state.pointer_y = y;
+            handle_pointer_down(state, x, y)
+        }
+        DesktopInputAction::PointerMove => {
+            state.pointer_x = x;
+            state.pointer_y = y;
+            handle_pointer_move(state, x, y)
+        }
         DesktopInputAction::PointerUp => {
+            state.pointer_x = x;
+            state.pointer_y = y;
+            let surface_id = handle_pointer_up(state, x, y)?;
             state.drag_state = None;
-            Ok(focused_surface_id(state))
+            state.content_capture = None;
+            Ok(surface_id)
         }
         DesktopInputAction::Click => {
+            state.pointer_x = x;
+            state.pointer_y = y;
             let _ = handle_pointer_down(state, x, y)?;
             state.drag_state = None;
+            state.content_capture = None;
             Ok(focused_surface_id(state))
         }
+        DesktopInputAction::KeyDown => {
+            handle_key_input(state, rt::AppKeyAction::Down, x as u32, y as u32)
+        }
+        DesktopInputAction::KeyUp => {
+            handle_key_input(state, rt::AppKeyAction::Up, x as u32, y as u32)
+        }
+        DesktopInputAction::TextInput => handle_text_input(state, x as u32),
     }?;
     render_desktop(state)?;
     Ok(result)
@@ -936,18 +1075,31 @@ fn handle_pointer_down(state: &mut DesktopState, x: i32, y: i32) -> rt::Result<u
     match hit_test(state, x, y) {
         HitTarget::Background => {
             state.drag_state = None;
+            state.content_capture = None;
             Ok(focused_surface_id(state))
         }
         HitTarget::Launcher(app_id) => launch_or_focus_app(state, app_id),
         HitTarget::WindowContent(app_id) => {
             state.drag_state = None;
-            focus_app(state, app_id)
+            state.content_capture = Some(ContentCapture { app_id, button: 1 });
+            let surface_id = focus_app(state, app_id)?;
+            let (local_x, local_y) = app_local_coords(state, app_id, x, y)?;
+            dispatch_pointer_to_app(
+                state,
+                app_id,
+                rt::AppPointerAction::Down,
+                local_x,
+                local_y,
+                1,
+            )?;
+            Ok(surface_id)
         }
         HitTarget::WindowMove {
             app_id,
             grab_offset_x,
             grab_offset_y,
         } => {
+            state.content_capture = None;
             let surface_id = focus_app(state, app_id)?;
             state.drag_state = Some(DragState::Move {
                 app_id,
@@ -958,23 +1110,31 @@ fn handle_pointer_down(state: &mut DesktopState, x: i32, y: i32) -> rt::Result<u
         }
         HitTarget::WindowResize {
             app_id,
-            origin_x,
-            origin_y,
+            edges,
         } => {
+            state.content_capture = None;
             let surface_id = focus_app(state, app_id)?;
             let index = app_slot_index(&state.apps, app_id).ok_or(rt::Error::NotFound)?;
             state.drag_state = Some(DragState::Resize {
                 app_id,
-                origin_x,
-                origin_y,
+                edges,
+                origin_pointer_x: x,
+                origin_pointer_y: y,
+                start_x: state.apps[index].window.x,
+                start_y: state.apps[index].window.y,
                 start_width: state.apps[index].window.width,
                 start_height: state.apps[index].window.height,
             });
             Ok(surface_id)
         }
         HitTarget::WindowClose(app_id) => {
+            state.content_capture = None;
             close_app(state, app_id)?;
             Ok(focused_surface_id(state))
+        }
+        HitTarget::WindowMaximize(app_id) => {
+            state.content_capture = None;
+            maximize_app(state, app_id)
         }
         HitTarget::WindowMinimize(app_id) => minimize_app(state, app_id),
     }
@@ -989,22 +1149,113 @@ fn handle_pointer_move(state: &mut DesktopState, x: i32, y: i32) -> rt::Result<u
         }) => move_app(state, app_id, x - grab_offset_x, y - grab_offset_y),
         Some(DragState::Resize {
             app_id,
-            origin_x,
-            origin_y,
+            edges,
+            origin_pointer_x,
+            origin_pointer_y,
+            start_x,
+            start_y,
             start_width,
             start_height,
-        }) => {
-            let delta_x = (x - origin_x).max(-(start_width as i32) + WINDOW_MIN_WIDTH as i32);
-            let delta_y = (y - origin_y).max(-(start_height as i32) + WINDOW_MIN_HEIGHT as i32);
-            resize_app(
-                state,
-                app_id,
-                (start_width as i32 + delta_x) as u32,
-                (start_height as i32 + delta_y) as u32,
-            )
+        }) => resize_drag(
+            state,
+            app_id,
+            edges,
+            origin_pointer_x,
+            origin_pointer_y,
+            start_x,
+            start_y,
+            start_width,
+            start_height,
+            x,
+            y,
+        ),
+        None => {
+            if let Some(capture) = state.content_capture {
+                let (local_x, local_y) = app_local_coords(state, capture.app_id, x, y)?;
+                dispatch_pointer_to_app(
+                    state,
+                    capture.app_id,
+                    rt::AppPointerAction::Move,
+                    local_x,
+                    local_y,
+                    capture.button,
+                )?;
+            }
+            Ok(focused_surface_id(state))
         }
-        None => Ok(focused_surface_id(state)),
     }
+}
+
+fn handle_pointer_up(state: &mut DesktopState, x: i32, y: i32) -> rt::Result<u32> {
+    if let Some(capture) = state.content_capture {
+        let (local_x, local_y) = app_local_coords(state, capture.app_id, x, y)?;
+        dispatch_pointer_to_app(
+            state,
+            capture.app_id,
+            rt::AppPointerAction::Up,
+            local_x,
+            local_y,
+            capture.button,
+        )?;
+    }
+    Ok(focused_surface_id(state))
+}
+
+fn handle_key_input(
+    state: &mut DesktopState,
+    action: rt::AppKeyAction,
+    key_code: u32,
+    modifiers: u32,
+) -> rt::Result<u32> {
+    if action == rt::AppKeyAction::Down && modifiers & MOD_ALT != 0 {
+        if key_code == KEY_TAB {
+            return focus_next_app(state);
+        }
+        if key_code == KEY_F4 {
+            if let Some(app_id) = state.focused_app {
+                close_app(state, app_id)?;
+                return Ok(focused_surface_id(state));
+            }
+        }
+    }
+
+    let Some(app_id) = state.focused_app else {
+        return Ok(0);
+    };
+    let Some(index) = app_slot_index(&state.apps, app_id) else {
+        return Ok(0);
+    };
+    let control = state.apps[index].window.control_handle;
+    if control == rt::INVALID_HANDLE {
+        return Ok(0);
+    }
+    rt::app_control_key(control, action, key_code)?;
+    let _ = emit_log(
+        state.log_handle,
+        LogSeverity::Debug,
+        LogEvent::InputKeyDelivered,
+        app_id as u32 as u64,
+        key_code as u64,
+    );
+    Ok(state.apps[index].window.surface_id)
+}
+
+fn handle_text_input(state: &mut DesktopState, scalar: u32) -> rt::Result<u32> {
+    let Some(ch) = char::from_u32(scalar) else {
+        return Ok(focused_surface_id(state));
+    };
+    let Some(app_id) = state.focused_app else {
+        return Ok(0);
+    };
+    let Some(index) = app_slot_index(&state.apps, app_id) else {
+        return Ok(0);
+    };
+    let control = state.apps[index].window.control_handle;
+    if control == rt::INVALID_HANDLE {
+        return Ok(0);
+    }
+    rt::app_control_text(control, ch)?;
+    Ok(state.apps[index].window.surface_id)
 }
 
 fn sort_app_ids_by_z(state: &DesktopState, values: &mut [DesktopAppId]) {
@@ -1063,6 +1314,7 @@ fn hit_test(state: &DesktopState, x: i32, y: i32) -> HitTarget {
             let close_left =
                 window.width as i32 - ui::WINDOW_BUTTON_RIGHT_MARGIN - ui::WINDOW_BUTTON_SIZE as i32;
             let minimize_left = close_left - ui::WINDOW_BUTTON_GAP - ui::WINDOW_BUTTON_SIZE as i32;
+            let maximize_left = minimize_left - ui::WINDOW_BUTTON_GAP - ui::WINDOW_BUTTON_SIZE as i32;
             if local_x >= close_left && local_x < close_left + ui::WINDOW_BUTTON_SIZE as i32 {
                 return HitTarget::WindowClose(app_id);
             }
@@ -1071,20 +1323,26 @@ fn hit_test(state: &DesktopState, x: i32, y: i32) -> HitTarget {
             {
                 return HitTarget::WindowMinimize(app_id);
             }
+            if local_x >= maximize_left
+                && local_x < maximize_left + ui::WINDOW_BUTTON_SIZE as i32
+            {
+                return HitTarget::WindowMaximize(app_id);
+            }
+        }
+
+        let resize_edges = resize_hit_edges(&window, local_x, local_y);
+        if !resize_edges.is_empty() && !window.maximized {
+            return HitTarget::WindowResize {
+                app_id,
+                edges: resize_edges,
+            };
+        }
+
+        if local_y < ui::TITLEBAR_HEIGHT as i32 {
             return HitTarget::WindowMove {
                 app_id,
                 grab_offset_x: local_x,
                 grab_offset_y: local_y,
-            };
-        }
-
-        if local_x >= window.width as i32 - RESIZE_GRIP_SIZE
-            && local_y >= window.height as i32 - RESIZE_GRIP_SIZE
-        {
-            return HitTarget::WindowResize {
-                app_id,
-                origin_x: x,
-                origin_y: y,
             };
         }
 
@@ -1323,6 +1581,7 @@ fn desktop_window_action_from_word(value: u64) -> Option<DesktopWindowAction> {
         x if x == DesktopWindowAction::Move as u32 => Some(DesktopWindowAction::Move),
         x if x == DesktopWindowAction::Resize as u32 => Some(DesktopWindowAction::Resize),
         x if x == DesktopWindowAction::FocusNext as u32 => Some(DesktopWindowAction::FocusNext),
+        x if x == DesktopWindowAction::Maximize as u32 => Some(DesktopWindowAction::Maximize),
         _ => None,
     }
 }
@@ -1333,6 +1592,9 @@ fn desktop_input_action_from_word(value: u64) -> Option<DesktopInputAction> {
         x if x == DesktopInputAction::PointerMove as u32 => Some(DesktopInputAction::PointerMove),
         x if x == DesktopInputAction::PointerUp as u32 => Some(DesktopInputAction::PointerUp),
         x if x == DesktopInputAction::Click as u32 => Some(DesktopInputAction::Click),
+        x if x == DesktopInputAction::KeyDown as u32 => Some(DesktopInputAction::KeyDown),
+        x if x == DesktopInputAction::KeyUp as u32 => Some(DesktopInputAction::KeyUp),
+        x if x == DesktopInputAction::TextInput as u32 => Some(DesktopInputAction::TextInput),
         _ => None,
     }
 }
@@ -1412,4 +1674,125 @@ fn emit_log(
 
 fn emit_text_log(domain: &str, args: core::fmt::Arguments<'_>) -> rt::Result<()> {
     rt::write_logf(domain, args)
+}
+
+fn dispatch_pointer_to_app(
+    state: &DesktopState,
+    app_id: DesktopAppId,
+    action: rt::AppPointerAction,
+    local_x: i32,
+    local_y: i32,
+    button: u32,
+) -> rt::Result<()> {
+    let Some(index) = app_slot_index(&state.apps, app_id) else {
+        return Err(rt::Error::NotFound);
+    };
+    let control = state.apps[index].window.control_handle;
+    if control == rt::INVALID_HANDLE {
+        return Err(rt::Error::NotFound);
+    }
+    rt::app_control_pointer(control, action, local_x, local_y, button)
+}
+
+fn app_local_coords(
+    state: &DesktopState,
+    app_id: DesktopAppId,
+    x: i32,
+    y: i32,
+) -> rt::Result<(i32, i32)> {
+    let Some(index) = app_slot_index(&state.apps, app_id) else {
+        return Err(rt::Error::NotFound);
+    };
+    let window = state.apps[index].window;
+    let max_x = (window.width.saturating_sub(1)) as i32;
+    let max_y = (window.height.saturating_sub(1)) as i32;
+    Ok(((x - window.x).clamp(0, max_x), (y - window.y).clamp(0, max_y)))
+}
+
+fn resize_hit_edges(window: &WindowState, local_x: i32, local_y: i32) -> ResizeEdges {
+    let mut edges = ResizeEdges::NONE;
+    if local_x <= ui::WINDOW_BORDER_THICKNESS {
+        edges |= ResizeEdges::LEFT;
+    }
+    if local_x >= window.width as i32 - RESIZE_GRIP_SIZE {
+        edges |= ResizeEdges::RIGHT;
+    }
+    if local_y <= ui::WINDOW_BORDER_THICKNESS {
+        edges |= ResizeEdges::TOP;
+    }
+    if local_y >= window.height as i32 - RESIZE_GRIP_SIZE {
+        edges |= ResizeEdges::BOTTOM;
+    }
+    edges
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resize_drag(
+    state: &mut DesktopState,
+    app_id: DesktopAppId,
+    edges: ResizeEdges,
+    origin_pointer_x: i32,
+    origin_pointer_y: i32,
+    start_x: i32,
+    start_y: i32,
+    start_width: u32,
+    start_height: u32,
+    x: i32,
+    y: i32,
+) -> rt::Result<u32> {
+    let Some(index) = app_slot_index(&state.apps, app_id) else {
+        return Err(rt::Error::NotFound);
+    };
+    let delta_x = x - origin_pointer_x;
+    let delta_y = y - origin_pointer_y;
+
+    let mut new_x = start_x;
+    let mut new_y = start_y;
+    let mut new_width = start_width as i32;
+    let mut new_height = start_height as i32;
+
+    if edges.contains(ResizeEdges::LEFT) {
+        new_x = start_x + delta_x;
+        new_width = start_width as i32 - delta_x;
+    }
+    if edges.contains(ResizeEdges::RIGHT) {
+        new_width = start_width as i32 + delta_x;
+    }
+    if edges.contains(ResizeEdges::TOP) {
+        new_y = start_y + delta_y;
+        new_height = start_height as i32 - delta_y;
+    }
+    if edges.contains(ResizeEdges::BOTTOM) {
+        new_height = start_height as i32 + delta_y;
+    }
+
+    if new_width < WINDOW_MIN_WIDTH as i32 {
+        if edges.contains(ResizeEdges::LEFT) {
+            new_x -= WINDOW_MIN_WIDTH as i32 - new_width;
+        }
+        new_width = WINDOW_MIN_WIDTH as i32;
+    }
+    if new_height < WINDOW_MIN_HEIGHT as i32 {
+        if edges.contains(ResizeEdges::TOP) {
+            new_y -= WINDOW_MIN_HEIGHT as i32 - new_height;
+        }
+        new_height = WINDOW_MIN_HEIGHT as i32;
+    }
+
+    state.apps[index].window.maximized = false;
+    state.apps[index].window.x =
+        clamp_window_x(state.chrome.output_width, new_width as u32, new_x);
+    state.apps[index].window.y =
+        clamp_window_y(state.chrome.output_height, new_height as u32, new_y);
+    state.apps[index].window.width = new_width as u32;
+    state.apps[index].window.height = new_height as u32;
+    apply_window_geometry(&state.apps[index])?;
+    if state.apps[index].window.control_handle != rt::INVALID_HANDLE {
+        let _ = rt::app_control_resize(
+            state.apps[index].window.control_handle,
+            state.apps[index].window.width,
+            state.apps[index].window.height,
+        );
+    }
+    Ok(state.apps[index].window.surface_id)
 }

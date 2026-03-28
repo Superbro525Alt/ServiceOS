@@ -7,7 +7,7 @@ use serviceos_abi::{ControlTag, ServiceImageId};
 use serviceos_bundle::BootStore;
 use serviceos_kernel_arch_x86_64::{
     boot::exit_boot_services_and_capture_context,
-    cpu, display,
+    cpu, display, input,
     interrupts::{self, TIMER_TICK_HZ},
     network,
     paging::ActivePageTable,
@@ -116,6 +116,8 @@ fn kernel_main() -> Status {
             .registry()
             .create_display_output(display::initialize(framebuffer))
     });
+    let bootstrap_input =
+        input::initialize().map(|backend| kernel.objects().registry().create_input_source(backend));
 
     log(
         "memory",
@@ -195,8 +197,24 @@ fn kernel_main() -> Status {
     } else {
         log_line("display", "no boot framebuffer detected");
     }
+    if let Some(summary) = input::bringup_summary() {
+        log(
+            "input",
+            format_args!(
+                "backend={:?} keyboards={} pointers={}",
+                summary.backend, summary.keyboard_devices, summary.pointer_devices,
+            ),
+        );
+    } else {
+        log_line("input", "no input source detected");
+    }
 
-    let summary = match launch_root_manager(&kernel, bootstrap_network, bootstrap_display) {
+    let summary = match launch_root_manager(
+        &kernel,
+        bootstrap_network,
+        bootstrap_display,
+        bootstrap_input,
+    ) {
         Ok(summary) => summary,
         Err(error) => {
             log(
@@ -263,6 +281,7 @@ fn launch_root_manager(
     kernel: &Kernel<'_>,
     bootstrap_network: Option<serviceos_kernel_core::object::KernelObjectRef>,
     bootstrap_display: Option<serviceos_kernel_core::object::KernelObjectRef>,
+    bootstrap_input: Option<serviceos_kernel_core::object::KernelObjectRef>,
 ) -> Result<RootBootstrapSummary, BootstrapError> {
     let ipc_kernel = ipc::kernel().ok_or(BootstrapError::MissingBootStore)?;
     let bootstrap_task = kernel
@@ -347,6 +366,20 @@ fn launch_root_manager(
     } else {
         None
     };
+    let input_transfer = if let Some(input_object) = bootstrap_input {
+        let input_handle = bootstrap_task.capability_space().install(
+            input_object,
+            CapabilityRights::input_source(),
+            None,
+        )?;
+        Some(bootstrap_task.capability_space().prepare_transfer(
+            input_handle,
+            CapabilityRights::input_source(),
+            TransferMode::Move,
+        )?)
+    } else {
+        None
+    };
 
     let root = kernel_user::spawn_builtin_task(
         ServiceImageId::RootManager as u32,
@@ -368,6 +401,9 @@ fn launch_root_manager(
     }
     if let Some(display_transfer) = display_transfer {
         startup = startup.add_transfer(display_transfer)?;
+    }
+    if let Some(input_transfer) = input_transfer {
+        startup = startup.add_transfer(input_transfer)?;
     }
     ipc_kernel.send(
         bootstrap_task.capability_space(),

@@ -366,7 +366,8 @@ fn handle_public_message(
                 LogEvent::DesktopAppLaunched
                 | LogEvent::DesktopAppExited
                 | LogEvent::DesktopFocusChanged
-                | LogEvent::AppRendered => write_structured_line(
+                | LogEvent::AppRendered
+                | LogEvent::InputKeyDelivered => write_structured_line(
                     sessions,
                     "console",
                     format_args!(
@@ -691,6 +692,8 @@ fn event_from_word(value: u64) -> LogEvent {
         x if x == LogEvent::DesktopAppExited as u32 => LogEvent::DesktopAppExited,
         x if x == LogEvent::DesktopFocusChanged as u32 => LogEvent::DesktopFocusChanged,
         x if x == LogEvent::AppRendered as u32 => LogEvent::AppRendered,
+        x if x == LogEvent::InputSourceReady as u32 => LogEvent::InputSourceReady,
+        x if x == LogEvent::InputKeyDelivered as u32 => LogEvent::InputKeyDelivered,
         _ => LogEvent::LookupGranted,
     }
 }
@@ -794,6 +797,8 @@ fn event_name(event: LogEvent) -> &'static str {
         LogEvent::DesktopAppExited => "desktop-app-exited",
         LogEvent::DesktopFocusChanged => "desktop-focus-changed",
         LogEvent::AppRendered => "app-rendered",
+        LogEvent::InputSourceReady => "input-source-ready",
+        LogEvent::InputKeyDelivered => "input-key-delivered",
     }
 }
 

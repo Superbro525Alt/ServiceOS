@@ -1,13 +1,20 @@
 #![no_std]
 #![no_main]
 
-use core::{fmt::Write, str};
+use core::{char, fmt::Write, str};
 
 use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
 use rt::{
-    AppControlTag, ConfigKey, ControlTag, FixedLogBuffer, LifecycleEvent, RawMessage,
+    AppControlTag, AppKeyAction, AppPointerAction, ConfigKey, ControlTag, FixedLogBuffer,
+    LifecycleEvent, RawMessage,
 };
+
+const NOTE_MAX_BYTES: usize = 24;
+const NOTE_FIELD_X0: i32 = 10;
+const NOTE_FIELD_Y0: i32 = 98;
+const NOTE_FIELD_X1: i32 = 232;
+const NOTE_FIELD_Y1: i32 = 122;
 
 rt::entry!(main);
 
@@ -31,8 +38,22 @@ fn main() -> u64 {
 
     let mut width = width;
     let mut height = height;
+    let mut editing_note = false;
+    let mut note = [0u8; NOTE_MAX_BYTES];
+    let mut note_len = 0usize;
 
-    if render(surface_handle, width, height, focused, config_handle, network_handle).is_err() {
+    if render(
+        surface_handle,
+        width,
+        height,
+        focused,
+        config_handle,
+        network_handle,
+        editing_note,
+        &note[..note_len],
+    )
+    .is_err()
+    {
         return 0xf003;
     }
     loop {
@@ -47,6 +68,9 @@ fn main() -> u64 {
             &mut width,
             &mut height,
             &mut focused,
+            &mut editing_note,
+            &mut note,
+            &mut note_len,
             config_handle,
             network_handle,
         ) {
@@ -67,6 +91,8 @@ fn render(
     focused: bool,
     config_handle: rt::Handle,
     network_handle: rt::Handle,
+    editing_note: bool,
+    note: &[u8],
 ) -> rt::Result<()> {
     let min_level = rt::config_read(config_handle, ConfigKey::LogMinimumSeverity)
         .map(|(_, value)| value)
@@ -106,6 +132,12 @@ fn render(
     } else {
         let _ = write!(&mut line3, "GATEWAY UNAVAILABLE");
     }
+    let mut line4 = FixedLogBuffer::<48>::new();
+    let note_prefix = if editing_note { "NOTE * " } else { "NOTE   " };
+    let note_text = str::from_utf8(note).unwrap_or("");
+    let _ = write!(&mut line4, "{}{}", note_prefix, note_text);
+    let mut line5 = FixedLogBuffer::<48>::new();
+    let _ = write!(&mut line5, "CLICK NOTE FIELD, TYPE TEXT");
 
     ui::render_window_state(
         surface_handle,
@@ -119,9 +151,31 @@ fn render(
             str::from_utf8(line1.as_bytes()).unwrap_or("HEARTBEAT ?"),
             str::from_utf8(line2.as_bytes()).unwrap_or("IP ?"),
             str::from_utf8(line3.as_bytes()).unwrap_or("GATEWAY ?"),
+            str::from_utf8(line4.as_bytes()).unwrap_or("NOTE"),
+            str::from_utf8(line5.as_bytes()).unwrap_or("TYPE"),
         ],
         focused,
-    )
+    )?;
+    rt::surface_set_rect(
+        surface_handle,
+        7,
+        NOTE_FIELD_X0,
+        NOTE_FIELD_Y0,
+        (NOTE_FIELD_X1 - NOTE_FIELD_X0) as u32,
+        (NOTE_FIELD_Y1 - NOTE_FIELD_Y0) as u32,
+        if editing_note { ui::ACCENT } else { ui::ACCENT_DIM },
+        true,
+    )?;
+    rt::surface_set_label(
+        surface_handle,
+        11,
+        NOTE_FIELD_X0 + 8,
+        NOTE_FIELD_Y0 + 7,
+        ui::BG_PANEL,
+        note_text,
+    )?;
+    let _ = height;
+    Ok(())
 }
 
 enum ControlFlow {
@@ -135,6 +189,9 @@ fn poll_control(
     width: &mut u32,
     height: &mut u32,
     focused: &mut bool,
+    editing_note: &mut bool,
+    note: &mut [u8; NOTE_MAX_BYTES],
+    note_len: &mut usize,
     config_handle: rt::Handle,
     network_handle: rt::Handle,
 ) -> rt::Result<ControlFlow> {
@@ -142,19 +199,127 @@ fn poll_control(
     match rt::channel_receive_nonblocking(control_handle, &mut message) {
         Ok(()) if message.tag == AppControlTag::FocusChanged as u32 && message.word_count > 0 => {
             *focused = message.words[0] != 0;
-            render(surface_handle, *width, *height, *focused, config_handle, network_handle)?;
+            render(
+                surface_handle,
+                *width,
+                *height,
+                *focused,
+                config_handle,
+                network_handle,
+                *editing_note,
+                &note[..*note_len],
+            )?;
             Ok(ControlFlow::Continue)
         }
         Ok(()) if message.tag == AppControlTag::Resize as u32 && message.word_count >= 2 => {
             *width = message.words[0] as u32;
             *height = message.words[1] as u32;
-            render(surface_handle, *width, *height, *focused, config_handle, network_handle)?;
+            render(
+                surface_handle,
+                *width,
+                *height,
+                *focused,
+                config_handle,
+                network_handle,
+                *editing_note,
+                &note[..*note_len],
+            )?;
+            Ok(ControlFlow::Continue)
+        }
+        Ok(()) if message.tag == AppControlTag::Pointer as u32 && message.word_count >= 4 => {
+            let action = app_pointer_action_from_word(message.words[0]);
+            let x = message.words[1] as i64 as i32;
+            let y = message.words[2] as i64 as i32;
+            if matches!(action, Some(AppPointerAction::Down))
+                && x >= NOTE_FIELD_X0
+                && x < NOTE_FIELD_X1
+                && y >= NOTE_FIELD_Y0
+                && y < NOTE_FIELD_Y1
+            {
+                *editing_note = true;
+            } else if matches!(action, Some(AppPointerAction::Down)) {
+                *editing_note = false;
+            }
+            render(
+                surface_handle,
+                *width,
+                *height,
+                *focused,
+                config_handle,
+                network_handle,
+                *editing_note,
+                &note[..*note_len],
+            )?;
+            Ok(ControlFlow::Continue)
+        }
+        Ok(()) if message.tag == AppControlTag::Key as u32 && message.word_count >= 2 => {
+            if *editing_note
+                && matches!(app_key_action_from_word(message.words[0]), Some(AppKeyAction::Down))
+                && message.words[1] as u32 == 14
+                && *note_len > 0
+            {
+                *note_len -= 1;
+                render(
+                    surface_handle,
+                    *width,
+                    *height,
+                    *focused,
+                    config_handle,
+                    network_handle,
+                    *editing_note,
+                    &note[..*note_len],
+                )?;
+            }
+            Ok(ControlFlow::Continue)
+        }
+        Ok(()) if message.tag == AppControlTag::Text as u32 && message.word_count > 0 => {
+            if *editing_note {
+                if let Some(ch) = char::from_u32(message.words[0] as u32) {
+                    if ch == '\n' {
+                        *editing_note = false;
+                    } else if ch.is_ascii_graphic() || ch == ' ' {
+                        let mut scratch = [0u8; 4];
+                        let bytes = ch.encode_utf8(&mut scratch).as_bytes();
+                        if *note_len + bytes.len() <= NOTE_MAX_BYTES {
+                            note[*note_len..*note_len + bytes.len()].copy_from_slice(bytes);
+                            *note_len += bytes.len();
+                        }
+                    }
+                    render(
+                        surface_handle,
+                        *width,
+                        *height,
+                        *focused,
+                        config_handle,
+                        network_handle,
+                        *editing_note,
+                        &note[..*note_len],
+                    )?;
+                }
+            }
             Ok(ControlFlow::Continue)
         }
         Ok(()) if message.tag == AppControlTag::Close as u32 => Ok(ControlFlow::Exit),
         Ok(()) => Ok(ControlFlow::Continue),
         Err(rt::Error::QueueEmpty) => Ok(ControlFlow::Continue),
         Err(error) => Err(error),
+    }
+}
+
+fn app_pointer_action_from_word(value: u64) -> Option<AppPointerAction> {
+    match value as u32 {
+        x if x == AppPointerAction::Down as u32 => Some(AppPointerAction::Down),
+        x if x == AppPointerAction::Move as u32 => Some(AppPointerAction::Move),
+        x if x == AppPointerAction::Up as u32 => Some(AppPointerAction::Up),
+        _ => None,
+    }
+}
+
+fn app_key_action_from_word(value: u64) -> Option<AppKeyAction> {
+    match value as u32 {
+        x if x == AppKeyAction::Down as u32 => Some(AppKeyAction::Down),
+        x if x == AppKeyAction::Up as u32 => Some(AppKeyAction::Up),
+        _ => None,
     }
 }
 

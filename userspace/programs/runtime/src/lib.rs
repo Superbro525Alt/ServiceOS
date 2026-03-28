@@ -6,19 +6,20 @@ use core::{
 };
 
 pub use serviceos_abi::{
-    AppControlTag, ConfigKey, ConfigTag, ConfigValueKind, ConsoleTag, ControlTag, DesktopAppId,
-    DesktopDragMode, DesktopInputAction, DesktopStatus, DesktopTag, DesktopWindowAction,
-    DisplayOutputBackend, DisplayOutputInfo, DisplayOutputState, DisplayPixelFormat,
-    GraphicsStatus, GraphicsTag, Handle, HandlePair, IPC_FLAG_NONBLOCK, IPC_MAX_HANDLES,
-    IPC_MAX_WORDS, INVALID_HANDLE, LifecycleEvent, LogDomain, LogEvent, LogQueryStatus,
-    LogSeverity, LogTag, LookupStatus, ManagerAction, ManagerServicePhase, ManagerStatus,
-    ManagerTag, NetworkStatus, NetworkTag, PACKET_INTERFACE_FLAG_NONBLOCK,
-    PacketInterfaceBackend, PacketInterfaceInfo, PacketInterfaceLinkState, PackageStatus,
-    PackageTag, RawMessage, ServiceId, ServiceImageId, SessionInputSource, SessionStatus,
-    SessionTag, StatusTag, StorageStatus, StorageTag, SurfaceTag, SyscallErrorCode,
-    SyscallNumber, TaskStateCode, TaskStatus,
+    AppControlTag, AppKeyAction, AppPointerAction, ConfigKey, ConfigTag, ConfigValueKind,
+    ConsoleTag, ControlTag, DesktopAppId, DesktopDragMode, DesktopInputAction, DesktopStatus,
+    DesktopTag, DesktopWindowAction, DisplayOutputBackend, DisplayOutputInfo,
+    DisplayOutputState, DisplayPixelFormat, GraphicsStatus, GraphicsTag, Handle, HandlePair,
+    IPC_FLAG_NONBLOCK, IPC_MAX_HANDLES, IPC_MAX_WORDS, INPUT_SOURCE_FLAG_NONBLOCK, INVALID_HANDLE,
+    InputButton, InputEventInfo, InputEventKind, InputSourceBackend, InputSourceInfo,
+    LifecycleEvent, LogDomain, LogEvent, LogQueryStatus, LogSeverity, LogTag, LookupStatus,
+    ManagerAction, ManagerServicePhase, ManagerStatus, ManagerTag, NetworkStatus, NetworkTag,
+    PACKET_INTERFACE_FLAG_NONBLOCK, PacketInterfaceBackend, PacketInterfaceInfo,
+    PacketInterfaceLinkState, PackageStatus, PackageTag, RawMessage, ServiceId, ServiceImageId,
+    SessionInputSource, SessionStatus, SessionTag, StatusTag, StorageStatus, StorageTag,
+    SurfaceTag, SyscallErrorCode, SyscallNumber, TaskStateCode, TaskStatus,
 };
-pub use serviceos_abi::rights;
+pub use serviceos_abi::{input_capability, rights};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
@@ -272,6 +273,53 @@ pub fn display_output_present(handle: Handle, frame: &[u8]) -> Result<usize> {
         frame.len() as u64,
     )
     .map(|value| value as usize)
+}
+
+pub fn input_source_info(handle: Handle) -> Result<InputSourceInfo> {
+    let mut info = InputSourceInfo {
+        backend: InputSourceBackend::Unknown as u32,
+        capabilities: 0,
+        device_count: 0,
+        pending_events: 0,
+    };
+    syscall2(
+        SyscallNumber::InputSourceInfo,
+        handle as u64,
+        &mut info as *mut InputSourceInfo as u64,
+    )?;
+    Ok(info)
+}
+
+pub fn input_source_receive(handle: Handle) -> Result<InputEventInfo> {
+    let mut event = InputEventInfo {
+        kind: 0,
+        code: 0,
+        value0: 0,
+        value1: 0,
+    };
+    syscall3(
+        SyscallNumber::InputSourceReceive,
+        handle as u64,
+        &mut event as *mut InputEventInfo as u64,
+        0,
+    )?;
+    Ok(event)
+}
+
+pub fn input_source_receive_nonblocking(handle: Handle) -> Result<InputEventInfo> {
+    let mut event = InputEventInfo {
+        kind: 0,
+        code: 0,
+        value0: 0,
+        value1: 0,
+    };
+    syscall3(
+        SyscallNumber::InputSourceReceive,
+        handle as u64,
+        &mut event as *mut InputEventInfo as u64,
+        INPUT_SOURCE_FLAG_NONBLOCK as u64,
+    )?;
+    Ok(event)
 }
 
 pub fn wait_for_exit(task_handle: Handle) -> Result<TaskStatus> {
@@ -1140,6 +1188,16 @@ pub fn desktop_restore_app(desktop_handle: Handle, app_id: DesktopAppId) -> Resu
     )
 }
 
+pub fn desktop_maximize_app(desktop_handle: Handle, app_id: DesktopAppId) -> Result<u32> {
+    desktop_window_action(
+        desktop_handle,
+        DesktopWindowAction::Maximize,
+        Some(app_id),
+        0,
+        0,
+    )
+}
+
 pub fn desktop_move_app(
     desktop_handle: Handle,
     app_id: DesktopAppId,
@@ -1202,6 +1260,15 @@ pub fn desktop_pointer_input(
 
 pub fn desktop_pointer_click(desktop_handle: Handle, x: i32, y: i32) -> Result<u32> {
     desktop_pointer_input(desktop_handle, DesktopInputAction::Click, x, y)
+}
+
+pub fn desktop_key_input(
+    desktop_handle: Handle,
+    action: DesktopInputAction,
+    key_code: u32,
+    value: u32,
+) -> Result<u32> {
+    desktop_pointer_input(desktop_handle, action, key_code as i32, value as i32)
 }
 
 pub fn manager_activate_service(bootstrap: Handle, manifest_path: &str) -> Result<ServiceId> {
@@ -2043,6 +2110,41 @@ pub fn app_control_resize(control_handle: Handle, width: u32, height: u32) -> Re
 
 pub fn app_control_close(control_handle: Handle) -> Result<()> {
     let request = RawMessage::empty(AppControlTag::Close as u32);
+    channel_send(control_handle, &request)
+}
+
+pub fn app_control_pointer(
+    control_handle: Handle,
+    action: AppPointerAction,
+    x: i32,
+    y: i32,
+    button: u32,
+) -> Result<()> {
+    let mut request = RawMessage::empty(AppControlTag::Pointer as u32);
+    request.word_count = 4;
+    request.words[0] = action as u32 as u64;
+    request.words[1] = x as i64 as u64;
+    request.words[2] = y as i64 as u64;
+    request.words[3] = button as u64;
+    channel_send(control_handle, &request)
+}
+
+pub fn app_control_key(
+    control_handle: Handle,
+    action: AppKeyAction,
+    key_code: u32,
+) -> Result<()> {
+    let mut request = RawMessage::empty(AppControlTag::Key as u32);
+    request.word_count = 2;
+    request.words[0] = action as u32 as u64;
+    request.words[1] = key_code as u64;
+    channel_send(control_handle, &request)
+}
+
+pub fn app_control_text(control_handle: Handle, scalar: char) -> Result<()> {
+    let mut request = RawMessage::empty(AppControlTag::Text as u32);
+    request.word_count = 1;
+    request.words[0] = scalar as u32 as u64;
     channel_send(control_handle, &request)
 }
 

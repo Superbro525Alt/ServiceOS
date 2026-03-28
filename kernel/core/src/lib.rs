@@ -5,6 +5,7 @@ extern crate alloc;
 pub mod bootstrap;
 pub mod capability;
 pub mod display;
+pub mod input;
 pub mod interrupts;
 pub mod ipc;
 pub mod memory;
@@ -64,6 +65,7 @@ impl<'boot> Kernel<'boot> {
     ) -> Result<Self, KernelInitError> {
         let memory = memory::initialize(boot_context, mapper)?;
         let interrupts = interrupts::initialize();
+        let _ = input::initialize();
         let syscalls = syscall::initialize();
         let time = time::initialize(time::TimerSourceInfo {
             tick_hz: timer_tick_hz,

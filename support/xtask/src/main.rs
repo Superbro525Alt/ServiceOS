@@ -168,6 +168,8 @@ fn run_qemu(disk_image: &Path) -> Result<(), Box<dyn Error>> {
         "-device",
         "virtio-net-pci,netdev=net0,mac=52:54:00:12:34:56",
     ]);
+    command.args(["-device", "virtio-keyboard-pci"]);
+    command.args(["-device", "virtio-tablet-pci"]);
     command.args([
         "-drive",
         &format!(

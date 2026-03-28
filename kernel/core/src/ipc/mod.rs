@@ -13,7 +13,7 @@ use crate::{
 };
 
 pub const MAX_MESSAGE_WORDS: usize = 16;
-pub const MAX_MESSAGE_CAPABILITIES: usize = 4;
+pub const MAX_MESSAGE_CAPABILITIES: usize = serviceos_abi::IPC_MAX_HANDLES;
 pub const MAX_QUEUED_MESSAGES_PER_ENDPOINT: usize = 64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]

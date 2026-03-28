@@ -28,6 +28,7 @@ struct BootstrapResources {
     bootstore: BootstrapResource,
     network: Option<BootstrapResource>,
     display: Option<BootstrapResource>,
+    input: Option<BootstrapResource>,
 }
 
 #[derive(Clone, Copy)]
@@ -103,6 +104,15 @@ fn main() -> u64 {
     } else {
         None
     };
+    let input_resource = if startup.handle_count > 4 {
+        Some(BootstrapResource {
+            handle: startup.handles[4],
+            len: 0,
+            rights: rights::READ | rights::WAIT,
+        })
+    } else {
+        None
+    };
     let bootstrap_resources = BootstrapResources {
         bootstore: BootstrapResource {
             handle: bootstore_handle,
@@ -111,6 +121,7 @@ fn main() -> u64 {
         },
         network: network_resource,
         display: display_resource,
+        input: input_resource,
     };
 
     fallback_log("bootstrap started");
@@ -512,6 +523,9 @@ fn bootstrap_resource_for(
             .map(|resource| (resource.handle, resource.len, resource.rights)),
         ServiceId::Graphics => bootstrap_resources
             .display
+            .map(|resource| (resource.handle, resource.len, resource.rights)),
+        ServiceId::Session => bootstrap_resources
+            .input
             .map(|resource| (resource.handle, resource.len, resource.rights)),
         _ => None,
     }
@@ -1491,6 +1505,8 @@ fn event_name(event: LogEvent) -> &'static str {
         LogEvent::DesktopAppExited => "desktop-app-exited",
         LogEvent::DesktopFocusChanged => "desktop-focus-changed",
         LogEvent::AppRendered => "app-rendered",
+        LogEvent::InputSourceReady => "input-source-ready",
+        LogEvent::InputKeyDelivered => "input-key-delivered",
     }
 }
 

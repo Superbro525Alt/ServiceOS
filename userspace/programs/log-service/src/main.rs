@@ -324,6 +324,8 @@ fn event_from_word(value: u64) -> LogEvent {
         x if x == LogEvent::DesktopAppExited as u32 => LogEvent::DesktopAppExited,
         x if x == LogEvent::DesktopFocusChanged as u32 => LogEvent::DesktopFocusChanged,
         x if x == LogEvent::AppRendered as u32 => LogEvent::AppRendered,
+        x if x == LogEvent::InputSourceReady as u32 => LogEvent::InputSourceReady,
+        x if x == LogEvent::InputKeyDelivered as u32 => LogEvent::InputKeyDelivered,
         _ => LogEvent::LookupGranted,
     }
 }

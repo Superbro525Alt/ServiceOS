@@ -1,8 +1,9 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use serviceos_abi::{
-    DisplayOutputInfo as AbiDisplayOutputInfo, Handle, HandlePair, IPC_FLAG_NONBLOCK,
-    IPC_MAX_HANDLES, IPC_MAX_WORDS, PACKET_INTERFACE_FLAG_NONBLOCK,
+    DisplayOutputInfo as AbiDisplayOutputInfo, Handle, HandlePair, INPUT_SOURCE_FLAG_NONBLOCK,
+    IPC_FLAG_NONBLOCK, IPC_MAX_HANDLES, IPC_MAX_WORDS, InputEventInfo as AbiInputEventInfo,
+    InputSourceInfo as AbiInputSourceInfo, PACKET_INTERFACE_FLAG_NONBLOCK,
     PacketInterfaceInfo as AbiPacketInterfaceInfo, RawMessage, SyscallErrorCode as AbiErrorCode,
     SyscallNumber as AbiSyscallNumber, TaskStateCode, TaskStatus as AbiTaskStatus,
 };
@@ -20,7 +21,7 @@ use crate::{
 };
 
 const SYSCALL_ABI_VERSION: u64 = 0x0003_0000;
-const MAX_SYSCALL_SLOTS: usize = 20;
+const MAX_SYSCALL_SLOTS: usize = 22;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SyscallNumber(pub u32);
@@ -95,6 +96,7 @@ pub enum SyscallAction {
     YieldCurrentThread,
     BlockCurrentThreadOnReceive { endpoint: ObjectId },
     BlockCurrentThreadOnPacketReceive { interface: ObjectId },
+    BlockCurrentThreadOnInputReceive { source: ObjectId },
     ExitCurrentThread { status: u64 },
 }
 
@@ -233,6 +235,8 @@ pub fn initialize() -> &'static DispatchTable {
             Some(handle_packet_interface_transmit),
             Some(handle_display_output_info),
             Some(handle_display_output_present),
+            Some(handle_input_source_info),
+            Some(handle_input_source_receive),
         ])
     })
 }
@@ -860,6 +864,92 @@ fn handle_display_output_present(context: &SyscallContext) -> SyscallReturn {
     }
 }
 
+fn handle_input_source_info(context: &SyscallContext) -> SyscallReturn {
+    let Some(current_task) = user::current_task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(task) = current_task.task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(descriptor) = task
+        .capability_space()
+        .resolve_descriptor(CapabilityHandle(context.arguments[0] as Handle))
+    else {
+        return SyscallReturn::error(SyscallError::NotFound);
+    };
+    if !descriptor.rights.contains(CapabilityRights::READ) {
+        return SyscallReturn::error(SyscallError::PermissionDenied);
+    }
+    let Some(object) =
+        crate::object::model().and_then(|model| model.registry().lookup(descriptor.object))
+    else {
+        return SyscallReturn::error(SyscallError::NotFound);
+    };
+    let Some(source) = object.input_source() else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Ok(info_out) = (unsafe { user_mut::<AbiInputSourceInfo>(context.arguments[1]) }) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+
+    *info_out = source.info();
+    SyscallReturn::success(0)
+}
+
+fn handle_input_source_receive(context: &SyscallContext) -> SyscallReturn {
+    let Some(current_task) = user::current_task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(task) = current_task.task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(descriptor) = task
+        .capability_space()
+        .resolve_descriptor(CapabilityHandle(context.arguments[0] as Handle))
+    else {
+        return SyscallReturn::error(SyscallError::NotFound);
+    };
+    if !descriptor
+        .rights
+        .contains(CapabilityRights::READ.union(CapabilityRights::WAIT))
+    {
+        return SyscallReturn::error(SyscallError::PermissionDenied);
+    }
+    let Some(object) =
+        crate::object::model().and_then(|model| model.registry().lookup(descriptor.object))
+    else {
+        return SyscallReturn::error(SyscallError::NotFound);
+    };
+    let Some(source) = object.input_source() else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Ok(event_out) = (unsafe { user_mut::<AbiInputEventInfo>(context.arguments[1]) }) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+
+    match source.receive() {
+        Ok(event) => {
+            *event_out = event;
+            SyscallReturn::success(0)
+        }
+        Err(crate::input::InputSourceError::QueueEmpty)
+            if context.arguments[2] as u32 & INPUT_SOURCE_FLAG_NONBLOCK != 0 =>
+        {
+            SyscallReturn::error(SyscallError::QueueEmpty)
+        }
+        Err(crate::input::InputSourceError::QueueEmpty) => SyscallReturn::error_with_action(
+            SyscallError::QueueEmpty,
+            SyscallAction::BlockCurrentThreadOnInputReceive {
+                source: descriptor.object,
+            },
+        ),
+        Err(crate::input::InputSourceError::Busy) => SyscallReturn::error(SyscallError::Busy),
+        Err(crate::input::InputSourceError::Unsupported) => {
+            SyscallReturn::error(SyscallError::Unsupported)
+        }
+    }
+}
+
 fn map_capability_error(error: CapabilityError) -> SyscallError {
     match error {
         CapabilityError::InvalidHandle => SyscallError::NotFound,
@@ -953,6 +1043,8 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
         ]);
 
         let result = table.dispatch(SyscallNumber(1), &empty_context());
@@ -970,6 +1062,8 @@ mod tests {
     fn abi_version_syscall_returns_stable_value() {
         let table = DispatchTable::new([
             Some(handle_abi_version),
+            None,
+            None,
             None,
             None,
             None,

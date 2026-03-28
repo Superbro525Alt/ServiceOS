@@ -116,6 +116,13 @@ impl CapabilityRights {
             .union(Self::DUPLICATE)
             .union(Self::TRANSFER)
     }
+
+    pub const fn input_source() -> Self {
+        Self::READ
+            .union(Self::WAIT)
+            .union(Self::DUPLICATE)
+            .union(Self::TRANSFER)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

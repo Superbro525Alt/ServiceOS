@@ -3,11 +3,19 @@
 
 use serviceos_userspace_runtime as rt;
 use rt::{
-    ControlTag, LifecycleEvent, LogDomain, LogEvent, LogSeverity, RawMessage, ServiceId,
-    SessionInputSource, SessionStatus, SessionTag,
+    ControlTag, DesktopInputAction, InputButton, InputEventKind, LifecycleEvent, LogDomain,
+    LogEvent, LogSeverity, RawMessage, ServiceId, SessionInputSource, SessionStatus, SessionTag,
+    input_capability,
 };
 
 const SESSION_ID: u32 = 1;
+const MOD_SHIFT: u32 = 1 << 0;
+const MOD_ALT: u32 = 1 << 1;
+
+const KEY_LEFT_SHIFT: u32 = 42;
+const KEY_RIGHT_SHIFT: u32 = 54;
+const KEY_LEFT_ALT: u32 = 56;
+const KEY_RIGHT_ALT: u32 = 100;
 
 rt::entry!(main);
 
@@ -17,11 +25,12 @@ fn main() -> u64 {
     if rt::channel_receive_blocking(bootstrap, &mut startup).is_err() {
         return 0xfd01;
     }
-    if startup.tag != ControlTag::Startup as u32 || startup.handle_count < 1 {
+    if startup.tag != ControlTag::Startup as u32 || startup.handle_count < 2 {
         return 0xfd02;
     }
 
-    let log_handle = startup.handles[0];
+    let input_handle = startup.handles[0];
+    let log_handle = startup.handles[1];
 
     let public = match rt::channel_create() {
         Ok(pair) => pair,
@@ -32,9 +41,30 @@ fn main() -> u64 {
     }
     let _ = rt::handle_close(public.second);
 
+    let output_size = match lookup_output_size(bootstrap) {
+        Ok(size) => size,
+        Err(_) => return 0xfd09,
+    };
+    let input_info = match rt::input_source_info(input_handle) {
+        Ok(info) => info,
+        Err(_) => return 0xfd0a,
+    };
+
     let mut state = SessionState {
         focused_surface: 0,
         surface_count_hint: 0,
+        input_source: if input_info.capabilities == 0 {
+            SessionInputSource::ServiceControl
+        } else {
+            SessionInputSource::Hardware
+        },
+        input_handle,
+        desktop_handle: rt::INVALID_HANDLE,
+        output_width: output_size.0,
+        output_height: output_size.1,
+        pointer_x: 0,
+        pointer_y: 0,
+        modifiers: 0,
     };
     let _ = emit_log(
         log_handle,
@@ -42,6 +72,13 @@ fn main() -> u64 {
         LogEvent::SessionReady,
         SESSION_ID as u64,
         0,
+    );
+    let _ = emit_log(
+        log_handle,
+        LogSeverity::Info,
+        LogEvent::InputSourceReady,
+        input_info.capabilities as u64,
+        input_info.device_count as u64,
     );
 
     loop {
@@ -62,6 +99,10 @@ fn main() -> u64 {
             Err(_) => return 0xfd07,
         }
 
+        if poll_input(bootstrap, &mut state).is_err() {
+            return 0xfd0b;
+        }
+
         if rt::yield_current().is_err() {
             return 0xfd08;
         }
@@ -71,6 +112,14 @@ fn main() -> u64 {
 struct SessionState {
     focused_surface: u32,
     surface_count_hint: u32,
+    input_source: SessionInputSource,
+    input_handle: rt::Handle,
+    desktop_handle: rt::Handle,
+    output_width: u32,
+    output_height: u32,
+    pointer_x: i32,
+    pointer_y: i32,
+    modifiers: u32,
 }
 
 fn handle_request(
@@ -104,7 +153,7 @@ fn handle_request(
             } else {
                 reply.words[0] = SessionStatus::Ok as u32 as u64;
                 reply.words[1] = SESSION_ID as u64;
-                reply.words[2] = SessionInputSource::ServiceControl as u32 as u64;
+                reply.words[2] = state.input_source as u32 as u64;
                 reply.words[3] = state.focused_surface as u64;
                 reply.words[4] = state.surface_count_hint as u64;
             }
@@ -147,6 +196,175 @@ fn handle_request(
     }
 
     Ok(())
+}
+
+fn poll_input(bootstrap: rt::Handle, state: &mut SessionState) -> rt::Result<()> {
+    loop {
+        let event = match rt::input_source_receive_nonblocking(state.input_handle) {
+            Ok(event) => event,
+            Err(rt::Error::QueueEmpty) => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        process_input_event(bootstrap, state, event)?;
+    }
+}
+
+fn process_input_event(
+    bootstrap: rt::Handle,
+    state: &mut SessionState,
+    event: rt::InputEventInfo,
+) -> rt::Result<()> {
+    let Some(desktop_handle) = desktop_handle(bootstrap, state)? else {
+        return Ok(());
+    };
+
+    match event.kind {
+        x if x == InputEventKind::PointerMotion as u32 => {
+            state.pointer_x = scale_input_axis(event.value0, state.output_width);
+            state.pointer_y = scale_input_axis(event.value1, state.output_height);
+            rt::desktop_pointer_input(
+                desktop_handle,
+                DesktopInputAction::PointerMove,
+                state.pointer_x,
+                state.pointer_y,
+            )?;
+        }
+        x if x == InputEventKind::PointerButton as u32 => {
+            let action = if event.value0 == 0 {
+                DesktopInputAction::PointerUp
+            } else {
+                DesktopInputAction::PointerDown
+            };
+            if event.code == InputButton::Left as u32 {
+                rt::desktop_pointer_input(desktop_handle, action, state.pointer_x, state.pointer_y)?;
+            }
+        }
+        x if x == InputEventKind::Key as u32 => {
+            update_modifier_state(state, event.code, event.value0 != 0);
+            let key_action = if event.value0 == 0 {
+                DesktopInputAction::KeyUp
+            } else {
+                DesktopInputAction::KeyDown
+            };
+            rt::desktop_key_input(desktop_handle, key_action, event.code, state.modifiers)?;
+            if event.value0 != 0 {
+                if let Some(ch) = keycode_to_text(event.code, state.modifiers) {
+                    rt::desktop_key_input(
+                        desktop_handle,
+                        DesktopInputAction::TextInput,
+                        ch as u32,
+                        state.modifiers,
+                    )?;
+                }
+            }
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
+fn desktop_handle(bootstrap: rt::Handle, state: &mut SessionState) -> rt::Result<Option<rt::Handle>> {
+    if state.desktop_handle != rt::INVALID_HANDLE {
+        return Ok(Some(state.desktop_handle));
+    }
+    match rt::lookup_service(bootstrap, ServiceId::DesktopShell) {
+        Ok(handle) => {
+            state.desktop_handle = handle;
+            Ok(Some(handle))
+        }
+        Err(rt::Error::NotFound) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn lookup_output_size(bootstrap: rt::Handle) -> rt::Result<(u32, u32)> {
+    let graphics_handle = rt::lookup_service(bootstrap, ServiceId::Graphics)?;
+    let output = rt::graphics_output_status(graphics_handle, 0)?
+        .ok_or(rt::Error::NotFound)?;
+    let _ = rt::handle_close(graphics_handle);
+    Ok((output.width, output.height))
+}
+
+fn scale_input_axis(value: i32, limit: u32) -> i32 {
+    if limit == 0 {
+        return 0;
+    }
+    let clamped = value.clamp(0, 65_535) as u64;
+    ((clamped.saturating_mul((limit.saturating_sub(1)) as u64)) / 65_535) as i32
+}
+
+fn update_modifier_state(state: &mut SessionState, key_code: u32, pressed: bool) {
+    let bit = match key_code {
+        KEY_LEFT_SHIFT | KEY_RIGHT_SHIFT => MOD_SHIFT,
+        KEY_LEFT_ALT | KEY_RIGHT_ALT => MOD_ALT,
+        _ => 0,
+    };
+    if bit == 0 {
+        return;
+    }
+    if pressed {
+        state.modifiers |= bit;
+    } else {
+        state.modifiers &= !bit;
+    }
+}
+
+fn keycode_to_text(key_code: u32, modifiers: u32) -> Option<char> {
+    let shift = modifiers & MOD_SHIFT != 0;
+    match key_code {
+        2 => Some(if shift { '!' } else { '1' }),
+        3 => Some(if shift { '@' } else { '2' }),
+        4 => Some(if shift { '#' } else { '3' }),
+        5 => Some(if shift { '$' } else { '4' }),
+        6 => Some(if shift { '%' } else { '5' }),
+        7 => Some(if shift { '^' } else { '6' }),
+        8 => Some(if shift { '&' } else { '7' }),
+        9 => Some(if shift { '*' } else { '8' }),
+        10 => Some(if shift { '(' } else { '9' }),
+        11 => Some(if shift { ')' } else { '0' }),
+        12 => Some(if shift { '_' } else { '-' }),
+        13 => Some(if shift { '+' } else { '=' }),
+        15 => Some('\t'),
+        16 => Some(if shift { 'Q' } else { 'q' }),
+        17 => Some(if shift { 'W' } else { 'w' }),
+        18 => Some(if shift { 'E' } else { 'e' }),
+        19 => Some(if shift { 'R' } else { 'r' }),
+        20 => Some(if shift { 'T' } else { 't' }),
+        21 => Some(if shift { 'Y' } else { 'y' }),
+        22 => Some(if shift { 'U' } else { 'u' }),
+        23 => Some(if shift { 'I' } else { 'i' }),
+        24 => Some(if shift { 'O' } else { 'o' }),
+        25 => Some(if shift { 'P' } else { 'p' }),
+        26 => Some(if shift { '{' } else { '[' }),
+        27 => Some(if shift { '}' } else { ']' }),
+        28 => Some('\n'),
+        30 => Some(if shift { 'A' } else { 'a' }),
+        31 => Some(if shift { 'S' } else { 's' }),
+        32 => Some(if shift { 'D' } else { 'd' }),
+        33 => Some(if shift { 'F' } else { 'f' }),
+        34 => Some(if shift { 'G' } else { 'g' }),
+        35 => Some(if shift { 'H' } else { 'h' }),
+        36 => Some(if shift { 'J' } else { 'j' }),
+        37 => Some(if shift { 'K' } else { 'k' }),
+        38 => Some(if shift { 'L' } else { 'l' }),
+        39 => Some(if shift { ':' } else { ';' }),
+        40 => Some(if shift { '"' } else { '\'' }),
+        41 => Some(if shift { '~' } else { '`' }),
+        43 => Some(if shift { '|' } else { '\\' }),
+        44 => Some(if shift { 'Z' } else { 'z' }),
+        45 => Some(if shift { 'X' } else { 'x' }),
+        46 => Some(if shift { 'C' } else { 'c' }),
+        47 => Some(if shift { 'V' } else { 'v' }),
+        48 => Some(if shift { 'B' } else { 'b' }),
+        49 => Some(if shift { 'N' } else { 'n' }),
+        50 => Some(if shift { 'M' } else { 'm' }),
+        51 => Some(if shift { '<' } else { ',' }),
+        52 => Some(if shift { '>' } else { '.' }),
+        53 => Some(if shift { '?' } else { '/' }),
+        57 => Some(' '),
+        _ => None,
+    }
 }
 
 fn poll_lifecycle(bootstrap: rt::Handle) -> rt::Result<bool> {

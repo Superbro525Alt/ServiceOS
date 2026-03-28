@@ -16,6 +16,9 @@ root-manager
        depends on log-service, config-service
        consumes one startup-granted packet-interface capability
        consumes one startup-granted hosts resource
+  -> audio-service
+       depends on log-service
+       consumes one startup-granted audio-endpoint capability
   -> graphics-service
        depends on log-service
        consumes one startup-granted display-output capability
@@ -113,6 +116,9 @@ Current startup grants:
   - one packet-interface capability from the root bootstrap path
   - send-only handle to `log-service`
   - one blob capability for `config/hosts.cfg`
+- `audio-service`
+  - one audio-endpoint capability from the root bootstrap path
+  - send-only handle to `log-service`
 - `graphics-service`
   - one display-output capability from the root bootstrap path
   - send-only handle to `log-service`
@@ -133,6 +139,7 @@ Current lookup permissions:
   - `graphics-service` with send-only rights
   - `session-service` with send-only rights
   - `desktop-shell-service` with send-only rights
+  - `audio-service` with send-only rights
 - `package-service`
   - `storage-service` with send-only rights
 - `session-service`
@@ -199,6 +206,17 @@ Current lookup permissions:
 - keeps the public contract generic so later VirtIO, additional virtual, and
   real-NIC backends can sit behind the same service boundary
 
+### `audio-service`
+
+- owns audio endpoint and playback stream policy in userspace
+- consumes the explicit kernel audio-endpoint capability
+- exposes endpoint status and playback-stream control through a stable service
+  contract
+- associates playback streams with session ids without collapsing session or
+  desktop policy into the backend
+- keeps the current QEMU PC-speaker backend behind a backend-neutral boundary
+  so later hardware backends can fit the same service contract
+
 ### `graphics-service`
 
 - owns display-output state in userspace
@@ -251,8 +269,8 @@ Current lookup permissions:
   services
 - receive one surface handle, one app-control channel, and a small explicit
   service-handle set
-- validate the current platform contracts for config, storage, status, and
-  network access
+- validate the current platform contracts for config, storage, status, network,
+  and audio access
 - stay replaceable and non-ambient: they do not inherit manager or compositor
   authority
 
@@ -262,6 +280,8 @@ Current lookup permissions:
 - opens a console session through `console-service`
 - inspects services through the manager control channel
 - reads logs, config, and storage through explicit service lookups
+- inspects networking and audio state through `network-service` and
+  `audio-service`
 - inspects outputs, surfaces, and sessions through `graphics-service` and
   `session-service`
 - launches transient tools through the manager rather than direct shell power

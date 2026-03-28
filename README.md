@@ -43,6 +43,7 @@ Current userspace platform:
 - package install, update, remove, and rollback foundation
 - networking service with dynamic IPv4, DNS-backed resolution, ICMP, and
   outbound TCP stream contracts
+- audio service with explicit endpoint and playback-stream contracts
 - graphics service, compositor foundation, and session service
 - desktop shell with initial graphical core apps
 
@@ -90,13 +91,13 @@ The repository currently supports a real end-to-end platform flow:
 4. The root manager starts a dependency-ordered service graph from persisted
    manifests.
 5. Foundational and platform services come up:
-   storage, config, log, console, status, package, network, graphics, session,
-   shell, and desktop shell.
+   storage, config, log, console, status, package, network, audio, graphics,
+   session, shell, and desktop shell.
 6. The desktop shell launches initial graphical apps through real service
    contracts.
 
 This is still an early OS. It is not yet a polished consumer desktop, and it
-does not yet include a full filesystem stack, advanced networking, audio,
+does not yet include a full filesystem stack, richer audio/media,
 compatibility runtimes, or a mature app ecosystem.
 
 ## Repository Layout
@@ -207,6 +208,8 @@ From the operator shell:
 - inspect network interfaces/routes/resolution state
 - perform practical outbound network checks and fetches through the real
   networking service
+- inspect audio endpoints and streams and run diagnostic playback through the
+  real audio service
 - inspect graphics/session state
 - launch desktop-aware tools and apps through the real manager/runtime path
 
@@ -226,7 +229,7 @@ Not built yet:
 - richer window management and input stack
 - full filesystem/user storage semantics
 - UDP, IPv6, inbound/listening sockets, and richer networking policy
-- audio/media stack
+- richer PCM/capture audio pipelines, mixing, and broader media policy
 - network-backed package repositories and signing/trust infrastructure
 - Linux or Windows compatibility layers
 - full third-party app platform/toolkit ecosystem
@@ -245,6 +248,7 @@ High-value entry points:
 - [Storage Foundation](docs/storage.md)
 - [Package Model](docs/packages.md)
 - [Networking Platform](docs/networking.md)
+- [Audio Platform](docs/audio.md)
 - [Graphics And Session Platform](docs/graphics.md)
 - [Desktop Shell](docs/desktop.md)
 - [Graphical Terminal](docs/terminal.md)

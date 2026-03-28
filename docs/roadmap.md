@@ -82,6 +82,8 @@
   packet-interface path
 - grow the current networking surface beyond DHCP/DNS/ICMP/outbound TCP into
   UDP, inbound/listening transports, richer routing, and IPv6
+- grow the current audio surface beyond tone playback into PCM output, capture
+  streams, mixing, per-app policy, and broader hardware backends
 - split the remaining x86 PC interrupt-controller details out of `arch/x86_64`
   if a second x86 platform target is added
 - grow the current shared-buffer graphics path into mapped or zero-copy
@@ -96,6 +98,5 @@
 ## Later
 
 - richer storage/filesystem services
-- audio/media stack
 - broader graphical application and toolkit ecosystem
 - compatibility runtimes

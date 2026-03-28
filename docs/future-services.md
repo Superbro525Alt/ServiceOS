@@ -61,24 +61,31 @@ Deferred work:
 - richer NIC interrupt models such as MSI/MSI-X and broader multi-device
   routing
 - additional virtual backends and real NIC driver hosts
-- DHCP, DNS, richer routing, and socket-like protocol services
+- UDP, listeners, IPv6, richer routing, and broader socket/transport services
 - packet-buffer sharing and zero-copy policy beyond the current copied-frame
   path
 
 ## Audio services
 
-Audio is deferred to later userspace services. The kernel already provides the
-pieces needed for that direction:
+The first audio platform slice now exists in userspace. That is the intended
+direction: audio policy stays outside the kernel except for low-level endpoint
+objects and timing/device primitives.
 
-- isolated tasks for mixers and device hosts
-- IPC channels for control and event flow
-- timers for buffer deadlines and wakeups
+The current platform already has:
+
+- a kernel audio-endpoint object with explicit rights
+- a userspace `audio-service` that owns endpoint and playback-stream policy
+- a backend-neutral service contract for endpoint inspection and playback
+  streams
+- a QEMU/x86_64 PC-speaker backend hidden behind the platform boundary
 
 Deferred work:
 
-- DMA-safe memory-object policy
-- device event objects for audio engines
-- stream graph and policy design
+- PCM buffer playback and richer mixing
+- capture/input stream support
+- broader hardware backends and device-host policy
+- per-app volume, notification, and communications policy
+- DMA-safe memory-object policy for richer engines
 
 ## Graphics and compositor
 

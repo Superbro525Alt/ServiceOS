@@ -25,6 +25,8 @@ const LAUNCHER_ITEM_STEP: i32 = 18;
 const WINDOW_MIN_WIDTH: u32 = 280;
 const WINDOW_MIN_HEIGHT: u32 = 160;
 const RESIZE_GRIP_SIZE: i32 = 20;
+const CURSOR_SIZE: u32 = 14;
+const CURSOR_Z_ORDER: u32 = 4_096;
 const MOD_ALT: u32 = 1 << 1;
 const KEY_TAB: u32 = 15;
 const KEY_F4: u32 = 62;
@@ -35,6 +37,7 @@ struct Chrome {
     topbar_handle: rt::Handle,
     launcher_handle: rt::Handle,
     status_handle: rt::Handle,
+    cursor_handle: rt::Handle,
     output_width: u32,
     output_height: u32,
 }
@@ -110,9 +113,6 @@ struct DesktopStatusSnapshot {
     heartbeat_count: u64,
     heartbeat_tick: u64,
     ipv4_address: u32,
-    pointer_x: i32,
-    pointer_y: i32,
-    drag_mode: DesktopDragMode,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -276,14 +276,17 @@ fn main() -> u64 {
         next_status_refresh: 0,
         last_status_snapshot: None,
         next_z_order: 10,
-        pointer_x: 0,
-        pointer_y: 0,
+        pointer_x: (output.width / 2) as i32,
+        pointer_y: (output.height / 2) as i32,
         drag_state: None,
         content_capture: None,
     };
 
     if render_desktop(&mut state).is_err() {
         return 0xfe0b;
+    }
+    if sync_cursor(&state).is_err() {
+        return 0xfe14;
     }
     if show_chrome(&state.chrome).is_err() {
         return 0xfe0c;
@@ -386,12 +389,25 @@ fn create_chrome(
         ui::BG_PANEL,
         false,
     )?;
+    let (_, cursor_handle) = rt::graphics_surface_create(
+        graphics_handle,
+        SESSION_ID,
+        (output_width / 2) as i32,
+        (output_height / 2) as i32,
+        CURSOR_SIZE,
+        CURSOR_SIZE,
+        CURSOR_Z_ORDER,
+        0,
+        false,
+    )?;
+    ui::render_cursor(cursor_handle, CURSOR_SIZE)?;
 
     Ok(Chrome {
         desktop_handle,
         topbar_handle,
         launcher_handle,
         status_handle,
+        cursor_handle,
         output_width,
         output_height,
     })
@@ -402,6 +418,7 @@ fn show_chrome(chrome: &Chrome) -> rt::Result<()> {
     rt::surface_set_visibility(chrome.topbar_handle, true)?;
     rt::surface_set_visibility(chrome.launcher_handle, true)?;
     rt::surface_set_visibility(chrome.status_handle, true)?;
+    rt::surface_set_visibility(chrome.cursor_handle, true)?;
     Ok(())
 }
 
@@ -935,16 +952,6 @@ fn render_desktop(state: &mut DesktopState) -> rt::Result<()> {
     write_network_status(&mut network_buf, status_snapshot.ipv4_address);
     let network_text = str::from_utf8(network_buf.as_bytes()).unwrap_or("NET OFFLINE");
 
-    let mut pointer_buf = FixedLogBuffer::<40>::new();
-    let _ = write!(
-        &mut pointer_buf,
-        "POINTER {},{} {:?}",
-        status_snapshot.pointer_x,
-        status_snapshot.pointer_y,
-        status_snapshot.drag_mode
-    );
-    let pointer_text = str::from_utf8(pointer_buf.as_bytes()).unwrap_or("POINTER ?");
-
     ui::render_panel(
         state.chrome.topbar_handle,
         state.chrome.output_width,
@@ -987,7 +994,7 @@ fn render_desktop(state: &mut DesktopState) -> rt::Result<()> {
             (heartbeat_text, ui::STATUS_OK),
             (tick_text, ui::TEXT_SECONDARY),
             (focus_text, ui::TEXT_SECONDARY),
-            (pointer_text, ui::TEXT_MUTED),
+            ("POINTER READY", ui::TEXT_MUTED),
         ],
     )?;
 
@@ -1017,12 +1024,6 @@ fn sample_desktop_status(state: &DesktopState) -> DesktopStatusSnapshot {
         heartbeat_count,
         heartbeat_tick,
         ipv4_address,
-        pointer_x: state.pointer_x,
-        pointer_y: state.pointer_y,
-        drag_mode: state
-            .drag_state
-            .map(|drag| drag.mode())
-            .unwrap_or(DesktopDragMode::None),
     }
 }
 
@@ -1067,8 +1068,27 @@ fn handle_input(
         }
         DesktopInputAction::TextInput => handle_text_input(state, x as u32),
     }?;
-    render_desktop(state)?;
+    sync_cursor(state)?;
+    match action {
+        DesktopInputAction::PointerMove => {
+            if state.drag_state.is_some() || state.content_capture.is_some() {
+                render_desktop(state)?;
+            }
+        }
+        _ => render_desktop(state)?,
+    }
     Ok(result)
+}
+
+fn sync_cursor(state: &DesktopState) -> rt::Result<()> {
+    rt::surface_set_geometry(
+        state.chrome.cursor_handle,
+        state.pointer_x,
+        state.pointer_y,
+        CURSOR_SIZE,
+        CURSOR_SIZE,
+        CURSOR_Z_ORDER,
+    )
 }
 
 fn handle_pointer_down(state: &mut DesktopState, x: i32, y: i32) -> rt::Result<u32> {

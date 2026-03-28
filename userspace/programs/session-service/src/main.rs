@@ -62,8 +62,8 @@ fn main() -> u64 {
         desktop_handle: rt::INVALID_HANDLE,
         output_width: output_size.0,
         output_height: output_size.1,
-        pointer_x: 0,
-        pointer_y: 0,
+        pointer_x: (output_size.0 / 2) as i32,
+        pointer_y: (output_size.1 / 2) as i32,
         modifiers: 0,
     };
     let _ = emit_log(
@@ -229,6 +229,18 @@ fn process_input_event(
                 state.pointer_y,
             )?;
         }
+        x if x == InputEventKind::PointerDelta as u32 => {
+            state.pointer_x =
+                clamp_axis(state.pointer_x.saturating_add(event.value0), state.output_width);
+            state.pointer_y =
+                clamp_axis(state.pointer_y.saturating_add(event.value1), state.output_height);
+            rt::desktop_pointer_input(
+                desktop_handle,
+                DesktopInputAction::PointerMove,
+                state.pointer_x,
+                state.pointer_y,
+            )?;
+        }
         x if x == InputEventKind::PointerButton as u32 => {
             let action = if event.value0 == 0 {
                 DesktopInputAction::PointerUp
@@ -292,6 +304,13 @@ fn scale_input_axis(value: i32, limit: u32) -> i32 {
     }
     let clamped = value.clamp(0, 65_535) as u64;
     ((clamped.saturating_mul((limit.saturating_sub(1)) as u64)) / 65_535) as i32
+}
+
+fn clamp_axis(value: i32, limit: u32) -> i32 {
+    if limit == 0 {
+        return 0;
+    }
+    value.clamp(0, limit.saturating_sub(1) as i32)
 }
 
 fn update_modifier_state(state: &mut SessionState, key_code: u32, pressed: bool) {

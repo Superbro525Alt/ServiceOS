@@ -19,6 +19,8 @@ pub const WINDOW_BUTTON_TOP: i32 = 8;
 pub const WINDOW_BUTTON_RIGHT_MARGIN: i32 = 10;
 pub const WINDOW_BUTTON_GAP: i32 = 8;
 pub const WINDOW_BORDER_THICKNESS: i32 = 6;
+pub const CURSOR_OUTLINE: u32 = 0x0b1220;
+pub const CURSOR_FILL: u32 = 0xf3f8ff;
 
 pub fn render_window(
     surface: rt::Handle,
@@ -140,5 +142,17 @@ pub fn render_status_panel(
         rt::surface_set_label(surface, (index + 1) as u32, 10, 34 + (index as i32 * 14), color, line)?;
     }
     let _ = height;
+    Ok(())
+}
+
+pub fn render_cursor(surface: rt::Handle, size: u32) -> rt::Result<()> {
+    rt::surface_set_fill(surface, 0)?;
+    rt::surface_clear_scene(surface)?;
+    rt::surface_set_rect(surface, 0, 0, 0, 2, size, CURSOR_OUTLINE, true)?;
+    rt::surface_set_rect(surface, 1, 0, 0, size, 2, CURSOR_OUTLINE, true)?;
+    rt::surface_set_rect(surface, 2, 1, 1, 1, size.saturating_sub(2), CURSOR_FILL, true)?;
+    rt::surface_set_rect(surface, 3, 1, 1, size.saturating_sub(2), 1, CURSOR_FILL, true)?;
+    rt::surface_set_rect(surface, 4, 3, 3, 2, 6, CURSOR_OUTLINE, true)?;
+    rt::surface_set_rect(surface, 5, 4, 4, 1, 5, CURSOR_FILL, true)?;
     Ok(())
 }

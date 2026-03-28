@@ -512,6 +512,7 @@ pub enum InputEventKind {
     PointerMotion = 1,
     PointerButton = 2,
     Key = 3,
+    PointerDelta = 4,
 }
 
 #[repr(u32)]

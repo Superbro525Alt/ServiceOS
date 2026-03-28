@@ -31,9 +31,12 @@ const MAX_PENDING_EVENTS: usize = 128;
 
 const EV_SYN: u16 = 0x00;
 const EV_KEY: u16 = 0x01;
+const EV_REL: u16 = 0x02;
 const EV_ABS: u16 = 0x03;
 
 const SYN_REPORT: u16 = 0x00;
+const REL_X: u16 = 0x00;
+const REL_Y: u16 = 0x01;
 const ABS_X: u16 = 0x00;
 const ABS_Y: u16 = 0x01;
 
@@ -86,8 +89,8 @@ pub fn initialize() -> Option<Arc<dyn InputBackend>> {
                 device,
                 pointer,
                 keyboard: has_keys,
-                current_x: 0,
-                current_y: 0,
+                pending_x: 0,
+                pending_y: 0,
                 motion_dirty: false,
             });
         }
@@ -138,17 +141,25 @@ struct VirtioInputState {
 
 struct InputDeviceState {
     device: VirtIOInput<KernelHal, PciTransport>,
-    pointer: Option<PointerAxes>,
+    pointer: Option<PointerSource>,
     keyboard: bool,
-    current_x: u32,
-    current_y: u32,
+    pending_x: i32,
+    pending_y: i32,
     motion_dirty: bool,
 }
 
 #[derive(Clone, Copy)]
+enum PointerSource {
+    Absolute(PointerAxes),
+    Relative,
+}
+
+#[derive(Clone, Copy)]
 struct PointerAxes {
-    max_x: u32,
-    max_y: u32,
+    min_x: i32,
+    max_x: i32,
+    min_y: i32,
+    max_y: i32,
 }
 
 impl VirtioInputBackend {
@@ -242,46 +253,88 @@ impl InputBackend for VirtioInputBackend {
 
 fn pointer_axes(
     device: &mut VirtIOInput<KernelHal, PciTransport>,
-) -> Result<Option<PointerAxes>, ()> {
-    let x = device.abs_info(ABS_X as u8).map_err(|_| ())?;
-    let y = device.abs_info(ABS_Y as u8).map_err(|_| ())?;
-    if x.max == 0 || y.max == 0 {
-        return Ok(None);
+) -> Result<Option<PointerSource>, ()> {
+    if let (Ok(x), Ok(y)) = (device.abs_info(ABS_X as u8), device.abs_info(ABS_Y as u8)) {
+        if x.max > x.min && y.max > y.min {
+            return Ok(Some(PointerSource::Absolute(PointerAxes {
+                min_x: x.min as i32,
+                max_x: x.max as i32,
+                min_y: y.min as i32,
+                max_y: y.max as i32,
+            })));
+        }
     }
-    Ok(Some(PointerAxes {
-        max_x: x.max,
-        max_y: y.max,
-    }))
+
+    let rel_bits = device.ev_bits(EV_REL as u8).map_err(|_| ())?;
+    let has_rel_x = bit_is_set(&rel_bits, REL_X as usize);
+    let has_rel_y = bit_is_set(&rel_bits, REL_Y as usize);
+    if has_rel_x || has_rel_y {
+        return Ok(Some(PointerSource::Relative));
+    }
+
+    Ok(None)
 }
 
 fn normalize_event(device: &mut InputDeviceState, event: InputEvent) -> Option<InputEventInfo> {
     match event.event_type {
-        EV_ABS if device.pointer.is_some() => {
-            match event.code {
-                ABS_X => {
-                    device.current_x = event.value;
-                    device.motion_dirty = true;
+        EV_ABS => {
+            if let Some(PointerSource::Absolute(_)) = device.pointer {
+                match event.code {
+                    ABS_X => {
+                        device.pending_x = event.value as i32;
+                        device.motion_dirty = true;
+                    }
+                    ABS_Y => {
+                        device.pending_y = event.value as i32;
+                        device.motion_dirty = true;
+                    }
+                    _ => {}
                 }
-                ABS_Y => {
-                    device.current_y = event.value;
-                    device.motion_dirty = true;
+            }
+            None
+        }
+        EV_REL => {
+            if let Some(PointerSource::Relative) = device.pointer {
+                match event.code {
+                    REL_X => {
+                        device.pending_x = device.pending_x.saturating_add(event.value as i32);
+                        device.motion_dirty = true;
+                    }
+                    REL_Y => {
+                        device.pending_y = device.pending_y.saturating_add(event.value as i32);
+                        device.motion_dirty = true;
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
             None
         }
         EV_SYN if event.code == SYN_REPORT => {
-            let axes = device.pointer?;
+            let pointer = device.pointer?;
             if !device.motion_dirty {
                 return None;
             }
             device.motion_dirty = false;
-            Some(InputEventInfo {
-                kind: InputEventKind::PointerMotion as u32,
-                code: 0,
-                value0: normalize_axis(device.current_x, axes.max_x),
-                value1: normalize_axis(device.current_y, axes.max_y),
-            })
+            match pointer {
+                PointerSource::Absolute(axes) => Some(InputEventInfo {
+                    kind: InputEventKind::PointerMotion as u32,
+                    code: 0,
+                    value0: normalize_axis(device.pending_x, axes.min_x, axes.max_x),
+                    value1: normalize_axis(device.pending_y, axes.min_y, axes.max_y),
+                }),
+                PointerSource::Relative => {
+                    let delta_x = device.pending_x;
+                    let delta_y = device.pending_y;
+                    device.pending_x = 0;
+                    device.pending_y = 0;
+                    Some(InputEventInfo {
+                        kind: InputEventKind::PointerDelta as u32,
+                        code: 0,
+                        value0: delta_x,
+                        value1: delta_y,
+                    })
+                }
+            }
         }
         EV_KEY if device.pointer.is_some() => map_pointer_button(event),
         EV_KEY if device.keyboard => Some(InputEventInfo {
@@ -309,11 +362,19 @@ fn map_pointer_button(event: InputEvent) -> Option<InputEventInfo> {
     })
 }
 
-fn normalize_axis(value: u32, max: u32) -> i32 {
-    if max == 0 {
+fn normalize_axis(value: i32, min: i32, max: i32) -> i32 {
+    if max <= min {
         return 0;
     }
-    (((value as u64).saturating_mul(65_535)) / max as u64) as i32
+    let span = (max - min) as i64;
+    let clamped = value.clamp(min, max) as i64 - min as i64;
+    ((clamped.saturating_mul(65_535)) / span) as i32
+}
+
+fn bit_is_set(bits: &[u8], index: usize) -> bool {
+    let byte = index / 8;
+    let bit = index % 8;
+    bits.get(byte).is_some_and(|value| value & (1 << bit) != 0)
 }
 
 #[derive(Clone, Copy)]

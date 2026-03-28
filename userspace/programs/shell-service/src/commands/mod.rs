@@ -1,6 +1,7 @@
 mod audio;
 mod core;
 mod desktop;
+mod developer;
 mod graphics;
 mod network;
 mod package;
@@ -55,6 +56,7 @@ pub(crate) fn execute_command(
         "audio" => audio::cmd_audio(bootstrap, output, parts),
         "gfx" => graphics::cmd_gfx(bootstrap, output, parts),
         "desktop" => desktop::cmd_desktop(bootstrap, output, parts),
+        "dev" => developer::cmd_dev(bootstrap, output, parts),
         "pkg" => package::cmd_pkg(bootstrap, output, parts),
         "runtime" => runtime::cmd_runtime(bootstrap, output, parts),
         "run" => match parts.next() {

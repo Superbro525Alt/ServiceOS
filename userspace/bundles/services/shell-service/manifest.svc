@@ -15,3 +15,4 @@ lookup=session-service:send
 lookup=desktop-shell-service:send
 lookup=audio-service:send
 lookup=runtime-service:send
+lookup=developer-service:send

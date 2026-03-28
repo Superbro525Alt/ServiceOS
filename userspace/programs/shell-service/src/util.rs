@@ -56,6 +56,13 @@ runtime vars <env-id>: list runtime environment variables\r\n\
 runtime runs: list runtime-backed workloads\r\n\
 runtime launch <env-id> <inspect|env|mounts|cat> [path]: launch a runtime-backed workload\r\n\
 runtime destroy <env-id>: destroy an idle runtime environment\r\n\
+dev toolchains: list developer toolchains and target support\r\n\
+dev toolchain <id>: show one toolchain and its SDK root\r\n\
+dev workspaces: list packaged developer workspaces\r\n\
+dev workspace <id>: show one workspace and its target mappings\r\n\
+dev build <workspace-id> <native|linux|windows|macos>: run a build job\r\n\
+dev jobs: list developer build jobs\r\n\
+dev artifact <job-id>: inspect one built artifact\r\n\
 gfx outputs: show graphics outputs\r\n\
 gfx surfaces: show compositor surfaces\r\n\
 gfx sessions: show graphical sessions\r\n\
@@ -146,6 +153,7 @@ pub(crate) fn parse_service_name(name: &str) -> Option<ServiceId> {
         "desktop" | "desktop-shell" | "desktop-shell-service" => Some(ServiceId::DesktopShell),
         "audio" | "audio-service" => Some(ServiceId::Audio),
         "runtime" | "runtime-service" => Some(ServiceId::Runtime),
+        "developer" | "developer-service" => Some(ServiceId::Developer),
         _ => None,
     }
 }
@@ -178,6 +186,7 @@ pub(crate) fn service_name(service_id: ServiceId) -> &'static str {
         ServiceId::Terminal => "terminal-service",
         ServiceId::Audio => "audio-service",
         ServiceId::Runtime => "runtime-service",
+        ServiceId::Developer => "developer-service",
     }
 }
 
@@ -266,6 +275,7 @@ pub(crate) fn domain_name(domain: LogDomain) -> &'static str {
         LogDomain::App => "app",
         LogDomain::Audio => "audio",
         LogDomain::Runtime => "runtime",
+        LogDomain::Developer => "developer",
     }
 }
 
@@ -326,6 +336,11 @@ pub(crate) fn event_name(event: LogEvent) -> &'static str {
         LogEvent::RuntimeLaunchStarted => "runtime-launch-started",
         LogEvent::RuntimeLaunchExited => "runtime-launch-exited",
         LogEvent::RuntimeMappedRead => "runtime-mapped-read",
+        LogEvent::DeveloperCatalogLoaded => "developer-catalog-loaded",
+        LogEvent::DeveloperBuildStarted => "developer-build-started",
+        LogEvent::DeveloperBuildFinished => "developer-build-finished",
+        LogEvent::DeveloperBuildFailed => "developer-build-failed",
+        LogEvent::DeveloperArtifactOpened => "developer-artifact-opened",
     }
 }
 

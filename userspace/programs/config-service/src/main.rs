@@ -4,7 +4,7 @@
 use serviceos_userspace_runtime as rt;
 use rt::{ConfigKey, ConfigTag, ConfigValueKind, ControlTag, LifecycleEvent, RawMessage, ServiceId};
 
-const MAX_CONFIG_BYTES: usize = 256;
+const MAX_CONFIG_BYTES: usize = 512;
 
 #[derive(Clone, Copy)]
 struct ConfigEntry {
@@ -39,7 +39,7 @@ fn main() -> u64 {
         key: ConfigKey::LogMinimumSeverity,
         kind: ConfigValueKind::Unsigned,
         value: 0,
-    }; 8];
+    }; 14];
     let entry_count = match parse_config_entries(&config_bytes[..loaded], &mut entries) {
         Ok(count) => count,
         Err(_) => return 0xf204,
@@ -116,6 +116,12 @@ fn parse_config_entries(bytes: &[u8], entries: &mut [ConfigEntry]) -> rt::Result
                 "network.ipv4_prefix_length" => ConfigKey::NetworkIpv4PrefixLength,
                 "network.ipv4_gateway" => ConfigKey::NetworkIpv4Gateway,
                 "network.probe_timeout_ticks" => ConfigKey::NetworkProbeTimeoutTicks,
+                "network.dynamic_ipv4" => ConfigKey::NetworkDynamicIpv4,
+                "network.dns_server" => ConfigKey::NetworkDnsServer,
+                "network.dns_query_timeout_ticks" => ConfigKey::NetworkDnsQueryTimeoutTicks,
+                "network.dhcp_acquire_timeout_ticks" => ConfigKey::NetworkDhcpAcquireTimeoutTicks,
+                "network.tcp_connect_timeout_ticks" => ConfigKey::NetworkTcpConnectTimeoutTicks,
+                "network.tcp_idle_timeout_ticks" => ConfigKey::NetworkTcpIdleTimeoutTicks,
                 _ => return Err(rt::Error::InvalidArgument),
             },
             kind: ConfigValueKind::Unsigned,
@@ -137,6 +143,12 @@ fn config_key_from_word(value: u64) -> ConfigKey {
         x if x == ConfigKey::NetworkIpv4PrefixLength as u32 => ConfigKey::NetworkIpv4PrefixLength,
         x if x == ConfigKey::NetworkIpv4Gateway as u32 => ConfigKey::NetworkIpv4Gateway,
         x if x == ConfigKey::NetworkProbeTimeoutTicks as u32 => ConfigKey::NetworkProbeTimeoutTicks,
+        x if x == ConfigKey::NetworkDynamicIpv4 as u32 => ConfigKey::NetworkDynamicIpv4,
+        x if x == ConfigKey::NetworkDnsServer as u32 => ConfigKey::NetworkDnsServer,
+        x if x == ConfigKey::NetworkDnsQueryTimeoutTicks as u32 => ConfigKey::NetworkDnsQueryTimeoutTicks,
+        x if x == ConfigKey::NetworkDhcpAcquireTimeoutTicks as u32 => ConfigKey::NetworkDhcpAcquireTimeoutTicks,
+        x if x == ConfigKey::NetworkTcpConnectTimeoutTicks as u32 => ConfigKey::NetworkTcpConnectTimeoutTicks,
+        x if x == ConfigKey::NetworkTcpIdleTimeoutTicks as u32 => ConfigKey::NetworkTcpIdleTimeoutTicks,
         x if x == ConfigKey::StatusConsoleMirror as u32 => ConfigKey::StatusConsoleMirror,
         x if x == ConfigKey::StatusHeartbeatLogPeriod as u32 => ConfigKey::StatusHeartbeatLogPeriod,
         _ => ConfigKey::StatusHeartbeatTicks,

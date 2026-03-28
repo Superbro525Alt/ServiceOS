@@ -26,8 +26,10 @@ cat <path>: print a text resource\r\n\
 status: show system heartbeat status\r\n\
 net ifaces: show network interfaces\r\n\
 net route: show the default route\r\n\
+net sockets: show active network sockets\r\n\
 net resolve <name>: resolve a host or literal\r\n\
 net ping <name|ip>: run an ICMP reachability probe\r\n\
+net http <host> [path]: fetch a URL over TCP through network-service\r\n\
 gfx outputs: show graphics outputs\r\n\
 gfx surfaces: show compositor surfaces\r\n\
 gfx sessions: show graphical sessions\r\n\
@@ -190,6 +192,12 @@ pub(crate) fn config_key_name(key: ConfigKey) -> &'static str {
         ConfigKey::NetworkIpv4PrefixLength => "network.ipv4_prefix_length",
         ConfigKey::NetworkIpv4Gateway => "network.ipv4_gateway",
         ConfigKey::NetworkProbeTimeoutTicks => "network.probe_timeout_ticks",
+        ConfigKey::NetworkDynamicIpv4 => "network.dynamic_ipv4",
+        ConfigKey::NetworkDnsServer => "network.dns_server",
+        ConfigKey::NetworkDnsQueryTimeoutTicks => "network.dns_query_timeout_ticks",
+        ConfigKey::NetworkDhcpAcquireTimeoutTicks => "network.dhcp_acquire_timeout_ticks",
+        ConfigKey::NetworkTcpConnectTimeoutTicks => "network.tcp_connect_timeout_ticks",
+        ConfigKey::NetworkTcpIdleTimeoutTicks => "network.tcp_idle_timeout_ticks",
     }
 }
 
@@ -253,6 +261,9 @@ pub(crate) fn event_name(event: LogEvent) -> &'static str {
         LogEvent::NetworkResolveCompleted => "network-resolve-completed",
         LogEvent::NetworkProbeCompleted => "network-probe-completed",
         LogEvent::NetworkLinkChanged => "network-link-changed",
+        LogEvent::NetworkLeaseChanged => "network-lease-changed",
+        LogEvent::NetworkSocketOpened => "network-socket-opened",
+        LogEvent::NetworkSocketClosed => "network-socket-closed",
         LogEvent::DisplayOutputReady => "display-output-ready",
         LogEvent::SurfaceCreated => "surface-created",
         LogEvent::SurfaceUpdated => "surface-updated",
@@ -381,7 +392,9 @@ pub(crate) fn write_log_record(session: rt::Handle, record: rt::LogRecord) -> rt
 
 pub(crate) fn config_value_text(key: ConfigKey, value: u64) -> FixedValueText {
     match key {
-        ConfigKey::NetworkIpv4Address | ConfigKey::NetworkIpv4Gateway => {
+        ConfigKey::NetworkIpv4Address
+        | ConfigKey::NetworkIpv4Gateway
+        | ConfigKey::NetworkDnsServer => {
             FixedValueText::ipv4(value as u32)
         }
         _ => FixedValueText::unsigned(value),
@@ -392,6 +405,32 @@ pub(crate) fn link_state_name(state: rt::PacketInterfaceLinkState) -> &'static s
     match state {
         rt::PacketInterfaceLinkState::Up => "up",
         rt::PacketInterfaceLinkState::Down => "down",
+    }
+}
+
+pub(crate) fn network_config_mode_name(mode: rt::NetworkConfigMode) -> &'static str {
+    match mode {
+        rt::NetworkConfigMode::Static => "static",
+        rt::NetworkConfigMode::Dynamic => "dynamic",
+    }
+}
+
+pub(crate) fn network_config_state_name(state: rt::NetworkConfigState) -> &'static str {
+    match state {
+        rt::NetworkConfigState::Pending => "pending",
+        rt::NetworkConfigState::Configured => "configured",
+        rt::NetworkConfigState::FallbackStatic => "fallback-static",
+        rt::NetworkConfigState::Failed => "failed",
+    }
+}
+
+pub(crate) fn network_socket_state_name(state: rt::NetworkSocketState) -> &'static str {
+    match state {
+        rt::NetworkSocketState::Connecting => "connecting",
+        rt::NetworkSocketState::Established => "established",
+        rt::NetworkSocketState::Closing => "closing",
+        rt::NetworkSocketState::Closed => "closed",
+        rt::NetworkSocketState::Failed => "failed",
     }
 }
 

@@ -1,7 +1,8 @@
 use crate::{
     DesktopAppId, DesktopDragMode, DisplayOutputBackend, DisplayOutputState, DisplayPixelFormat,
-    LogDomain, LogEvent, LogSeverity, ManagerServicePhase, PacketInterfaceBackend,
-    PacketInterfaceLinkState, ServiceId, SessionInputSource,
+    LogDomain, LogEvent, LogSeverity, ManagerServicePhase, NetworkConfigMode, NetworkConfigState,
+    NetworkSocketKind, NetworkSocketState, PacketInterfaceBackend, PacketInterfaceLinkState,
+    ServiceId, SessionInputSource,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -51,13 +52,28 @@ pub struct NetworkInterfaceStatusInfo {
     pub backend: PacketInterfaceBackend,
     pub link_state: PacketInterfaceLinkState,
     pub mtu: u32,
+    pub config_mode: NetworkConfigMode,
+    pub config_state: NetworkConfigState,
     pub address: u32,
     pub prefix_len: u8,
     pub gateway: u32,
+    pub dns_server: u32,
     pub mac: [u8; 6],
     pub rx_packets: u64,
     pub tx_packets: u64,
     pub dropped_packets: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NetworkSocketInfo {
+    pub slot: u32,
+    pub kind: NetworkSocketKind,
+    pub state: NetworkSocketState,
+    pub remote_address: u32,
+    pub remote_port: u16,
+    pub local_port: u16,
+    pub rx_bytes: u64,
+    pub tx_bytes: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

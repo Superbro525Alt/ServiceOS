@@ -95,6 +95,12 @@ pub(crate) fn cmd_config(bootstrap: rt::Handle, session: rt::Handle) -> rt::Resu
         ConfigKey::NetworkIpv4PrefixLength,
         ConfigKey::NetworkIpv4Gateway,
         ConfigKey::NetworkProbeTimeoutTicks,
+        ConfigKey::NetworkDynamicIpv4,
+        ConfigKey::NetworkDnsServer,
+        ConfigKey::NetworkDnsQueryTimeoutTicks,
+        ConfigKey::NetworkDhcpAcquireTimeoutTicks,
+        ConfigKey::NetworkTcpConnectTimeoutTicks,
+        ConfigKey::NetworkTcpIdleTimeoutTicks,
     ] {
         let (_, value) = rt::config_read(config_handle, key)?;
         write_session_linef(

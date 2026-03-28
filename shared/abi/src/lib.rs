@@ -264,6 +264,9 @@ pub enum LogEvent {
     AppRendered = 38,
     InputSourceReady = 39,
     InputKeyDelivered = 40,
+    NetworkLeaseChanged = 41,
+    NetworkSocketOpened = 42,
+    NetworkSocketClosed = 43,
 }
 
 #[repr(u32)]
@@ -384,6 +387,12 @@ pub enum ConfigKey {
     NetworkIpv4PrefixLength = 6,
     NetworkIpv4Gateway = 7,
     NetworkProbeTimeoutTicks = 8,
+    NetworkDynamicIpv4 = 9,
+    NetworkDnsServer = 10,
+    NetworkDnsQueryTimeoutTicks = 11,
+    NetworkDhcpAcquireTimeoutTicks = 12,
+    NetworkTcpConnectTimeoutTicks = 13,
+    NetworkTcpIdleTimeoutTicks = 14,
 }
 
 #[repr(u32)]
@@ -553,6 +562,10 @@ pub enum NetworkTag {
     ResolveReply = 0x805,
     PingRequest = 0x806,
     PingReply = 0x807,
+    SocketOpenRequest = 0x808,
+    SocketOpenReply = 0x809,
+    SocketListRequest = 0x80a,
+    SocketListReply = 0x80b,
 }
 
 #[repr(u32)]
@@ -565,6 +578,54 @@ pub enum NetworkStatus {
     Timeout = 4,
     End = 5,
     Unsupported = 6,
+    Denied = 7,
+    CapacityExceeded = 8,
+    Closed = 9,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NetworkConfigMode {
+    Static = 1,
+    Dynamic = 2,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NetworkConfigState {
+    Pending = 1,
+    Configured = 2,
+    FallbackStatic = 3,
+    Failed = 4,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NetworkSocketKind {
+    TcpStream = 1,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NetworkSocketState {
+    Connecting = 1,
+    Established = 2,
+    Closing = 3,
+    Closed = 4,
+    Failed = 5,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NetworkSocketTag {
+    StatusRequest = 0x820,
+    StatusReply = 0x821,
+    SendRequest = 0x822,
+    SendReply = 0x823,
+    ReceiveRequest = 0x824,
+    ReceiveReply = 0x825,
+    CloseRequest = 0x826,
+    CloseReply = 0x827,
 }
 
 #[repr(u32)]

@@ -34,7 +34,14 @@ impl PacketInterfaceObject {
     }
 
     pub fn receive(&self, buffer: &mut [u8]) -> Result<usize, PacketInterfaceError> {
-        self.backend.receive(buffer)
+        match self.backend.receive(buffer) {
+            Ok(length) => Ok(length),
+            Err(PacketInterfaceError::QueueEmpty) => {
+                let _ = self.backend.poll();
+                self.backend.receive(buffer)
+            }
+            Err(error) => Err(error),
+        }
     }
 
     pub fn backend(&self) -> Arc<dyn PacketBackend> {

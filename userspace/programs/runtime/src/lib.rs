@@ -13,7 +13,9 @@ pub use serviceos_abi::{
     IPC_FLAG_NONBLOCK, IPC_MAX_HANDLES, IPC_MAX_WORDS, INPUT_SOURCE_FLAG_NONBLOCK, INVALID_HANDLE,
     InputButton, InputEventInfo, InputEventKind, InputSourceBackend, InputSourceInfo,
     LifecycleEvent, LogDomain, LogEvent, LogQueryStatus, LogSeverity, LogTag, LookupStatus,
-    ManagerAction, ManagerServicePhase, ManagerStatus, ManagerTag, NetworkStatus, NetworkTag,
+    ManagerAction, ManagerServicePhase, ManagerStatus, ManagerTag, NetworkConfigMode,
+    NetworkConfigState, NetworkSocketKind, NetworkSocketState, NetworkSocketTag, NetworkStatus,
+    NetworkTag,
     PACKET_INTERFACE_FLAG_NONBLOCK, PacketInterfaceBackend, PacketInterfaceInfo,
     PacketInterfaceLinkState, PackageStatus, PackageTag, RawMessage, ServiceId, ServiceImageId,
     SessionInputSource, SessionStatus, SessionTag, StatusTag, StorageStatus, StorageTag,
@@ -362,6 +364,9 @@ fn network_status_from_word(value: u64) -> NetworkStatus {
         x if x == NetworkStatus::Timeout as u32 => NetworkStatus::Timeout,
         x if x == NetworkStatus::End as u32 => NetworkStatus::End,
         x if x == NetworkStatus::Unsupported as u32 => NetworkStatus::Unsupported,
+        x if x == NetworkStatus::Denied as u32 => NetworkStatus::Denied,
+        x if x == NetworkStatus::CapacityExceeded as u32 => NetworkStatus::CapacityExceeded,
+        x if x == NetworkStatus::Closed as u32 => NetworkStatus::Closed,
         _ => NetworkStatus::Busy,
     }
 }
@@ -374,6 +379,41 @@ fn network_status_error(status: NetworkStatus) -> Error {
         NetworkStatus::Timeout => Error::QueueEmpty,
         NetworkStatus::End => Error::NotFound,
         NetworkStatus::Unsupported => Error::Unsupported,
+        NetworkStatus::Denied => Error::PermissionDenied,
+        NetworkStatus::CapacityExceeded => Error::CapacityExceeded,
+        NetworkStatus::Closed => Error::NotFound,
+    }
+}
+
+fn network_config_mode_from_word(value: u64) -> NetworkConfigMode {
+    match value as u32 {
+        x if x == NetworkConfigMode::Dynamic as u32 => NetworkConfigMode::Dynamic,
+        _ => NetworkConfigMode::Static,
+    }
+}
+
+fn network_config_state_from_word(value: u64) -> NetworkConfigState {
+    match value as u32 {
+        x if x == NetworkConfigState::Pending as u32 => NetworkConfigState::Pending,
+        x if x == NetworkConfigState::FallbackStatic as u32 => NetworkConfigState::FallbackStatic,
+        x if x == NetworkConfigState::Failed as u32 => NetworkConfigState::Failed,
+        _ => NetworkConfigState::Configured,
+    }
+}
+
+fn network_socket_kind_from_word(value: u64) -> NetworkSocketKind {
+    match value as u32 {
+        _ => NetworkSocketKind::TcpStream,
+    }
+}
+
+fn network_socket_state_from_word(value: u64) -> NetworkSocketState {
+    match value as u32 {
+        x if x == NetworkSocketState::Connecting as u32 => NetworkSocketState::Connecting,
+        x if x == NetworkSocketState::Established as u32 => NetworkSocketState::Established,
+        x if x == NetworkSocketState::Closing as u32 => NetworkSocketState::Closing,
+        x if x == NetworkSocketState::Failed as u32 => NetworkSocketState::Failed,
+        _ => NetworkSocketState::Closed,
     }
 }
 

@@ -50,12 +50,12 @@ pub fn render_window_state(
     width: u32,
     height: u32,
     background_rgb: u32,
-    accent_rgb: u32,
+    _accent_rgb: u32,
     title: &str,
     lines: &[&str],
     focused: bool,
 ) -> rt::Result<()> {
-    let titlebar_rgb = if focused { accent_rgb } else { ACCENT_DIM };
+    let titlebar_rgb = if focused { ACCENT } else { ACCENT_DIM };
     rt::surface_set_fill(surface, background_rgb)?;
     rt::surface_clear_scene(surface)?;
     rt::surface_set_rect(surface, 0, 0, 0, width, TITLEBAR_HEIGHT, titlebar_rgb, true)?;

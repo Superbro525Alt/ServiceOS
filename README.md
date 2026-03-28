@@ -52,6 +52,7 @@ Current graphical/product layer:
 - `settings-app`
 - `files-app`
 - `monitor-app`
+- `terminal-app`
 
 ## Architecture Snapshot
 
@@ -213,6 +214,7 @@ From the graphical session:
 
 - bring up a retained-scene desktop shell
 - launch the first small set of core system apps
+- launch a graphical terminal window that hosts the shared shell/runtime stack
 - exercise config, storage, status, and network-backed UI paths through real
   service contracts
 
@@ -245,6 +247,7 @@ High-value entry points:
 - [Networking Platform](docs/networking.md)
 - [Graphics And Session Platform](docs/graphics.md)
 - [Desktop Shell](docs/desktop.md)
+- [Graphical Terminal](docs/terminal.md)
 - [Shell And Operator Environment](docs/shell.md)
 - [Manifest And Bundle Schema](docs/manifests.md)
 - [Future Services](docs/future-services.md)

@@ -16,6 +16,9 @@ The current session stack is:
 shell-service
   -> console-service session
        -> raw serial console path
+terminal-service
+  -> terminal session
+       -> terminal-app window
 session-service
   -> graphics-service surfaces
        -> kernel display-output object
@@ -26,9 +29,15 @@ session channel. That session channel carries line-oriented input and raw text
 output. The shell does not talk directly to the kernel debug console except
 through `console-service`.
 
+The same shell command/runtime layer is also reused by `terminal-service`,
+which exposes a PTY-like terminal session contract to the graphical
+`terminal-app`. That keeps shell semantics shared while leaving console and
+graphical hosting as separate presentation layers.
+
 Current properties:
 
 - one text-first operator session
+- one or more graphical terminal sessions through `terminal-service`
 - line-based input
 - explicit session handle passing to transient tools
 - no ambient login or account model yet
@@ -79,14 +88,15 @@ Current built-in commands:
 - `desktop apps`
 - `desktop windows`
 - `desktop launch <settings|files|monitor>`
-- `desktop focus <settings|files|monitor>`
+- `desktop launch <settings|files|monitor|terminal>`
+- `desktop focus <settings|files|monitor|terminal>`
 - `desktop next`
-- `desktop close <settings|files|monitor>`
-- `desktop minimize <settings|files|monitor>`
-- `desktop restore <settings|files|monitor>`
-- `desktop maximize <settings|files|monitor>`
-- `desktop move <settings|files|monitor> <x> <y>`
-- `desktop resize <settings|files|monitor> <width> <height>`
+- `desktop close <settings|files|monitor|terminal>`
+- `desktop minimize <settings|files|monitor|terminal>`
+- `desktop restore <settings|files|monitor|terminal>`
+- `desktop maximize <settings|files|monitor|terminal>`
+- `desktop move <settings|files|monitor|terminal> <x> <y>`
+- `desktop resize <settings|files|monitor|terminal> <width> <height>`
 - `desktop click <x> <y>`
 - `pkg list`
 - `pkg info <name>`
@@ -143,6 +153,7 @@ desktop comes up.
 
 - the graphical desktop owns product UX
 - the serial shell owns low-level inspection and operator workflows
+- the graphical terminal hosts the same shell/runtime stack inside the desktop
 - both sit on top of the same root-manager and service contracts
 
 That split is deliberate. The desktop can evolve without sacrificing bring-up
@@ -156,5 +167,6 @@ and debugging access.
 - login/account/session ownership
 - package-installed command discovery
 - richer package UX and operator history views
-- richer terminal emulation and graphical shells
+- tabs, panes, and richer terminal emulation on top of the current
+  terminal-service boundary
 - richer graphical session tooling beyond the current desktop window controls

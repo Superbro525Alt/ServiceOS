@@ -21,6 +21,10 @@ root-manager
        consumes one startup-granted display-output capability
   -> session-service
        depends on graphics-service, log-service
+  -> terminal-service
+       depends on log-service, config-service, storage-service,
+       status-service, package-service, network-service, graphics-service,
+       session-service, desktop-shell-service
   -> desktop-shell-service
        depends on graphics-service, session-service, log-service,
        network-service, status-service
@@ -53,6 +57,8 @@ desktop-shell-service
   -> settings-app
        launched on desktop request
   -> files-app
+       launched on desktop request
+  -> terminal-app
        launched on desktop request
 ```
 
@@ -136,6 +142,16 @@ Current lookup permissions:
   - `session-service` with send-only rights
   - `network-service` with send-only rights
   - `status-service` with send-only rights
+- `terminal-service`
+  - `log-service` with send-only rights
+  - `config-service` with send-only rights
+  - `storage-service` with send-only rights
+  - `status-service` with send-only rights
+  - `package-service` with send-only rights
+  - `network-service` with send-only rights
+  - `graphics-service` with send-only rights
+  - `session-service` with send-only rights
+  - `desktop-shell-service` with send-only rights
 
 ## Service roles
 
@@ -218,6 +234,15 @@ Current lookup permissions:
   keyboard routing
 - asks the root manager to launch graphical apps instead of spawning tasks
   directly
+
+### `terminal-service`
+
+- owns PTY-like terminal sessions for graphical terminal hosting
+- reuses the shared shell command/runtime library instead of introducing a
+  second shell implementation
+- accepts terminal-session open, input, resize, status, and close requests
+- keeps line editing, history, and prompt redraw logic out of the graphical UI
+- logs terminal-session lifecycle through the normal logging path
 - keeps desktop product policy out of `graphics-service` and `session-service`
 
 ### `settings-app`, `files-app`, and `monitor-app`

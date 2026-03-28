@@ -35,6 +35,7 @@ Current graphical apps:
 - `settings-app`
 - `files-app`
 - `monitor-app`
+- `terminal-app`
 
 These are applications, not hidden platform services. They render into a
 surface capability created by the desktop shell, receive one app-control
@@ -202,6 +203,10 @@ Current per-app grants:
   - app-control channel
   - `status-service`
   - `network-service`
+- `terminal-app`
+  - surface handle
+  - app-control channel
+  - `terminal-service`
 
 Apps do not inherit:
 
@@ -223,6 +228,9 @@ The first app set is intentionally small and platform-validating.
 - `monitor-app`
   - shows heartbeat and network status through `status-service` and
     `network-service`
+- `terminal-app`
+  - hosts the shared shell/runtime stack through `terminal-service` inside a
+    desktop window
 
 Each app now also proves a piece of desktop lifecycle behavior:
 

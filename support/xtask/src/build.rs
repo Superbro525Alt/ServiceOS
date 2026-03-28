@@ -104,10 +104,7 @@ fn build_package(
 }
 
 fn userspace_target(spec: PlatformSpec) -> &'static str {
-    match spec.arch {
-        crate::platform::Arch::X86_64 => "x86_64-unknown-none",
-        crate::platform::Arch::Aarch64 => "aarch64-unknown-none-softfloat",
-    }
+    spec.userspace_rust_target()
 }
 
 pub fn ensure_success(status: ExitStatus, context: &str) -> Result<(), Box<dyn Error>> {

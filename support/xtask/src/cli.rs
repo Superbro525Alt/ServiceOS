@@ -5,6 +5,7 @@ pub enum CommandKind {
     Build,
     Image,
     Run,
+    CiMatrix,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -26,6 +27,7 @@ impl<'a> Options<'a> {
             "build" => CommandKind::Build,
             "image" => CommandKind::Image,
             "run" => CommandKind::Run,
+            "ci-matrix" => CommandKind::CiMatrix,
             "qemu" => {
                 platform = Some("qemu-virtio");
                 CommandKind::Run
@@ -85,7 +87,7 @@ impl fmt::Display for UsageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "usage: cargo xtask <build|image|run|qemu|release> [--platform <qemu-virtio|raspi5>] [--release]"
+            "usage: cargo xtask <build|image|run|qemu|release|ci-matrix> [--platform <qemu-virtio|raspi5>] [--release]"
         )
     }
 }

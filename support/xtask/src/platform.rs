@@ -38,6 +38,12 @@ pub struct PlatformSpec {
 }
 
 impl PlatformSpec {
+    const ALL: [Self; 2] = [Self::qemu_virtio(), Self::raspi5()];
+
+    pub const fn all() -> &'static [Self] {
+        &Self::ALL
+    }
+
     pub fn resolve(name: &str) -> Result<Self, Box<dyn Error>> {
         match name {
             "qemu-virtio" => Ok(Self::qemu_virtio()),
@@ -80,6 +86,13 @@ impl PlatformSpec {
             .join("images")
             .join(profile)
             .join(self.name)
+    }
+
+    pub const fn userspace_rust_target(self) -> &'static str {
+        match self.arch {
+            Arch::X86_64 => "x86_64-unknown-none",
+            Arch::Aarch64 => "aarch64-unknown-none-softfloat",
+        }
     }
 
     pub fn kernel_binary_path(

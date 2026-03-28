@@ -118,7 +118,29 @@ fn convert_elf_to_binary(source: &Path, destination: &Path) -> Result<(), Box<dy
 fn objcopy_executable() -> PathBuf {
     env::var_os("LLVM_OBJCOPY")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/usr/sbin/llvm-objcopy"))
+        .filter(|path| path.exists())
+        .or_else(|| find_in_path("llvm-objcopy"))
+        .or_else(|| {
+            [
+                "/usr/bin/llvm-objcopy",
+                "/usr/sbin/llvm-objcopy",
+                "/usr/lib/llvm-18/bin/llvm-objcopy",
+                "/usr/lib/llvm-17/bin/llvm-objcopy",
+                "/usr/lib/llvm-16/bin/llvm-objcopy",
+            ]
+            .into_iter()
+            .map(PathBuf::from)
+            .find(|path| path.exists())
+        })
+        .unwrap_or_else(|| PathBuf::from("llvm-objcopy"))
+}
+
+fn find_in_path(binary: &str) -> Option<PathBuf> {
+    env::var_os("PATH").and_then(|path| {
+        env::split_paths(&path)
+            .map(|dir| dir.join(binary))
+            .find(|candidate| candidate.exists())
+    })
 }
 
 fn locate_raspi5_dtb() -> Option<PathBuf> {

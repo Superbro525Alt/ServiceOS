@@ -135,6 +135,7 @@ fn qemu_accel_mode() -> QemuAccelMode {
     match env::var("QEMU_ACCEL").ok().as_deref() {
         Some("kvm") => QemuAccelMode::Kvm,
         Some("tcg") => QemuAccelMode::Tcg,
+        _ if kvm_available() => QemuAccelMode::Kvm,
         _ => QemuAccelMode::Tcg,
     }
 }

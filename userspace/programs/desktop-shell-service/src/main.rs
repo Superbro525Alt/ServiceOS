@@ -308,15 +308,17 @@ fn main() -> u64 {
             Err(_) => return 0xfe0d,
         }
 
-        let mut request = RawMessage::empty(0);
-        match rt::channel_receive_nonblocking(public.first, &mut request) {
-            Ok(()) => {
-                if handle_request(&mut state, &request).is_err() {
-                    return 0xfe0e;
+        loop {
+            let mut request = RawMessage::empty(0);
+            match rt::channel_receive_nonblocking(public.first, &mut request) {
+                Ok(()) => {
+                    if handle_request(&mut state, &request).is_err() {
+                        return 0xfe0e;
+                    }
                 }
+                Err(rt::Error::QueueEmpty) => break,
+                Err(_) => return 0xfe0f,
             }
-            Err(rt::Error::QueueEmpty) => {}
-            Err(_) => return 0xfe0f,
         }
 
         if refresh_apps(&mut state).is_err() {

@@ -131,22 +131,24 @@ fn poll_control(
     height: &mut u32,
     focused: &mut bool,
 ) -> rt::Result<ControlFlow> {
-    let mut message = RawMessage::empty(0);
-    match rt::channel_receive_nonblocking(control_handle, &mut message) {
-        Ok(()) if message.tag == AppControlTag::FocusChanged as u32 && message.word_count > 0 => {
-            *focused = message.words[0] != 0;
-            Ok(ControlFlow::Continue)
+    loop {
+        let mut message = RawMessage::empty(0);
+        match rt::channel_receive_nonblocking(control_handle, &mut message) {
+            Ok(()) if message.tag == AppControlTag::FocusChanged as u32 && message.word_count > 0 => {
+                *focused = message.words[0] != 0;
+            }
+            Ok(()) if message.tag == AppControlTag::Resize as u32 && message.word_count >= 2 => {
+                *width = message.words[0] as u32;
+                *height = message.words[1] as u32;
+            }
+            Ok(()) if message.tag == AppControlTag::Close as u32 => return Ok(ControlFlow::Exit),
+            Ok(()) => {}
+            Err(rt::Error::QueueEmpty) => break,
+            Err(error) => return Err(error),
         }
-        Ok(()) if message.tag == AppControlTag::Resize as u32 && message.word_count >= 2 => {
-            *width = message.words[0] as u32;
-            *height = message.words[1] as u32;
-            Ok(ControlFlow::Continue)
-        }
-        Ok(()) if message.tag == AppControlTag::Close as u32 => Ok(ControlFlow::Exit),
-        Ok(()) => Ok(ControlFlow::Continue),
-        Err(rt::Error::QueueEmpty) => Ok(ControlFlow::Continue),
-        Err(error) => Err(error),
     }
+
+    Ok(ControlFlow::Continue)
 }
 
 fn sample_snapshot(status_handle: rt::Handle, network_handle: rt::Handle) -> MonitorSnapshot {

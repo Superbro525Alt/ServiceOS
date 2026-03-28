@@ -195,115 +195,83 @@ fn poll_control(
     config_handle: rt::Handle,
     network_handle: rt::Handle,
 ) -> rt::Result<ControlFlow> {
-    let mut message = RawMessage::empty(0);
-    match rt::channel_receive_nonblocking(control_handle, &mut message) {
-        Ok(()) if message.tag == AppControlTag::FocusChanged as u32 && message.word_count > 0 => {
-            *focused = message.words[0] != 0;
-            render(
-                surface_handle,
-                *width,
-                *height,
-                *focused,
-                config_handle,
-                network_handle,
-                *editing_note,
-                &note[..*note_len],
-            )?;
-            Ok(ControlFlow::Continue)
-        }
-        Ok(()) if message.tag == AppControlTag::Resize as u32 && message.word_count >= 2 => {
-            *width = message.words[0] as u32;
-            *height = message.words[1] as u32;
-            render(
-                surface_handle,
-                *width,
-                *height,
-                *focused,
-                config_handle,
-                network_handle,
-                *editing_note,
-                &note[..*note_len],
-            )?;
-            Ok(ControlFlow::Continue)
-        }
-        Ok(()) if message.tag == AppControlTag::Pointer as u32 && message.word_count >= 4 => {
-            let action = app_pointer_action_from_word(message.words[0]);
-            let x = message.words[1] as i64 as i32;
-            let y = message.words[2] as i64 as i32;
-            if matches!(action, Some(AppPointerAction::Down))
-                && x >= NOTE_FIELD_X0
-                && x < NOTE_FIELD_X1
-                && y >= NOTE_FIELD_Y0
-                && y < NOTE_FIELD_Y1
-            {
-                *editing_note = true;
-            } else if matches!(action, Some(AppPointerAction::Down)) {
-                *editing_note = false;
+    let mut changed = false;
+    loop {
+        let mut message = RawMessage::empty(0);
+        match rt::channel_receive_nonblocking(control_handle, &mut message) {
+            Ok(()) if message.tag == AppControlTag::FocusChanged as u32 && message.word_count > 0 => {
+                *focused = message.words[0] != 0;
+                changed = true;
             }
-            render(
-                surface_handle,
-                *width,
-                *height,
-                *focused,
-                config_handle,
-                network_handle,
-                *editing_note,
-                &note[..*note_len],
-            )?;
-            Ok(ControlFlow::Continue)
-        }
-        Ok(()) if message.tag == AppControlTag::Key as u32 && message.word_count >= 2 => {
-            if *editing_note
-                && matches!(app_key_action_from_word(message.words[0]), Some(AppKeyAction::Down))
-                && message.words[1] as u32 == 14
-                && *note_len > 0
-            {
-                *note_len -= 1;
-                render(
-                    surface_handle,
-                    *width,
-                    *height,
-                    *focused,
-                    config_handle,
-                    network_handle,
-                    *editing_note,
-                    &note[..*note_len],
-                )?;
+            Ok(()) if message.tag == AppControlTag::Resize as u32 && message.word_count >= 2 => {
+                *width = message.words[0] as u32;
+                *height = message.words[1] as u32;
+                changed = true;
             }
-            Ok(ControlFlow::Continue)
-        }
-        Ok(()) if message.tag == AppControlTag::Text as u32 && message.word_count > 0 => {
-            if *editing_note {
-                if let Some(ch) = char::from_u32(message.words[0] as u32) {
+            Ok(()) if message.tag == AppControlTag::Pointer as u32 && message.word_count >= 4 => {
+                let action = app_pointer_action_from_word(message.words[0]);
+                let x = message.words[1] as i64 as i32;
+                let y = message.words[2] as i64 as i32;
+                if matches!(action, Some(AppPointerAction::Down))
+                    && x >= NOTE_FIELD_X0
+                    && x < NOTE_FIELD_X1
+                    && y >= NOTE_FIELD_Y0
+                    && y < NOTE_FIELD_Y1
+                {
+                    *editing_note = true;
+                    changed = true;
+                } else if matches!(action, Some(AppPointerAction::Down)) {
+                    *editing_note = false;
+                    changed = true;
+                }
+            }
+            Ok(()) if message.tag == AppControlTag::Key as u32 && message.word_count >= 2 => {
+                if *editing_note
+                    && matches!(app_key_action_from_word(message.words[0]), Some(AppKeyAction::Down))
+                    && message.words[1] as u32 == 14
+                    && *note_len > 0
+                {
+                    *note_len -= 1;
+                    changed = true;
+                }
+            }
+            Ok(()) if message.tag == AppControlTag::Text as u32 && message.word_count > 0 => {
+                if *editing_note && let Some(ch) = char::from_u32(message.words[0] as u32) {
                     if ch == '\n' {
                         *editing_note = false;
+                        changed = true;
                     } else if ch.is_ascii_graphic() || ch == ' ' {
                         let mut scratch = [0u8; 4];
                         let bytes = ch.encode_utf8(&mut scratch).as_bytes();
                         if *note_len + bytes.len() <= NOTE_MAX_BYTES {
                             note[*note_len..*note_len + bytes.len()].copy_from_slice(bytes);
                             *note_len += bytes.len();
+                            changed = true;
                         }
                     }
-                    render(
-                        surface_handle,
-                        *width,
-                        *height,
-                        *focused,
-                        config_handle,
-                        network_handle,
-                        *editing_note,
-                        &note[..*note_len],
-                    )?;
                 }
             }
-            Ok(ControlFlow::Continue)
+            Ok(()) if message.tag == AppControlTag::Close as u32 => return Ok(ControlFlow::Exit),
+            Ok(()) => {}
+            Err(rt::Error::QueueEmpty) => break,
+            Err(error) => return Err(error),
         }
-        Ok(()) if message.tag == AppControlTag::Close as u32 => Ok(ControlFlow::Exit),
-        Ok(()) => Ok(ControlFlow::Continue),
-        Err(rt::Error::QueueEmpty) => Ok(ControlFlow::Continue),
-        Err(error) => Err(error),
     }
+
+    if changed {
+        render(
+            surface_handle,
+            *width,
+            *height,
+            *focused,
+            config_handle,
+            network_handle,
+            *editing_note,
+            &note[..*note_len],
+        )?;
+    }
+
+    Ok(ControlFlow::Continue)
 }
 
 fn app_pointer_action_from_word(value: u64) -> Option<AppPointerAction> {

@@ -222,24 +222,24 @@ fn process_input_event(
         x if x == InputEventKind::PointerMotion as u32 => {
             state.pointer_x = scale_input_axis(event.value0, state.output_width);
             state.pointer_y = scale_input_axis(event.value1, state.output_height);
-            rt::desktop_pointer_input(
+            tolerate_input_backpressure(rt::desktop_pointer_input(
                 desktop_handle,
                 DesktopInputAction::PointerMove,
                 state.pointer_x,
                 state.pointer_y,
-            )?;
+            ))?;
         }
         x if x == InputEventKind::PointerDelta as u32 => {
             state.pointer_x =
                 clamp_axis(state.pointer_x.saturating_add(event.value0), state.output_width);
             state.pointer_y =
                 clamp_axis(state.pointer_y.saturating_add(event.value1), state.output_height);
-            rt::desktop_pointer_input(
+            tolerate_input_backpressure(rt::desktop_pointer_input(
                 desktop_handle,
                 DesktopInputAction::PointerMove,
                 state.pointer_x,
                 state.pointer_y,
-            )?;
+            ))?;
         }
         x if x == InputEventKind::PointerButton as u32 => {
             let action = if event.value0 == 0 {
@@ -248,7 +248,12 @@ fn process_input_event(
                 DesktopInputAction::PointerDown
             };
             if event.code == InputButton::Left as u32 {
-                rt::desktop_pointer_input(desktop_handle, action, state.pointer_x, state.pointer_y)?;
+                tolerate_input_backpressure(rt::desktop_pointer_input(
+                    desktop_handle,
+                    action,
+                    state.pointer_x,
+                    state.pointer_y,
+                ))?;
             }
         }
         x if x == InputEventKind::Key as u32 => {
@@ -258,15 +263,20 @@ fn process_input_event(
             } else {
                 DesktopInputAction::KeyDown
             };
-            rt::desktop_key_input(desktop_handle, key_action, event.code, state.modifiers)?;
+            tolerate_input_backpressure(rt::desktop_key_input(
+                desktop_handle,
+                key_action,
+                event.code,
+                state.modifiers,
+            ))?;
             if event.value0 != 0 {
                 if let Some(ch) = keycode_to_text(event.code, state.modifiers) {
-                    rt::desktop_key_input(
+                    tolerate_input_backpressure(rt::desktop_key_input(
                         desktop_handle,
                         DesktopInputAction::TextInput,
                         ch as u32,
                         state.modifiers,
-                    )?;
+                    ))?;
                 }
             }
         }
@@ -311,6 +321,14 @@ fn clamp_axis(value: i32, limit: u32) -> i32 {
         return 0;
     }
     value.clamp(0, limit.saturating_sub(1) as i32)
+}
+
+fn tolerate_input_backpressure(result: rt::Result<u32>) -> rt::Result<()> {
+    match result {
+        Ok(_) => Ok(()),
+        Err(rt::Error::Busy | rt::Error::CapacityExceeded) => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 fn update_modifier_state(state: &mut SessionState, key_code: u32, pressed: bool) {

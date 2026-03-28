@@ -112,24 +112,31 @@ fn poll_control(
     focused: &mut bool,
     storage_handle: rt::Handle,
 ) -> rt::Result<ControlFlow> {
-    let mut message = RawMessage::empty(0);
-    match rt::channel_receive_nonblocking(control_handle, &mut message) {
-        Ok(()) if message.tag == AppControlTag::FocusChanged as u32 && message.word_count > 0 => {
-            *focused = message.words[0] != 0;
-            render(surface_handle, *width, *height, *focused, storage_handle)?;
-            Ok(ControlFlow::Continue)
+    let mut changed = false;
+    loop {
+        let mut message = RawMessage::empty(0);
+        match rt::channel_receive_nonblocking(control_handle, &mut message) {
+            Ok(()) if message.tag == AppControlTag::FocusChanged as u32 && message.word_count > 0 => {
+                *focused = message.words[0] != 0;
+                changed = true;
+            }
+            Ok(()) if message.tag == AppControlTag::Resize as u32 && message.word_count >= 2 => {
+                *width = message.words[0] as u32;
+                *height = message.words[1] as u32;
+                changed = true;
+            }
+            Ok(()) if message.tag == AppControlTag::Close as u32 => return Ok(ControlFlow::Exit),
+            Ok(()) => {}
+            Err(rt::Error::QueueEmpty) => break,
+            Err(error) => return Err(error),
         }
-        Ok(()) if message.tag == AppControlTag::Resize as u32 && message.word_count >= 2 => {
-            *width = message.words[0] as u32;
-            *height = message.words[1] as u32;
-            render(surface_handle, *width, *height, *focused, storage_handle)?;
-            Ok(ControlFlow::Continue)
-        }
-        Ok(()) if message.tag == AppControlTag::Close as u32 => Ok(ControlFlow::Exit),
-        Ok(()) => Ok(ControlFlow::Continue),
-        Err(rt::Error::QueueEmpty) => Ok(ControlFlow::Continue),
-        Err(error) => Err(error),
     }
+
+    if changed {
+        render(surface_handle, *width, *height, *focused, storage_handle)?;
+    }
+
+    Ok(ControlFlow::Continue)
 }
 
 #[derive(Clone, Copy)]

@@ -72,6 +72,8 @@
 - grow the current ICMP/status path into a broader socket and transport surface
 - add shared graphical buffers and client-drawn content on top of the current
   graphics-service contract
+- reduce or eliminate remaining heap-backed IPC message allocation in hot
+  runtime paths
 - grow the first desktop shell into richer task switching, broader shortcut and
   gesture policy, notifications, and permissions-aware desktop UX without
   collapsing it into platform services

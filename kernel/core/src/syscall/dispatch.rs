@@ -4,7 +4,8 @@ use spin::Once;
 
 use super::{
     MAX_SYSCALL_SLOTS, SyscallContext, SyscallDispatcher, SyscallError, SyscallNumber,
-    SyscallReturn, SyscallSnapshot, handle_abi_version, handle_channel_create,
+    SyscallReturn, SyscallSnapshot, handle_abi_version, handle_audio_endpoint_info,
+    handle_audio_endpoint_play_tone, handle_audio_endpoint_stop, handle_channel_create,
     handle_channel_receive, handle_channel_send, handle_debug_console_read,
     handle_debug_console_write, handle_debug_log_write, handle_display_output_info,
     handle_display_output_present, handle_handle_close, handle_handle_duplicate,
@@ -87,6 +88,9 @@ pub fn initialize() -> &'static DispatchTable {
             Some(handle_input_source_receive),
             Some(handle_memory_create),
             Some(handle_memory_write),
+            Some(handle_audio_endpoint_info),
+            Some(handle_audio_endpoint_play_tone),
+            Some(handle_audio_endpoint_stop),
         ])
     })
 }

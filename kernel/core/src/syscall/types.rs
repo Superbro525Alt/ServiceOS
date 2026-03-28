@@ -3,7 +3,7 @@ use serviceos_abi::{SyscallErrorCode as AbiErrorCode, SyscallNumber as AbiSyscal
 use crate::object::ObjectId;
 
 pub const SYSCALL_ABI_VERSION: u64 = 0x0003_0000;
-pub const MAX_SYSCALL_SLOTS: usize = 24;
+pub const MAX_SYSCALL_SLOTS: usize = 27;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SyscallNumber(pub u32);
@@ -139,6 +139,9 @@ pub enum SyscallKind {
     InputSourceReceive = AbiSyscallNumber::InputSourceReceive as isize,
     MemoryCreate = AbiSyscallNumber::MemoryCreate as isize,
     MemoryWrite = AbiSyscallNumber::MemoryWrite as isize,
+    AudioEndpointInfo = AbiSyscallNumber::AudioEndpointInfo as isize,
+    AudioEndpointPlayTone = AbiSyscallNumber::AudioEndpointPlayTone as isize,
+    AudioEndpointStop = AbiSyscallNumber::AudioEndpointStop as isize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

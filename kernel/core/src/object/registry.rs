@@ -5,6 +5,7 @@ use alloc::{
 use spin::Mutex;
 
 use crate::{
+    audio::{AudioBackend, AudioEndpointObject},
     display::{DisplayBackend, DisplayOutputObject},
     input::{self, InputBackend, InputSourceObject},
     ipc::ChannelEndpointObject,
@@ -214,6 +215,16 @@ impl ObjectRegistry {
             .backend();
         let _ = input::initialize().register_source(object.id().0, source);
         object
+    }
+
+    pub fn create_audio_endpoint(&self, backend: Arc<dyn AudioBackend>) -> KernelObjectRef {
+        self.register(KernelObjectRecord {
+            header: ObjectHeader {
+                id: self.allocate_id(ObjectKind::AudioEndpoint),
+                kind: ObjectKind::AudioEndpoint,
+            },
+            body: KernelObject::AudioEndpoint(AudioEndpointObject::new(backend)),
+        })
     }
 
     pub fn lookup(&self, id: ObjectId) -> Option<KernelObjectRef> {

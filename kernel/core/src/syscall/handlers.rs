@@ -1,4 +1,5 @@
 use serviceos_abi::{
+    AudioEndpointInfo as AbiAudioEndpointInfo, AudioToneRequest as AbiAudioToneRequest,
     DisplayOutputInfo as AbiDisplayOutputInfo, Handle, HandlePair, INPUT_SOURCE_FLAG_NONBLOCK,
     IPC_FLAG_NONBLOCK, IPC_MAX_HANDLES, IPC_MAX_WORDS, InputEventInfo as AbiInputEventInfo,
     InputSourceInfo as AbiInputSourceInfo, PACKET_INTERFACE_FLAG_NONBLOCK,
@@ -696,6 +697,82 @@ pub(super) fn handle_input_source_receive(context: &SyscallContext) -> SyscallRe
         ),
         Err(crate::input::InputSourceError::Busy) => SyscallReturn::error(SyscallError::Busy),
         Err(crate::input::InputSourceError::Unsupported) => {
+            SyscallReturn::error(SyscallError::Unsupported)
+        }
+    }
+}
+
+pub(super) fn handle_audio_endpoint_info(context: &SyscallContext) -> SyscallReturn {
+    let Ok(current_task) = current_task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let object = match resolve_object(
+        &current_task,
+        context.arguments[0] as Handle,
+        CapabilityRights::READ,
+    ) {
+        Ok(view) => view.object,
+        Err(error) => return SyscallReturn::error(error),
+    };
+    let Some(endpoint) = object.audio_endpoint() else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Ok(info_out) = (unsafe { user_mut::<AbiAudioEndpointInfo>(context.arguments[1]) }) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+
+    *info_out = endpoint.info();
+    SyscallReturn::success(0)
+}
+
+pub(super) fn handle_audio_endpoint_play_tone(context: &SyscallContext) -> SyscallReturn {
+    let Ok(current_task) = current_task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let object = match resolve_object(
+        &current_task,
+        context.arguments[0] as Handle,
+        CapabilityRights::WRITE,
+    ) {
+        Ok(view) => view.object,
+        Err(error) => return SyscallReturn::error(error),
+    };
+    let Some(endpoint) = object.audio_endpoint() else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Ok(request) = (unsafe { user_ref::<AbiAudioToneRequest>(context.arguments[1]) }) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+
+    match endpoint.play_tone(*request) {
+        Ok(()) => SyscallReturn::success(0),
+        Err(crate::audio::AudioEndpointError::Busy) => SyscallReturn::error(SyscallError::Busy),
+        Err(crate::audio::AudioEndpointError::Unsupported) => {
+            SyscallReturn::error(SyscallError::Unsupported)
+        }
+    }
+}
+
+pub(super) fn handle_audio_endpoint_stop(context: &SyscallContext) -> SyscallReturn {
+    let Ok(current_task) = current_task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let object = match resolve_object(
+        &current_task,
+        context.arguments[0] as Handle,
+        CapabilityRights::WRITE,
+    ) {
+        Ok(view) => view.object,
+        Err(error) => return SyscallReturn::error(error),
+    };
+    let Some(endpoint) = object.audio_endpoint() else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+
+    match endpoint.stop() {
+        Ok(()) => SyscallReturn::success(0),
+        Err(crate::audio::AudioEndpointError::Busy) => SyscallReturn::error(SyscallError::Busy),
+        Err(crate::audio::AudioEndpointError::Unsupported) => {
             SyscallReturn::error(SyscallError::Unsupported)
         }
     }

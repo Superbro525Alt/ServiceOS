@@ -56,9 +56,11 @@ fn run_qemu(disk_image: &Path) -> Result<(), Box<dyn Error>> {
     );
     let accel = qemu_accel_mode();
     println!("  accelerator: {}", accel_name(accel));
+    let audio_device = qemu_audio_device()?;
+    println!("  audio: {}", audio_device);
 
     let mut command = Command::new(&qemu_binary);
-    command.args(["-machine", "q35"]);
+    command.args(["-machine", "q35,pcspk-audiodev=speaker"]);
     command.args(["-m", "512"]);
     command.args(["-smp", "2"]);
     command.args(["-cpu", "max"]);
@@ -79,6 +81,7 @@ fn run_qemu(disk_image: &Path) -> Result<(), Box<dyn Error>> {
     } else {
         command.args(["-display", "gtk,gl=off"]);
     }
+    command.args(["-audiodev", &audio_device]);
     command.args(["-netdev", "user,id=net0"]);
     command.args([
         "-device",
@@ -117,6 +120,22 @@ fn run_qemu(disk_image: &Path) -> Result<(), Box<dyn Error>> {
         )
     })?;
     ensure_success(status, "QEMU UEFI run failed")
+}
+
+fn qemu_audio_device() -> Result<String, Box<dyn Error>> {
+    if let Some(spec) = env::var_os("QEMU_AUDIODEV") {
+        return Ok(spec.to_string_lossy().into_owned());
+    }
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .unwrap()
+        .join("target")
+        .join("qemu-audio");
+    std::fs::create_dir_all(&root)?;
+    let path = root.join("serviceos-pcspk.wav");
+    Ok(format!("wav,id=speaker,path={}", path.display()))
 }
 
 fn qemu_headless() -> bool {

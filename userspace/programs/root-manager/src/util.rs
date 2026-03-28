@@ -68,6 +68,9 @@ pub(crate) fn bootstrap_resource_for(
         ServiceId::Session => bootstrap_resources
             .input
             .map(|resource| (resource.handle, resource.len, resource.rights)),
+        ServiceId::Audio => bootstrap_resources
+            .audio
+            .map(|resource| (resource.handle, resource.len, resource.rights)),
         _ => None,
     }
 }
@@ -211,6 +214,7 @@ pub(crate) fn service_id_from_word(value: u64) -> ServiceId {
         x if x == ServiceId::Session as u32 => ServiceId::Session,
         x if x == ServiceId::DesktopShell as u32 => ServiceId::DesktopShell,
         x if x == ServiceId::Terminal as u32 => ServiceId::Terminal,
+        x if x == ServiceId::Audio as u32 => ServiceId::Audio,
         _ => ServiceId::RootManager,
     }
 }
@@ -237,6 +241,7 @@ pub(crate) fn image_id_from_word(value: u64) -> ServiceImageId {
         x if x == ServiceImageId::MonitorApp as u32 => ServiceImageId::MonitorApp,
         x if x == ServiceImageId::TerminalService as u32 => ServiceImageId::TerminalService,
         x if x == ServiceImageId::TerminalApp as u32 => ServiceImageId::TerminalApp,
+        x if x == ServiceImageId::AudioService as u32 => ServiceImageId::AudioService,
         _ => ServiceImageId::RootManager,
     }
 }
@@ -277,6 +282,7 @@ pub(crate) fn service_name(service_id: ServiceId) -> &'static str {
         ServiceId::Session => "session-service",
         ServiceId::DesktopShell => "desktop-shell-service",
         ServiceId::Terminal => "terminal-service",
+        ServiceId::Audio => "audio-service",
     }
 }
 
@@ -337,6 +343,11 @@ pub(crate) fn event_name(event: LogEvent) -> &'static str {
         LogEvent::InputKeyDelivered => "input-key-delivered",
         LogEvent::TerminalSessionOpened => "terminal-session-opened",
         LogEvent::TerminalSessionClosed => "terminal-session-closed",
+        LogEvent::AudioEndpointReady => "audio-endpoint-ready",
+        LogEvent::AudioStreamOpened => "audio-stream-opened",
+        LogEvent::AudioStreamStarted => "audio-stream-started",
+        LogEvent::AudioStreamStopped => "audio-stream-stopped",
+        LogEvent::AudioStreamClosed => "audio-stream-closed",
     }
 }
 

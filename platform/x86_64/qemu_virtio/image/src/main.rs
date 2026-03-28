@@ -20,7 +20,7 @@ use serviceos_kernel_core::{
     task::{ExecutionState, SchedulerError, TaskRole, ThreadId, ThreadMode},
     user::{self as kernel_user, SpawnError, TaskExitStatus},
 };
-use serviceos_platform_qemu_virtio::{boot, display, input, network, serial};
+use serviceos_platform_qemu_virtio::{audio, boot, display, input, network, serial};
 use spin::Once;
 use uefi::{Status, entry};
 
@@ -117,6 +117,12 @@ fn kernel_main() -> Status {
     });
     let bootstrap_input =
         input::initialize().map(|backend| kernel.objects().registry().create_input_source(backend));
+    let bootstrap_audio = Some(
+        kernel
+            .objects()
+            .registry()
+            .create_audio_endpoint(audio::initialize()),
+    );
 
     log(
         "memory",
@@ -209,12 +215,24 @@ fn kernel_main() -> Status {
     } else {
         log_line("input", "no input source detected");
     }
+    if let Some(summary) = audio::bringup_summary() {
+        log(
+            "audio",
+            format_args!(
+                "backend={:?} default-frequency-hz={}",
+                summary.backend, summary.default_frequency_hz,
+            ),
+        );
+    } else {
+        log_line("audio", "no audio endpoint detected");
+    }
 
     let summary = match launch_root_manager(
         &kernel,
         bootstrap_network,
         bootstrap_display,
         bootstrap_input,
+        bootstrap_audio,
     ) {
         Ok(summary) => summary,
         Err(error) => {
@@ -283,6 +301,7 @@ fn launch_root_manager(
     bootstrap_network: Option<serviceos_kernel_core::object::KernelObjectRef>,
     bootstrap_display: Option<serviceos_kernel_core::object::KernelObjectRef>,
     bootstrap_input: Option<serviceos_kernel_core::object::KernelObjectRef>,
+    bootstrap_audio: Option<serviceos_kernel_core::object::KernelObjectRef>,
 ) -> Result<RootBootstrapSummary, BootstrapError> {
     log_line("bootstrap", "preparing root-manager bootstrap channel");
     let ipc_kernel = ipc::kernel().ok_or(BootstrapError::MissingBootStore)?;
@@ -386,6 +405,20 @@ fn launch_root_manager(
     } else {
         None
     };
+    let audio_transfer = if let Some(audio_object) = bootstrap_audio {
+        let audio_handle = bootstrap_task.capability_space().install(
+            audio_object,
+            CapabilityRights::audio_endpoint(),
+            None,
+        )?;
+        Some(bootstrap_task.capability_space().prepare_transfer(
+            audio_handle,
+            CapabilityRights::audio_endpoint(),
+            TransferMode::Move,
+        )?)
+    } else {
+        None
+    };
 
     log_line("bootstrap", "spawning root-manager task");
     let root = kernel_user::spawn_builtin_task(
@@ -412,6 +445,9 @@ fn launch_root_manager(
     }
     if let Some(input_transfer) = input_transfer {
         startup = startup.add_transfer(input_transfer)?;
+    }
+    if let Some(audio_transfer) = audio_transfer {
+        startup = startup.add_transfer(audio_transfer)?;
     }
     ipc_kernel.send(
         bootstrap_task.capability_space(),

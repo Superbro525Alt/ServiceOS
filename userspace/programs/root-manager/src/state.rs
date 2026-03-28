@@ -21,6 +21,7 @@ pub(crate) struct BootstrapResources {
     pub(crate) network: Option<BootstrapResource>,
     pub(crate) display: Option<BootstrapResource>,
     pub(crate) input: Option<BootstrapResource>,
+    pub(crate) audio: Option<BootstrapResource>,
 }
 
 #[derive(Clone, Copy)]

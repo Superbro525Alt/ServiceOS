@@ -67,6 +67,15 @@ fn main() -> u64 {
     } else {
         None
     };
+    let audio_resource = if startup.handle_count > 5 {
+        Some(BootstrapResource {
+            handle: startup.handles[5],
+            len: 0,
+            rights: rights::READ | rights::WRITE,
+        })
+    } else {
+        None
+    };
     let bootstrap_resources = BootstrapResources {
         bootstore: BootstrapResource {
             handle: bootstore_handle,
@@ -76,6 +85,7 @@ fn main() -> u64 {
         network: network_resource,
         display: display_resource,
         input: input_resource,
+        audio: audio_resource,
     };
 
     fallback_log("bootstrap started");

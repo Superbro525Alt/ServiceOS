@@ -120,6 +120,13 @@ impl CapabilityRights {
             .union(Self::DUPLICATE)
             .union(Self::TRANSFER)
     }
+
+    pub const fn audio_endpoint() -> Self {
+        Self::READ
+            .union(Self::WRITE)
+            .union(Self::DUPLICATE)
+            .union(Self::TRANSFER)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

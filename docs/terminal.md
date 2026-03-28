@@ -87,7 +87,8 @@ The current model is intentionally simple:
 
 - shell execution is synchronous per session
 - terminal output is text-oriented rather than a full PTY byte stream
-- minimal ANSI/CSI handling is supported for prompt redraw and cursor movement
+- ANSI/CSI handling now covers the practical cursor and clear-screen subset
+  needed for normal shell use
 
 That is enough for real shell use without hardwiring shell behavior into the
 graphical UI.
@@ -114,6 +115,7 @@ Currently supported interactive behavior:
 - `Ctrl+C` to cancel the current line and redraw the prompt
 - prompt redraw after command output
 - focus-aware keyboard delivery through the normal desktop app path
+- multiple terminal tabs backed by independent terminal sessions
 
 Global desktop shortcuts remain outside the terminal session. The terminal only
 consumes input after the desktop has decided that the terminal window is the
@@ -131,7 +133,9 @@ It currently:
 - tracks a scrollback grid
 - renders a simple monospaced bitmap font
 - shows a focused cursor
-- handles redraw on output, resize, and focus changes
+- handles redraw on output, resize, focus changes, and scroll movement
+- supports in-window text selection and local copy/paste
+- supports mouse-wheel and keyboard scrollback navigation
 
 The terminal window therefore uses the same graphics/session/window model as
 other desktop apps instead of bypassing the compositor.
@@ -158,23 +162,22 @@ Close flow:
 4. the app exits as a normal graphical task
 5. `desktop-shell-service` cleans up the window state
 
-## Current limitations
+## Current capabilities
 
-The terminal is now real and usable, but still intentionally scoped:
+The terminal is now materially more practical for daily use:
 
-- no tabs or panes
-- no text selection or copy/paste yet
-- no full ANSI/VT escape coverage
-- no shell job control
-- no independent background process group handling
-- no alternate screen buffer
-- no configurable themes or profiles
+- multiple tabs inside one terminal window
+- per-tab terminal sessions
+- scrollback with keyboard and mouse-wheel control
+- selection with copy and paste inside the current terminal app
+- broader ANSI/CSI handling for cursor motion, positioning, and clear actions
+- resize-aware redraw behavior across window geometry changes
 
 ## Deferred
 
-- tabs and split panes
-- richer ANSI/VT escape handling
-- selection, copy, and paste within the desktop capability model
-- better terminal resize semantics for future richer process environments
+- split panes
+- broader ANSI/VT coverage, including more styling and alternate-screen behavior
+- clipboard integration beyond the current terminal-local copy/paste buffer
+- richer resize semantics for future process-group and PTY growth
 - terminal themes and profiles
 - remote terminal and SSH-oriented workflows

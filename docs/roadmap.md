@@ -97,13 +97,11 @@
 
 - add Raspberry Pi 5 framebuffer, input, networking, and writable-boot-store
   backends behind the current `platform/aarch64/raspi5` contracts
-- evolve the flat-image bootstrap into a richer executable-loading model when
-  the current userspace service graph outgrows it
-- add writable storage and directory capabilities
-- extend terminate-on-fault isolation into richer user-fault upcalls and
-  recovery policy
-- move input delivery from PIT polling to device-driven wakeups, mirroring the
-  packet-interface path
+- grow the current storage layer beyond the mutable in-memory namespace overlay
+  into persistent writable backing, broader directory policy, and fuller
+  application-facing filesystem APIs
+- extend the current fault-state propagation, manager supervision, and desktop
+  fault surfacing into richer user-fault upcalls and recovery policy
 - grow the current networking surface beyond DHCP/DNS/ICMP/outbound TCP into
   UDP, inbound/listening transports, richer routing, and IPv6
 - grow the current audio surface beyond tone playback into PCM output, capture
@@ -121,14 +119,15 @@
 - add stronger isolation and sandboxing policy for compatibility workloads
 - split the remaining x86 PC interrupt-controller details out of `arch/x86_64`
   if a second x86 platform target is added
-- grow the current shared-buffer graphics path into mapped or zero-copy
-  presentation buffers and a broader client-render protocol
-- grow the first desktop shell into richer task switching, broader shortcut and
-  gesture policy, notifications, and permissions-aware desktop UX without
-  collapsing it into platform services
-- grow the first graphical terminal into tabs, selection/copy-paste, richer
-  ANSI/VT handling, and better resize semantics on top of the current
-  `terminal-service` boundary
+- grow the current mapped-buffer graphics path into damage-tracked
+  multi-buffer presentation and a broader client-render protocol
+- grow the desktop shell beyond the current shortcuts, notifications, and task
+  switching into richer gesture, permissions, and system-status UX
+- grow the graphical terminal beyond tabs, selection/copy-paste, and the
+  current ANSI/VT subset into fuller terminal emulation and richer clipboard
+  integration
+- grow the current stored flat-image loader into richer executable formats,
+  dependency loading, and broader runtime policy
 
 ## Later
 

@@ -55,6 +55,8 @@ handles.
 - keyboard focus and app-target routing on top of session focus
 - app launch and window-action requests over the desktop-shell contract
 - manager-mediated app launch requests
+- notifications presentation and timeout state
+- richer shortcut handling and task switching on top of the focused-window model
 
 It does not own:
 
@@ -161,6 +163,8 @@ Current behavior:
 - titlebar controls close, minimize, and maximize or restore a window
 - app-content pointer events are routed only to the owning app window
 - `Alt+Tab` cycles focused windows
+- `Alt+Shift+Tab` cycles backward
+- `Alt+1..4` launches or focuses the primary desktop apps
 - `Alt+F4` requests close on the focused app
 - text input reaches the focused app when that app chooses to consume it
 
@@ -243,6 +247,11 @@ desktop shell forwards pointer, key, and text events over the app-control
 channel, and the app updates its own note field without gaining session-global
 input authority.
 
+The desktop shell also now exposes a first notification path through the real
+desktop contract. Shell/operator commands can post notifications without
+gaining compositor or app-owned surface authority, and app faults can surface
+as desktop notifications instead of disappearing silently.
+
 ## Operator coexistence
 
 The graphical desktop does not replace the serial/operator path.
@@ -257,6 +266,15 @@ The graphical desktop does not replace the serial/operator path.
 
 That coexistence is intentional. It keeps bring-up and debugging usable while
 the graphical product layer matures.
+
+## Deferred
+
+Still intentionally deferred:
+
+- a richer notification center and history model
+- broader gesture and snap policy
+- permissions-aware desktop prompts and policy UX
+- more advanced task switcher visuals
 
 ## Current limitations
 

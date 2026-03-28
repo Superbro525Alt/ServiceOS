@@ -73,6 +73,9 @@ Current built-in commands:
 - `logs [count]`
 - `config`
 - `store ls [prefix]`
+- `store mkdir <path>`
+- `store write <path> <text>`
+- `store rm <path>`
 - `cat <path>`
 - `status`
 - `net ifaces`
@@ -99,6 +102,8 @@ Current built-in commands:
 - `desktop move <settings|files|monitor|terminal> <x> <y>`
 - `desktop resize <settings|files|monitor|terminal> <width> <height>`
 - `desktop click <x> <y>`
+- `desktop notify <text>`
+- `run image <path>`
 - `pkg list`
 - `pkg info <name>`
 - `pkg install <name> [version]`

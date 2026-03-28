@@ -62,12 +62,12 @@ Backend placement now looks like this:
 - composition ordering
 - framebuffer presentation
 
-The current compositor is deliberately simple:
+The current compositor is still deliberately simple:
 
 - one output
-- solid-fill rectangular surfaces
-- optional shared-buffer surface content
-- full-frame recomposition on change
+- shell-owned retained-scene primitives
+- client-owned mapped presentation buffers
+- broader present requests on top of the surface contract
 - userspace-owned z-order
 
 This is enough to prove the client-facing surface and presentation model
@@ -75,31 +75,46 @@ without pretending that the final desktop compositor already exists.
 
 ## Surface model
 
-The first surface contract includes:
+The first surface contract now includes:
 
 - surface creation through `graphics-service`
 - per-surface capability handles
 - geometry updates
 - fill-color updates
 - shared-buffer attachment through a transferred memory-object capability
+- mapped buffer presentation requests from clients
 - visibility updates
 - surface status queries
 
 Surface handles are explicit capabilities. Clients do not gain ambient access
 to all graphical objects just because they can talk to the graphics service.
 
-The current surface implementation now supports two composition styles behind
-the same surface contract:
+The current surface implementation supports two composition styles behind the
+same contract:
 
 - retained-scene primitives (`fill`, `rect`, `label`) owned by
   `graphics-service`
-- client-owned shared buffers backed by writable kernel memory objects
+- client-owned mapped buffers backed by writable kernel memory objects
 
-The first client-drawn path is intentionally modest: `monitor-app` can attach a
-shared pixel buffer and draw directly into it, while the service still
-composites retained shell/app chrome above that content. This is enough to
-prove the contract needed for later media, richer app rendering, and broader
-desktop growth without forcing a full GPU or toolkit redesign now.
+The client-render path is no longer just “attach a buffer and hope the
+compositor copies it later.” Clients can now:
+
+- map their own memory-object-backed pixel buffers
+- render directly into those buffers
+- issue explicit present-buffer requests through the graphics contract
+- keep buffer ownership and lifetime explicit
+
+That gives the system a real client-render substrate without collapsing the
+compositor boundary into ad hoc shared-memory shortcuts.
+
+Current mapped-buffer clients include:
+
+- `monitor-app`
+- `files-app`
+- `terminal-app`
+
+The desktop shell still owns chrome and policy, while apps own their local
+pixel content. This is the right long-term split for richer client rendering.
 
 ## Session model
 
@@ -162,7 +177,7 @@ Bring-up-specific parts:
 
 - `platform/x86_64/qemu_virtio::boot` UEFI framebuffer discovery
 - one boot framebuffer backend
-- full-frame copies on presentation
+- one software-composited output
 - one VirtIO input bring-up path for pointer and keyboard delivery
 
 This is intentionally QEMU-friendly but not QEMU-locked. Later work can add
@@ -173,9 +188,9 @@ contracts.
 
 Still intentionally deferred:
 
-- mapped or zero-copy presentation buffers
 - multiple outputs
 - multiple graphical sessions
-- window management policy
-- desktop shell, launcher, dock, notifications, and settings UI
+- damage tracking and multi-buffer client presentation
+- richer client-render protocol details beyond the current mapped-buffer present
+  path
 - GPU acceleration and richer display mode management

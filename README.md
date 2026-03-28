@@ -48,6 +48,8 @@ Current userspace platform:
 - audio service with explicit endpoint and playback-stream contracts
 - graphics service, compositor foundation, and session service
 - desktop shell with initial graphical core apps
+- writable storage namespaces with scoped directory and file capabilities
+- manager-owned stored-image launching through the storage path
 
 Current graphical/product layer:
 
@@ -206,6 +208,8 @@ From the operator shell:
 - inspect services and service state
 - inspect logs
 - inspect stored bundle/config data
+- create and update files in writable namespaces through the real storage
+  service
 - perform package operations
 - install optional runtime support packages
 - install optional developer tooling support packages
@@ -218,6 +222,9 @@ From the operator shell:
 - inspect build jobs and exported artifact handles
 - inspect network interfaces/routes/resolution state
 - perform practical outbound network checks and fetches through the real
+  network-service path
+- launch desktop apps and post notifications through the desktop contract
+- launch stored flat images through the manager-owned loader path
   networking service
 - inspect audio endpoints and streams and run diagnostic playback through the
   real audio service

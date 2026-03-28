@@ -63,11 +63,24 @@ This model is now exercised by a real service platform:
 - the root manager and foundational services run on the same scheduler
 - later blocking syscalls can reuse the same scheduler APIs
 
+The runtime model is also less bootstrap-bound than before:
+
+- the root manager can now launch stored executable images through the storage
+  service and a manager-owned image-loading path
+- dynamic image launch no longer has to be hardwired to built-in image ids only
+- user tasks now report `Faulted` as a distinct terminal state instead of
+  collapsing every failure into a generic exit
+
+That keeps loading policy in the manager/runtime layer rather than scattering
+it into shell or app launch code.
+
 ## Still deferred
 
 - actual CPU register context switching between unrelated kernel threads
 - preemptive time-slice enforcement
 - SMP scheduling
-- richer user fault delivery or recovery beyond the current terminate-on-fault
-  isolation
-- richer executable loading
+- richer user-fault upcalls and user-directed recovery policy beyond the
+  current fault-state propagation, manager supervision, and desktop fault
+  surfacing
+- richer executable formats, dependency loading, and policy beyond the current
+  stored flat-image loader path

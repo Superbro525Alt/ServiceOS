@@ -28,6 +28,9 @@ pub fn run_platform(artifacts: &BuildArtifacts, image: &Path) -> Result<(), Box<
 }
 
 fn run_qemu(disk_image: &Path) -> Result<(), Box<dyn Error>> {
+    let qemu_binary = find_qemu_binary().ok_or_else(|| {
+        "qemu-system-x86_64 not found; install QEMU or set QEMU_SYSTEM_X86_64 to an absolute path"
+    })?;
     let ovmf_code = find_ovmf_code().ok_or("no OVMF code firmware found")?;
     let ovmf_vars = create_ovmf_vars_copy(
         &Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -38,8 +41,25 @@ fn run_qemu(disk_image: &Path) -> Result<(), Box<dyn Error>> {
             .join("ovmf"),
     )?;
     let headless = qemu_headless();
+    if !disk_image.exists() {
+        return Err(format!(
+            "QEMU disk image is missing: {}",
+            disk_image.display()
+        )
+        .into());
+    }
 
-    let mut command = Command::new("qemu-system-x86_64");
+    println!("Launching QEMU with:");
+    println!("  binary: {}", qemu_binary.display());
+    println!("  firmware code: {}", ovmf_code.display());
+    println!("  firmware vars: {}", ovmf_vars.display());
+    println!("  disk image: {}", disk_image.display());
+    println!(
+        "  display mode: {}",
+        if headless { "headless" } else { "graphical" }
+    );
+
+    let mut command = Command::new(&qemu_binary);
     command.args(["-machine", "q35"]);
     command.args(["-m", "512"]);
     command.args(["-smp", "2"]);
@@ -83,7 +103,14 @@ fn run_qemu(disk_image: &Path) -> Result<(), Box<dyn Error>> {
         }
     }
 
-    let status = command.status()?;
+    let status = command.status().map_err(|error| {
+        format!(
+            "failed to launch QEMU binary {} with disk {}: {}",
+            qemu_binary.display(),
+            disk_image.display(),
+            error
+        )
+    })?;
     ensure_success(status, "QEMU UEFI run failed")
 }
 
@@ -135,6 +162,25 @@ fn find_ovmf_vars_template() -> Option<PathBuf> {
         ]
         .into_iter()
         .map(PathBuf::from)
-        .find(|path| path.exists())
+            .find(|path| path.exists())
     })
+}
+
+fn find_qemu_binary() -> Option<PathBuf> {
+    env::var_os("QEMU_SYSTEM_X86_64")
+        .map(PathBuf::from)
+        .filter(|path| path.exists())
+        .or_else(|| {
+            env::var_os("PATH").and_then(|path| {
+                env::split_paths(&path)
+                    .map(|dir| dir.join("qemu-system-x86_64"))
+                    .find(|candidate| candidate.exists())
+            })
+        })
+        .or_else(|| {
+            ["/usr/bin/qemu-system-x86_64", "/usr/sbin/qemu-system-x86_64"]
+                .into_iter()
+                .map(PathBuf::from)
+                .find(|path| path.exists())
+        })
 }

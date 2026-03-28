@@ -75,6 +75,9 @@
 - grow the first desktop shell into richer task switching, broader shortcut and
   gesture policy, notifications, and permissions-aware desktop UX without
   collapsing it into platform services
+- Add a graphical terminal app that runs the existing shell inside desktop 
+  windows without forking shell logic into a separate desktop-only 
+  command path
 
 ## Later
 

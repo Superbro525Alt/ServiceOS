@@ -514,18 +514,8 @@ fn draw_titlebar(bytes: &mut [u8], width: usize, focused: bool) {
         ui::WINDOW_BUTTON_SIZE as usize,
         ui::STATUS_WARN,
     );
-    if focused {
-        rt::draw_text_rgba8888(
-            bytes,
-            PIXEL_STRIDE,
-            10,
-            9,
-            ui::TEXT_PRIMARY,
-            "TERMINAL ACTIVE",
-        );
-    } else {
-        rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, 10, 9, ui::TEXT_PRIMARY, "TERMINAL");
-    }
+    let _ = focused;
+    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, 10, 9, ui::TEXT_PRIMARY, "TERMINAL");
 }
 
 fn draw_terminal_contents(bytes: &mut [u8], width: usize, height: usize, state: &TerminalState) {

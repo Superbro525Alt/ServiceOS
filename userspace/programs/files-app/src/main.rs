@@ -355,7 +355,11 @@ fn render(
         0,
         width,
         ui::TITLEBAR_HEIGHT as usize,
-        if state.focused { ui::ACCENT_DIM } else { ui::TEXT_MUTED },
+        if state.focused {
+            ui::ACCENT
+        } else {
+            ui::ACCENT_DIM
+        },
     );
     fill_rect(
         bytes,
@@ -426,8 +430,7 @@ fn draw_titlebar(bytes: &mut [u8], width: usize, focused: bool) {
         ui::BG_PANEL,
         "X",
     );
-    let title = if focused { "FILES ACTIVE" } else { "FILES" };
-    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, 10, 9, ui::TEXT_PRIMARY, title);
+    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, 10, 9, ui::TEXT_PRIMARY, "FILES");
 }
 
 fn draw_header(bytes: &mut [u8], state: &ExplorerState) {

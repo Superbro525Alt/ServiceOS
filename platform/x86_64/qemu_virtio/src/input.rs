@@ -294,13 +294,13 @@ fn normalize_event(device: &mut InputDeviceState, event: InputEvent) -> Option<I
             None
         }
         EV_REL => {
-            if let Some(PointerSource::Relative) = device.pointer {
+            if device.pointer.is_some() {
                 match event.code {
-                    REL_X => {
+                    REL_X if matches!(device.pointer, Some(PointerSource::Relative)) => {
                         device.pending_x = device.pending_x.saturating_add(event.value as i32);
                         device.motion_dirty = true;
                     }
-                    REL_Y => {
+                    REL_Y if matches!(device.pointer, Some(PointerSource::Relative)) => {
                         device.pending_y = device.pending_y.saturating_add(event.value as i32);
                         device.motion_dirty = true;
                     }

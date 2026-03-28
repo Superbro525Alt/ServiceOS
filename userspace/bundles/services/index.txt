@@ -4,6 +4,7 @@ services/log-service/manifest.svc
 services/network-service/manifest.svc
 services/graphics-service/manifest.svc
 services/session-service/manifest.svc
+services/terminal-service/manifest.svc
 services/desktop-shell-service/manifest.svc
 services/status-service/manifest.svc
 services/package-service/manifest.svc

@@ -14,7 +14,7 @@ use rt::{
 };
 
 const SESSION_ID: u32 = 1;
-const APP_COUNT: usize = 3;
+const APP_COUNT: usize = 4;
 const WINDOW_PAGE_SIZE: usize = 2;
 const STATUS_REFRESH_TICKS: u64 = 100;
 const TOPBAR_HEIGHT: u32 = 42;
@@ -271,6 +271,7 @@ fn main() -> u64 {
             AppSlot::new(DesktopAppId::Settings, ServiceImageId::SettingsApp),
             AppSlot::new(DesktopAppId::Files, ServiceImageId::FilesApp),
             AppSlot::new(DesktopAppId::Monitor, ServiceImageId::MonitorApp),
+            AppSlot::new(DesktopAppId::Terminal, ServiceImageId::TerminalApp),
         ],
         focused_app: None,
         next_status_refresh: 0,

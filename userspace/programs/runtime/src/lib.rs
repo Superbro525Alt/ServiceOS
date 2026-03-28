@@ -19,7 +19,8 @@ pub use serviceos_abi::{
     PACKET_INTERFACE_FLAG_NONBLOCK, PacketInterfaceBackend, PacketInterfaceInfo,
     PacketInterfaceLinkState, PackageStatus, PackageTag, RawMessage, ServiceId, ServiceImageId,
     SessionInputSource, SessionStatus, SessionTag, StatusTag, StorageStatus, StorageTag,
-    SurfaceTag, SyscallErrorCode, SyscallNumber, TaskStateCode, TaskStatus,
+    SurfaceTag, SyscallErrorCode, SyscallNumber, TaskStateCode, TaskStatus, TerminalStatus,
+    TerminalTag,
 };
 pub use serviceos_abi::{input_capability, rights};
 
@@ -40,6 +41,7 @@ mod package;
 mod session;
 mod status;
 mod storage;
+mod terminal;
 mod types;
 
 pub use app_control::*;
@@ -59,6 +61,7 @@ pub use package::*;
 pub use session::*;
 pub use status::*;
 pub use storage::*;
+pub use terminal::*;
 pub use types::*;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -226,6 +229,7 @@ fn service_id_from_word(value: u64) -> ServiceId {
         x if x == ServiceId::Graphics as u32 => ServiceId::Graphics,
         x if x == ServiceId::Session as u32 => ServiceId::Session,
         x if x == ServiceId::DesktopShell as u32 => ServiceId::DesktopShell,
+        x if x == ServiceId::Terminal as u32 => ServiceId::Terminal,
         _ => ServiceId::RootManager,
     }
 }
@@ -481,6 +485,7 @@ fn desktop_app_id_from_word(value: u64) -> core::result::Result<DesktopAppId, ()
         x if x == DesktopAppId::Settings as u32 => Ok(DesktopAppId::Settings),
         x if x == DesktopAppId::Files as u32 => Ok(DesktopAppId::Files),
         x if x == DesktopAppId::Monitor as u32 => Ok(DesktopAppId::Monitor),
+        x if x == DesktopAppId::Terminal as u32 => Ok(DesktopAppId::Terminal),
         _ => Err(()),
     }
 }

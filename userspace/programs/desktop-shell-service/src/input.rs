@@ -207,7 +207,7 @@ fn handle_key_input(
     if control == rt::INVALID_HANDLE {
         return Ok(0);
     }
-    rt::app_control_key(control, action, key_code)?;
+    rt::app_control_key(control, action, key_code, modifiers)?;
     let _ = emit_log(
         state.log_handle,
         LogSeverity::Debug,
@@ -333,7 +333,7 @@ fn launcher_hit_app(state: &DesktopState, x: i32, y: i32) -> Option<DesktopAppId
     if x < launcher_x
         || y < launcher_y
         || x >= launcher_x + crate::LAUNCHER_WIDTH as i32
-        || y >= launcher_y + 264
+        || y >= launcher_y + 278
     {
         return None;
     }

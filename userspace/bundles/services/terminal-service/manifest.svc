@@ -1,0 +1,14 @@
+service=terminal-service
+image=terminal-service
+startup=eager
+restart=on-failure:1
+depends=log-service, config-service, storage-service, status-service, package-service, network-service, graphics-service, session-service, desktop-shell-service
+lookup=log-service:send
+lookup=config-service:send
+lookup=storage-service:send
+lookup=status-service:send
+lookup=package-service:send
+lookup=network-service:send
+lookup=graphics-service:send
+lookup=session-service:send
+lookup=desktop-shell-service:send

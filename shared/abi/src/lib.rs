@@ -128,6 +128,8 @@ pub enum ServiceImageId {
     SettingsApp = 15,
     FilesApp = 16,
     MonitorApp = 17,
+    TerminalService = 18,
+    TerminalApp = 19,
 }
 
 #[repr(u32)]
@@ -146,6 +148,7 @@ pub enum ServiceId {
     Graphics = 11,
     Session = 12,
     DesktopShell = 13,
+    Terminal = 14,
 }
 
 #[repr(u32)]
@@ -267,6 +270,8 @@ pub enum LogEvent {
     NetworkLeaseChanged = 41,
     NetworkSocketOpened = 42,
     NetworkSocketClosed = 43,
+    TerminalSessionOpened = 44,
+    TerminalSessionClosed = 45,
 }
 
 #[repr(u32)]
@@ -677,6 +682,33 @@ pub enum DesktopAppId {
     Settings = 1,
     Files = 2,
     Monitor = 3,
+    Terminal = 4,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TerminalTag {
+    SessionOpenRequest = 0xb00,
+    SessionOpenReply = 0xb01,
+    SessionListRequest = 0xb02,
+    SessionListReply = 0xb03,
+    SessionStatusRequest = 0xb04,
+    SessionStatusReply = 0xb05,
+    SessionInput = 0xb06,
+    SessionOutput = 0xb07,
+    SessionResize = 0xb08,
+    SessionClose = 0xb09,
+    SessionClosed = 0xb0a,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TerminalStatus {
+    Ok = 0,
+    Busy = 1,
+    NotFound = 2,
+    Denied = 3,
+    Closed = 4,
 }
 
 #[repr(u32)]

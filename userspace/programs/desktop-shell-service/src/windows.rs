@@ -450,6 +450,7 @@ pub(crate) fn initial_window_layout(
             240,
             ui::BG_WINDOW,
         ),
+        DesktopAppId::Terminal => (220, 96, 720, 420, 0x11161f),
     }
 }
 
@@ -477,6 +478,9 @@ pub(crate) fn launcher_line(slot: AppSlot) -> &'static str {
         (DesktopAppId::Monitor, true, false) => "MONITOR RUN",
         (DesktopAppId::Monitor, true, true) => "MONITOR MIN",
         (DesktopAppId::Monitor, false, _) => "MONITOR OFF",
+        (DesktopAppId::Terminal, true, false) => "TERMINAL RUN",
+        (DesktopAppId::Terminal, true, true) => "TERMINAL MIN",
+        (DesktopAppId::Terminal, false, _) => "TERMINAL OFF",
     }
 }
 
@@ -493,6 +497,7 @@ pub(crate) fn app_title(app_id: DesktopAppId) -> &'static str {
         DesktopAppId::Settings => "SETTINGS",
         DesktopAppId::Files => "FILES",
         DesktopAppId::Monitor => "MONITOR",
+        DesktopAppId::Terminal => "TERMINAL",
     }
 }
 

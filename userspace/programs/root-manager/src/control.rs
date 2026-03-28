@@ -569,10 +569,13 @@ fn launch_program(
 
 fn launch_is_authorized(caller: ServiceId, image_id: ServiceImageId) -> bool {
     match caller {
-        ServiceId::Shell => image_id == ServiceImageId::SysinfoTool,
+        ServiceId::Shell | ServiceId::Terminal => image_id == ServiceImageId::SysinfoTool,
         ServiceId::DesktopShell => matches!(
             image_id,
-            ServiceImageId::SettingsApp | ServiceImageId::FilesApp | ServiceImageId::MonitorApp
+            ServiceImageId::SettingsApp
+                | ServiceImageId::FilesApp
+                | ServiceImageId::MonitorApp
+                | ServiceImageId::TerminalApp
         ),
         _ => false,
     }
@@ -632,6 +635,16 @@ fn append_launch_grants(
                 slots,
                 service_count,
                 ServiceId::Network,
+                rights::SEND | rights::TRANSFER,
+                startup,
+                handle_index,
+            )?;
+        }
+        ServiceImageId::TerminalApp => {
+            append_service_launch_handle(
+                slots,
+                service_count,
+                ServiceId::Terminal,
                 rights::SEND | rights::TRANSFER,
                 startup,
                 handle_index,

@@ -201,6 +201,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "serviceos-terminal-app"
+version = "0.1.0"
+dependencies = [
+ "serviceos-desktop-ui",
+ "serviceos-userspace-runtime",
+]
+
+[[package]]
+name = "serviceos-terminal-service"
+version = "0.1.0"
+dependencies = [
+ "serviceos-shell-service",
+ "serviceos-userspace-runtime",
+]
+
+[[package]]
 name = "serviceos-userspace-runtime"
 version = "0.1.0"
 dependencies = [

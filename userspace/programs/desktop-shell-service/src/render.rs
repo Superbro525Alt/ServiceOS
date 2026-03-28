@@ -44,13 +44,14 @@ pub(crate) fn render_desktop(state: &mut DesktopState) -> rt::Result<()> {
         launcher_line(state.apps[0]),
         launcher_line(state.apps[1]),
         launcher_line(state.apps[2]),
+        launcher_line(state.apps[3]),
         "CLICK ITEMS OR USE SHELL",
         "DRAG TITLEBAR / GRIP",
     ];
     ui::render_panel(
         state.chrome.launcher_handle,
         LAUNCHER_WIDTH,
-        264,
+        278,
         "LAUNCHER",
         &launcher_lines,
     )?;

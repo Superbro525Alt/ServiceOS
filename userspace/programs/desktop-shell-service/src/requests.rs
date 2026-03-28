@@ -197,6 +197,7 @@ fn desktop_app_from_word(value: u64) -> Option<DesktopAppId> {
         x if x == DesktopAppId::Settings as u32 => Some(DesktopAppId::Settings),
         x if x == DesktopAppId::Files as u32 => Some(DesktopAppId::Files),
         x if x == DesktopAppId::Monitor as u32 => Some(DesktopAppId::Monitor),
+        x if x == DesktopAppId::Terminal as u32 => Some(DesktopAppId::Terminal),
         _ => None,
     }
 }

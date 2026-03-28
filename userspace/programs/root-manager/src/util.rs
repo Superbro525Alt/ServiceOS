@@ -210,6 +210,7 @@ pub(crate) fn service_id_from_word(value: u64) -> ServiceId {
         x if x == ServiceId::Graphics as u32 => ServiceId::Graphics,
         x if x == ServiceId::Session as u32 => ServiceId::Session,
         x if x == ServiceId::DesktopShell as u32 => ServiceId::DesktopShell,
+        x if x == ServiceId::Terminal as u32 => ServiceId::Terminal,
         _ => ServiceId::RootManager,
     }
 }
@@ -234,6 +235,8 @@ pub(crate) fn image_id_from_word(value: u64) -> ServiceImageId {
         x if x == ServiceImageId::SettingsApp as u32 => ServiceImageId::SettingsApp,
         x if x == ServiceImageId::FilesApp as u32 => ServiceImageId::FilesApp,
         x if x == ServiceImageId::MonitorApp as u32 => ServiceImageId::MonitorApp,
+        x if x == ServiceImageId::TerminalService as u32 => ServiceImageId::TerminalService,
+        x if x == ServiceImageId::TerminalApp as u32 => ServiceImageId::TerminalApp,
         _ => ServiceImageId::RootManager,
     }
 }
@@ -273,6 +276,7 @@ pub(crate) fn service_name(service_id: ServiceId) -> &'static str {
         ServiceId::Graphics => "graphics-service",
         ServiceId::Session => "session-service",
         ServiceId::DesktopShell => "desktop-shell-service",
+        ServiceId::Terminal => "terminal-service",
     }
 }
 
@@ -331,6 +335,8 @@ pub(crate) fn event_name(event: LogEvent) -> &'static str {
         LogEvent::AppRendered => "app-rendered",
         LogEvent::InputSourceReady => "input-source-ready",
         LogEvent::InputKeyDelivered => "input-key-delivered",
+        LogEvent::TerminalSessionOpened => "terminal-session-opened",
+        LogEvent::TerminalSessionClosed => "terminal-session-closed",
     }
 }
 

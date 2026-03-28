@@ -11,11 +11,14 @@ use rt::{
 const SESSION_ID: u32 = 1;
 const MOD_SHIFT: u32 = 1 << 0;
 const MOD_ALT: u32 = 1 << 1;
+const MOD_CTRL: u32 = 1 << 2;
 
 const KEY_LEFT_SHIFT: u32 = 42;
 const KEY_RIGHT_SHIFT: u32 = 54;
 const KEY_LEFT_ALT: u32 = 56;
 const KEY_RIGHT_ALT: u32 = 100;
+const KEY_LEFT_CTRL: u32 = 29;
+const KEY_RIGHT_CTRL: u32 = 97;
 
 rt::entry!(main);
 
@@ -270,13 +273,15 @@ fn process_input_event(
                 state.modifiers,
             ))?;
             if event.value0 != 0 {
-                if let Some(ch) = keycode_to_text(event.code, state.modifiers) {
+                if state.modifiers & MOD_CTRL == 0 {
+                    if let Some(ch) = keycode_to_text(event.code, state.modifiers) {
                     tolerate_input_backpressure(rt::desktop_key_input_async(
                         desktop_handle,
                         DesktopInputAction::TextInput,
                         ch as u32,
                         state.modifiers,
                     ))?;
+                    }
                 }
             }
         }
@@ -335,6 +340,7 @@ fn update_modifier_state(state: &mut SessionState, key_code: u32, pressed: bool)
     let bit = match key_code {
         KEY_LEFT_SHIFT | KEY_RIGHT_SHIFT => MOD_SHIFT,
         KEY_LEFT_ALT | KEY_RIGHT_ALT => MOD_ALT,
+        KEY_LEFT_CTRL | KEY_RIGHT_CTRL => MOD_CTRL,
         _ => 0,
     };
     if bit == 0 {

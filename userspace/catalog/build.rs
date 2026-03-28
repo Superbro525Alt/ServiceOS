@@ -137,6 +137,20 @@ const PROGRAMS: &[Program] = &[
         service_path: "apps/monitor-app/program.img",
         service_id: 0,
     },
+    Program {
+        package: "serviceos-terminal-service",
+        bin_name: "serviceos-terminal-service",
+        image_id: 18,
+        service_path: "services/terminal-service/program.img",
+        service_id: 14,
+    },
+    Program {
+        package: "serviceos-terminal-app",
+        bin_name: "serviceos-terminal-app",
+        image_id: 19,
+        service_path: "apps/terminal-app/program.img",
+        service_id: 0,
+    },
 ];
 
 struct Program {

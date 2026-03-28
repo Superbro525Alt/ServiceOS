@@ -18,6 +18,8 @@ members = [
     "settings-app",
     "files-app",
     "monitor-app",
+    "terminal-service",
+    "terminal-app",
     "announce-service",
     "sysinfo-tool",
 ]

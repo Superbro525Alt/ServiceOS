@@ -250,6 +250,7 @@ fn service_id_from_word(value: u64) -> ServiceId {
         x if x == ServiceId::Graphics as u32 => ServiceId::Graphics,
         x if x == ServiceId::Session as u32 => ServiceId::Session,
         x if x == ServiceId::DesktopShell as u32 => ServiceId::DesktopShell,
+        x if x == ServiceId::Terminal as u32 => ServiceId::Terminal,
         _ => ServiceId::RootManager,
     }
 }
@@ -326,6 +327,8 @@ fn event_from_word(value: u64) -> LogEvent {
         x if x == LogEvent::AppRendered as u32 => LogEvent::AppRendered,
         x if x == LogEvent::InputSourceReady as u32 => LogEvent::InputSourceReady,
         x if x == LogEvent::InputKeyDelivered as u32 => LogEvent::InputKeyDelivered,
+        x if x == LogEvent::TerminalSessionOpened as u32 => LogEvent::TerminalSessionOpened,
+        x if x == LogEvent::TerminalSessionClosed as u32 => LogEvent::TerminalSessionClosed,
         _ => LogEvent::LookupGranted,
     }
 }

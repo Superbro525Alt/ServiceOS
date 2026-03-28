@@ -1,0 +1,12 @@
+[package]
+name = "serviceos-terminal-service"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "serviceos-terminal-service"
+path = "src/main.rs"
+
+[dependencies]
+serviceos-userspace-runtime = { path = "../runtime" }
+serviceos-shell-service = { path = "../shell-service" }

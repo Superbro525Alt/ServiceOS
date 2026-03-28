@@ -42,11 +42,13 @@ pub fn app_control_key(
     control_handle: Handle,
     action: AppKeyAction,
     key_code: u32,
+    modifiers: u32,
 ) -> Result<()> {
     let mut request = RawMessage::empty(AppControlTag::Key as u32);
-    request.word_count = 2;
+    request.word_count = 3;
     request.words[0] = action as u32 as u64;
     request.words[1] = key_code as u64;
+    request.words[2] = modifiers as u64;
     channel_send(control_handle, &request)
 }
 

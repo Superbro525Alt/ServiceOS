@@ -78,6 +78,9 @@ pub fn mark_current_thread_exited(code: u64) {
     if let Some(runtime) = runtime() {
         runtime.mark_thread_exit(thread_id, code);
     }
+    if let Some(hooks) = arch_hooks() {
+        (hooks.release_thread_runtime)(thread_id);
+    }
     if let Some(task_object) = tasks.current_task_object() {
         if let Some(task) = task_object.task() {
             task.set_exit_status(TaskExitStatus::Exited { code });

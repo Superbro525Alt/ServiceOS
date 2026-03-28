@@ -12,7 +12,7 @@ use serviceos_kernel_core::{
     },
 };
 
-const MAX_USER_THREADS: usize = 16;
+const MAX_USER_THREADS: usize = 64;
 
 global_asm!(
     r#"
@@ -195,6 +195,15 @@ impl UserThreadRuntime {
             .copied()
             .find(|thread| thread.thread_id == thread_id)
     }
+
+    fn release_thread(&mut self, thread_id: ThreadId) {
+        if let Some(slot) = self.slots.iter_mut().find(|slot| {
+            slot.as_ref()
+                .is_some_and(|thread| thread.thread_id == thread_id)
+        }) {
+            *slot = None;
+        }
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -206,6 +215,7 @@ pub fn initialize() {
     user::register_arch_hooks(UserArchHooks {
         prepare_address_space,
         register_thread_launch,
+        release_thread_runtime,
     });
 }
 
@@ -237,6 +247,10 @@ pub fn register_thread_launch(launch: UserThreadLaunch) {
         .lock()
         .register_launch(launch)
         .expect("user thread runtime capacity must cover bootstrap services");
+}
+
+pub fn release_thread_runtime(thread_id: ThreadId) {
+    USER_THREADS.lock().release_thread(thread_id);
 }
 
 pub fn save_thread_context(thread_id: ThreadId, context: &SavedUserContext) {

@@ -291,6 +291,15 @@ serviceos_aarch64_lower_el_sync:
                 .flatten()
                 .find(|thread| thread.thread_id == thread_id)
         }
+
+        fn release_thread(&mut self, thread_id: ThreadId) {
+            if let Some(slot) = self.slots.iter_mut().find(|slot| {
+                slot.as_ref()
+                    .is_some_and(|thread| thread.thread_id == thread_id)
+            }) {
+                *slot = None;
+            }
+        }
     }
 
     #[unsafe(no_mangle)]
@@ -304,6 +313,7 @@ serviceos_aarch64_lower_el_sync:
         user::register_arch_hooks(UserArchHooks {
             prepare_address_space,
             register_thread_launch,
+            release_thread_runtime,
         });
     }
 
@@ -335,6 +345,10 @@ serviceos_aarch64_lower_el_sync:
             .lock()
             .register_launch(launch)
             .expect("user thread runtime capacity must cover bootstrap services");
+    }
+
+    pub fn release_thread_runtime(thread_id: ThreadId) {
+        USER_THREADS.lock().release_thread(thread_id);
     }
 
     pub fn run_thread(thread_id: ThreadId) -> Result<(), UserLaunchError> {
@@ -383,6 +397,7 @@ mod imp {
         user::register_arch_hooks(UserArchHooks {
             prepare_address_space,
             register_thread_launch,
+            release_thread_runtime,
         });
     }
 
@@ -394,6 +409,8 @@ mod imp {
 
     pub fn register_thread_launch(_launch: UserThreadLaunch) {}
 
+    pub fn release_thread_runtime(_thread_id: ThreadId) {}
+
     pub fn run_thread(_thread_id: ThreadId) -> Result<(), UserLaunchError> {
         Err(UserLaunchError::Unsupported)
     }
@@ -401,5 +418,5 @@ mod imp {
 
 pub use imp::{
     SavedUserContext, UserLaunchError, initialize, prepare_address_space, register_thread_launch,
-    run_thread,
+    release_thread_runtime, run_thread,
 };

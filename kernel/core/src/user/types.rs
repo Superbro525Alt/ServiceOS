@@ -35,6 +35,7 @@ pub struct UserArchHooks {
     pub prepare_address_space:
         fn(&[u8]) -> Result<PreparedUserAddressSpace, AddressSpacePreparationError>,
     pub register_thread_launch: fn(UserThreadLaunch),
+    pub release_thread_runtime: fn(ThreadId),
 }
 
 #[derive(Clone)]

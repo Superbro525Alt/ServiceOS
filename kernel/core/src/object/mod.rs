@@ -5,8 +5,8 @@ mod types;
 
 pub use model::{KernelObjectModel, initialize, model};
 pub use objects::{
-    BootstrapCapabilityObject, EventObject, EventStateView, MemoryObject, MemoryObjectInfo,
-    TimerObject, TimerStateView,
+    BootstrapCapabilityObject, EventObject, EventStateView, MemoryAccessError, MemoryObject,
+    MemoryObjectInfo, TimerObject, TimerStateView,
 };
 pub use registry::{ObjectRegistry, ObjectRegistrySnapshot};
 pub use types::{
@@ -59,6 +59,16 @@ mod tests {
                 writable: true,
             }
         );
+    }
+
+    #[test]
+    fn writable_memory_object_round_trips_bytes() {
+        let memory = MemoryObject::new(16, true);
+        assert_eq!(memory.write(4, b"abcd"), Ok(4));
+
+        let mut bytes = [0u8; 8];
+        assert_eq!(memory.read(0, &mut bytes), 8);
+        assert_eq!(&bytes[4..8], b"abcd");
     }
 
     #[test]

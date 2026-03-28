@@ -44,6 +44,7 @@ QEMU
 - boot context transport of the staged boot store
 - x86_64 active page-table access through the current CR3 root
 - dedicated kernel heap mapping in the upper canonical half
+- explicit reclaim of boot-services pages after heap bootstrap
 - x86_64 descriptor-table installation before `sti`
 - timer interrupt delivery through the legacy PIC/PIT path
 - structured exception/fault reporting in Rust
@@ -57,7 +58,6 @@ QEMU
 ## What is intentionally deferred
 
 - switching to fully kernel-owned page tables
-- reclaiming boot-services memory
 - direct-map installation for all physical memory
 - fast `SYSCALL/SYSRET`
 - general executable loading beyond the boot-store bootstrap path

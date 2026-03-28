@@ -1,7 +1,7 @@
 use super::{Frame, InitializationError, PAGE_SIZE_BYTES, PageSize};
 use crate::bootstrap::{BootContext, BootMemoryRegionKind};
 
-const MAX_USABLE_REGIONS: usize = 32;
+const MAX_ALLOCATABLE_REGIONS: usize = 128;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct FrameRegionCursor {
@@ -12,17 +12,19 @@ struct FrameRegionCursor {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FrameAllocatorStats {
-    pub usable_regions: usize,
+    pub allocatable_regions: usize,
     pub allocated_frames: u64,
     pub remaining_frames: u64,
+    pub reclaimed_boot_service_frames: u64,
 }
 
 #[derive(Debug)]
 pub struct EarlyFrameAllocator {
-    regions: [FrameRegionCursor; MAX_USABLE_REGIONS],
+    regions: [FrameRegionCursor; MAX_ALLOCATABLE_REGIONS],
     region_count: usize,
     active_region: usize,
     allocated_frames: u64,
+    reclaimed_boot_service_frames: u64,
 }
 
 impl EarlyFrameAllocator {
@@ -31,7 +33,7 @@ impl EarlyFrameAllocator {
             start_frame: 0,
             end_frame_exclusive: 0,
             next_frame: 0,
-        }; MAX_USABLE_REGIONS];
+        }; MAX_ALLOCATABLE_REGIONS];
         let mut region_count = 0usize;
 
         for region in boot_context.memory_regions {
@@ -45,16 +47,7 @@ impl EarlyFrameAllocator {
                 continue;
             }
 
-            if region_count == regions.len() {
-                return Err(InitializationError::TooManyUsableRegions);
-            }
-
-            regions[region_count] = FrameRegionCursor {
-                start_frame: start,
-                end_frame_exclusive: end,
-                next_frame: start,
-            };
-            region_count += 1;
+            push_region(&mut regions, &mut region_count, start, end)?;
         }
 
         Ok(Self {
@@ -62,7 +55,35 @@ impl EarlyFrameAllocator {
             region_count,
             active_region: 0,
             allocated_frames: 0,
+            reclaimed_boot_service_frames: 0,
         })
+    }
+
+    pub fn reclaim_boot_services(
+        &mut self,
+        boot_context: &BootContext<'_>,
+    ) -> Result<u64, InitializationError> {
+        let mut reclaimed_frames = 0u64;
+
+        for region in boot_context.memory_regions {
+            if !matches!(region.kind, BootMemoryRegionKind::BootServicesReclaimable) {
+                continue;
+            }
+
+            let start = region.start.align_up(PAGE_SIZE_BYTES).as_u64() / PAGE_SIZE_BYTES;
+            let end = region.end.align_down(PAGE_SIZE_BYTES).as_u64() / PAGE_SIZE_BYTES;
+            if end <= start {
+                continue;
+            }
+
+            push_region(&mut self.regions, &mut self.region_count, start, end)?;
+            reclaimed_frames = reclaimed_frames.saturating_add(end - start);
+        }
+
+        self.reclaimed_boot_service_frames = self
+            .reclaimed_boot_service_frames
+            .saturating_add(reclaimed_frames);
+        Ok(reclaimed_frames)
     }
 
     pub fn allocate_4kib(&mut self) -> Option<Frame> {
@@ -94,11 +115,31 @@ impl EarlyFrameAllocator {
 
     pub fn stats(&self) -> FrameAllocatorStats {
         FrameAllocatorStats {
-            usable_regions: self.region_count,
+            allocatable_regions: self.region_count,
             allocated_frames: self.allocated_frames,
             remaining_frames: self.remaining_frames(),
+            reclaimed_boot_service_frames: self.reclaimed_boot_service_frames,
         }
     }
+}
+
+fn push_region(
+    regions: &mut [FrameRegionCursor; MAX_ALLOCATABLE_REGIONS],
+    region_count: &mut usize,
+    start_frame: u64,
+    end_frame_exclusive: u64,
+) -> Result<(), InitializationError> {
+    if *region_count == regions.len() {
+        return Err(InitializationError::TooManyUsableRegions);
+    }
+
+    regions[*region_count] = FrameRegionCursor {
+        start_frame,
+        end_frame_exclusive,
+        next_frame: start_frame,
+    };
+    *region_count += 1;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -159,9 +200,10 @@ mod tests {
         assert_eq!(
             allocator.stats(),
             FrameAllocatorStats {
-                usable_regions: 2,
+                allocatable_regions: 2,
                 allocated_frames: 3,
                 remaining_frames: 0,
+                reclaimed_boot_service_frames: 0,
             }
         );
     }
@@ -172,7 +214,7 @@ mod tests {
             start: PhysicalAddress::new(0),
             end: PhysicalAddress::new(0),
             kind: BootMemoryRegionKind::Reserved,
-        }; MAX_USABLE_REGIONS + 1];
+        }; MAX_ALLOCATABLE_REGIONS + 1];
 
         for (index, region) in regions.iter_mut().enumerate() {
             let base = 0x1000 * ((index as u64) + 1);

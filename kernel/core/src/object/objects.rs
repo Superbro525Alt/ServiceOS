@@ -1,4 +1,4 @@
-use alloc::sync::Arc;
+use alloc::{boxed::Box, sync::Arc, vec};
 use spin::Mutex;
 
 use crate::time::MonotonicInstant;
@@ -118,12 +118,23 @@ pub struct MemoryObjectInfo {
 
 pub struct MemoryObject {
     info: MemoryObjectInfo,
-    bytes: Option<Arc<[u8]>>,
+    storage: MemoryStorage,
+}
+
+enum MemoryStorage {
+    ReadOnly(Arc<[u8]>),
+    Writable(Mutex<Box<[u8]>>),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MemoryAccessError {
+    ReadOnly,
 }
 
 impl MemoryObject {
     pub fn new(size_bytes: usize, writable: bool) -> Self {
         let page_count = size_bytes.div_ceil(4096);
+        let zeroed = vec![0u8; size_bytes].into_boxed_slice();
 
         Self {
             info: MemoryObjectInfo {
@@ -131,7 +142,11 @@ impl MemoryObject {
                 page_count,
                 writable,
             },
-            bytes: None,
+            storage: if writable {
+                MemoryStorage::Writable(Mutex::new(zeroed))
+            } else {
+                MemoryStorage::ReadOnly(Arc::from(zeroed))
+            },
         }
     }
 
@@ -144,7 +159,7 @@ impl MemoryObject {
                 page_count,
                 writable: false,
             },
-            bytes: Some(Arc::from(bytes)),
+            storage: MemoryStorage::ReadOnly(Arc::from(bytes)),
         }
     }
 
@@ -153,14 +168,37 @@ impl MemoryObject {
     }
 
     pub fn read(&self, offset: usize, destination: &mut [u8]) -> usize {
-        let Some(bytes) = &self.bytes else {
-            return 0;
+        match &self.storage {
+            MemoryStorage::ReadOnly(bytes) => {
+                let Some(source) = bytes.get(offset..) else {
+                    return 0;
+                };
+                let len = source.len().min(destination.len());
+                destination[..len].copy_from_slice(&source[..len]);
+                len
+            }
+            MemoryStorage::Writable(bytes) => {
+                let bytes = bytes.lock();
+                let Some(source) = bytes.get(offset..) else {
+                    return 0;
+                };
+                let len = source.len().min(destination.len());
+                destination[..len].copy_from_slice(&source[..len]);
+                len
+            }
+        }
+    }
+
+    pub fn write(&self, offset: usize, source: &[u8]) -> Result<usize, MemoryAccessError> {
+        let MemoryStorage::Writable(bytes) = &self.storage else {
+            return Err(MemoryAccessError::ReadOnly);
         };
-        let Some(source) = bytes.get(offset..) else {
-            return 0;
+        let mut bytes = bytes.lock();
+        let Some(destination) = bytes.get_mut(offset..) else {
+            return Ok(0);
         };
-        let len = source.len().min(destination.len());
+        let len = destination.len().min(source.len());
         destination[..len].copy_from_slice(&source[..len]);
-        len
+        Ok(len)
     }
 }

@@ -5,7 +5,7 @@ pub const USER_SPACE_END: VirtualAddress = VirtualAddress::new(0x0000_8000_0000_
 pub const KERNEL_PHYSICAL_WINDOW_START: VirtualAddress = VirtualAddress::new(0xffff_8000_0000_0000);
 pub const KERNEL_PHYSICAL_WINDOW_END: VirtualAddress = VirtualAddress::new(0xffff_c000_0000_0000);
 pub const KERNEL_HEAP_START: VirtualAddress = VirtualAddress::new(0xffff_c100_0000_0000);
-pub const KERNEL_HEAP_END: VirtualAddress = VirtualAddress::new(0xffff_c100_0080_0000);
+pub const KERNEL_HEAP_END: VirtualAddress = VirtualAddress::new(0xffff_c100_0400_0000);
 pub const KERNEL_OBJECTS_START: VirtualAddress = VirtualAddress::new(0xffff_c200_0000_0000);
 pub const KERNEL_OBJECTS_END: VirtualAddress = VirtualAddress::new(0xffff_c201_0000_0000);
 

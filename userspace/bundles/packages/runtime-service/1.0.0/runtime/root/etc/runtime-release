@@ -1,0 +1,3 @@
+ServiceOS Runtime Profile
+kind=posix
+version=1

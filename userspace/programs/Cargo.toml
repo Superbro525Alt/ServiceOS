@@ -13,6 +13,7 @@ members = [
     "package-service",
     "network-service",
     "audio-service",
+    "runtime-service",
     "session-service",
     "desktop-shell-service",
     "shell-service",
@@ -22,6 +23,7 @@ members = [
     "terminal-service",
     "terminal-app",
     "announce-service",
+    "posix-host-tool",
     "sysinfo-tool",
 ]
 

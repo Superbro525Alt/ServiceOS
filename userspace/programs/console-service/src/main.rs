@@ -897,6 +897,7 @@ fn service_id_from_word(value: u64) -> ServiceId {
         x if x == ServiceId::DesktopShell as u32 => ServiceId::DesktopShell,
         x if x == ServiceId::Terminal as u32 => ServiceId::Terminal,
         x if x == ServiceId::Audio as u32 => ServiceId::Audio,
+        x if x == ServiceId::Runtime as u32 => ServiceId::Runtime,
         _ => ServiceId::RootManager,
     }
 }
@@ -929,6 +930,7 @@ fn domain_from_word(value: u64) -> LogDomain {
         x if x == LogDomain::Desktop as u32 => LogDomain::Desktop,
         x if x == LogDomain::App as u32 => LogDomain::App,
         x if x == LogDomain::Audio as u32 => LogDomain::Audio,
+        x if x == LogDomain::Runtime as u32 => LogDomain::Runtime,
         _ => LogDomain::Service,
     }
 }
@@ -981,6 +983,13 @@ fn event_from_word(value: u64) -> LogEvent {
         x if x == LogEvent::AudioStreamStarted as u32 => LogEvent::AudioStreamStarted,
         x if x == LogEvent::AudioStreamStopped as u32 => LogEvent::AudioStreamStopped,
         x if x == LogEvent::AudioStreamClosed as u32 => LogEvent::AudioStreamClosed,
+        x if x == LogEvent::RuntimeEnvironmentCreated as u32 => LogEvent::RuntimeEnvironmentCreated,
+        x if x == LogEvent::RuntimeEnvironmentDestroyed as u32 => {
+            LogEvent::RuntimeEnvironmentDestroyed
+        }
+        x if x == LogEvent::RuntimeLaunchStarted as u32 => LogEvent::RuntimeLaunchStarted,
+        x if x == LogEvent::RuntimeLaunchExited as u32 => LogEvent::RuntimeLaunchExited,
+        x if x == LogEvent::RuntimeMappedRead as u32 => LogEvent::RuntimeMappedRead,
         _ => LogEvent::LookupGranted,
     }
 }
@@ -1012,6 +1021,7 @@ fn service_name(service_id: ServiceId) -> &'static str {
         ServiceId::DesktopShell => "desktop-shell-service",
         ServiceId::Terminal => "terminal-service",
         ServiceId::Audio => "audio-service",
+        ServiceId::Runtime => "runtime-service",
     }
 }
 
@@ -1044,6 +1054,7 @@ fn domain_name(domain: LogDomain) -> &'static str {
         LogDomain::Desktop => "desktop",
         LogDomain::App => "app",
         LogDomain::Audio => "audio",
+        LogDomain::Runtime => "runtime",
     }
 }
 
@@ -1099,6 +1110,11 @@ fn event_name(event: LogEvent) -> &'static str {
         LogEvent::AudioStreamStarted => "audio-stream-started",
         LogEvent::AudioStreamStopped => "audio-stream-stopped",
         LogEvent::AudioStreamClosed => "audio-stream-closed",
+        LogEvent::RuntimeEnvironmentCreated => "runtime-environment-created",
+        LogEvent::RuntimeEnvironmentDestroyed => "runtime-environment-destroyed",
+        LogEvent::RuntimeLaunchStarted => "runtime-launch-started",
+        LogEvent::RuntimeLaunchExited => "runtime-launch-exited",
+        LogEvent::RuntimeMappedRead => "runtime-mapped-read",
     }
 }
 

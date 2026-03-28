@@ -793,6 +793,9 @@ fn service_id_from_word(value: u64) -> ServiceId {
         x if x == ServiceId::Graphics as u32 => ServiceId::Graphics,
         x if x == ServiceId::Session as u32 => ServiceId::Session,
         x if x == ServiceId::DesktopShell as u32 => ServiceId::DesktopShell,
+        x if x == ServiceId::Terminal as u32 => ServiceId::Terminal,
+        x if x == ServiceId::Audio as u32 => ServiceId::Audio,
+        x if x == ServiceId::Runtime as u32 => ServiceId::Runtime,
         _ => ServiceId::RootManager,
     }
 }

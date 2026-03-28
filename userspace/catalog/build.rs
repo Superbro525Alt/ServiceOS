@@ -103,6 +103,13 @@ const PROGRAMS: &[Program] = &[
         service_id: 15,
     },
     Program {
+        package: "serviceos-runtime-service",
+        bin_name: "serviceos-runtime-service",
+        image_id: 21,
+        service_path: "services/runtime-service/program.img",
+        service_id: 16,
+    },
+    Program {
         package: "serviceos-graphics-service",
         bin_name: "serviceos-graphics-service",
         image_id: 12,
@@ -156,6 +163,13 @@ const PROGRAMS: &[Program] = &[
         bin_name: "serviceos-terminal-app",
         image_id: 19,
         service_path: "apps/terminal-app/program.img",
+        service_id: 0,
+    },
+    Program {
+        package: "serviceos-posix-host-tool",
+        bin_name: "serviceos-posix-host-tool",
+        image_id: 22,
+        service_path: "tools/posix-host-tool/program.img",
         service_id: 0,
     },
 ];

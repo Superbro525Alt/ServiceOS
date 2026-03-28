@@ -1,0 +1,12 @@
+[package]
+name = "serviceos-runtime-service"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "serviceos-runtime-service"
+path = "src/main.rs"
+
+[dependencies]
+serviceos-userspace-runtime = { path = "../runtime" }
+serviceos-bundle = { path = "../../../shared/bundle" }

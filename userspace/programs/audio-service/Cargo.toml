@@ -1,0 +1,11 @@
+[package]
+name = "serviceos-audio-service"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "serviceos-audio-service"
+path = "src/main.rs"
+
+[dependencies]
+serviceos-userspace-runtime = { path = "../runtime" }

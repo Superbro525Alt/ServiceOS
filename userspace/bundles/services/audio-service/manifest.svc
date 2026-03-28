@@ -1,0 +1,6 @@
+service=audio-service
+image=audio-service
+startup=eager
+restart=on-failure:2
+depends=log-service
+grant=log-service:send

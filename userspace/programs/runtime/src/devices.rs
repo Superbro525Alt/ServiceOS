@@ -1,8 +1,9 @@
 use crate::{
-    syscall2, syscall3, syscall4, DisplayOutputBackend, DisplayOutputInfo, DisplayOutputState,
-    DisplayPixelFormat, Handle, InputEventInfo, InputSourceBackend, InputSourceInfo,
-    PacketInterfaceBackend, PacketInterfaceInfo, PacketInterfaceLinkState, Result, SyscallNumber,
-    INPUT_SOURCE_FLAG_NONBLOCK, PACKET_INTERFACE_FLAG_NONBLOCK,
+    syscall1, syscall2, syscall3, syscall4, AudioEndpointInfo, AudioToneRequest, DisplayOutputBackend,
+    DisplayOutputInfo, DisplayOutputState, DisplayPixelFormat, Handle, InputEventInfo,
+    InputSourceBackend, InputSourceInfo, PacketInterfaceBackend, PacketInterfaceInfo,
+    PacketInterfaceLinkState, Result, SyscallNumber, INPUT_SOURCE_FLAG_NONBLOCK,
+    PACKET_INTERFACE_FLAG_NONBLOCK,
 };
 
 pub fn packet_interface_info(handle: Handle) -> Result<PacketInterfaceInfo> {
@@ -133,4 +134,41 @@ pub fn input_source_receive_nonblocking(handle: Handle) -> Result<InputEventInfo
         INPUT_SOURCE_FLAG_NONBLOCK as u64,
     )?;
     Ok(event)
+}
+
+pub fn audio_endpoint_info(handle: Handle) -> Result<AudioEndpointInfo> {
+    let mut info = AudioEndpointInfo {
+        backend: 0,
+        direction: 0,
+        state: 0,
+        capabilities: 0,
+        nominal_rate_hz: 0,
+        channels: 0,
+        min_frequency_hz: 0,
+        max_frequency_hz: 0,
+        current_frequency_hz: 0,
+        reserved: 0,
+        play_count: 0,
+    };
+    syscall2(
+        SyscallNumber::AudioEndpointInfo,
+        handle as u64,
+        &mut info as *mut AudioEndpointInfo as u64,
+    )?;
+    Ok(info)
+}
+
+pub fn audio_endpoint_play_tone(handle: Handle, request: AudioToneRequest) -> Result<()> {
+    let request = request;
+    syscall2(
+        SyscallNumber::AudioEndpointPlayTone,
+        handle as u64,
+        &request as *const AudioToneRequest as u64,
+    )?;
+    Ok(())
+}
+
+pub fn audio_endpoint_stop(handle: Handle) -> Result<()> {
+    let _ = syscall1(SyscallNumber::AudioEndpointStop, handle as u64)?;
+    Ok(())
 }

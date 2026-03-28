@@ -611,6 +611,14 @@ fn append_launch_grants(
                 startup,
                 handle_index,
             )?;
+            append_service_launch_handle(
+                slots,
+                service_count,
+                ServiceId::Audio,
+                rights::SEND | rights::TRANSFER,
+                startup,
+                handle_index,
+            )?;
         }
         ServiceImageId::FilesApp => {
             append_service_launch_handle(

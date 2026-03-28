@@ -537,6 +537,7 @@ fn parse_service_id(value: &str) -> Result<ServiceId, BootStoreError> {
         "session-service" => Ok(ServiceId::Session),
         "desktop-shell-service" => Ok(ServiceId::DesktopShell),
         "terminal-service" => Ok(ServiceId::Terminal),
+        "audio-service" => Ok(ServiceId::Audio),
         _ => Err(BootStoreError::InvalidManifest),
     }
 }
@@ -559,6 +560,7 @@ fn parse_image_id(value: &str) -> Result<ServiceImageId, BootStoreError> {
         "desktop-shell-service" => Ok(ServiceImageId::DesktopShellService),
         "terminal-service" => Ok(ServiceImageId::TerminalService),
         "terminal-app" => Ok(ServiceImageId::TerminalApp),
+        "audio-service" => Ok(ServiceImageId::AudioService),
         _ => Err(BootStoreError::InvalidManifest),
     }
 }

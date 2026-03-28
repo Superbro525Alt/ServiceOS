@@ -6,25 +6,27 @@ use core::{
 };
 
 pub use serviceos_abi::{
-    AppControlTag, AppKeyAction, AppPointerAction, BootstrapPlatform, ConfigKey, ConfigTag, ConfigValueKind,
+    AppControlTag, AppKeyAction, AppPointerAction, AudioEndpointBackend, AudioEndpointDirection,
+    AudioEndpointInfo, AudioEndpointState, AudioStatus, AudioStreamDirection, AudioStreamState,
+    AudioTag, AudioToneRequest, BootstrapPlatform, ConfigKey, ConfigTag, ConfigValueKind,
     ConsoleTag, ControlTag, DesktopAppId, DesktopDragMode, DesktopInputAction, DesktopStatus,
-    DesktopTag, DesktopWindowAction, DisplayOutputBackend, DisplayOutputInfo,
-    DisplayOutputState, DisplayPixelFormat, GraphicsStatus, GraphicsTag, Handle, HandlePair,
-    IPC_FLAG_NONBLOCK, IPC_MAX_HANDLES, IPC_MAX_WORDS, INPUT_SOURCE_FLAG_NONBLOCK, INVALID_HANDLE,
-    InputButton, InputEventInfo, InputEventKind, InputSourceBackend, InputSourceInfo,
-    LifecycleEvent, LogDomain, LogEvent, LogQueryStatus, LogSeverity, LogTag, LookupStatus,
-    ManagerAction, ManagerServicePhase, ManagerStatus, ManagerTag, NetworkConfigMode,
-    NetworkConfigState, NetworkSocketKind, NetworkSocketState, NetworkSocketTag, NetworkStatus,
-    NetworkTag,
+    DesktopTag, DesktopWindowAction, DisplayOutputBackend, DisplayOutputInfo, DisplayOutputState,
+    DisplayPixelFormat, GraphicsStatus, GraphicsTag, Handle, HandlePair, IPC_FLAG_NONBLOCK,
+    IPC_MAX_HANDLES, IPC_MAX_WORDS, INPUT_SOURCE_FLAG_NONBLOCK, INVALID_HANDLE, InputButton,
+    InputEventInfo, InputEventKind, InputSourceBackend, InputSourceInfo, LifecycleEvent,
+    LogDomain, LogEvent, LogQueryStatus, LogSeverity, LogTag, LookupStatus, ManagerAction,
+    ManagerServicePhase, ManagerStatus, ManagerTag, NetworkConfigMode, NetworkConfigState,
+    NetworkSocketKind, NetworkSocketState, NetworkSocketTag, NetworkStatus, NetworkTag,
     PACKET_INTERFACE_FLAG_NONBLOCK, PacketInterfaceBackend, PacketInterfaceInfo,
     PacketInterfaceLinkState, PackageStatus, PackageTag, RawMessage, ServiceId, ServiceImageId,
     SessionInputSource, SessionStatus, SessionTag, StatusTag, StorageEntryKind, StorageStatus, StorageTag,
     SurfaceTag, SyscallErrorCode, SyscallNumber, TaskStateCode, TaskStatus, TerminalStatus,
     TerminalTag,
 };
-pub use serviceos_abi::{input_capability, rights};
+pub use serviceos_abi::{audio_capability, input_capability, rights};
 
 mod app_control;
+mod audio;
 mod bootstrap;
 mod config;
 mod console;
@@ -46,6 +48,7 @@ mod terminal;
 mod types;
 
 pub use app_control::*;
+pub use audio::*;
 pub use bootstrap::*;
 pub use config::*;
 pub use console::*;
@@ -232,6 +235,7 @@ fn service_id_from_word(value: u64) -> ServiceId {
         x if x == ServiceId::Session as u32 => ServiceId::Session,
         x if x == ServiceId::DesktopShell as u32 => ServiceId::DesktopShell,
         x if x == ServiceId::Terminal as u32 => ServiceId::Terminal,
+        x if x == ServiceId::Audio as u32 => ServiceId::Audio,
         _ => ServiceId::RootManager,
     }
 }
@@ -263,6 +267,7 @@ fn domain_from_word(value: u64) -> LogDomain {
         x if x == LogDomain::Session as u32 => LogDomain::Session,
         x if x == LogDomain::Desktop as u32 => LogDomain::Desktop,
         x if x == LogDomain::App as u32 => LogDomain::App,
+        x if x == LogDomain::Audio as u32 => LogDomain::Audio,
         _ => LogDomain::Service,
     }
 }
@@ -306,6 +311,18 @@ fn event_from_word(value: u64) -> LogEvent {
         x if x == LogEvent::DesktopAppExited as u32 => LogEvent::DesktopAppExited,
         x if x == LogEvent::DesktopFocusChanged as u32 => LogEvent::DesktopFocusChanged,
         x if x == LogEvent::AppRendered as u32 => LogEvent::AppRendered,
+        x if x == LogEvent::InputSourceReady as u32 => LogEvent::InputSourceReady,
+        x if x == LogEvent::InputKeyDelivered as u32 => LogEvent::InputKeyDelivered,
+        x if x == LogEvent::NetworkLeaseChanged as u32 => LogEvent::NetworkLeaseChanged,
+        x if x == LogEvent::NetworkSocketOpened as u32 => LogEvent::NetworkSocketOpened,
+        x if x == LogEvent::NetworkSocketClosed as u32 => LogEvent::NetworkSocketClosed,
+        x if x == LogEvent::TerminalSessionOpened as u32 => LogEvent::TerminalSessionOpened,
+        x if x == LogEvent::TerminalSessionClosed as u32 => LogEvent::TerminalSessionClosed,
+        x if x == LogEvent::AudioEndpointReady as u32 => LogEvent::AudioEndpointReady,
+        x if x == LogEvent::AudioStreamOpened as u32 => LogEvent::AudioStreamOpened,
+        x if x == LogEvent::AudioStreamStarted as u32 => LogEvent::AudioStreamStarted,
+        x if x == LogEvent::AudioStreamStopped as u32 => LogEvent::AudioStreamStopped,
+        x if x == LogEvent::AudioStreamClosed as u32 => LogEvent::AudioStreamClosed,
         _ => LogEvent::LookupGranted,
     }
 }
@@ -388,6 +405,68 @@ fn network_status_error(status: NetworkStatus) -> Error {
         NetworkStatus::Denied => Error::PermissionDenied,
         NetworkStatus::CapacityExceeded => Error::CapacityExceeded,
         NetworkStatus::Closed => Error::NotFound,
+    }
+}
+
+fn audio_status_from_word(value: u64) -> AudioStatus {
+    match value as u32 {
+        x if x == AudioStatus::Ok as u32 => AudioStatus::Ok,
+        x if x == AudioStatus::NotFound as u32 => AudioStatus::NotFound,
+        x if x == AudioStatus::Busy as u32 => AudioStatus::Busy,
+        x if x == AudioStatus::Unsupported as u32 => AudioStatus::Unsupported,
+        x if x == AudioStatus::Denied as u32 => AudioStatus::Denied,
+        x if x == AudioStatus::CapacityExceeded as u32 => AudioStatus::CapacityExceeded,
+        x if x == AudioStatus::Closed as u32 => AudioStatus::Closed,
+        _ => AudioStatus::Busy,
+    }
+}
+
+fn audio_status_error(status: AudioStatus) -> Error {
+    match status {
+        AudioStatus::Ok => Error::InvalidArgument,
+        AudioStatus::NotFound | AudioStatus::Closed => Error::NotFound,
+        AudioStatus::Busy => Error::Busy,
+        AudioStatus::Unsupported => Error::Unsupported,
+        AudioStatus::Denied => Error::PermissionDenied,
+        AudioStatus::CapacityExceeded => Error::CapacityExceeded,
+    }
+}
+
+fn audio_endpoint_backend_from_word(value: u64) -> AudioEndpointBackend {
+    match value as u32 {
+        x if x == AudioEndpointBackend::PcSpeaker as u32 => AudioEndpointBackend::PcSpeaker,
+        _ => AudioEndpointBackend::Unknown,
+    }
+}
+
+fn audio_endpoint_direction_from_word(value: u64) -> AudioEndpointDirection {
+    match value as u32 {
+        x if x == AudioEndpointDirection::Input as u32 => AudioEndpointDirection::Input,
+        _ => AudioEndpointDirection::Output,
+    }
+}
+
+fn audio_endpoint_state_from_word(value: u64) -> AudioEndpointState {
+    match value as u32 {
+        x if x == AudioEndpointState::Offline as u32 => AudioEndpointState::Offline,
+        x if x == AudioEndpointState::Active as u32 => AudioEndpointState::Active,
+        _ => AudioEndpointState::Idle,
+    }
+}
+
+fn audio_stream_direction_from_word(value: u64) -> AudioStreamDirection {
+    match value as u32 {
+        x if x == AudioStreamDirection::Capture as u32 => AudioStreamDirection::Capture,
+        _ => AudioStreamDirection::Playback,
+    }
+}
+
+fn audio_stream_state_from_word(value: u64) -> AudioStreamState {
+    match value as u32 {
+        x if x == AudioStreamState::Active as u32 => AudioStreamState::Active,
+        x if x == AudioStreamState::Closed as u32 => AudioStreamState::Closed,
+        x if x == AudioStreamState::Failed as u32 => AudioStreamState::Failed,
+        _ => AudioStreamState::Idle,
     }
 }
 

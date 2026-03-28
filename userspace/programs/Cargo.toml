@@ -12,6 +12,7 @@ members = [
     "status-service",
     "package-service",
     "network-service",
+    "audio-service",
     "session-service",
     "desktop-shell-service",
     "shell-service",

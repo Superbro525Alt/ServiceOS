@@ -15,6 +15,10 @@ const NOTE_FIELD_X0: i32 = 10;
 const NOTE_FIELD_Y0: i32 = 98;
 const NOTE_FIELD_X1: i32 = 232;
 const NOTE_FIELD_Y1: i32 = 122;
+const AUDIO_TEST_X0: i32 = 10;
+const AUDIO_TEST_Y0: i32 = 128;
+const AUDIO_TEST_X1: i32 = 118;
+const AUDIO_TEST_Y1: i32 = 148;
 
 rt::entry!(main);
 
@@ -24,7 +28,7 @@ fn main() -> u64 {
     if rt::channel_receive_blocking(bootstrap, &mut startup).is_err() {
         return 0xf001;
     }
-    if startup.tag != ControlTag::Startup as u32 || startup.handle_count < 4 || startup.word_count < 4 {
+    if startup.tag != ControlTag::Startup as u32 || startup.handle_count < 5 || startup.word_count < 4 {
         return 0xf002;
     }
 
@@ -32,6 +36,7 @@ fn main() -> u64 {
     let control_handle = startup.handles[1];
     let config_handle = startup.handles[2];
     let network_handle = startup.handles[3];
+    let audio_handle = startup.handles[4];
     let width = startup.words[1] as u32;
     let height = startup.words[2] as u32;
     let mut focused = startup.words[3] != 0;
@@ -41,6 +46,9 @@ fn main() -> u64 {
     let mut editing_note = false;
     let mut note = [0u8; NOTE_MAX_BYTES];
     let mut note_len = 0usize;
+    let audio_stream_handle =
+        rt::audio_stream_open(audio_handle, rt::AudioStreamDirection::Playback, 0)
+            .unwrap_or(rt::INVALID_HANDLE);
 
     if render(
         surface_handle,
@@ -49,6 +57,7 @@ fn main() -> u64 {
         focused,
         config_handle,
         network_handle,
+        audio_handle,
         editing_note,
         &note[..note_len],
     )
@@ -58,7 +67,10 @@ fn main() -> u64 {
     }
     loop {
         match poll_lifecycle(bootstrap) {
-            Ok(true) => return 0,
+            Ok(true) => {
+                cleanup_audio(audio_stream_handle, audio_handle);
+                return 0;
+            }
             Ok(false) => {}
             Err(_) => return 0xf004,
         }
@@ -73,12 +85,18 @@ fn main() -> u64 {
             &mut note_len,
             config_handle,
             network_handle,
+            audio_handle,
+            audio_stream_handle,
         ) {
             Ok(ControlFlow::Continue) => {}
-            Ok(ControlFlow::Exit) => return 0,
+            Ok(ControlFlow::Exit) => {
+                cleanup_audio(audio_stream_handle, audio_handle);
+                return 0;
+            }
             Err(_) => return 0xf006,
         }
         if rt::yield_current().is_err() {
+            cleanup_audio(audio_stream_handle, audio_handle);
             return 0xf005;
         }
     }
@@ -91,6 +109,7 @@ fn render(
     focused: bool,
     config_handle: rt::Handle,
     network_handle: rt::Handle,
+    audio_handle: rt::Handle,
     editing_note: bool,
     note: &[u8],
 ) -> rt::Result<()> {
@@ -137,7 +156,21 @@ fn render(
     let note_text = str::from_utf8(note).unwrap_or("");
     let _ = write!(&mut line4, "{}{}", note_prefix, note_text);
     let mut line5 = FixedLogBuffer::<48>::new();
-    let _ = write!(&mut line5, "CLICK NOTE FIELD, TYPE TEXT");
+    if let Some(endpoint) = rt::audio_service_endpoint_status(audio_handle, 0).unwrap_or(None) {
+        let _ = write!(
+            &mut line5,
+            "AUDIO {} {}HZ {}",
+            match endpoint.state {
+                rt::AudioEndpointState::Offline => "OFFLINE",
+                rt::AudioEndpointState::Idle => "IDLE",
+                rt::AudioEndpointState::Active => "ACTIVE",
+            },
+            endpoint.current_frequency_hz,
+            endpoint.play_count,
+        );
+    } else {
+        let _ = write!(&mut line5, "AUDIO UNAVAILABLE");
+    }
 
     ui::render_window_state(
         surface_handle,
@@ -174,6 +207,17 @@ fn render(
         ui::BG_PANEL,
         note_text,
     )?;
+    rt::surface_set_rect(
+        surface_handle,
+        12,
+        AUDIO_TEST_X0,
+        AUDIO_TEST_Y0,
+        (AUDIO_TEST_X1 - AUDIO_TEST_X0) as u32,
+        (AUDIO_TEST_Y1 - AUDIO_TEST_Y0) as u32,
+        ui::ACCENT_DIM,
+        true,
+    )?;
+    rt::surface_set_label(surface_handle, 13, AUDIO_TEST_X0 + 10, AUDIO_TEST_Y0 + 6, ui::BG_PANEL, "TEST TONE")?;
     let _ = height;
     Ok(())
 }
@@ -194,6 +238,8 @@ fn poll_control(
     note_len: &mut usize,
     config_handle: rt::Handle,
     network_handle: rt::Handle,
+    audio_handle: rt::Handle,
+    audio_stream_handle: rt::Handle,
 ) -> rt::Result<ControlFlow> {
     let mut changed = false;
     loop {
@@ -219,6 +265,17 @@ fn poll_control(
                     && y < NOTE_FIELD_Y1
                 {
                     *editing_note = true;
+                    changed = true;
+                } else if matches!(action, Some(AppPointerAction::Down))
+                    && x >= AUDIO_TEST_X0
+                    && x < AUDIO_TEST_X1
+                    && y >= AUDIO_TEST_Y0
+                    && y < AUDIO_TEST_Y1
+                {
+                    if audio_stream_handle != rt::INVALID_HANDLE {
+                        let _ = rt::audio_stream_play_tone(audio_stream_handle, 880, 120);
+                    }
+                    *editing_note = false;
                     changed = true;
                 } else if matches!(action, Some(AppPointerAction::Down)) {
                     *editing_note = false;
@@ -266,12 +323,23 @@ fn poll_control(
             *focused,
             config_handle,
             network_handle,
+            audio_handle,
             *editing_note,
             &note[..*note_len],
         )?;
     }
 
     Ok(ControlFlow::Continue)
+}
+
+fn cleanup_audio(audio_stream_handle: rt::Handle, audio_handle: rt::Handle) {
+    if audio_stream_handle != rt::INVALID_HANDLE {
+        let _ = rt::audio_stream_close(audio_stream_handle);
+        let _ = rt::handle_close(audio_stream_handle);
+    }
+    if audio_handle != rt::INVALID_HANDLE {
+        let _ = rt::handle_close(audio_handle);
+    }
 }
 
 fn app_pointer_action_from_word(value: u64) -> Option<AppPointerAction> {

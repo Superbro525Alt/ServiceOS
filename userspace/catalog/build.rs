@@ -96,6 +96,13 @@ const PROGRAMS: &[Program] = &[
         service_id: 10,
     },
     Program {
+        package: "serviceos-audio-service",
+        bin_name: "serviceos-audio-service",
+        image_id: 20,
+        service_path: "services/audio-service/program.img",
+        service_id: 15,
+    },
+    Program {
         package: "serviceos-graphics-service",
         bin_name: "serviceos-graphics-service",
         image_id: 12,

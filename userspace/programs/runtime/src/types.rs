@@ -1,8 +1,9 @@
 use crate::{
-    DesktopAppId, DesktopDragMode, DisplayOutputBackend, DisplayOutputState, DisplayPixelFormat,
-    LogDomain, LogEvent, LogSeverity, ManagerServicePhase, NetworkConfigMode, NetworkConfigState,
-    NetworkSocketKind, NetworkSocketState, PacketInterfaceBackend, PacketInterfaceLinkState,
-    ServiceId, SessionInputSource,
+    AudioEndpointBackend, AudioEndpointDirection, AudioEndpointState, AudioStreamDirection,
+    AudioStreamState, DesktopAppId, DesktopDragMode, DisplayOutputBackend, DisplayOutputState,
+    DisplayPixelFormat, LogDomain, LogEvent, LogSeverity, ManagerServicePhase,
+    NetworkConfigMode, NetworkConfigState, NetworkSocketKind, NetworkSocketState,
+    PacketInterfaceBackend, PacketInterfaceLinkState, ServiceId, SessionInputSource,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -74,6 +75,32 @@ pub struct NetworkSocketInfo {
     pub local_port: u16,
     pub rx_bytes: u64,
     pub tx_bytes: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AudioEndpointStatusInfo {
+    pub index: u32,
+    pub backend: AudioEndpointBackend,
+    pub direction: AudioEndpointDirection,
+    pub state: AudioEndpointState,
+    pub capabilities: u32,
+    pub nominal_rate_hz: u32,
+    pub channels: u32,
+    pub min_frequency_hz: u32,
+    pub max_frequency_hz: u32,
+    pub current_frequency_hz: u32,
+    pub play_count: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AudioStreamInfo {
+    pub slot: u32,
+    pub direction: AudioStreamDirection,
+    pub state: AudioStreamState,
+    pub session_id: u32,
+    pub endpoint_index: u32,
+    pub frequency_hz: u32,
+    pub remaining_ticks: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

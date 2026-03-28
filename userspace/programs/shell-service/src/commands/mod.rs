@@ -1,3 +1,4 @@
+mod audio;
 mod core;
 mod desktop;
 mod graphics;
@@ -50,6 +51,7 @@ pub(crate) fn execute_command(
         },
         "status" => core::cmd_status(bootstrap, output),
         "net" => network::cmd_net(bootstrap, output, parts),
+        "audio" => audio::cmd_audio(bootstrap, output, parts),
         "gfx" => graphics::cmd_gfx(bootstrap, output, parts),
         "desktop" => desktop::cmd_desktop(bootstrap, output, parts),
         "pkg" => package::cmd_pkg(bootstrap, output, parts),

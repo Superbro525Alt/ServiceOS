@@ -251,6 +251,7 @@ fn service_id_from_word(value: u64) -> ServiceId {
         x if x == ServiceId::Session as u32 => ServiceId::Session,
         x if x == ServiceId::DesktopShell as u32 => ServiceId::DesktopShell,
         x if x == ServiceId::Terminal as u32 => ServiceId::Terminal,
+        x if x == ServiceId::Audio as u32 => ServiceId::Audio,
         _ => ServiceId::RootManager,
     }
 }
@@ -282,6 +283,7 @@ fn domain_from_word(value: u64) -> LogDomain {
         x if x == LogDomain::Session as u32 => LogDomain::Session,
         x if x == LogDomain::Desktop as u32 => LogDomain::Desktop,
         x if x == LogDomain::App as u32 => LogDomain::App,
+        x if x == LogDomain::Audio as u32 => LogDomain::Audio,
         _ => LogDomain::Service,
     }
 }
@@ -329,6 +331,11 @@ fn event_from_word(value: u64) -> LogEvent {
         x if x == LogEvent::InputKeyDelivered as u32 => LogEvent::InputKeyDelivered,
         x if x == LogEvent::TerminalSessionOpened as u32 => LogEvent::TerminalSessionOpened,
         x if x == LogEvent::TerminalSessionClosed as u32 => LogEvent::TerminalSessionClosed,
+        x if x == LogEvent::AudioEndpointReady as u32 => LogEvent::AudioEndpointReady,
+        x if x == LogEvent::AudioStreamOpened as u32 => LogEvent::AudioStreamOpened,
+        x if x == LogEvent::AudioStreamStarted as u32 => LogEvent::AudioStreamStarted,
+        x if x == LogEvent::AudioStreamStopped as u32 => LogEvent::AudioStreamStopped,
+        x if x == LogEvent::AudioStreamClosed as u32 => LogEvent::AudioStreamClosed,
         _ => LogEvent::LookupGranted,
     }
 }

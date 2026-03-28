@@ -45,6 +45,9 @@ net sockets: show active network sockets\r\n\
 net resolve <name>: resolve a host or literal\r\n\
 net ping <name|ip>: run an ICMP reachability probe\r\n\
 net http <host> [path]: fetch a URL over TCP through network-service\r\n\
+audio endpoints: show audio endpoints\r\n\
+audio streams: show active audio streams\r\n\
+audio tone <hz> [ms]: play a diagnostic tone through audio-service\r\n\
 gfx outputs: show graphics outputs\r\n\
 gfx surfaces: show compositor surfaces\r\n\
 gfx sessions: show graphical sessions\r\n\
@@ -133,6 +136,7 @@ pub(crate) fn parse_service_name(name: &str) -> Option<ServiceId> {
         "graphics" | "graphics-service" => Some(ServiceId::Graphics),
         "session" | "session-service" => Some(ServiceId::Session),
         "desktop" | "desktop-shell" | "desktop-shell-service" => Some(ServiceId::DesktopShell),
+        "audio" | "audio-service" => Some(ServiceId::Audio),
         _ => None,
     }
 }
@@ -163,6 +167,7 @@ pub(crate) fn service_name(service_id: ServiceId) -> &'static str {
         ServiceId::Session => "session-service",
         ServiceId::DesktopShell => "desktop-shell-service",
         ServiceId::Terminal => "terminal-service",
+        ServiceId::Audio => "audio-service",
     }
 }
 
@@ -249,6 +254,7 @@ pub(crate) fn domain_name(domain: LogDomain) -> &'static str {
         LogDomain::Session => "session",
         LogDomain::Desktop => "desktop",
         LogDomain::App => "app",
+        LogDomain::Audio => "audio",
     }
 }
 
@@ -299,6 +305,11 @@ pub(crate) fn event_name(event: LogEvent) -> &'static str {
         LogEvent::InputKeyDelivered => "input-key-delivered",
         LogEvent::TerminalSessionOpened => "terminal-session-opened",
         LogEvent::TerminalSessionClosed => "terminal-session-closed",
+        LogEvent::AudioEndpointReady => "audio-endpoint-ready",
+        LogEvent::AudioStreamOpened => "audio-stream-opened",
+        LogEvent::AudioStreamStarted => "audio-stream-started",
+        LogEvent::AudioStreamStopped => "audio-stream-stopped",
+        LogEvent::AudioStreamClosed => "audio-stream-closed",
     }
 }
 

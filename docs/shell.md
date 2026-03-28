@@ -65,6 +65,12 @@ Current built-in commands:
 - `store ls [prefix]`
 - `cat <path>`
 - `status`
+- `net ifaces`
+- `net route`
+- `net sockets`
+- `net resolve <name>`
+- `net ping <name|ip>`
+- `net http <host> [path]`
 - `gfx outputs`
 - `gfx surfaces`
 - `gfx sessions`
@@ -97,6 +103,11 @@ special shell-only backdoors.
 Package commands call the real `package-service`, which then coordinates with
 the root manager. The shell does not edit manifests or activate services by
 itself.
+
+Network commands call the real `network-service`.
+The shell can inspect interfaces, resolve names, run probes, inspect active
+transport sessions, and open a small outbound TCP stream session for HTTP
+testing, but it never receives raw packet-interface authority directly.
 
 Graphics commands call the real `graphics-service` and `session-service`.
 The shell can inspect and request focus changes because its manifest grants

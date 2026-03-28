@@ -78,11 +78,10 @@
 - add writable storage and directory capabilities
 - extend terminate-on-fault isolation into richer user-fault upcalls and
   recovery policy
-- add dynamic IPv4 configuration and DNS-backed resolution behind the current
-  network-service contract
-- grow the current ICMP/status path into a broader socket and transport surface
 - move input delivery from PIT polling to device-driven wakeups, mirroring the
   packet-interface path
+- grow the current networking surface beyond DHCP/DNS/ICMP/outbound TCP into
+  UDP, inbound/listening transports, richer routing, and IPv6
 - split the remaining x86 PC interrupt-controller details out of `arch/x86_64`
   if a second x86 platform target is added
 - grow the current shared-buffer graphics path into mapped or zero-copy

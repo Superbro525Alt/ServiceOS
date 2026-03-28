@@ -41,7 +41,8 @@ Current userspace platform:
 - storage, log, config, console, and status services
 - text shell and operator tooling
 - package install, update, remove, and rollback foundation
-- networking service with interface/address/route/reporting contracts
+- networking service with dynamic IPv4, DNS-backed resolution, ICMP, and
+  outbound TCP stream contracts
 - graphics service, compositor foundation, and session service
 - desktop shell with initial graphical core apps
 
@@ -203,6 +204,8 @@ From the operator shell:
 - inspect stored bundle/config data
 - perform package operations
 - inspect network interfaces/routes/resolution state
+- perform practical outbound network checks and fetches through the real
+  networking service
 - inspect graphics/session state
 - launch desktop-aware tools and apps through the real manager/runtime path
 
@@ -220,7 +223,7 @@ Not built yet:
 - polished final desktop UX
 - richer window management and input stack
 - full filesystem/user storage semantics
-- DHCP, DNS, TCP/UDP, IPv6, and richer networking policy
+- UDP, IPv6, inbound/listening sockets, and richer networking policy
 - audio/media stack
 - network-backed package repositories and signing/trust infrastructure
 - Linux or Windows compatibility layers

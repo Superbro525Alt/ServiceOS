@@ -175,10 +175,11 @@ Current lookup permissions:
 - owns interface state and IP-level networking policy in userspace
 - consumes an explicit packet-interface capability rather than ambient NIC
   access
-- applies static IPv4 configuration from `config-service`
+- acquires dynamic IPv4 configuration when enabled, with a static fallback path
+  from `config-service`
 - loads static host mappings from a storage-backed resource blob
-- exposes interface status, route reporting, host resolution, and ICMP probe
-  requests through a stable service contract
+- exposes interface status, route reporting, DNS-backed host resolution, ICMP
+  probes, and outbound TCP stream sessions through a stable service contract
 - keeps the public contract generic so later VirtIO, additional virtual, and
   real-NIC backends can sit behind the same service boundary
 

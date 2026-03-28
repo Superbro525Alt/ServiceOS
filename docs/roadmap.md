@@ -46,6 +46,14 @@
 - first core app set: `settings-app`, `files-app`, `monitor-app`
 - serial-shell inspection of desktop state through the desktop-shell contract
 
+## Desktop interaction completed
+
+- window focus, z-order, move, resize, minimize, restore, and close handling in
+  `desktop-shell-service`
+- app-control channel for desktop-driven focus, resize, and close events
+- shell/operator inspection and control of desktop windows through the
+  desktop-shell contract
+
 ## Next
 
 - reclaim boot-services memory safely
@@ -62,8 +70,9 @@
   graphics-service contract
 - add physical input-device hosts and routing behind the current
   session-service boundary
-- grow the first desktop shell into richer task switching, notifications, and
-  permissions-aware desktop UX without collapsing it into platform services
+- grow the first desktop shell into richer task switching, notifications,
+  keyboard-driven interaction, and permissions-aware desktop UX without
+  collapsing it into platform services
 
 ## Later
 

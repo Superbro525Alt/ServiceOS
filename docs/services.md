@@ -202,8 +202,14 @@ Current lookup permissions:
 ### `desktop-shell-service`
 
 - is the first graphical product shell built on top of the platform services
-- owns desktop chrome, launcher state, and app focus tracking
+- owns desktop chrome, launcher state, retained window state, and app focus
+  tracking
 - creates shell-owned surfaces through `graphics-service`
+- retains the authoritative surface handle for each app window
+- creates one app-control channel per launched app for focus, resize, and close
+  delivery
+- owns move, resize, minimize, restore, and close policy for desktop windows
+- accepts desktop interaction requests for hit testing and pointer-style actions
 - asks the root manager to launch graphical apps instead of spawning tasks
   directly
 - keeps desktop product policy out of `graphics-service` and `session-service`
@@ -212,7 +218,8 @@ Current lookup permissions:
 
 - are transient graphical applications rather than long-running platform
   services
-- receive one surface handle plus a small explicit service-handle set
+- receive one surface handle, one app-control channel, and a small explicit
+  service-handle set
 - validate the current platform contracts for config, storage, status, and
   network access
 - stay replaceable and non-ambient: they do not inherit manager or compositor

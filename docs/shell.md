@@ -71,8 +71,16 @@ Current built-in commands:
 - `gfx focus <surface-id>`
 - `desktop status`
 - `desktop apps`
+- `desktop windows`
 - `desktop launch <settings|files|monitor>`
 - `desktop focus <settings|files|monitor>`
+- `desktop next`
+- `desktop close <settings|files|monitor>`
+- `desktop minimize <settings|files|monitor>`
+- `desktop restore <settings|files|monitor>`
+- `desktop move <settings|files|monitor> <x> <y>`
+- `desktop resize <settings|files|monitor> <width> <height>`
+- `desktop click <x> <y>`
 - `pkg list`
 - `pkg info <name>`
 - `pkg install <name> [version]`
@@ -94,9 +102,10 @@ The shell can inspect and request focus changes because its manifest grants
 lookup access; it does not own display hardware directly.
 
 Desktop commands call the real `desktop-shell-service`.
-The shell can inspect and request app launch/focus through that service, but it
-does not gain direct graphical app-spawn authority or shell-owned surface
-handles.
+The shell can inspect and request app launch, focus, window actions, and
+desktop-pointer actions through that service, but it does not gain direct
+graphical app-spawn authority, shell-owned surface handles, or app-local input
+authority.
 
 ## Tool launch model
 
@@ -136,4 +145,4 @@ and debugging access.
 - package-installed command discovery
 - richer package UX and operator history views
 - richer terminal emulation and graphical shells
-- richer graphical session tooling and window-management commands
+- richer graphical session tooling beyond the current desktop window controls

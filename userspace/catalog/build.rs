@@ -295,7 +295,7 @@ fn build_program(
 }
 
 fn objcopy_binary(input: &Path, output: &Path) -> Result<(), Box<dyn Error>> {
-    let status = Command::new("/usr/sbin/llvm-objcopy")
+    let status = Command::new(llvm_tool("LLVM_OBJCOPY", "llvm-objcopy"))
         .args(["-O", "binary"])
         .arg(input)
         .arg(output)
@@ -315,7 +315,7 @@ struct FlatImageLayout {
 }
 
 fn read_flat_image_layout(elf: &Path) -> Result<FlatImageLayout, Box<dyn Error>> {
-    let output = Command::new("/usr/sbin/llvm-readelf")
+    let output = Command::new(llvm_tool("LLVM_READELF", "llvm-readelf"))
         .args(["-l"])
         .arg(elf)
         .output()?;
@@ -381,6 +381,34 @@ fn read_flat_image_layout(elf: &Path) -> Result<FlatImageLayout, Box<dyn Error>>
             writable_offset
         },
         memory_size: memory_limit,
+    })
+}
+
+fn llvm_tool(env_var: &str, binary: &str) -> PathBuf {
+    env::var_os(env_var)
+        .map(PathBuf::from)
+        .filter(|path| path.exists())
+        .or_else(|| find_in_path(binary))
+        .or_else(|| {
+            [
+                format!("/usr/bin/{binary}"),
+                format!("/usr/sbin/{binary}"),
+                format!("/usr/lib/llvm-18/bin/{binary}"),
+                format!("/usr/lib/llvm-17/bin/{binary}"),
+                format!("/usr/lib/llvm-16/bin/{binary}"),
+            ]
+            .into_iter()
+            .map(PathBuf::from)
+            .find(|path| path.exists())
+        })
+        .unwrap_or_else(|| PathBuf::from(binary))
+}
+
+fn find_in_path(binary: &str) -> Option<PathBuf> {
+    env::var_os("PATH").and_then(|path| {
+        env::split_paths(&path)
+            .map(|dir| dir.join(binary))
+            .find(|candidate| candidate.exists())
     })
 }
 

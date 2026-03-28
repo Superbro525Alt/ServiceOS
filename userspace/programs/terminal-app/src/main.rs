@@ -514,6 +514,30 @@ fn draw_titlebar(bytes: &mut [u8], width: usize, focused: bool) {
         ui::WINDOW_BUTTON_SIZE as usize,
         ui::STATUS_WARN,
     );
+    fill_rect(
+        bytes,
+        (maximize_x + 3).max(0) as usize,
+        (ui::WINDOW_BUTTON_TOP + 3).max(0) as usize,
+        6,
+        6,
+        ui::BG_PANEL,
+    );
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        minimize_x + 3,
+        ui::WINDOW_BUTTON_TOP + 2,
+        ui::BG_PANEL,
+        "_",
+    );
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        close_x + 3,
+        ui::WINDOW_BUTTON_TOP + 2,
+        ui::BG_PANEL,
+        "X",
+    );
     let _ = focused;
     rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, 10, 9, ui::TEXT_PRIMARY, "TERMINAL");
 }

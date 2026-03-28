@@ -70,6 +70,8 @@
 - grow the current ICMP/status path into a broader socket and transport surface
 - move input delivery from PIT polling to device-driven wakeups, mirroring the
   packet-interface path
+- continue the userspace entrypoint cleanup by splitting remaining oversized
+  services such as `graphics-service` into focused internal modules
 - grow the current shared-buffer graphics path into mapped or zero-copy
   presentation buffers and a broader client-render protocol
 - grow the first desktop shell into richer task switching, broader shortcut and

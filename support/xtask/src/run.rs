@@ -20,7 +20,7 @@ pub fn run_platform(artifacts: &BuildArtifacts, image: &Path) -> Result<(), Box<
             );
             println!("Staged output: {}", image.display());
             println!(
-                "Copy the contents of that directory to a Raspberry Pi boot partition once the native kernel image exists."
+                "Copy the contents of that directory to a Raspberry Pi boot partition and boot it on hardware."
             );
             Ok(())
         }

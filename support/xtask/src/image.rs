@@ -1,4 +1,5 @@
 use std::{
+    env,
     error::Error,
     fs,
     path::{Path, PathBuf},
@@ -15,7 +16,7 @@ pub fn create_platform_image(artifacts: &BuildArtifacts) -> Result<PathBuf, Box<
     let layout = stage_platform_bundle(artifacts)?;
     match artifacts.spec.image_kind {
         ImageKind::RawDisk => create_qemu_disk_image(&layout.root_dir),
-        ImageKind::RaspberryPiBundle => create_raspi_bundle(artifacts, &layout.root_dir),
+        ImageKind::RaspberryPiBundle => create_raspi_bundle(artifacts, &layout),
     }
 }
 
@@ -52,8 +53,9 @@ fn create_qemu_disk_image(esp_dir: &Path) -> Result<PathBuf, Box<dyn Error>> {
 
 fn create_raspi_bundle(
     artifacts: &BuildArtifacts,
-    boot_dir: &Path,
+    layout: &crate::bundle::StagedPlatformLayout,
 ) -> Result<PathBuf, Box<dyn Error>> {
+    let boot_dir = &layout.boot_dir;
     fs::create_dir_all(boot_dir)?;
     let config_txt = boot_dir.join("config.txt");
     let readme = boot_dir.join("README.txt");
@@ -62,6 +64,20 @@ fn create_raspi_bundle(
     } else {
         "debug"
     };
+    let kernel_elf = layout.serviceos_dir.join("serviceos-kernel.elf");
+    let kernel_img = boot_dir.join("kernel8.img");
+    convert_elf_to_binary(&kernel_elf, &kernel_img)?;
+    let device_tree_line = if let Some(dtb_source) = locate_raspi5_dtb() {
+        let file_name = dtb_source
+            .file_name()
+            .ok_or("invalid Raspberry Pi DTB path")?;
+        fs::copy(&dtb_source, boot_dir.join(file_name))?;
+        format!("device_tree={}", file_name.to_string_lossy())
+    } else {
+        String::from(
+            "# device_tree=bcm2712-rpi-5-b.dtb  # add this if your target boot partition does not already provide it",
+        )
+    };
 
     fs::write(
         &config_txt,
@@ -69,9 +85,9 @@ fn create_raspi_bundle(
             "arm_64bit=1",
             "enable_uart=1",
             "kernel=kernel8.img",
-            "# ServiceOS Raspberry Pi 5 platform scaffold",
-            "# The userspace boot-store is staged under serviceos/bootstore.bin.",
-            "# A native Raspberry Pi 5 kernel entry path is not implemented yet.",
+            &device_tree_line,
+            "# ServiceOS Raspberry Pi 5 native bring-up image",
+            "# The userspace boot-store is staged under serviceos/bootstore.bin for later platform phases.",
             "",
         ]
         .join("\n"),
@@ -79,13 +95,47 @@ fn create_raspi_bundle(
     fs::write(
         &readme,
         format!(
-            "ServiceOS Raspberry Pi 5 platform image scaffold\n\nProfile: {release_mode}\nPlatform: raspi5\n\nStaged files:\n- config.txt\n- serviceos/bootstore.bin\n\nCurrent state:\n- arch/aarch64 and platform/aarch64/raspi5 crates build and define the long-term split\n- the Raspberry Pi firmware boot parser and executable kernel image are still deferred\n- this directory is the intended boot-partition layout for the eventual Pi image pipeline\n"
+            "ServiceOS Raspberry Pi 5 bring-up image\n\nProfile: {release_mode}\nPlatform: raspi5\n\nStaged files:\n- config.txt\n- kernel8.img\n- serviceos/bootstore.bin\n- serviceos/serviceos-kernel.elf\n\nDeployment:\n1. Copy the contents of this directory to a Raspberry Pi 5 FAT boot partition.\n2. If this directory does not include bcm2712-rpi-5-b.dtb, use an existing Pi boot partition that already has the matching DTB, or set RASPI5_DTB before running xtask image.\n3. Connect the Raspberry Pi 5 debug UART and power on.\n\nCurrent state:\n- native AArch64 entry, DTB parsing, memory discovery, and PL011 UART logging are implemented\n- full ServiceOS kernel/userspace bootstrap on Raspberry Pi 5 remains deferred to later platform bring-up work\n- graphics, input, networking, and storage backends remain x86_64/qemu-virtio only for now\n"
         ),
     )?;
 
     println!(
-        "Created Raspberry Pi 5 boot scaffold at: {}",
+        "Created Raspberry Pi 5 boot bundle at: {}",
         boot_dir.display()
     );
     Ok(boot_dir.to_path_buf())
+}
+
+fn convert_elf_to_binary(source: &Path, destination: &Path) -> Result<(), Box<dyn Error>> {
+    let status = Command::new(objcopy_executable())
+        .args(["-O", "binary"])
+        .arg(source)
+        .arg(destination)
+        .status()?;
+    ensure_success(status, "llvm-objcopy failed for Raspberry Pi kernel image")
+}
+
+fn objcopy_executable() -> PathBuf {
+    env::var_os("LLVM_OBJCOPY")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/usr/sbin/llvm-objcopy"))
+}
+
+fn locate_raspi5_dtb() -> Option<PathBuf> {
+    env::var_os("RASPI5_DTB")
+        .map(PathBuf::from)
+        .filter(|path| path.exists())
+        .or_else(|| {
+            [
+                "/boot/firmware/bcm2712-rpi-5-b.dtb",
+                "/boot/firmware/broadcom/bcm2712-rpi-5-b.dtb",
+                "/boot/bcm2712-rpi-5-b.dtb",
+                "/boot/broadcom/bcm2712-rpi-5-b.dtb",
+                "/usr/lib/firmware/broadcom/bcm2712-rpi-5-b.dtb",
+                "/lib/firmware/broadcom/bcm2712-rpi-5-b.dtb",
+            ]
+            .into_iter()
+            .map(PathBuf::from)
+            .find(|path| path.exists())
+        })
 }

@@ -6,3 +6,6 @@ kernel-run = "xtask qemu"
 
 [target.x86_64-unknown-uefi]
 rustflags = ["-C", "no-redzone=yes"]
+
+[target.aarch64-unknown-none-softfloat]
+rustflags = ["-C", "relocation-model=static"]

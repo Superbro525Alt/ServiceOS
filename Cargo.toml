@@ -9,6 +9,7 @@ members = [
     "platform/x86_64/qemu_virtio",
     "platform/aarch64/raspi5",
     "platform/x86_64/qemu_virtio/image",
+    "platform/aarch64/raspi5/image",
     "support/xtask",
     "userspace/catalog",
 ]

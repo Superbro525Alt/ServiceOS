@@ -38,6 +38,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "fdt"
+version = "0.2.0-alpha1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9d070dea8bd0df3ea6d250490ae21eb908e83478c53099212ba1fa5af8e77a5b"
+
+[[package]]
 name = "lock_api"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -148,6 +154,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "serviceos-kernel-raspi5"
+version = "0.1.0"
+dependencies = [
+ "serviceos-kernel-arch-aarch64",
+ "serviceos-kernel-core",
+ "serviceos-platform-raspi5",
+]
+
+[[package]]
 name = "serviceos-kernel-x86_64"
 version = "0.1.0"
 dependencies = [
@@ -177,6 +192,7 @@ dependencies = [
 name = "serviceos-platform-raspi5"
 version = "0.1.0"
 dependencies = [
+ "fdt",
  "serviceos-kernel-arch-aarch64",
  "serviceos-kernel-core",
 ]

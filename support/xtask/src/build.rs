@@ -58,16 +58,7 @@ pub fn build_for_platform(
         false,
     )?;
 
-    let kernel_binary = match (spec.kernel_package, spec.rust_target) {
-        (Some(kernel_package), Some(target)) => Some(
-            workspace_root
-                .join("target")
-                .join(target)
-                .join(profile)
-                .join(format!("{kernel_package}.efi")),
-        ),
-        _ => None,
-    };
+    let kernel_binary = spec.kernel_binary_path(&workspace_root, profile);
 
     Ok(BuildArtifacts {
         spec,

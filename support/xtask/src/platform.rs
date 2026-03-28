@@ -64,8 +64,8 @@ impl PlatformSpec {
         Self {
             name: "raspi5",
             arch: Arch::Aarch64,
-            rust_target: None,
-            kernel_package: None,
+            rust_target: Some("aarch64-unknown-none-softfloat"),
+            kernel_package: Some("serviceos-kernel-raspi5"),
             arch_package: "serviceos-kernel-arch-aarch64",
             platform_package: "serviceos-platform-raspi5",
             image_kind: ImageKind::RaspberryPiBundle,
@@ -80,6 +80,27 @@ impl PlatformSpec {
             .join("images")
             .join(profile)
             .join(self.name)
+    }
+
+    pub fn kernel_binary_path(
+        self,
+        workspace_root: &std::path::Path,
+        profile: &str,
+    ) -> Option<PathBuf> {
+        let package = self.kernel_package?;
+        let target = self.rust_target?;
+        let file_name = match self.boot_kind {
+            BootKind::Uefi => format!("{package}.efi"),
+            BootKind::RaspberryPiFirmware => package.to_owned(),
+        };
+
+        Some(
+            workspace_root
+                .join("target")
+                .join(target)
+                .join(profile)
+                .join(file_name),
+        )
     }
 }
 

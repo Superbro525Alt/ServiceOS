@@ -12,5 +12,6 @@ test = false
 bench = false
 
 [dependencies]
+fdt = "0.2.0-alpha1"
 serviceos-kernel-core = { path = "../../../kernel/core" }
 serviceos-kernel-arch-aarch64 = { path = "../../../arch/aarch64" }

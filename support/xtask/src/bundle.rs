@@ -4,6 +4,8 @@ use crate::{build::BuildArtifacts, platform::BootKind};
 
 pub struct StagedPlatformLayout {
     pub root_dir: PathBuf,
+    pub boot_dir: PathBuf,
+    pub serviceos_dir: PathBuf,
 }
 
 pub fn stage_platform_bundle(
@@ -29,10 +31,14 @@ pub fn stage_platform_bundle(
     if let Some(kernel_binary) = &artifacts.kernel_binary {
         let destination = match artifacts.spec.boot_kind {
             BootKind::Uefi => boot_dir.join("BOOTX64.EFI"),
-            BootKind::RaspberryPiFirmware => boot_dir.join("kernel8.img"),
+            BootKind::RaspberryPiFirmware => serviceos_dir.join("serviceos-kernel.elf"),
         };
         fs::copy(kernel_binary, destination)?;
     }
 
-    Ok(StagedPlatformLayout { root_dir })
+    Ok(StagedPlatformLayout {
+        root_dir,
+        boot_dir,
+        serviceos_dir,
+    })
 }

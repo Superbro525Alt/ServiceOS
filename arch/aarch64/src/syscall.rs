@@ -1,8 +1,8 @@
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SyscallBringupStatus {
-    pub implemented: bool,
+    pub entry_path: bool,
 }
 
 pub const fn bringup_status() -> SyscallBringupStatus {
-    SyscallBringupStatus { implemented: false }
+    SyscallBringupStatus { entry_path: false }
 }

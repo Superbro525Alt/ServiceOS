@@ -9,8 +9,8 @@ mod imp {
         memory::{self, MappingError, PhysicalAddress},
         task::ThreadId,
         user::{
-            self, AddressSpacePreparationError, LoadError, PreparedUserAddressSpace,
-            UserArchHooks, UserThreadLaunch,
+            self, AddressSpacePreparationError, LoadError, PreparedUserAddressSpace, UserArchHooks,
+            UserThreadLaunch,
         },
     };
 
@@ -399,4 +399,7 @@ mod imp {
     }
 }
 
-pub use imp::{SavedUserContext, UserLaunchError, initialize, prepare_address_space, register_thread_launch, run_thread};
+pub use imp::{
+    SavedUserContext, UserLaunchError, initialize, prepare_address_space, register_thread_launch,
+    run_thread,
+};

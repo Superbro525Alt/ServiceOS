@@ -93,15 +93,26 @@ mod imp {
                 if start >= end {
                     continue;
                 }
-                map_identity_block_range(PhysicalAddress::new(root as *mut PageTable as u64), start, end, false)?;
+                map_identity_block_range(
+                    PhysicalAddress::new(root as *mut PageTable as u64),
+                    start,
+                    end,
+                    false,
+                )?;
             }
 
             for region in mmio_regions.iter().copied() {
                 let start = region.base.align_down(L2_BLOCK_BYTES).as_u64();
-                let end = PhysicalAddress::new(region.base.as_u64().saturating_add(region.size as u64))
-                    .align_up(L2_BLOCK_BYTES)
-                    .as_u64();
-                map_identity_block_range(PhysicalAddress::new(root as *mut PageTable as u64), start, end, true)?;
+                let end =
+                    PhysicalAddress::new(region.base.as_u64().saturating_add(region.size as u64))
+                        .align_up(L2_BLOCK_BYTES)
+                        .as_u64();
+                map_identity_block_range(
+                    PhysicalAddress::new(root as *mut PageTable as u64),
+                    start,
+                    end,
+                    true,
+                )?;
             }
 
             let root_frame = PhysicalAddress::new(root as *mut PageTable as u64);
@@ -270,7 +281,10 @@ mod imp {
         Ok(())
     }
 
-    fn translate_address(root_frame: PhysicalAddress, address: VirtualAddress) -> Option<PhysicalAddress> {
+    fn translate_address(
+        root_frame: PhysicalAddress,
+        address: VirtualAddress,
+    ) -> Option<PhysicalAddress> {
         let root = table_ptr(root_frame);
         let l0_entry = root.entries[l0_index(address)];
         if l0_entry & DESC_VALID == 0 {
@@ -278,7 +292,9 @@ mod imp {
         }
         if l0_entry & DESC_TABLE_OR_PAGE == 0 {
             let base = l0_entry & TABLE_ADDRESS_MASK;
-            return Some(PhysicalAddress::new(base + (address.as_u64() & ((1 << L0_INDEX_SHIFT) - 1))));
+            return Some(PhysicalAddress::new(
+                base + (address.as_u64() & ((1 << L0_INDEX_SHIFT) - 1)),
+            ));
         }
 
         let l1 = table_ptr(PhysicalAddress::new(l0_entry & TABLE_ADDRESS_MASK));
@@ -288,7 +304,9 @@ mod imp {
         }
         if l1_entry & DESC_TABLE_OR_PAGE == 0 {
             let base = l1_entry & !((1 << L1_INDEX_SHIFT) - 1);
-            return Some(PhysicalAddress::new(base + (address.as_u64() & ((1 << L1_INDEX_SHIFT) - 1))));
+            return Some(PhysicalAddress::new(
+                base + (address.as_u64() & ((1 << L1_INDEX_SHIFT) - 1)),
+            ));
         }
 
         let l2 = table_ptr(PhysicalAddress::new(l1_entry & TABLE_ADDRESS_MASK));
@@ -298,7 +316,9 @@ mod imp {
         }
         if l2_entry & DESC_TABLE_OR_PAGE == 0 {
             let base = l2_entry & !((1 << L2_INDEX_SHIFT) - 1);
-            return Some(PhysicalAddress::new(base + (address.as_u64() & ((1 << L2_INDEX_SHIFT) - 1))));
+            return Some(PhysicalAddress::new(
+                base + (address.as_u64() & ((1 << L2_INDEX_SHIFT) - 1)),
+            ));
         }
 
         let l3 = table_ptr(PhysicalAddress::new(l2_entry & TABLE_ADDRESS_MASK));
@@ -323,7 +343,9 @@ mod imp {
             let table_address = table as *mut PageTable as u64;
             parent.entries[index] = DESC_VALID | DESC_TABLE_OR_PAGE | table_address;
         }
-        Ok(table_ptr(PhysicalAddress::new(parent.entries[index] & TABLE_ADDRESS_MASK)))
+        Ok(table_ptr(PhysicalAddress::new(
+            parent.entries[index] & TABLE_ADDRESS_MASK,
+        )))
     }
 
     fn ensure_allocator_child_table(
@@ -339,7 +361,9 @@ mod imp {
             zero_table(table);
             parent.entries[index] = DESC_VALID | DESC_TABLE_OR_PAGE | frame.base.as_u64();
         }
-        Ok(table_ptr(PhysicalAddress::new(parent.entries[index] & TABLE_ADDRESS_MASK)))
+        Ok(table_ptr(PhysicalAddress::new(
+            parent.entries[index] & TABLE_ADDRESS_MASK,
+        )))
     }
 
     fn block_descriptor(physical: u64, device: bool) -> u64 {

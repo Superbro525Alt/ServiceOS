@@ -162,7 +162,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         env::var("SERVICEOS_USER_TARGET").unwrap_or_else(|_| X86_64_USER_TARGET.to_owned());
     let target_dir = repo_root.join("target").join("userspace-programs");
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").unwrap());
-    let bootstore_output = target_dir.join(&user_target).join(&profile).join("bootstore.bin");
+    let bootstore_output = target_dir
+        .join(&user_target)
+        .join(&profile)
+        .join("bootstore.bin");
 
     println!("cargo:rerun-if-changed={}", programs_root.display());
     println!("cargo:rerun-if-changed={}", bundles_root.display());

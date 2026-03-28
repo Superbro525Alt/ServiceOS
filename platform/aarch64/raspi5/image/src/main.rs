@@ -151,10 +151,12 @@ extern "C" fn serviceos_raspi5_entry(dtb_ptr: usize) -> ! {
         &boot_state
             .summary
             .uart
-            .map(|descriptor| [MmioRegion {
-                base: descriptor.base,
-                size: descriptor.span,
-            }])
+            .map(|descriptor| {
+                [MmioRegion {
+                    base: descriptor.base,
+                    size: descriptor.span,
+                }]
+            })
             .unwrap_or([MmioRegion {
                 base: PhysicalAddress::new(0),
                 size: 0,
@@ -228,7 +230,10 @@ extern "C" fn serviceos_raspi5_entry(dtb_ptr: usize) -> ! {
             root_thread_state.last_wake_reason,
         ),
     );
-    log_line("bootstrap", "root userspace service graph completed; halting");
+    log_line(
+        "bootstrap",
+        "root userspace service graph completed; halting",
+    );
     cpu::wait_forever()
 }
 
@@ -377,7 +382,10 @@ fn run_userspace_executor(
                 continue;
             }
             if snapshot.blocked_threads > 0 {
-                log_line("bootstrap", "userspace executor stalled with only blocked threads");
+                log_line(
+                    "bootstrap",
+                    "userspace executor stalled with only blocked threads",
+                );
                 return Ok(());
             }
             return Ok(());

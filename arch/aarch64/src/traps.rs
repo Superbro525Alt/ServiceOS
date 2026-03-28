@@ -3,9 +3,7 @@ mod imp {
     use core::arch::global_asm;
 
     use serviceos_kernel_core::{
-        interrupts::{
-            self, ExceptionDetail, ExceptionVector, FaultDisposition, TrapFrameView,
-        },
+        interrupts::{self, ExceptionDetail, ExceptionVector, FaultDisposition, TrapFrameView},
         syscall::{SyscallContext, SyscallNumber},
         task::system,
         user,
@@ -122,7 +120,8 @@ serviceos_aarch64_fatal_vector:
                 context.x0, context.x1, context.x2, context.x3, context.x4, context.x5,
             ],
         };
-        let result = interrupts::dispatch_syscall(SyscallNumber(context.x8 as u32), &syscall_context);
+        let result =
+            interrupts::dispatch_syscall(SyscallNumber(context.x8 as u32), &syscall_context);
 
         context.x0 = result.value;
         context.x1 = result.abi_error_code();
@@ -134,7 +133,9 @@ serviceos_aarch64_fatal_vector:
                 }
                 1
             }
-            serviceos_kernel_core::syscall::SyscallAction::BlockCurrentThreadOnReceive { endpoint } => {
+            serviceos_kernel_core::syscall::SyscallAction::BlockCurrentThreadOnReceive {
+                endpoint,
+            } => {
                 if let Some(tasks) = system() {
                     let _ = tasks.scheduler().block_current_on_receive(endpoint);
                 }

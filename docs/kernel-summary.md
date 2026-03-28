@@ -75,6 +75,6 @@ The kernel is intentionally not doing the following yet:
 - audio pipelines
 - graphics/compositor policy
 - desktop shell behavior
-- compatibility runtimes
+- foreign ABI support and stronger compatibility isolation
 
 Those remain later userspace responsibilities.

@@ -205,6 +205,10 @@ From the operator shell:
 - inspect logs
 - inspect stored bundle/config data
 - perform package operations
+- install optional runtime support packages
+- create compatibility/runtime environments and inspect their mounts, variables,
+  and runs
+- launch runtime-hosted workloads through the real manager/runtime path
 - inspect network interfaces/routes/resolution state
 - perform practical outbound network checks and fetches through the real
   networking service
@@ -231,7 +235,8 @@ Not built yet:
 - UDP, IPv6, inbound/listening sockets, and richer networking policy
 - richer PCM/capture audio pipelines, mixing, and broader media policy
 - network-backed package repositories and signing/trust infrastructure
-- Linux or Windows compatibility layers
+- Linux ABI compatibility, Windows `.exe` support, and stronger runtime
+  sandboxing
 - full third-party app platform/toolkit ecosystem
 
 Those are future layers on top of the current substrate, not things to force
@@ -249,6 +254,7 @@ High-value entry points:
 - [Package Model](docs/packages.md)
 - [Networking Platform](docs/networking.md)
 - [Audio Platform](docs/audio.md)
+- [Compatibility And Runtime Foundations](docs/runtime.md)
 - [Graphics And Session Platform](docs/graphics.md)
 - [Desktop Shell](docs/desktop.md)
 - [Graphical Terminal](docs/terminal.md)

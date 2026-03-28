@@ -29,10 +29,14 @@ Each package version currently wraps:
 
 - one package manifest (`package.pkg`)
 - one service manifest to activate
-- any versioned static resources referenced by that service manifest
+- any versioned static resources referenced by that service manifest, including
+  runtime profiles and mounted runtime-root content
 
-The first package-backed service is `announce-service`, with repository
-versions `1.0.0` and `1.1.0`.
+Current package-backed components include:
+
+- `announce-service`, with repository versions `1.0.0` and `1.1.0`
+- `runtime-service`, which delivers the first compatibility/runtime service,
+  runtime profile metadata, and a small mounted runtime root tree
 
 ## Authority model
 
@@ -119,6 +123,13 @@ That workflow proves:
 - remove and rollback behavior
 - visible package lifecycle logs
 
+The runtime workflow builds on the same package path:
+
+1. `pkg install runtime`
+2. `runtime-service` is activated through the root manager
+3. the runtime package's profile and root content become available as explicit
+   resources to that service
+
 ## Deferred
 
 This phase intentionally does not implement:
@@ -128,5 +139,5 @@ This phase intentionally does not implement:
 - writable install roots or persistent install journals
 - GUI package management
 - whole-system image updates
-- compatibility-runtime packaging
+- richer runtime package metadata and distribution
 - SDK/toolchain distribution

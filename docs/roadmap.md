@@ -69,6 +69,17 @@
 - shell/operator inspection and control of desktop windows through the
   desktop-shell contract
 
+## Compatibility/runtime foundation completed
+
+- package-delivered `runtime-service` for explicit compatibility/runtime
+  environments
+- environment creation, inspection, run launch, and teardown through a real
+  userspace service contract
+- explicit mount and variable mapping for the first `posix` runtime profile
+- manager-mediated launch of runtime-hosted workloads instead of shell-owned
+  compatibility shortcuts
+- shared shell/terminal operator integration for runtime inspection and launch
+
 ## Next
 
 - add Raspberry Pi 5 framebuffer, input, networking, and writable-boot-store
@@ -84,6 +95,10 @@
   UDP, inbound/listening transports, richer routing, and IPv6
 - grow the current audio surface beyond tone playback into PCM output, capture
   streams, mixing, per-app policy, and broader hardware backends
+- grow the current compatibility/runtime foundation beyond hosted `posix`
+  environments into Linux-oriented ABI expansion, richer runtime packaging, and
+  desktop launch UX for runtime-hosted apps
+- add stronger isolation and sandboxing policy for compatibility workloads
 - split the remaining x86 PC interrupt-controller details out of `arch/x86_64`
   if a second x86 platform target is added
 - grow the current shared-buffer graphics path into mapped or zero-copy
@@ -99,4 +114,4 @@
 
 - richer storage/filesystem services
 - broader graphical application and toolkit ecosystem
-- compatibility runtimes
+- Windows runtime support and broader cross-platform application execution

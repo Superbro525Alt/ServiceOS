@@ -50,7 +50,8 @@ It has:
 
 - lookup rights for `console-service`, `log-service`, `config-service`,
   `storage-service`, `status-service`, `package-service`, `network-service`,
-  `graphics-service`, `session-service`, and `desktop-shell-service`
+  `audio-service`, `runtime-service`, `graphics-service`, `session-service`,
+  and `desktop-shell-service`
 - its own bootstrap/control channel back to the root manager
 - manager authorization for service restart and transient tool launch
 
@@ -105,6 +106,14 @@ Current built-in commands:
 - `pkg remove <name>`
 - `pkg rollback <name>`
 - `pkg history <name>`
+- `runtime envs`
+- `runtime create posix`
+- `runtime inspect <env-id>`
+- `runtime mounts <env-id>`
+- `runtime vars <env-id>`
+- `runtime runs`
+- `runtime launch <env-id> <inspect|env|mounts|cat> [guest-path]`
+- `runtime destroy <env-id>`
 - `run sysinfo`
 
 These commands intentionally exercise the real service contracts rather than
@@ -118,6 +127,11 @@ Network commands call the real `network-service`.
 The shell can inspect interfaces, resolve names, run probes, inspect active
 transport sessions, and open a small outbound TCP stream session for HTTP
 testing, but it never receives raw packet-interface authority directly.
+
+Runtime commands call the real `runtime-service`.
+The shell can create environments, inspect mapped resources, and launch
+runtime-hosted workloads, but it does not gain ambient foreign-runtime power
+or direct storage-root access.
 
 Graphics commands call the real `graphics-service` and `session-service`.
 The shell can inspect and request focus changes because its manifest grants
@@ -166,6 +180,7 @@ and debugging access.
 - environment variables and richer process environments
 - login/account/session ownership
 - package-installed command discovery
+- broader runtime-hosted command sets and desktop launch UX
 - richer package UX and operator history views
 - tabs, panes, and richer terminal emulation on top of the current
   terminal-service boundary

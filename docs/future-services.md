@@ -128,19 +128,22 @@ Later services should own:
 
 ## Compatibility runtimes
 
-Compatibility layers should be hosted as userspace runtimes or subsystem
-services, not welded into the kernel.
+The first compatibility/runtime foundation now exists as a userspace runtime
+service rather than a kernel compatibility subsystem.
 
-The current kernel already supports that direction through:
+That direction remains correct:
 
-- separate tasks and user threads
-- explicit syscall growth rather than ambient host ABI leakage
-- channel-based service boundaries
-- a boot-store based executable bootstrap path that can evolve into richer
-  loaders later
+- separate tasks and user threads host foreign-runtime growth
+- explicit startup handles and service lookups keep authority scoped
+- channel-based service boundaries keep compatibility policy out of the kernel
+- the current boot-store executable path can evolve into richer loaders later
 
 Deferred work:
 
+- Linux-oriented ABI and syscall expansion beyond the current hosted runtime
+  tools
+- Windows `.exe` runtime support
+- stronger sandboxing and container-style isolation
 - richer memory-mapping syscalls
 - richer fault upcalls to user processes beyond terminate-on-fault isolation
 - executable-loader expansion beyond the boot-store bootstrap format

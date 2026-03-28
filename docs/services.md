@@ -282,9 +282,28 @@ Current lookup permissions:
 - reads logs, config, and storage through explicit service lookups
 - inspects networking and audio state through `network-service` and
   `audio-service`
+- inspects and drives compatibility/runtime state through `runtime-service`
 - inspects outputs, surfaces, and sessions through `graphics-service` and
   `session-service`
 - launches transient tools through the manager rather than direct shell power
+
+### `runtime-service`
+
+- is the first compatibility/runtime platform service
+- is package-delivered rather than always-on base graph infrastructure
+- owns runtime environment creation, inspection, launch, and teardown
+- maps guest-visible runtime paths onto explicit `storage-service` resources
+- injects runtime variables from packaged runtime metadata
+- launches runtime-hosted workloads through the existing root-manager tool path
+- keeps compatibility/runtime policy in userspace instead of leaking it into
+  native app semantics
+
+### `posix-host-tool`
+
+- is the first runtime-hosted transient workload image
+- proves runtime launch, output relay, and mapped-resource access without
+  claiming Linux ABI compatibility
+- runs under `runtime-service` control rather than direct shell privilege
 
 ### `package-service`
 
@@ -342,8 +361,9 @@ This platform layer still does not implement:
 - directory capabilities for general applications
 - network-backed package repositories or signed update feeds
 - dynamic service installation
-- richer routing, DHCP, DNS, TCP/UDP socket services, audio, or compatibility
-  services
+- broader Linux-oriented runtime expansion, Windows runtime support, and
+  stronger compatibility sandboxing
+- richer routing, TCP/UDP socket services, audio, and media policy
 - richer terminal features and login/session policy
 - signed repositories, writable install roots, and package-feed transport
 - input-device hosts, shared-memory presentation buffers, and richer desktop

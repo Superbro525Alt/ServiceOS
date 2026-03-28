@@ -59,7 +59,7 @@ pub(crate) fn handle_input(
     }?;
     sync_cursor(state)?;
     match action {
-        DesktopInputAction::PointerMove => {}
+        DesktopInputAction::PointerMove | DesktopInputAction::PointerScroll => {}
         _ => render_desktop(state)?,
     }
     Ok(result)
@@ -190,7 +190,11 @@ fn handle_pointer_up(state: &mut DesktopState, x: i32, y: i32) -> rt::Result<u32
 fn handle_pointer_scroll(state: &mut DesktopState, x: i32, y: i32, delta_y: i32) -> rt::Result<u32> {
     match hit_test(state, x, y) {
         HitTarget::WindowContent(app_id) => {
-            let surface_id = focus_app(state, app_id)?;
+            let surface_id = if state.focused_app == Some(app_id) {
+                focused_surface_id(state)
+            } else {
+                focus_app(state, app_id)?
+            };
             let (local_x, local_y) = app_local_coords(state, app_id, x, y)?;
             dispatch_pointer_to_app(
                 state,

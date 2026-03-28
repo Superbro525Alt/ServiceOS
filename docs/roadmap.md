@@ -80,6 +80,19 @@
   compatibility shortcuts
 - shared shell/terminal operator integration for runtime inspection and launch
 
+## Developer tooling foundation completed
+
+- package-delivered `developer-service` for toolchain, workspace, build-job,
+  and artifact management
+- packaged toolchain descriptors for native, Linux, Windows, and honest
+  remote-only macOS target metadata
+- packaged workspace descriptors and sample source payloads for the first
+  cross-target workflow
+- manager-mediated launch of transient `cross-builder-tool` workers instead of
+  shell-owned build shortcuts
+- shared shell/terminal operator integration for toolchain inspection, build
+  submission, job inspection, and artifact export
+
 ## Next
 
 - add Raspberry Pi 5 framebuffer, input, networking, and writable-boot-store
@@ -98,6 +111,13 @@
 - grow the current compatibility/runtime foundation beyond hosted `posix`
   environments into Linux-oriented ABI expansion, richer runtime packaging, and
   desktop launch UX for runtime-hosted apps
+- grow the current developer tooling foundation beyond packaged sample
+  workspaces into writable project directories, persistent build outputs,
+  broader SDK/toolchain distribution, and richer language ecosystems
+- add remote macOS build/sign/notarization integration on top of the current
+  remote-only target metadata model
+- add stronger isolation and sandboxing policy for build workers and developer
+  toolchains
 - add stronger isolation and sandboxing policy for compatibility workloads
 - split the remaining x86 PC interrupt-controller details out of `arch/x86_64`
   if a second x86 platform target is added

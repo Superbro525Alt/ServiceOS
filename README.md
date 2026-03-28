@@ -41,6 +41,8 @@ Current userspace platform:
 - storage, log, config, console, and status services
 - text shell and operator tooling
 - package install, update, remove, and rollback foundation
+- package-delivered developer tooling foundation with toolchain, workspace, and
+  cross-target build workflows
 - networking service with dynamic IPv4, DNS-backed resolution, ICMP, and
   outbound TCP stream contracts
 - audio service with explicit endpoint and playback-stream contracts
@@ -206,9 +208,14 @@ From the operator shell:
 - inspect stored bundle/config data
 - perform package operations
 - install optional runtime support packages
+- install optional developer tooling support packages
 - create compatibility/runtime environments and inspect their mounts, variables,
   and runs
 - launch runtime-hosted workloads through the real manager/runtime path
+- inspect packaged toolchains and workspaces
+- run native, Linux, and Windows cross-target builds through the real
+  developer-service path
+- inspect build jobs and exported artifact handles
 - inspect network interfaces/routes/resolution state
 - perform practical outbound network checks and fetches through the real
   networking service
@@ -237,6 +244,8 @@ Not built yet:
 - network-backed package repositories and signing/trust infrastructure
 - Linux ABI compatibility, Windows `.exe` support, and stronger runtime
   sandboxing
+- richer language ecosystems, remote macOS build/sign workflows, and stronger
+  build-worker sandboxing
 - full third-party app platform/toolkit ecosystem
 
 Those are future layers on top of the current substrate, not things to force

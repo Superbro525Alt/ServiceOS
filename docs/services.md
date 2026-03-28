@@ -49,6 +49,10 @@ package-service
   -> announce-service package
        versioned at 1.0.0 and 1.1.0
        activated on operator request
+  -> runtime-service package
+       activated on operator request
+  -> developer-service package
+       activated on operator request
 ```
 
 The current transient graphical app graph is:
@@ -142,6 +146,9 @@ Current lookup permissions:
   - `audio-service` with send-only rights
 - `package-service`
   - `storage-service` with send-only rights
+- `developer-service`
+  - `cross-builder-tool` launch authority through the root-manager bootstrap
+    channel
 - `session-service`
   - `graphics-service` with send-only rights
 - `desktop-shell-service`
@@ -258,6 +265,21 @@ Current lookup permissions:
 - owns PTY-like terminal sessions for graphical terminal hosting
 - reuses the shared shell command/runtime library instead of introducing a
   second shell implementation
+
+### `developer-service`
+
+- owns developer toolchain, workspace, build-job, and artifact policy in
+  userspace
+- is delivered as an optional package instead of being forced into the always-on
+  base graph
+- consumes explicit startup grants for `log-service`, `storage-service`, and
+  its packaged catalog blob
+- launches transient build workers through `root-manager` instead of spawning
+  them directly
+- exposes toolchain discovery, workspace discovery, build submission, job
+  inspection, and artifact export through a stable service contract
+- keeps target metadata backend-neutral so native, Linux, Windows, and future
+  remote-target workflows fit the same boundary
 - accepts terminal-session open, input, resize, status, and close requests
 - keeps line editing, history, and prompt redraw logic out of the graphical UI
 - logs terminal-session lifecycle through the normal logging path

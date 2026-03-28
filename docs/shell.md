@@ -50,8 +50,8 @@ It has:
 
 - lookup rights for `console-service`, `log-service`, `config-service`,
   `storage-service`, `status-service`, `package-service`, `network-service`,
-  `audio-service`, `runtime-service`, `graphics-service`, `session-service`,
-  and `desktop-shell-service`
+  `audio-service`, `runtime-service`, `developer-service`, `graphics-service`,
+  `session-service`, and `desktop-shell-service`
 - its own bootstrap/control channel back to the root manager
 - manager authorization for service restart and transient tool launch
 
@@ -114,6 +114,13 @@ Current built-in commands:
 - `runtime runs`
 - `runtime launch <env-id> <inspect|env|mounts|cat> [guest-path]`
 - `runtime destroy <env-id>`
+- `dev toolchains`
+- `dev toolchain <id>`
+- `dev workspaces`
+- `dev workspace <id>`
+- `dev build <workspace-id> <native|linux|windows|macos>`
+- `dev jobs`
+- `dev artifact <job-id>`
 - `run sysinfo`
 
 These commands intentionally exercise the real service contracts rather than
@@ -132,6 +139,12 @@ Runtime commands call the real `runtime-service`.
 The shell can create environments, inspect mapped resources, and launch
 runtime-hosted workloads, but it does not gain ambient foreign-runtime power
 or direct storage-root access.
+
+Developer commands call the real `developer-service`.
+The shell can inspect packaged toolchains and workspaces, submit build jobs,
+inspect job state, and open exported artifact handles, but it does not gain
+ambient build-worker spawn power, storage-root access, or package-policy
+ownership.
 
 Graphics commands call the real `graphics-service` and `session-service`.
 The shell can inspect and request focus changes because its manifest grants
@@ -181,6 +194,8 @@ and debugging access.
 - login/account/session ownership
 - package-installed command discovery
 - broader runtime-hosted command sets and desktop launch UX
+- richer project editing flows, writable workspaces, and broader language
+  ecosystem commands
 - richer package UX and operator history views
 - tabs, panes, and richer terminal emulation on top of the current
   terminal-service boundary

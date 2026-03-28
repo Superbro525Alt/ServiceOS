@@ -37,6 +37,8 @@ Current package-backed components include:
 - `announce-service`, with repository versions `1.0.0` and `1.1.0`
 - `runtime-service`, which delivers the first compatibility/runtime service,
   runtime profile metadata, and a small mounted runtime root tree
+- `developer-service`, which delivers the first developer-toolchain catalog,
+  workspace descriptors, sample project content, and SDK metadata placeholders
 
 ## Authority model
 
@@ -130,6 +132,15 @@ The runtime workflow builds on the same package path:
 3. the runtime package's profile and root content become available as explicit
    resources to that service
 
+The developer workflow uses the same lifecycle:
+
+1. `pkg install developer`
+2. `developer-service` is activated through the root manager
+3. the package's toolchain catalog, workspace descriptors, source payloads, and
+   SDK metadata become explicit resources for that service
+4. build workers are launched later by `developer-service`, not by
+   `package-service`
+
 ## Deferred
 
 This phase intentionally does not implement:
@@ -140,4 +151,4 @@ This phase intentionally does not implement:
 - GUI package management
 - whole-system image updates
 - richer runtime package metadata and distribution
-- SDK/toolchain distribution
+- broader SDK/toolchain distribution and writable project install roots

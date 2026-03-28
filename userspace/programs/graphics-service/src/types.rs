@@ -10,9 +10,6 @@ pub(crate) const DEFAULT_BACKGROUND_RGB: u32 = 0x10151d;
 pub(crate) const PRESENT_COALESCE_TICKS: u64 = 2;
 pub(crate) const CURSOR_SURFACE_Z_ORDER_MIN: u32 = 4_096;
 pub(crate) const CURSOR_SURFACE_MAX_SIZE: u32 = 64;
-pub(crate) const LABEL_ADVANCE: usize = 6;
-pub(crate) const GLYPH_WIDTH: usize = 5;
-pub(crate) const GLYPH_HEIGHT: usize = 7;
 
 pub(crate) type Surfaces = [SurfaceSlot; MAX_SURFACES];
 

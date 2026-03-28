@@ -14,16 +14,17 @@ const MAX_COLS: usize = 120;
 const MAX_SCROLLBACK_LINES: usize = 256;
 const CELL_WIDTH: usize = 6;
 const CELL_HEIGHT: usize = 10;
-const CELL_GLYPH_WIDTH: usize = 5;
-const CELL_GLYPH_HEIGHT: usize = 7;
 const CONTENT_PADDING_X: usize = 10;
 const CONTENT_PADDING_Y: usize = 8;
 const KEY_BACKSPACE: u32 = 14;
 const KEY_UP: u32 = 103;
+const KEY_PAGE_UP: u32 = 104;
 const KEY_LEFT: u32 = 105;
 const KEY_RIGHT: u32 = 106;
 const KEY_DOWN: u32 = 108;
+const KEY_PAGE_DOWN: u32 = 109;
 const MOD_CTRL: u32 = 1 << 2;
+const MOD_SHIFT: u32 = 1 << 0;
 
 struct GlobalBuffer(UnsafeCell<[u8; BUFFER_BYTES]>);
 
@@ -71,6 +72,7 @@ struct TerminalState {
     line_count: usize,
     cursor_line: usize,
     cursor_col: usize,
+    scroll_offset: usize,
     parse_state: ParseState,
     csi_param: usize,
 }
@@ -126,6 +128,7 @@ fn main() -> u64 {
         line_count: 1,
         cursor_line: 0,
         cursor_col: 0,
+        scroll_offset: 0,
         parse_state: ParseState::Ground,
         csi_param: 0,
     };
@@ -146,7 +149,7 @@ fn main() -> u64 {
             Err(_) => return 0xfa06,
         }
 
-        match poll_control(control_handle, state.session_handle, &mut width, &mut height, &mut focused) {
+        match poll_control(control_handle, &mut state, &mut width, &mut height, &mut focused) {
             Ok(ControlFlow::Continue) => {}
             Ok(ControlFlow::Exit) => break,
             Err(_) => return 0xfa07,
@@ -209,7 +212,7 @@ enum TerminalMessage {
 
 fn poll_control(
     control_handle: rt::Handle,
-    session_handle: rt::Handle,
+    state: &mut TerminalState,
     width: &mut u32,
     height: &mut u32,
     focused: &mut bool,
@@ -229,7 +232,8 @@ fn poll_control(
                 if let Some(ch) = core::char::from_u32(message.words[0] as u32) {
                     let mut bytes = [0u8; 4];
                     let encoded = ch.encode_utf8(&mut bytes);
-                    let _ = rt::terminal_session_send_input(session_handle, encoded.as_bytes());
+                    state.scroll_offset = 0;
+                    let _ = rt::terminal_session_send_input(state.session_handle, encoded.as_bytes());
                 }
             }
             Ok(()) if message.tag == AppControlTag::Key as u32 && message.word_count >= 2 => {
@@ -237,7 +241,7 @@ fn poll_control(
                 if action == rt::AppKeyAction::Down as u32 {
                     let key_code = message.words[1] as u32;
                     let modifiers = message.words.get(2).copied().unwrap_or(0) as u32;
-                    handle_key_down(session_handle, key_code, modifiers)?;
+                    handle_key_down(state, key_code, modifiers)?;
                 }
             }
             Ok(()) => {}
@@ -248,16 +252,26 @@ fn poll_control(
     Ok(ControlFlow::Continue)
 }
 
-fn handle_key_down(session_handle: rt::Handle, key_code: u32, modifiers: u32) -> rt::Result<()> {
+fn handle_key_down(state: &mut TerminalState, key_code: u32, modifiers: u32) -> rt::Result<()> {
     if modifiers & MOD_CTRL != 0 && key_code == 46 {
-        return rt::terminal_session_send_input(session_handle, &[0x03]);
+        state.scroll_offset = 0;
+        return rt::terminal_session_send_input(state.session_handle, &[0x03]);
     }
+    if key_code == KEY_PAGE_UP || (modifiers & MOD_SHIFT != 0 && key_code == KEY_UP) {
+        scroll_up_view(state, if key_code == KEY_PAGE_UP { state.rows.saturating_sub(1).max(1) } else { 1 });
+        return Ok(());
+    }
+    if key_code == KEY_PAGE_DOWN || (modifiers & MOD_SHIFT != 0 && key_code == KEY_DOWN) {
+        scroll_down_view(state, if key_code == KEY_PAGE_DOWN { state.rows.saturating_sub(1).max(1) } else { 1 });
+        return Ok(());
+    }
+    state.scroll_offset = 0;
     match key_code {
-        KEY_BACKSPACE => rt::terminal_session_send_input(session_handle, &[0x7f]),
-        KEY_UP => rt::terminal_session_send_input(session_handle, b"\x1b[A"),
-        KEY_DOWN => rt::terminal_session_send_input(session_handle, b"\x1b[B"),
-        KEY_RIGHT => rt::terminal_session_send_input(session_handle, b"\x1b[C"),
-        KEY_LEFT => rt::terminal_session_send_input(session_handle, b"\x1b[D"),
+        KEY_BACKSPACE => rt::terminal_session_send_input(state.session_handle, &[0x7f]),
+        KEY_UP => rt::terminal_session_send_input(state.session_handle, b"\x1b[A"),
+        KEY_DOWN => rt::terminal_session_send_input(state.session_handle, b"\x1b[B"),
+        KEY_RIGHT => rt::terminal_session_send_input(state.session_handle, b"\x1b[C"),
+        KEY_LEFT => rt::terminal_session_send_input(state.session_handle, b"\x1b[D"),
         _ => Ok(()),
     }
 }
@@ -287,6 +301,7 @@ fn recompute_layout(state: &mut TerminalState) {
         .saturating_sub(ui::TITLEBAR_HEIGHT + (CONTENT_PADDING_Y as u32) * 2 + 4);
     state.columns = ((content_width as usize) / CELL_WIDTH).clamp(20, MAX_COLS);
     state.rows = ((content_height as usize) / CELL_HEIGHT).clamp(8, MAX_SCROLLBACK_LINES);
+    clamp_scroll_offset(state);
 }
 
 fn clear_grid() {
@@ -341,6 +356,7 @@ fn apply_output(state: &mut TerminalState, bytes: &[u8]) {
             }
         }
     }
+    clamp_scroll_offset(state);
 }
 
 fn put_char(state: &mut TerminalState, byte: u8) {
@@ -457,14 +473,18 @@ fn draw_titlebar(bytes: &mut [u8], width: usize, focused: bool) {
         ui::WINDOW_BUTTON_SIZE as usize,
         ui::STATUS_WARN,
     );
-    draw_text(bytes, width, 10, 9, ui::TEXT_PRIMARY, if focused { "TERMINAL ACTIVE" } else { "TERMINAL" });
+    if focused {
+        rt::draw_text_rgba8888(bytes, width, 10, 9, ui::TEXT_PRIMARY, "TERMINAL ACTIVE");
+    } else {
+        rt::draw_text_rgba8888(bytes, width, 10, 9, ui::TEXT_PRIMARY, "TERMINAL");
+    }
 }
 
 fn draw_terminal_contents(bytes: &mut [u8], width: usize, height: usize, state: &TerminalState) {
     let start_x = CONTENT_PADDING_X;
     let start_y = ui::TITLEBAR_HEIGHT as usize + CONTENT_PADDING_Y;
     let visible_rows = state.rows.min(MAX_SCROLLBACK_LINES);
-    let first_line = state.line_count.saturating_sub(visible_rows);
+    let first_line = first_visible_line(state, visible_rows);
     let lines = unsafe { GRID.as_ref() };
 
     for row in 0..visible_rows {
@@ -481,12 +501,25 @@ fn draw_terminal_contents(bytes: &mut [u8], width: usize, height: usize, state: 
             if x + CELL_WIDTH >= width {
                 break;
             }
-            let ch = normalize_glyph(lines[grid_line][col]);
-            draw_glyph(bytes, width, x as i32, y as i32, ui::TEXT_PRIMARY, ch);
+            let ch = rt::normalize_bitmap_glyph(lines[grid_line][col]);
+            rt::draw_glyph_rgba8888(bytes, width, x as i32, y as i32, ui::TEXT_PRIMARY, ch);
         }
     }
 
-    if state.focused {
+    if state.scroll_offset > 0 {
+        let mut status = rt::FixedLogBuffer::<32>::new();
+        let _ = core::fmt::Write::write_fmt(
+            &mut status,
+            format_args!("SCROLL -{}", state.scroll_offset),
+        );
+        if let Ok(label) = core::str::from_utf8(status.as_bytes()) {
+            let label_width = label.len() * rt::BITMAP_GLYPH_ADVANCE;
+            let label_x = width.saturating_sub(label_width + CONTENT_PADDING_X);
+            rt::draw_text_rgba8888(bytes, width, label_x as i32, start_y as i32, ui::TEXT_MUTED, label);
+        }
+    }
+
+    if state.focused && state.scroll_offset == 0 {
         let cursor_visible_row = state.cursor_line.saturating_sub(first_line);
         if cursor_visible_row < visible_rows && state.cursor_col < state.columns {
             let cursor_x = start_x + state.cursor_col * CELL_WIDTH;
@@ -496,46 +529,35 @@ fn draw_terminal_contents(bytes: &mut [u8], width: usize, height: usize, state: 
     }
 }
 
+fn first_visible_line(state: &TerminalState, visible_rows: usize) -> usize {
+    let scroll_offset = state
+        .scroll_offset
+        .min(state.line_count.saturating_sub(visible_rows));
+    state.line_count.saturating_sub(visible_rows + scroll_offset)
+}
+
+fn clamp_scroll_offset(state: &mut TerminalState) {
+    let max_offset = state.line_count.saturating_sub(state.rows.min(MAX_SCROLLBACK_LINES));
+    state.scroll_offset = state.scroll_offset.min(max_offset);
+}
+
+fn scroll_up_view(state: &mut TerminalState, lines: usize) {
+    let max_offset = state.line_count.saturating_sub(state.rows.min(MAX_SCROLLBACK_LINES));
+    state.scroll_offset = state.scroll_offset.saturating_add(lines).min(max_offset);
+}
+
+fn scroll_down_view(state: &mut TerminalState, lines: usize) {
+    state.scroll_offset = state.scroll_offset.saturating_sub(lines);
+}
+
 fn fill_rect(bytes: &mut [u8], x: usize, y: usize, width: usize, height: usize, rgb: u32) {
     let end_x = (x + width).min(BUFFER_WIDTH as usize);
     let end_y = (y + height).min(BUFFER_HEIGHT as usize);
     for py in y..end_y {
         for px in x..end_x {
-            set_pixel(bytes, px, py, rgb);
+            rt::set_pixel_rgba8888(bytes, BUFFER_WIDTH as usize, px, py, rgb);
         }
     }
-}
-
-fn draw_text(bytes: &mut [u8], stride: usize, x: i32, y: i32, color: u32, text: &str) {
-    for (index, byte) in text.as_bytes().iter().copied().enumerate() {
-        draw_glyph(bytes, stride, x + (index as i32 * CELL_WIDTH as i32), y, color, normalize_glyph(byte));
-    }
-}
-
-fn draw_glyph(bytes: &mut [u8], stride: usize, x: i32, y: i32, color: u32, ch: u8) {
-    let rows = glyph_rows(ch);
-    for (row_index, bits) in rows.iter().copied().enumerate() {
-        for column in 0..CELL_GLYPH_WIDTH {
-            if (bits >> (CELL_GLYPH_WIDTH - 1 - column)) & 1 == 0 {
-                continue;
-            }
-            let px = x + column as i32;
-            let py = y + row_index as i32;
-            if px < 0 || py < 0 {
-                continue;
-            }
-            set_pixel(bytes, px as usize, py as usize, color);
-        }
-    }
-    let _ = stride;
-}
-
-fn set_pixel(bytes: &mut [u8], x: usize, y: usize, rgb: u32) {
-    let index = ((y * BUFFER_WIDTH as usize) + x) * 4;
-    if index + 4 > bytes.len() {
-        return;
-    }
-    bytes[index..index + 4].copy_from_slice(&(rgb & 0x00ff_ffff).to_le_bytes());
 }
 
 fn unpack_bytes(words: &[u64], len: usize, destination: &mut [u8]) -> rt::Result<()> {
@@ -553,72 +575,6 @@ fn unpack_bytes(words: &[u64], len: usize, destination: &mut [u8]) -> rt::Result
         copied += chunk;
     }
     Ok(())
-}
-
-fn normalize_glyph(byte: u8) -> u8 {
-    if byte.is_ascii_lowercase() {
-        byte - 32
-    } else {
-        byte
-    }
-}
-
-fn glyph_rows(ch: u8) -> [u8; CELL_GLYPH_HEIGHT] {
-    match ch {
-        b'A' => [0x0e, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11],
-        b'B' => [0x1e, 0x11, 0x11, 0x1e, 0x11, 0x11, 0x1e],
-        b'C' => [0x0f, 0x10, 0x10, 0x10, 0x10, 0x10, 0x0f],
-        b'D' => [0x1e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1e],
-        b'E' => [0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x1f],
-        b'F' => [0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x10],
-        b'G' => [0x0f, 0x10, 0x10, 0x17, 0x11, 0x11, 0x0f],
-        b'H' => [0x11, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11],
-        b'I' => [0x1f, 0x04, 0x04, 0x04, 0x04, 0x04, 0x1f],
-        b'J' => [0x01, 0x01, 0x01, 0x01, 0x11, 0x11, 0x0e],
-        b'K' => [0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11],
-        b'L' => [0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1f],
-        b'M' => [0x11, 0x1b, 0x15, 0x15, 0x11, 0x11, 0x11],
-        b'N' => [0x11, 0x11, 0x19, 0x15, 0x13, 0x11, 0x11],
-        b'O' => [0x0e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e],
-        b'P' => [0x1e, 0x11, 0x11, 0x1e, 0x10, 0x10, 0x10],
-        b'Q' => [0x0e, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0d],
-        b'R' => [0x1e, 0x11, 0x11, 0x1e, 0x14, 0x12, 0x11],
-        b'S' => [0x0f, 0x10, 0x10, 0x0e, 0x01, 0x01, 0x1e],
-        b'T' => [0x1f, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04],
-        b'U' => [0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e],
-        b'V' => [0x11, 0x11, 0x11, 0x11, 0x11, 0x0a, 0x04],
-        b'W' => [0x11, 0x11, 0x11, 0x15, 0x15, 0x1b, 0x11],
-        b'X' => [0x11, 0x11, 0x0a, 0x04, 0x0a, 0x11, 0x11],
-        b'Y' => [0x11, 0x11, 0x0a, 0x04, 0x04, 0x04, 0x04],
-        b'Z' => [0x1f, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1f],
-        b'0' => [0x0e, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0e],
-        b'1' => [0x04, 0x0c, 0x14, 0x04, 0x04, 0x04, 0x1f],
-        b'2' => [0x0e, 0x11, 0x01, 0x06, 0x08, 0x10, 0x1f],
-        b'3' => [0x1f, 0x02, 0x04, 0x06, 0x01, 0x11, 0x0e],
-        b'4' => [0x02, 0x06, 0x0a, 0x12, 0x1f, 0x02, 0x02],
-        b'5' => [0x1f, 0x10, 0x1e, 0x01, 0x01, 0x11, 0x0e],
-        b'6' => [0x06, 0x08, 0x10, 0x1e, 0x11, 0x11, 0x0e],
-        b'7' => [0x1f, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08],
-        b'8' => [0x0e, 0x11, 0x11, 0x0e, 0x11, 0x11, 0x0e],
-        b'9' => [0x0e, 0x11, 0x11, 0x0f, 0x01, 0x02, 0x0c],
-        b'.' => [0x00, 0x00, 0x00, 0x00, 0x00, 0x0c, 0x0c],
-        b':' => [0x00, 0x0c, 0x0c, 0x00, 0x0c, 0x0c, 0x00],
-        b'-' => [0x00, 0x00, 0x00, 0x1f, 0x00, 0x00, 0x00],
-        b'/' => [0x01, 0x02, 0x02, 0x04, 0x08, 0x08, 0x10],
-        b'_' => [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1f],
-        b'>' => [0x10, 0x08, 0x04, 0x02, 0x04, 0x08, 0x10],
-        b'<' => [0x01, 0x02, 0x04, 0x08, 0x04, 0x02, 0x01],
-        b'=' => [0x00, 0x1f, 0x00, 0x1f, 0x00, 0x00, 0x00],
-        b'?' => [0x0e, 0x11, 0x01, 0x02, 0x04, 0x00, 0x04],
-        b'!' => [0x04, 0x04, 0x04, 0x04, 0x04, 0x00, 0x04],
-        b'[' => [0x0e, 0x08, 0x08, 0x08, 0x08, 0x08, 0x0e],
-        b']' => [0x0e, 0x02, 0x02, 0x02, 0x02, 0x02, 0x0e],
-        b'(' => [0x02, 0x04, 0x08, 0x08, 0x08, 0x04, 0x02],
-        b')' => [0x08, 0x04, 0x02, 0x02, 0x02, 0x04, 0x08],
-        b'+' => [0x00, 0x04, 0x04, 0x1f, 0x04, 0x04, 0x00],
-        b' ' => [0x00; CELL_GLYPH_HEIGHT],
-        _ => [0x0e, 0x11, 0x01, 0x06, 0x04, 0x00, 0x04],
-    }
 }
 
 fn poll_lifecycle(bootstrap: rt::Handle) -> rt::Result<bool> {

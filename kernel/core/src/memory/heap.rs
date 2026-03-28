@@ -8,7 +8,7 @@ use spin::Mutex;
 
 #[cfg_attr(not(test), global_allocator)]
 static KERNEL_ALLOCATOR: KernelAllocator = KernelAllocator::empty();
-const MAX_FREE_REGIONS: usize = 256;
+const MAX_FREE_REGIONS: usize = 4096;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HeapInfo {
@@ -300,5 +300,29 @@ mod tests {
         let aligned = allocator.allocate(layout(160, 64));
         assert!(!aligned.is_null());
         assert_eq!((aligned as usize) % 64, 0);
+    }
+
+    #[test]
+    fn allocator_survives_fragmentation_pressure() {
+        let mut allocator = FreeListAllocator::empty();
+        allocator.initialize(0x10_0000, 0x40_000).unwrap();
+
+        let mut pointers = [null_mut(); 512];
+        for (index, slot) in pointers.iter_mut().enumerate() {
+            let align = if index % 2 == 0 { 8 } else { 16 };
+            *slot = allocator.allocate(layout(64 + (index % 5) * 32, align));
+            assert!(!slot.is_null());
+        }
+
+        for index in (0..pointers.len()).step_by(2) {
+            allocator.deallocate(pointers[index], layout(64 + (index % 5) * 32, 8));
+        }
+
+        for index in (1..pointers.len()).step_by(2) {
+            allocator.deallocate(pointers[index], layout(64 + (index % 5) * 32, 16));
+        }
+
+        let large = allocator.allocate(layout(0x8000, 16));
+        assert!(!large.is_null());
     }
 }

@@ -45,7 +45,19 @@ pub(crate) fn execute_command(
         "config" => core::cmd_config(bootstrap, output),
         "store" => match parts.next() {
             Some("ls") => core::cmd_store_ls(bootstrap, output, parts.next().unwrap_or("")),
-            _ => write_output_linef(output, format_args!("usage: store ls [prefix]")),
+            Some("mkdir") => match parts.next() {
+                Some(path) => core::cmd_store_mkdir(bootstrap, output, path),
+                None => write_output_linef(output, format_args!("usage: store mkdir <path>")),
+            },
+            Some("write") => match parts.next() {
+                Some(path) => core::cmd_store_write(bootstrap, output, path, parts),
+                None => write_output_linef(output, format_args!("usage: store write <path> <text>")),
+            },
+            Some("rm") => match parts.next() {
+                Some(path) => core::cmd_store_rm(bootstrap, output, path),
+                None => write_output_linef(output, format_args!("usage: store rm <path>")),
+            },
+            _ => write_output_linef(output, format_args!("usage: store <ls|mkdir|write|rm> ...")),
         },
         "cat" => match parts.next() {
             Some(path) => core::cmd_cat(bootstrap, output, path),
@@ -61,7 +73,11 @@ pub(crate) fn execute_command(
         "runtime" => runtime::cmd_runtime(bootstrap, output, parts),
         "run" => match parts.next() {
             Some("sysinfo") => core::cmd_run_sysinfo(bootstrap, output),
-            _ => write_output_linef(output, format_args!("usage: run sysinfo")),
+            Some("image") => match parts.next() {
+                Some(path) => core::cmd_run_image(bootstrap, output, path),
+                None => write_output_linef(output, format_args!("usage: run image <path>")),
+            },
+            _ => write_output_linef(output, format_args!("usage: run <sysinfo|image>")),
         },
         _ => write_output_linef(output, format_args!("unknown command: {command}")),
     }

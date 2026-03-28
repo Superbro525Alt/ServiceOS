@@ -166,9 +166,55 @@ pub(crate) fn handle_request(state: &mut DesktopState, request: &RawMessage) -> 
                 let _ = rt::handle_close(reply_handle);
             }
         }
+        x if x == DesktopTag::NotifyRequest as u32 => {
+            if request.handle_count < 1 || request.word_count < 1 {
+                return Ok(());
+            }
+            let reply_handle = request.handles[0];
+            let text_len = request.words[0] as usize;
+            let status = if text_len > crate::MAX_NOTIFICATION_BYTES {
+                DesktopStatus::Busy
+            } else if unpack_bytes(
+                &request.words[1..request.word_count as usize],
+                text_len,
+                &mut state.notification,
+            )
+            .is_err()
+            {
+                DesktopStatus::Busy
+            } else {
+                state.notification_len = text_len;
+                state.notification_deadline =
+                    rt::monotonic_now().unwrap_or(0).saturating_add(crate::NOTIFICATION_TIMEOUT_TICKS);
+                crate::render::render_desktop(state)?;
+                DesktopStatus::Ok
+            };
+            let mut reply = RawMessage::empty(DesktopTag::NotifyReply as u32);
+            reply.word_count = 1;
+            reply.words[0] = status as u32 as u64;
+            let _ = rt::channel_send(reply_handle, &reply);
+            let _ = rt::handle_close(reply_handle);
+        }
         _ => {}
     }
 
+    Ok(())
+}
+
+fn unpack_bytes(words: &[u64], len: usize, destination: &mut [u8]) -> rt::Result<()> {
+    if len > destination.len() || len > words.len() * 8 {
+        return Err(rt::Error::BufferTooSmall);
+    }
+    let mut copied = 0usize;
+    for word in words.iter().copied() {
+        if copied >= len {
+            break;
+        }
+        let bytes = word.to_le_bytes();
+        let chunk = (len - copied).min(bytes.len());
+        destination[copied..copied + chunk].copy_from_slice(&bytes[..chunk]);
+        copied += chunk;
+    }
     Ok(())
 }
 

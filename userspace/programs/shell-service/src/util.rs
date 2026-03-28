@@ -36,7 +36,10 @@ service <name>: show one service state\r\n\
 restart <name>: request a service restart\r\n\
 logs [count]: show recent structured logs\r\n\
 config: show core configuration values\r\n\
-store ls [prefix]: list boot-store paths\r\n\
+store ls [prefix]: list storage paths\r\n\
+store mkdir <path>: create a writable directory under a mutable namespace\r\n\
+store write <path> <text>: create or replace a writable text file\r\n\
+store rm <path>: remove a writable file or empty directory\r\n\
 cat <path>: print a text resource\r\n\
 status: show system heartbeat status\r\n\
 net ifaces: show network interfaces\r\n\
@@ -80,6 +83,7 @@ desktop maximize <settings|files|monitor>: maximize or restore a window\r\n\
 desktop move <settings|files|monitor> <x> <y>: move a window\r\n\
 desktop resize <settings|files|monitor> <width> <height>: resize a window\r\n\
 desktop click <x> <y>: inject a pointer click into the desktop session\r\n\
+desktop notify <text>: post a desktop shell notification\r\n\
 desktop launch terminal: open the graphical terminal app\r\n\
 pkg list: list repository packages\r\n\
 pkg info <name>: inspect one package\r\n\
@@ -88,7 +92,8 @@ pkg update <name> [version]: switch to a newer package version\r\n\
 pkg remove <name>: deactivate a package\r\n\
 pkg rollback <name>: restore the prior active version\r\n\
 pkg history <name>: show current and rollback versions\r\n\
-run sysinfo: launch a transient tool\r\n";
+run sysinfo: launch a transient tool\r\n\
+run image <path>: launch a flat image resource through the manager loader path\r\n";
 
 pub fn emit_shell_log(
     bootstrap: rt::Handle,

@@ -10,8 +10,8 @@ use crate::{
         focused_surface_id, maximize_app, minimize_app, move_app,
     },
     ContentCapture, DesktopState, DragState, HitTarget, ResizeEdges, WindowState, APP_COUNT,
-    KEY_F4, KEY_TAB, MOD_ALT, PANEL_MARGIN, RESIZE_GRIP_SIZE, TOPBAR_HEIGHT, WINDOW_MIN_HEIGHT,
-    WINDOW_MIN_WIDTH,
+    KEY_1, KEY_2, KEY_3, KEY_4, KEY_F4, KEY_TAB, MOD_ALT, MOD_SHIFT, PANEL_MARGIN,
+    RESIZE_GRIP_SIZE, TOPBAR_HEIGHT, WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH,
 };
 
 pub(crate) fn handle_input(
@@ -219,6 +219,9 @@ fn handle_key_input(
 ) -> rt::Result<u32> {
     if action == AppKeyAction::Down && modifiers & MOD_ALT != 0 {
         if key_code == KEY_TAB {
+            if modifiers & MOD_SHIFT != 0 {
+                return focus_previous_app(state);
+            }
             return focus_next_app(state);
         }
         if key_code == KEY_F4 {
@@ -226,6 +229,18 @@ fn handle_key_input(
                 close_app(state, app_id)?;
                 return Ok(focused_surface_id(state));
             }
+        }
+    }
+    if action == AppKeyAction::Down && modifiers & MOD_ALT != 0 {
+        let direct = match key_code {
+            KEY_1 => Some(DesktopAppId::Settings),
+            KEY_2 => Some(DesktopAppId::Files),
+            KEY_3 => Some(DesktopAppId::Monitor),
+            KEY_4 => Some(DesktopAppId::Terminal),
+            _ => None,
+        };
+        if let Some(app_id) = direct {
+            return crate::windows::launch_or_focus_app(state, app_id);
         }
     }
 
@@ -410,6 +425,36 @@ pub(crate) fn focus_next_app(state: &mut DesktopState) -> rt::Result<u32> {
         candidates[count - 1]
     };
     focus_app(state, next)
+}
+
+pub(crate) fn focus_previous_app(state: &mut DesktopState) -> rt::Result<u32> {
+    let mut candidates = [DesktopAppId::Settings; APP_COUNT];
+    let mut count = 0usize;
+    for slot in state.apps.iter().copied() {
+        if slot.running && slot.window.visible() {
+            candidates[count] = slot.app_id;
+            count += 1;
+        }
+    }
+    if count == 0 {
+        return Err(rt::Error::NotFound);
+    }
+    sort_app_ids_by_z(state, &mut candidates[..count]);
+
+    let previous = if let Some(current) = state.focused_app {
+        let current_index = candidates[..count]
+            .iter()
+            .position(|candidate| *candidate == current)
+            .unwrap_or(0);
+        if current_index == 0 {
+            candidates[count - 1]
+        } else {
+            candidates[current_index - 1]
+        }
+    } else {
+        candidates[count - 1]
+    };
+    focus_app(state, previous)
 }
 
 pub(crate) fn focus_next_visible_without_cycle(state: &mut DesktopState) -> rt::Result<u32> {

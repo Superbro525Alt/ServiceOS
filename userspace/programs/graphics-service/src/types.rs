@@ -67,6 +67,7 @@ pub(crate) struct BufferBinding {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) stride_pixels: u32,
+    pub(crate) mapped_ptr: *mut u8,
 }
 
 impl BufferBinding {
@@ -76,6 +77,7 @@ impl BufferBinding {
             width: 0,
             height: 0,
             stride_pixels: 0,
+            mapped_ptr: core::ptr::null_mut(),
         }
     }
 

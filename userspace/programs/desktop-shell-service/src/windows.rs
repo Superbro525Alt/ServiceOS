@@ -1,11 +1,14 @@
+use core::fmt::Write;
+
 use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
-use rt::{DesktopAppId, LogEvent, LogSeverity, StartupHandle};
+use rt::{DesktopAppId, FixedLogBuffer, LogEvent, LogSeverity, StartupHandle};
 
 use crate::{
     logging::{emit_log, emit_text_log},
     render::render_desktop,
-    AppSlot, DesktopState, WindowState, APP_COUNT, PANEL_MARGIN, SESSION_ID, TOPBAR_HEIGHT,
+    AppSlot, DesktopState, WindowState, APP_COUNT, MAX_NOTIFICATION_BYTES,
+    NOTIFICATION_TIMEOUT_TICKS, PANEL_MARGIN, SESSION_ID, TOPBAR_HEIGHT,
     WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH,
 };
 
@@ -321,11 +324,12 @@ pub(crate) fn refresh_apps(state: &mut DesktopState) -> rt::Result<()> {
             continue;
         }
         let status = rt::task_status(slot.task_handle)?;
-        if status.state != rt::TaskStateCode::Exited {
+        if !matches!(status.state, rt::TaskStateCode::Exited | rt::TaskStateCode::Faulted) {
             continue;
         }
         let exited_app = slot.app_id;
         let exit_code = status.exit_code;
+        let faulted = status.state == rt::TaskStateCode::Faulted;
         if slot.window.surface_handle != rt::INVALID_HANDLE {
             let _ = rt::surface_close(slot.window.surface_handle);
             let _ = rt::handle_close(slot.window.surface_handle);
@@ -343,11 +347,29 @@ pub(crate) fn refresh_apps(state: &mut DesktopState) -> rt::Result<()> {
         }
         let _ = emit_log(
             state.log_handle,
-            LogSeverity::Warn,
+            if faulted {
+                LogSeverity::Error
+            } else {
+                LogSeverity::Warn
+            },
             LogEvent::DesktopAppExited,
             exited_app as u32 as u64,
             exit_code,
         );
+        if faulted {
+            let mut message = FixedLogBuffer::<MAX_NOTIFICATION_BYTES>::new();
+            let _ = write!(
+                &mut message,
+                "{} faulted ({:#x})",
+                app_title(exited_app),
+                exit_code
+            );
+            let bytes = message.as_bytes();
+            state.notification[..bytes.len()].copy_from_slice(bytes);
+            state.notification_len = bytes.len();
+            state.notification_deadline =
+                rt::monotonic_now()?.saturating_add(NOTIFICATION_TIMEOUT_TICKS);
+        }
         changed = true;
     }
     if changed {

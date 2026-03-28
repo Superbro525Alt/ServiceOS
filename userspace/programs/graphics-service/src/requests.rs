@@ -402,6 +402,23 @@ fn handle_surface_request(
             {
                 GraphicsStatus::CapacityExceeded
             } else {
+                let mapped_ptr = match rt::memory_map(message.handles[1], false) {
+                    Ok(ptr) => ptr,
+                    Err(rt::Error::PermissionDenied) => core::ptr::null_mut(),
+                    Err(_) => core::ptr::null_mut(),
+                };
+                if mapped_ptr.is_null() {
+                    if message.handle_count > 0 {
+                        reply_surface_status(
+                            message.handles,
+                            1,
+                            SurfaceTag::AttachBufferReply,
+                            GraphicsStatus::Denied,
+                        );
+                    }
+                    let _ = rt::handle_close(message.handles[1]);
+                    return Ok(());
+                }
                 if surface.buffer.attached() {
                     let _ = rt::handle_close(surface.buffer.handle);
                 }
@@ -410,6 +427,7 @@ fn handle_surface_request(
                     width,
                     height,
                     stride_pixels,
+                    mapped_ptr,
                 };
                 *dirty = DirtyState::Full { immediate: true };
                 GraphicsStatus::Ok
@@ -418,6 +436,27 @@ fn handle_surface_request(
                 let _ = rt::handle_close(message.handles[1]);
             }
             reply_surface_status(message.handles, 1, SurfaceTag::AttachBufferReply, status);
+        }
+        x if x == SurfaceTag::PresentBufferRequest as u32 => {
+            if message.word_count < 4 {
+                return Ok(());
+            }
+            if surface.buffer.attached() {
+                *dirty = DirtyState::Full { immediate: true };
+                let _ = emit_log(
+                    log_handle,
+                    LogSeverity::Debug,
+                    LogEvent::SurfaceUpdated,
+                    surface.id as u64,
+                    0xff,
+                );
+            }
+            reply_surface_status(
+                message.handles,
+                message.handle_count,
+                SurfaceTag::PresentBufferReply,
+                GraphicsStatus::Ok,
+            );
         }
         x if x == SurfaceTag::CloseRequest as u32 => {
             release_surface(surface);

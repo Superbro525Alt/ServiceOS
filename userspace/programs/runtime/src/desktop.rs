@@ -1,9 +1,9 @@
 use crate::{
     channel_create, channel_receive_blocking, channel_send, desktop_app_id_from_word,
     desktop_drag_mode_from_word, desktop_status_error, desktop_status_from_word, handle_close,
-    rights, unpack_i32_pair, unpack_u32_pair, DesktopAppId, DesktopAppInfo, DesktopDragMode,
-    DesktopInputAction, DesktopShellStatusInfo, DesktopStatus, DesktopTag, DesktopWindowAction,
-    DesktopWindowInfo, Error, Handle, RawMessage, Result,
+    pack_bytes, rights, unpack_i32_pair, unpack_u32_pair, DesktopAppId, DesktopAppInfo,
+    DesktopDragMode, DesktopInputAction, DesktopShellStatusInfo, DesktopStatus, DesktopTag,
+    DesktopWindowAction, DesktopWindowInfo, Error, Handle, IPC_MAX_WORDS, RawMessage, Result,
 };
 
 pub fn desktop_status(desktop_handle: Handle) -> Result<DesktopShellStatusInfo> {
@@ -317,6 +317,34 @@ pub fn desktop_resize_app(
         width as u64,
         height as u64,
     )
+}
+
+pub fn desktop_notify(desktop_handle: Handle, text: &str) -> Result<()> {
+    let text_bytes = text.as_bytes();
+    let max_inline_bytes = (IPC_MAX_WORDS.saturating_sub(1)) * 8;
+    if text_bytes.len() > max_inline_bytes {
+        return Err(Error::BufferTooSmall);
+    }
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(DesktopTag::NotifyRequest as u32);
+    request.word_count = 1 + pack_bytes(text_bytes, &mut request.words[1..])?;
+    request.words[0] = text_bytes.len() as u64;
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(desktop_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != DesktopTag::NotifyReply as u32 || response.word_count < 1 {
+        return Err(Error::InvalidArgument);
+    }
+    match desktop_status_from_word(response.words[0]) {
+        DesktopStatus::Ok => Ok(()),
+        status => Err(desktop_status_error(status)),
+    }
 }
 
 fn desktop_input_request(

@@ -1,5 +1,7 @@
+use core::fmt::Write;
+
 use serviceos_userspace_runtime as rt;
-use rt::{DesktopAppId, DesktopAppInfo, DesktopWindowInfo, ServiceId};
+use rt::{DesktopAppId, DesktopAppInfo, DesktopWindowInfo, FixedLogBuffer, ServiceId};
 
 use crate::util::{
     desktop_app_name, desktop_drag_name, parse_desktop_app_name, write_output_linef, ShellOutput,
@@ -92,10 +94,27 @@ where
             (Some(x), Some(y)) => cmd_desktop_click(bootstrap, output, x, y),
             _ => write_output_linef(output, format_args!("usage: desktop click <x> <y>")),
         },
+        Some("notify") => {
+            let mut message = FixedLogBuffer::<128>::new();
+            let mut wrote_any = false;
+            for part in parts {
+                if wrote_any {
+                    let _ = message.write_str(" ");
+                }
+                let _ = message.write_str(part);
+                wrote_any = true;
+            }
+            let message = core::str::from_utf8(message.as_bytes()).unwrap_or("");
+            if message.is_empty() {
+                write_output_linef(output, format_args!("usage: desktop notify <text>"))
+            } else {
+                cmd_desktop_notify(bootstrap, output, &message)
+            }
+        }
         _ => write_output_linef(
             output,
             format_args!(
-                "usage: desktop <status|apps|windows|launch|focus|next|close|minimize|restore|maximize|move|resize|click> ..."
+                "usage: desktop <status|apps|windows|launch|focus|next|close|minimize|restore|maximize|move|resize|click|notify> ..."
             ),
         ),
     }
@@ -216,6 +235,13 @@ fn cmd_desktop_next(bootstrap: rt::Handle, output: ShellOutput) -> rt::Result<()
         output,
         format_args!("focused next visible window on surface {}", surface_id),
     )
+}
+
+fn cmd_desktop_notify(bootstrap: rt::Handle, output: ShellOutput, text: &str) -> rt::Result<()> {
+    let desktop_handle = rt::lookup_service(bootstrap, ServiceId::DesktopShell)?;
+    rt::desktop_notify(desktop_handle, text)?;
+    let _ = rt::handle_close(desktop_handle);
+    write_output_linef(output, format_args!("notification posted"))
 }
 
 fn cmd_desktop_close(bootstrap: rt::Handle, output: ShellOutput, app_id: DesktopAppId) -> rt::Result<()> {

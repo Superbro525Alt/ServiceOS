@@ -1,12 +1,7 @@
 #![no_std]
 #![no_main]
 
-use core::{
-    cell::UnsafeCell,
-    cmp::Ordering,
-    fmt::Write,
-    str,
-};
+use core::{cmp::Ordering, fmt::Write, str};
 
 use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
@@ -34,22 +29,6 @@ const KEY_RIGHT: u32 = 106;
 const KEY_DOWN: u32 = 108;
 const KEY_PAGE_DOWN: u32 = 109;
 const MOD_SHIFT: u32 = 1 << 0;
-
-struct GlobalBuffer(UnsafeCell<[u8; BUFFER_BYTES]>);
-
-unsafe impl Sync for GlobalBuffer {}
-
-impl GlobalBuffer {
-    const fn new() -> Self {
-        Self(UnsafeCell::new([0; BUFFER_BYTES]))
-    }
-
-    unsafe fn as_mut(&self) -> &mut [u8; BUFFER_BYTES] {
-        unsafe { &mut *self.0.get() }
-    }
-}
-
-static BUFFER: GlobalBuffer = GlobalBuffer::new();
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum EntryKind {
@@ -135,9 +114,16 @@ fn main() -> u64 {
         let _ = rt::handle_close(buffer_handle);
         return 0xf104;
     }
+    let mut mapped_buffer = match rt::MappedMemory::map(buffer_handle, BUFFER_BYTES, true) {
+        Ok(buffer) => buffer,
+        Err(_) => {
+            let _ = rt::handle_close(buffer_handle);
+            return 0xf108;
+        }
+    };
 
     let _ = reload_directory(&mut state, storage_handle);
-    let _ = render(surface_handle, buffer_handle, &state);
+    let _ = render(surface_handle, &mut mapped_buffer, &state);
 
     loop {
         match poll_lifecycle(bootstrap) {
@@ -149,7 +135,7 @@ fn main() -> u64 {
         match poll_control(
             control_handle,
             surface_handle,
-            buffer_handle,
+            &mut mapped_buffer,
             storage_handle,
             &mut state,
         ) {
@@ -177,7 +163,7 @@ enum ControlFlow {
 fn poll_control(
     control_handle: rt::Handle,
     surface_handle: rt::Handle,
-    buffer_handle: rt::Handle,
+    buffer: &mut rt::MappedMemory,
     storage_handle: rt::Handle,
     state: &mut ExplorerState,
 ) -> rt::Result<ControlFlow> {
@@ -241,7 +227,7 @@ fn poll_control(
     }
 
     if changed {
-        render(surface_handle, buffer_handle, state)?;
+        render(surface_handle, buffer, state)?;
         return Ok(ControlFlow::Worked);
     }
 
@@ -341,12 +327,12 @@ fn handle_key_down(
 
 fn render(
     surface_handle: rt::Handle,
-    buffer_handle: rt::Handle,
+    buffer: &mut rt::MappedMemory,
     state: &ExplorerState,
 ) -> rt::Result<()> {
     let width = state.width.min(BUFFER_WIDTH) as usize;
     let height = state.height.min(BUFFER_HEIGHT) as usize;
-    let bytes = unsafe { &mut BUFFER.as_mut()[..BUFFER_BYTES] };
+    let bytes = &mut buffer.as_slice_mut()[..BUFFER_BYTES];
 
     fill_rect(bytes, 0, 0, width, height, ui::BG_WINDOW_ALT);
     fill_rect(
@@ -374,8 +360,13 @@ fn render(
     draw_list(bytes, state);
     draw_footer(bytes, state);
 
-    rt::memory_write(buffer_handle, 0, &bytes[..BUFFER_BYTES]).map(|_| ())?;
-    rt::surface_clear_scene(surface_handle)
+    rt::surface_present_buffer(
+        surface_handle,
+        0,
+        0,
+        state.width.min(BUFFER_WIDTH),
+        state.height.min(BUFFER_HEIGHT),
+    )
 }
 
 fn draw_titlebar(bytes: &mut [u8], width: usize, focused: bool) {

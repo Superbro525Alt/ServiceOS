@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use core::cell::UnsafeCell;
+use core::{cell::UnsafeCell, fmt::Write};
 
 use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
@@ -10,13 +10,22 @@ use rt::{AppControlTag, ConsoleTag, ControlTag, LifecycleEvent, RawMessage, Term
 const BUFFER_WIDTH: u32 = 1024;
 const BUFFER_HEIGHT: u32 = 768;
 const BUFFER_BYTES: usize = BUFFER_WIDTH as usize * BUFFER_HEIGHT as usize * 4;
+const MAX_TABS: usize = 4;
 const MAX_COLS: usize = 120;
 const MAX_SCROLLBACK_LINES: usize = 256;
+const CLIPBOARD_BYTES: usize = 1024;
 const CELL_WIDTH: usize = 6;
 const CELL_HEIGHT: usize = 10;
 const CONTENT_PADDING_X: usize = 10;
 const CONTENT_PADDING_Y: usize = 8;
+const TAB_STRIP_HEIGHT: usize = 18;
+const TAB_WIDTH: usize = 84;
 const KEY_BACKSPACE: u32 = 14;
+const KEY_TAB: u32 = 15;
+const KEY_W: u32 = 17;
+const KEY_T: u32 = 20;
+const KEY_C: u32 = 46;
+const KEY_V: u32 = 47;
 const KEY_UP: u32 = 103;
 const KEY_PAGE_UP: u32 = 104;
 const KEY_LEFT: u32 = 105;
@@ -27,55 +36,70 @@ const MOD_CTRL: u32 = 1 << 2;
 const MOD_SHIFT: u32 = 1 << 0;
 const PIXEL_STRIDE: usize = BUFFER_WIDTH as usize;
 
-struct GlobalBuffer(UnsafeCell<[u8; BUFFER_BYTES]>);
+struct GlobalTabs(UnsafeCell<[[[u8; MAX_COLS]; MAX_SCROLLBACK_LINES]; MAX_TABS]>);
 
-unsafe impl Sync for GlobalBuffer {}
+unsafe impl Sync for GlobalTabs {}
 
-impl GlobalBuffer {
+impl GlobalTabs {
     const fn new() -> Self {
-        Self(UnsafeCell::new([0; BUFFER_BYTES]))
+        Self(UnsafeCell::new([[[b' '; MAX_COLS]; MAX_SCROLLBACK_LINES]; MAX_TABS]))
     }
 
-    unsafe fn as_mut(&self) -> &mut [u8; BUFFER_BYTES] {
-        unsafe { &mut *self.0.get() }
+    unsafe fn tab(&self, index: usize) -> &[[u8; MAX_COLS]; MAX_SCROLLBACK_LINES] {
+        unsafe { &(*self.0.get())[index] }
+    }
+
+    unsafe fn tab_mut(&self, index: usize) -> &mut [[u8; MAX_COLS]; MAX_SCROLLBACK_LINES] {
+        unsafe { &mut (*self.0.get())[index] }
     }
 }
 
-struct GlobalGrid(UnsafeCell<[[u8; MAX_COLS]; MAX_SCROLLBACK_LINES]>);
-
-unsafe impl Sync for GlobalGrid {}
-
-impl GlobalGrid {
-    const fn new() -> Self {
-        Self(UnsafeCell::new([[b' '; MAX_COLS]; MAX_SCROLLBACK_LINES]))
-    }
-
-    unsafe fn as_ref(&self) -> &[[u8; MAX_COLS]; MAX_SCROLLBACK_LINES] {
-        unsafe { &*self.0.get() }
-    }
-
-    unsafe fn as_mut(&self) -> &mut [[u8; MAX_COLS]; MAX_SCROLLBACK_LINES] {
-        unsafe { &mut *self.0.get() }
-    }
-}
-
-static BUFFER: GlobalBuffer = GlobalBuffer::new();
-static GRID: GlobalGrid = GlobalGrid::new();
+static GRIDS: GlobalTabs = GlobalTabs::new();
 
 #[derive(Clone, Copy)]
 struct TerminalState {
     width: u32,
     height: u32,
     focused: bool,
-    session_handle: rt::Handle,
+    terminal_handle: rt::Handle,
     columns: usize,
     rows: usize,
+    active_tab: usize,
+    tabs: [TerminalTab; MAX_TABS],
+    selection: Option<Selection>,
+    clipboard: [u8; CLIPBOARD_BYTES],
+    clipboard_len: usize,
+}
+
+#[derive(Clone, Copy)]
+struct TerminalTab {
+    occupied: bool,
+    session_handle: rt::Handle,
+    session_id: u32,
     line_count: usize,
     cursor_line: usize,
     cursor_col: usize,
     scroll_offset: usize,
     parse_state: ParseState,
-    csi_param: usize,
+    csi_params: [usize; 4],
+    csi_count: usize,
+}
+
+impl TerminalTab {
+    const fn empty() -> Self {
+        Self {
+            occupied: false,
+            session_handle: rt::INVALID_HANDLE,
+            session_id: 0,
+            line_count: 1,
+            cursor_line: 0,
+            cursor_col: 0,
+            scroll_offset: 0,
+            parse_state: ParseState::Ground,
+            csi_params: [0; 4],
+            csi_count: 0,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -83,6 +107,19 @@ enum ParseState {
     Ground,
     Esc,
     Csi,
+}
+
+#[derive(Clone, Copy)]
+struct CellPos {
+    line: usize,
+    col: usize,
+}
+
+#[derive(Clone, Copy)]
+struct Selection {
+    anchor: CellPos,
+    focus: CellPos,
+    dragging: bool,
 }
 
 rt::entry!(main);
@@ -112,88 +149,101 @@ fn main() -> u64 {
         let _ = rt::handle_close(buffer_handle);
         return 0xfa04;
     }
-
-    let (_, session_handle, _, _) = match rt::terminal_session_open(terminal_handle) {
-        Ok(info) => info,
-        Err(_) => return 0xfa05,
+    let mut mapped_buffer = match rt::MappedMemory::map(buffer_handle, BUFFER_BYTES, true) {
+        Ok(buffer) => buffer,
+        Err(_) => {
+            let _ = rt::handle_close(buffer_handle);
+            return 0xfa0a;
+        }
     };
 
-    clear_grid();
+    clear_all_grids();
     let mut state = TerminalState {
         width,
         height,
         focused,
-        session_handle,
+        terminal_handle,
         columns: 0,
         rows: 0,
-        line_count: 1,
-        cursor_line: 0,
-        cursor_col: 0,
-        scroll_offset: 0,
-        parse_state: ParseState::Ground,
-        csi_param: 0,
+        active_tab: 0,
+        tabs: [TerminalTab::empty(); MAX_TABS],
+        selection: None,
+        clipboard: [0; CLIPBOARD_BYTES],
+        clipboard_len: 0,
     };
     recompute_layout(&mut state);
-    let _ = rt::terminal_session_resize(
-        state.session_handle,
-        state.columns as u32,
-        state.rows as u32,
-        state.width,
-        state.height,
-    );
-    let _ = render(surface_handle, buffer_handle, &state);
+    if open_new_tab(&mut state).is_err() {
+        return 0xfa05;
+    }
+    let _ = render(surface_handle, &mut mapped_buffer, &state);
 
     loop {
         let mut did_work = false;
+        let mut changed = false;
+
         match poll_lifecycle(bootstrap) {
             Ok(true) => break,
             Ok(false) => {}
             Err(_) => return 0xfa06,
         }
 
-        let mut changed = match poll_control(control_handle, &mut state, &mut width, &mut height, &mut focused) {
-            Ok((ControlFlow::Continue, control_changed)) => {
-                did_work |= control_changed;
-                control_changed
+        match poll_control(control_handle, &mut state, &mut width, &mut height, &mut focused) {
+            Ok((ControlFlow::Continue, control_changed, control_worked)) => {
+                changed |= control_changed;
+                did_work |= control_worked;
             }
-            Ok((ControlFlow::Exit, _)) => break,
+            Ok((ControlFlow::Exit, _, _)) => break,
             Err(_) => return 0xfa07,
-        };
+        }
 
         if width != state.width || height != state.height || focused != state.focused {
             state.width = width;
             state.height = height;
             state.focused = focused;
             recompute_layout(&mut state);
-            let _ = rt::terminal_session_resize(
-                state.session_handle,
-                state.columns as u32,
-                state.rows as u32,
-                state.width,
-                state.height,
-            );
-            let _ = render(surface_handle, buffer_handle, &state);
+            for tab in state.tabs.iter().copied().filter(|tab| tab.occupied) {
+                let _ = rt::terminal_session_resize(
+                    tab.session_handle,
+                    state.columns as u32,
+                    state.rows as u32,
+                    state.width,
+                    state.height,
+                );
+            }
+            changed = true;
         }
 
         let mut data = [0u8; (rt::IPC_MAX_WORDS - 1) * 8];
-        loop {
-            match receive_terminal_message(state.session_handle, &mut data) {
-                Ok(Some(TerminalMessage::Output(len))) => {
-                    apply_output(&mut state, &data[..len]);
-                    changed = true;
-                    did_work = true;
+        for tab_index in 0..MAX_TABS {
+            if !state.tabs[tab_index].occupied {
+                continue;
+            }
+            loop {
+                match receive_terminal_message(state.tabs[tab_index].session_handle, &mut data) {
+                    Ok(Some(TerminalMessage::Output(len))) => {
+                        apply_output(&mut state, tab_index, &data[..len]);
+                        changed = true;
+                        did_work = true;
+                    }
+                    Ok(Some(TerminalMessage::Closed)) => {
+                        close_tab(&mut state, tab_index);
+                        changed = true;
+                        did_work = true;
+                        if active_tab_count(&state) == 0 {
+                            let _ = open_new_tab(&mut state);
+                        }
+                        break;
+                    }
+                    Ok(None) => break,
+                    Err(rt::Error::QueueEmpty) => break,
+                    Err(_) => return 0xfa08,
                 }
-                Ok(Some(TerminalMessage::Closed)) => return 0,
-                Ok(None) => break,
-                Err(rt::Error::QueueEmpty) => break,
-                Err(_) => return 0xfa08,
             }
         }
 
         if changed {
-            let _ = render(surface_handle, buffer_handle, &state);
+            let _ = render(surface_handle, &mut mapped_buffer, &state);
         }
-
         if did_work {
             continue;
         }
@@ -203,8 +253,10 @@ fn main() -> u64 {
         }
     }
 
-    let _ = rt::terminal_session_close(session_handle);
-    let _ = rt::handle_close(session_handle);
+    for tab in state.tabs.iter().copied().filter(|tab| tab.occupied) {
+        let _ = rt::terminal_session_close(tab.session_handle);
+        let _ = rt::handle_close(tab.session_handle);
+    }
     let _ = rt::handle_close(buffer_handle);
     0
 }
@@ -225,41 +277,59 @@ fn poll_control(
     width: &mut u32,
     height: &mut u32,
     focused: &mut bool,
-) -> rt::Result<(ControlFlow, bool)> {
+) -> rt::Result<(ControlFlow, bool, bool)> {
     let mut changed = false;
+    let mut did_work = false;
     loop {
         let mut message = RawMessage::empty(0);
         match rt::channel_receive_nonblocking(control_handle, &mut message) {
             Ok(()) if message.tag == AppControlTag::FocusChanged as u32 && message.word_count > 0 => {
                 *focused = message.words[0] != 0;
                 changed = true;
+                did_work = true;
             }
             Ok(()) if message.tag == AppControlTag::Resize as u32 && message.word_count >= 2 => {
                 *width = message.words[0] as u32;
                 *height = message.words[1] as u32;
                 changed = true;
+                did_work = true;
             }
-            Ok(()) if message.tag == AppControlTag::Close as u32 => return Ok((ControlFlow::Exit, false)),
+            Ok(()) if message.tag == AppControlTag::Close as u32 => {
+                return Ok((ControlFlow::Exit, false, true))
+            }
             Ok(()) if message.tag == AppControlTag::Pointer as u32 && message.word_count >= 5 => {
+                did_work = true;
                 let action = app_pointer_action_from_word(message.words[0]);
+                let x = message.words[1] as i64 as i32;
+                let y = message.words[2] as i64 as i32;
                 let detail = message.words[4] as i64 as i32;
-                if matches!(action, Some(rt::AppPointerAction::Scroll)) {
-                    handle_pointer_scroll(state, detail);
-                    changed = true;
+                match action {
+                    Some(rt::AppPointerAction::Down) => changed |= handle_pointer_down(state, x, y),
+                    Some(rt::AppPointerAction::Move) => changed |= handle_pointer_move(state, x, y),
+                    Some(rt::AppPointerAction::Up) => changed |= handle_pointer_up(state, x, y),
+                    Some(rt::AppPointerAction::Scroll) => {
+                        handle_pointer_scroll(state, detail);
+                        changed = true;
+                    }
+                    _ => {}
                 }
             }
             Ok(()) if message.tag == AppControlTag::Text as u32 && message.word_count > 0 => {
                 if let Some(ch) = core::char::from_u32(message.words[0] as u32) {
-                    let mut bytes = [0u8; 4];
-                    let encoded = ch.encode_utf8(&mut bytes);
-                    state.scroll_offset = 0;
-                    let _ = rt::terminal_session_send_input(state.session_handle, encoded.as_bytes());
-                    changed = true;
+                    state.selection = None;
+                    if let Some(tab) = active_tab_mut(state) {
+                        let mut bytes = [0u8; 4];
+                        let encoded = ch.encode_utf8(&mut bytes);
+                        tab.scroll_offset = 0;
+                        let _ = rt::terminal_session_send_input(tab.session_handle, encoded.as_bytes());
+                        changed = true;
+                        did_work = true;
+                    }
                 }
             }
             Ok(()) if message.tag == AppControlTag::Key as u32 && message.word_count >= 2 => {
-                let action = message.words[0] as u32;
-                if action == rt::AppKeyAction::Down as u32 {
+                did_work = true;
+                if message.words[0] as u32 == rt::AppKeyAction::Down as u32 {
                     let key_code = message.words[1] as u32;
                     let modifiers = message.words.get(2).copied().unwrap_or(0) as u32;
                     changed |= handle_key_down(state, key_code, modifiers)?;
@@ -270,30 +340,82 @@ fn poll_control(
             Err(error) => return Err(error),
         }
     }
-    Ok((ControlFlow::Continue, changed))
+    Ok((ControlFlow::Continue, changed, did_work))
 }
 
 fn handle_key_down(state: &mut TerminalState, key_code: u32, modifiers: u32) -> rt::Result<bool> {
-    if modifiers & MOD_CTRL != 0 && key_code == 46 {
-        state.scroll_offset = 0;
-        rt::terminal_session_send_input(state.session_handle, &[0x03])?;
+    if modifiers & MOD_CTRL != 0 && modifiers & MOD_SHIFT != 0 {
+        match key_code {
+            KEY_T => {
+                open_new_tab(state)?;
+                return Ok(true);
+            }
+            KEY_W => {
+                close_active_tab(state);
+                return Ok(true);
+            }
+            KEY_C => {
+                copy_selection(state);
+                return Ok(true);
+            }
+            KEY_V => {
+                let clipboard_len = state.clipboard_len;
+                let clipboard = state.clipboard;
+                state.selection = None;
+                if let Some(tab) = active_tab_mut(state) {
+                    if clipboard_len > 0 {
+                        tab.scroll_offset = 0;
+                        let _ = rt::terminal_session_send_input(tab.session_handle, &clipboard[..clipboard_len]);
+                        return Ok(true);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if modifiers & MOD_CTRL != 0 && key_code == KEY_TAB {
+        if modifiers & MOD_SHIFT != 0 {
+            focus_previous_tab(state);
+        } else {
+            focus_next_tab(state);
+        }
         return Ok(true);
+    }
+    if modifiers & MOD_CTRL != 0 && key_code == KEY_C {
+        state.selection = None;
+        if let Some(tab) = active_tab_mut(state) {
+            tab.scroll_offset = 0;
+            rt::terminal_session_send_input(tab.session_handle, &[0x03])?;
+            return Ok(true);
+        }
     }
     if key_code == KEY_PAGE_UP || (modifiers & MOD_SHIFT != 0 && key_code == KEY_UP) {
-        scroll_up_view(state, if key_code == KEY_PAGE_UP { state.rows.saturating_sub(1).max(1) } else { 1 });
-        return Ok(true);
+        let rows = state.rows;
+        if let Some(tab) = active_tab_mut(state) {
+            scroll_up_view(tab, if key_code == KEY_PAGE_UP { rows.saturating_sub(1).max(1) } else { 1 }, rows);
+            return Ok(true);
+        }
     }
     if key_code == KEY_PAGE_DOWN || (modifiers & MOD_SHIFT != 0 && key_code == KEY_DOWN) {
-        scroll_down_view(state, if key_code == KEY_PAGE_DOWN { state.rows.saturating_sub(1).max(1) } else { 1 });
-        return Ok(true);
+        let rows = state.rows;
+        if let Some(tab) = active_tab_mut(state) {
+            scroll_down_view(tab, if key_code == KEY_PAGE_DOWN { rows.saturating_sub(1).max(1) } else { 1 });
+            return Ok(true);
+        }
     }
-    state.scroll_offset = 0;
+
+    state.selection = None;
+    let Some(tab) = active_tab_mut(state) else {
+        return Ok(false);
+    };
+    tab.scroll_offset = 0;
     match key_code {
-        KEY_BACKSPACE => rt::terminal_session_send_input(state.session_handle, &[0x7f])?,
-        KEY_UP => rt::terminal_session_send_input(state.session_handle, b"\x1b[A")?,
-        KEY_DOWN => rt::terminal_session_send_input(state.session_handle, b"\x1b[B")?,
-        KEY_RIGHT => rt::terminal_session_send_input(state.session_handle, b"\x1b[C")?,
-        KEY_LEFT => rt::terminal_session_send_input(state.session_handle, b"\x1b[D")?,
+        KEY_BACKSPACE => rt::terminal_session_send_input(tab.session_handle, &[0x7f])?,
+        KEY_UP => rt::terminal_session_send_input(tab.session_handle, b"\x1b[A")?,
+        KEY_DOWN => rt::terminal_session_send_input(tab.session_handle, b"\x1b[B")?,
+        KEY_RIGHT => rt::terminal_session_send_input(tab.session_handle, b"\x1b[C")?,
+        KEY_LEFT => rt::terminal_session_send_input(tab.session_handle, b"\x1b[D")?,
         _ => return Ok(false),
     }
     Ok(true)
@@ -309,11 +431,62 @@ fn app_pointer_action_from_word(value: u64) -> Option<rt::AppPointerAction> {
     }
 }
 
+fn handle_pointer_down(state: &mut TerminalState, x: i32, y: i32) -> bool {
+    if let Some(tab_index) = tab_strip_hit_index(state, x, y) {
+        if tab_index != state.active_tab && state.tabs[tab_index].occupied {
+            state.active_tab = tab_index;
+            state.selection = None;
+            return true;
+        }
+        return false;
+    }
+    let Some(cell) = pointer_to_cell(state, x, y) else {
+        state.selection = None;
+        return false;
+    };
+    state.selection = Some(Selection {
+        anchor: cell,
+        focus: cell,
+        dragging: true,
+    });
+    true
+}
+
+fn handle_pointer_move(state: &mut TerminalState, x: i32, y: i32) -> bool {
+    let Some(mut selection) = state.selection else {
+        return false;
+    };
+    if !selection.dragging {
+        return false;
+    }
+    let Some(cell) = pointer_to_cell(state, x, y) else {
+        return false;
+    };
+    selection.focus = cell;
+    state.selection = Some(selection);
+    true
+}
+
+fn handle_pointer_up(state: &mut TerminalState, x: i32, y: i32) -> bool {
+    let Some(mut selection) = state.selection else {
+        return false;
+    };
+    if let Some(cell) = pointer_to_cell(state, x, y) {
+        selection.focus = cell;
+    }
+    selection.dragging = false;
+    state.selection = Some(selection);
+    true
+}
+
 fn handle_pointer_scroll(state: &mut TerminalState, delta_y: i32) {
-    if delta_y > 0 {
-        scroll_up_view(state, delta_y as usize);
-    } else if delta_y < 0 {
-        scroll_down_view(state, (-delta_y) as usize);
+    let rows = state.rows;
+    if let Some(tab) = active_tab_mut(state) {
+        if delta_y > 0 {
+            scroll_up_view(tab, delta_y as usize, rows);
+        } else if delta_y < 0 {
+            scroll_down_view(tab, (-delta_y) as usize);
+        }
     }
 }
 
@@ -339,112 +512,270 @@ fn recompute_layout(state: &mut TerminalState) {
     let content_width = state.width.saturating_sub((CONTENT_PADDING_X as u32) * 2);
     let content_height = state
         .height
-        .saturating_sub(ui::TITLEBAR_HEIGHT + (CONTENT_PADDING_Y as u32) * 2 + 4);
+        .saturating_sub(ui::TITLEBAR_HEIGHT + TAB_STRIP_HEIGHT as u32 + (CONTENT_PADDING_Y as u32) * 2 + 4);
     state.columns = ((content_width as usize) / CELL_WIDTH).clamp(20, MAX_COLS);
     state.rows = ((content_height as usize) / CELL_HEIGHT).clamp(8, MAX_SCROLLBACK_LINES);
-    clamp_scroll_offset(state);
+    for tab in state.tabs.iter_mut().filter(|tab| tab.occupied) {
+        clamp_scroll_offset(tab, state.rows);
+        if tab.cursor_col >= state.columns {
+            tab.cursor_col = state.columns.saturating_sub(1);
+        }
+    }
 }
 
-fn clear_grid() {
-    let lines = unsafe { GRID.as_mut() };
-    for row in lines.iter_mut() {
+fn clear_all_grids() {
+    for tab in 0..MAX_TABS {
+        let rows = unsafe { GRIDS.tab_mut(tab) };
+        for row in rows.iter_mut() {
+            for cell in row.iter_mut() {
+                *cell = b' ';
+            }
+        }
+    }
+}
+
+fn clear_tab_grid(tab_index: usize) {
+    let rows = unsafe { GRIDS.tab_mut(tab_index) };
+    for row in rows.iter_mut() {
         for cell in row.iter_mut() {
             *cell = b' ';
         }
     }
 }
 
-fn apply_output(state: &mut TerminalState, bytes: &[u8]) {
+fn open_new_tab(state: &mut TerminalState) -> rt::Result<()> {
+    let Some(index) = state.tabs.iter().position(|tab| !tab.occupied) else {
+        return Err(rt::Error::CapacityExceeded);
+    };
+    let (_, session_handle, _, _) = rt::terminal_session_open(state.terminal_handle)?;
+    let _ = rt::terminal_session_resize(
+        session_handle,
+        state.columns as u32,
+        state.rows as u32,
+        state.width,
+        state.height,
+    );
+    clear_tab_grid(index);
+    state.tabs[index] = TerminalTab {
+        occupied: true,
+        session_handle,
+        session_id: (index + 1) as u32,
+        line_count: 1,
+        cursor_line: 0,
+        cursor_col: 0,
+        scroll_offset: 0,
+        parse_state: ParseState::Ground,
+        csi_params: [0; 4],
+        csi_count: 0,
+    };
+    state.active_tab = index;
+    state.selection = None;
+    Ok(())
+}
+
+fn close_active_tab(state: &mut TerminalState) {
+    let active = state.active_tab;
+    if active_tab_count(state) <= 1 {
+        return;
+    }
+    close_tab(state, active);
+    if !state.tabs[state.active_tab].occupied {
+        focus_next_tab(state);
+    }
+    state.selection = None;
+}
+
+fn close_tab(state: &mut TerminalState, tab_index: usize) {
+    let tab = state.tabs[tab_index];
+    if !tab.occupied {
+        return;
+    }
+    let _ = rt::terminal_session_close(tab.session_handle);
+    let _ = rt::handle_close(tab.session_handle);
+    state.tabs[tab_index] = TerminalTab::empty();
+    clear_tab_grid(tab_index);
+    if state.active_tab == tab_index {
+        focus_next_tab(state);
+    }
+}
+
+fn active_tab_count(state: &TerminalState) -> usize {
+    state.tabs.iter().filter(|tab| tab.occupied).count()
+}
+
+fn focus_next_tab(state: &mut TerminalState) {
+    for offset in 1..=MAX_TABS {
+        let index = (state.active_tab + offset) % MAX_TABS;
+        if state.tabs[index].occupied {
+            state.active_tab = index;
+            state.selection = None;
+            return;
+        }
+    }
+}
+
+fn focus_previous_tab(state: &mut TerminalState) {
+    for offset in 1..=MAX_TABS {
+        let index = (state.active_tab + MAX_TABS - offset) % MAX_TABS;
+        if state.tabs[index].occupied {
+            state.active_tab = index;
+            state.selection = None;
+            return;
+        }
+    }
+}
+
+fn active_tab_mut(state: &mut TerminalState) -> Option<&mut TerminalTab> {
+    state.tabs.get_mut(state.active_tab).filter(|tab| tab.occupied)
+}
+
+fn active_tab_ref(state: &TerminalState) -> Option<&TerminalTab> {
+    state.tabs.get(state.active_tab).filter(|tab| tab.occupied)
+}
+
+fn apply_output(state: &mut TerminalState, tab_index: usize, bytes: &[u8]) {
+    let tab = &mut state.tabs[tab_index];
     for byte in bytes.iter().copied() {
-        match state.parse_state {
+        match tab.parse_state {
             ParseState::Ground => match byte {
                 0x1b => {
-                    state.parse_state = ParseState::Esc;
-                    state.csi_param = 0;
+                    tab.parse_state = ParseState::Esc;
+                    tab.csi_params = [0; 4];
+                    tab.csi_count = 0;
                 }
-                b'\r' => state.cursor_col = 0,
-                b'\n' => new_line(state),
-                0x08 => {
-                    if state.cursor_col > 0 {
-                        state.cursor_col -= 1;
-                    }
-                }
-                0x20..=0x7e => put_char(state, byte),
+                b'\r' => tab.cursor_col = 0,
+                b'\n' => new_line(tab, tab_index),
+                0x08 => tab.cursor_col = tab.cursor_col.saturating_sub(1),
+                0x20..=0x7e => put_char(tab, state.columns, tab_index, byte),
                 _ => {}
             },
             ParseState::Esc => {
                 if byte == b'[' {
-                    state.parse_state = ParseState::Csi;
-                    state.csi_param = 0;
+                    tab.parse_state = ParseState::Csi;
+                    tab.csi_params = [0; 4];
+                    tab.csi_count = 1;
                 } else {
-                    state.parse_state = ParseState::Ground;
+                    tab.parse_state = ParseState::Ground;
                 }
             }
             ParseState::Csi => {
                 if byte.is_ascii_digit() {
-                    state.csi_param = state.csi_param.saturating_mul(10) + (byte - b'0') as usize;
+                    let index = tab.csi_count.saturating_sub(1).min(tab.csi_params.len() - 1);
+                    tab.csi_params[index] =
+                        tab.csi_params[index].saturating_mul(10) + (byte - b'0') as usize;
                     continue;
                 }
-                let param = if state.csi_param == 0 { 1 } else { state.csi_param };
-                match byte {
-                    b'D' => state.cursor_col = state.cursor_col.saturating_sub(param),
-                    b'C' => state.cursor_col = (state.cursor_col + param).min(state.columns.saturating_sub(1)),
-                    b'K' => clear_line_mode(state, param),
-                    _ => {}
+                if byte == b';' {
+                    if tab.csi_count < tab.csi_params.len() {
+                        tab.csi_count += 1;
+                    }
+                    continue;
                 }
-                state.parse_state = ParseState::Ground;
-                state.csi_param = 0;
+                apply_csi(tab, state.columns, tab_index, byte);
+                tab.parse_state = ParseState::Ground;
+                tab.csi_params = [0; 4];
+                tab.csi_count = 0;
             }
         }
     }
-    clamp_scroll_offset(state);
+    clamp_scroll_offset(tab, state.rows);
 }
 
-fn put_char(state: &mut TerminalState, byte: u8) {
-    if state.cursor_col >= state.columns {
-        new_line(state);
-    }
-    let lines = unsafe { GRID.as_mut() };
-    if state.cursor_line >= MAX_SCROLLBACK_LINES {
-        scroll_up(lines);
-        state.cursor_line = MAX_SCROLLBACK_LINES - 1;
-    }
-    lines[state.cursor_line][state.cursor_col] = byte;
-    state.cursor_col += 1;
-}
-
-fn new_line(state: &mut TerminalState) {
-    state.cursor_col = 0;
-    state.cursor_line += 1;
-    if state.line_count < state.cursor_line + 1 {
-        state.line_count = state.cursor_line + 1;
-    }
-    if state.cursor_line >= MAX_SCROLLBACK_LINES {
-        let lines = unsafe { GRID.as_mut() };
-        scroll_up(lines);
-        state.cursor_line = MAX_SCROLLBACK_LINES - 1;
-        state.line_count = MAX_SCROLLBACK_LINES;
+fn apply_csi(tab: &mut TerminalTab, columns: usize, tab_index: usize, opcode: u8) {
+    let param0 = csi_param(tab, 0, 1);
+    let param1 = csi_param(tab, 1, 1);
+    match opcode {
+        b'A' => tab.cursor_line = tab.cursor_line.saturating_sub(param0),
+        b'B' => tab.cursor_line = (tab.cursor_line + param0).min(MAX_SCROLLBACK_LINES.saturating_sub(1)),
+        b'C' => tab.cursor_col = (tab.cursor_col + param0).min(columns.saturating_sub(1)),
+        b'D' => tab.cursor_col = tab.cursor_col.saturating_sub(param0),
+        b'G' => tab.cursor_col = param0.saturating_sub(1).min(columns.saturating_sub(1)),
+        b'H' | b'f' => {
+            tab.cursor_line = param0.saturating_sub(1).min(MAX_SCROLLBACK_LINES.saturating_sub(1));
+            tab.cursor_col = param1.saturating_sub(1).min(columns.saturating_sub(1));
+        }
+        b'J' => clear_display(tab, tab_index, columns, param0),
+        b'K' => clear_line_mode(tab, columns, tab_index, param0),
+        b'm' => {}
+        _ => {}
     }
 }
 
-fn clear_line_mode(state: &mut TerminalState, mode: usize) {
-    let lines = unsafe { GRID.as_mut() };
-    let row = &mut lines[state.cursor_line.min(MAX_SCROLLBACK_LINES - 1)];
+fn csi_param(tab: &TerminalTab, index: usize, default: usize) -> usize {
+    let value = tab.csi_params.get(index).copied().unwrap_or(0);
+    if value == 0 { default } else { value }
+}
+
+fn put_char(tab: &mut TerminalTab, columns: usize, tab_index: usize, byte: u8) {
+    if tab.cursor_col >= columns {
+        new_line(tab, tab_index);
+    }
+    let lines = unsafe { GRIDS.tab_mut(tab_index) };
+    if tab.cursor_line >= MAX_SCROLLBACK_LINES {
+        scroll_grid(lines);
+        tab.cursor_line = MAX_SCROLLBACK_LINES - 1;
+    }
+    lines[tab.cursor_line][tab.cursor_col] = byte;
+    tab.cursor_col += 1;
+}
+
+fn new_line(tab: &mut TerminalTab, tab_index: usize) {
+    tab.cursor_col = 0;
+    tab.cursor_line += 1;
+    if tab.line_count < tab.cursor_line + 1 {
+        tab.line_count = tab.cursor_line + 1;
+    }
+    if tab.cursor_line >= MAX_SCROLLBACK_LINES {
+        let lines = unsafe { GRIDS.tab_mut(tab_index) };
+        scroll_grid(lines);
+        tab.cursor_line = MAX_SCROLLBACK_LINES - 1;
+        tab.line_count = MAX_SCROLLBACK_LINES;
+    }
+}
+
+fn clear_display(tab: &mut TerminalTab, tab_index: usize, columns: usize, mode: usize) {
+    let lines = unsafe { GRIDS.tab_mut(tab_index) };
     match mode {
         2 => {
-            for cell in row.iter_mut().take(state.columns) {
+            for row in lines.iter_mut() {
+                for cell in row.iter_mut().take(columns) {
+                    *cell = b' ';
+                }
+            }
+            tab.cursor_line = 0;
+            tab.cursor_col = 0;
+            tab.line_count = 1;
+            tab.scroll_offset = 0;
+        }
+        _ => {
+            clear_line_mode(tab, columns, tab_index, 0);
+            for row in tab.cursor_line + 1..tab.line_count.min(MAX_SCROLLBACK_LINES) {
+                for cell in lines[row].iter_mut().take(columns) {
+                    *cell = b' ';
+                }
+            }
+        }
+    }
+}
+
+fn clear_line_mode(tab: &mut TerminalTab, columns: usize, tab_index: usize, mode: usize) {
+    let lines = unsafe { GRIDS.tab_mut(tab_index) };
+    let row = &mut lines[tab.cursor_line.min(MAX_SCROLLBACK_LINES - 1)];
+    match mode {
+        2 => {
+            for cell in row.iter_mut().take(columns) {
                 *cell = b' ';
             }
         }
         _ => {
-            for cell in row.iter_mut().take(state.columns).skip(state.cursor_col) {
+            for cell in row.iter_mut().take(columns).skip(tab.cursor_col) {
                 *cell = b' ';
             }
         }
     }
 }
 
-fn scroll_up(lines: &mut [[u8; MAX_COLS]; MAX_SCROLLBACK_LINES]) {
+fn scroll_grid(lines: &mut [[u8; MAX_COLS]; MAX_SCROLLBACK_LINES]) {
     let mut row = 1usize;
     while row < MAX_SCROLLBACK_LINES {
         lines[row - 1] = lines[row];
@@ -455,12 +786,12 @@ fn scroll_up(lines: &mut [[u8; MAX_COLS]; MAX_SCROLLBACK_LINES]) {
 
 fn render(
     surface_handle: rt::Handle,
-    buffer_handle: rt::Handle,
+    buffer: &mut rt::MappedMemory,
     state: &TerminalState,
 ) -> rt::Result<()> {
     let width = state.width.min(BUFFER_WIDTH) as usize;
     let height = state.height.min(BUFFER_HEIGHT) as usize;
-    let bytes = unsafe { &mut BUFFER.as_mut()[..BUFFER_BYTES] };
+    let bytes = &mut buffer.as_slice_mut()[..BUFFER_BYTES];
 
     fill_rect(bytes, 0, 0, width, height, 0x10151d);
     fill_rect(
@@ -480,74 +811,58 @@ fn render(
         0x0b1220,
     );
 
-    draw_titlebar(bytes, width, state.focused);
+    draw_titlebar(bytes, width);
+    draw_tab_strip(bytes, width, state);
     draw_terminal_contents(bytes, width, height, state);
-    rt::memory_write(buffer_handle, 0, &bytes[..BUFFER_BYTES]).map(|_| ())?;
-    rt::surface_clear_scene(surface_handle)
+    rt::surface_present_buffer(
+        surface_handle,
+        0,
+        0,
+        state.width.min(BUFFER_WIDTH),
+        state.height.min(BUFFER_HEIGHT),
+    )
 }
 
-fn draw_titlebar(bytes: &mut [u8], width: usize, focused: bool) {
+fn draw_titlebar(bytes: &mut [u8], width: usize) {
     let close_x = width as i32 - ui::WINDOW_BUTTON_RIGHT_MARGIN - ui::WINDOW_BUTTON_SIZE as i32;
     let minimize_x = close_x - ui::WINDOW_BUTTON_GAP - ui::WINDOW_BUTTON_SIZE as i32;
     let maximize_x = minimize_x - ui::WINDOW_BUTTON_GAP - ui::WINDOW_BUTTON_SIZE as i32;
-    fill_rect(
-        bytes,
-        maximize_x.max(0) as usize,
-        ui::WINDOW_BUTTON_TOP.max(0) as usize,
-        ui::WINDOW_BUTTON_SIZE as usize,
-        ui::WINDOW_BUTTON_SIZE as usize,
-        ui::ACCENT,
-    );
-    fill_rect(
-        bytes,
-        minimize_x.max(0) as usize,
-        ui::WINDOW_BUTTON_TOP.max(0) as usize,
-        ui::WINDOW_BUTTON_SIZE as usize,
-        ui::WINDOW_BUTTON_SIZE as usize,
-        ui::TEXT_MUTED,
-    );
-    fill_rect(
-        bytes,
-        close_x.max(0) as usize,
-        ui::WINDOW_BUTTON_TOP.max(0) as usize,
-        ui::WINDOW_BUTTON_SIZE as usize,
-        ui::WINDOW_BUTTON_SIZE as usize,
-        ui::STATUS_WARN,
-    );
-    fill_rect(
-        bytes,
-        (maximize_x + 3).max(0) as usize,
-        (ui::WINDOW_BUTTON_TOP + 3).max(0) as usize,
-        6,
-        6,
-        ui::BG_PANEL,
-    );
-    rt::draw_text_rgba8888(
-        bytes,
-        PIXEL_STRIDE,
-        minimize_x + 3,
-        ui::WINDOW_BUTTON_TOP + 2,
-        ui::BG_PANEL,
-        "_",
-    );
-    rt::draw_text_rgba8888(
-        bytes,
-        PIXEL_STRIDE,
-        close_x + 3,
-        ui::WINDOW_BUTTON_TOP + 2,
-        ui::BG_PANEL,
-        "X",
-    );
-    let _ = focused;
+    fill_rect(bytes, maximize_x.max(0) as usize, ui::WINDOW_BUTTON_TOP.max(0) as usize, ui::WINDOW_BUTTON_SIZE as usize, ui::WINDOW_BUTTON_SIZE as usize, ui::ACCENT);
+    fill_rect(bytes, minimize_x.max(0) as usize, ui::WINDOW_BUTTON_TOP.max(0) as usize, ui::WINDOW_BUTTON_SIZE as usize, ui::WINDOW_BUTTON_SIZE as usize, ui::TEXT_MUTED);
+    fill_rect(bytes, close_x.max(0) as usize, ui::WINDOW_BUTTON_TOP.max(0) as usize, ui::WINDOW_BUTTON_SIZE as usize, ui::WINDOW_BUTTON_SIZE as usize, ui::STATUS_WARN);
+    fill_rect(bytes, (maximize_x + 3).max(0) as usize, (ui::WINDOW_BUTTON_TOP + 3).max(0) as usize, 6, 6, ui::BG_PANEL);
+    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, minimize_x + 3, ui::WINDOW_BUTTON_TOP + 2, ui::BG_PANEL, "_");
+    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, close_x + 3, ui::WINDOW_BUTTON_TOP + 2, ui::BG_PANEL, "X");
     rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, 10, 9, ui::TEXT_PRIMARY, "TERMINAL");
 }
 
+fn draw_tab_strip(bytes: &mut [u8], width: usize, state: &TerminalState) {
+    let strip_y = ui::TITLEBAR_HEIGHT as usize + 4;
+    fill_rect(bytes, CONTENT_PADDING_X, strip_y, width.saturating_sub(CONTENT_PADDING_X * 2), TAB_STRIP_HEIGHT, 0x122035);
+    for index in 0..MAX_TABS {
+        if !state.tabs[index].occupied {
+            continue;
+        }
+        let x = CONTENT_PADDING_X + index * TAB_WIDTH;
+        let fill = if index == state.active_tab { ui::ACCENT } else { ui::BG_WINDOW_ALT };
+        fill_rect(bytes, x, strip_y, TAB_WIDTH.saturating_sub(4), TAB_STRIP_HEIGHT.saturating_sub(2), fill);
+        let mut label = rt::FixedLogBuffer::<16>::new();
+        let _ = write!(&mut label, "TAB {}", state.tabs[index].session_id);
+        if let Ok(text) = core::str::from_utf8(label.as_bytes()) {
+            rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, (x + 8) as i32, (strip_y + 4) as i32, ui::TEXT_PRIMARY, text);
+        }
+    }
+}
+
 fn draw_terminal_contents(bytes: &mut [u8], width: usize, height: usize, state: &TerminalState) {
+    let Some(tab) = active_tab_ref(state) else {
+        return;
+    };
     let start_x = CONTENT_PADDING_X;
-    let start_y = ui::TITLEBAR_HEIGHT as usize + CONTENT_PADDING_Y;
+    let start_y = ui::TITLEBAR_HEIGHT as usize + TAB_STRIP_HEIGHT + CONTENT_PADDING_Y;
     let visible_rows = state.rows.min(MAX_SCROLLBACK_LINES);
-    let first_line = first_visible_line(state, visible_rows);
-    let lines = unsafe { GRID.as_ref() };
+    let first_line = first_visible_line(tab, visible_rows);
+    let lines = unsafe { GRIDS.tab(state.active_tab) };
 
     for row in 0..visible_rows {
         let grid_line = first_line + row;
@@ -563,67 +878,140 @@ fn draw_terminal_contents(bytes: &mut [u8], width: usize, height: usize, state: 
             if x + CELL_WIDTH >= width {
                 break;
             }
+            if selection_contains(state.selection, grid_line, col) {
+                fill_rect(bytes, x, y, CELL_WIDTH, CELL_HEIGHT, 0x224468);
+            }
             let ch = rt::normalize_bitmap_glyph(lines[grid_line][col]);
-            rt::draw_glyph_rgba8888(
-                bytes,
-                PIXEL_STRIDE,
-                x as i32,
-                y as i32,
-                ui::TEXT_PRIMARY,
-                ch,
-            );
+            rt::draw_glyph_rgba8888(bytes, PIXEL_STRIDE, x as i32, y as i32, ui::TEXT_PRIMARY, ch);
         }
     }
 
-    if state.scroll_offset > 0 {
+    if tab.scroll_offset > 0 {
         let mut status = rt::FixedLogBuffer::<32>::new();
-        let _ = core::fmt::Write::write_fmt(
-            &mut status,
-            format_args!("SCROLL -{}", state.scroll_offset),
-        );
+        let _ = write!(&mut status, "SCROLL -{}", tab.scroll_offset);
         if let Ok(label) = core::str::from_utf8(status.as_bytes()) {
             let label_width = label.len() * rt::BITMAP_GLYPH_ADVANCE;
             let label_x = width.saturating_sub(label_width + CONTENT_PADDING_X);
-            rt::draw_text_rgba8888(
-                bytes,
-                PIXEL_STRIDE,
-                label_x as i32,
-                start_y as i32,
-                ui::TEXT_MUTED,
-                label,
-            );
+            rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, label_x as i32, start_y as i32, ui::TEXT_MUTED, label);
         }
     }
 
-    if state.focused && state.scroll_offset == 0 {
-        let cursor_visible_row = state.cursor_line.saturating_sub(first_line);
-        if cursor_visible_row < visible_rows && state.cursor_col < state.columns {
-            let cursor_x = start_x + state.cursor_col * CELL_WIDTH;
+    if state.focused && tab.scroll_offset == 0 {
+        let cursor_visible_row = tab.cursor_line.saturating_sub(first_line);
+        if cursor_visible_row < visible_rows && tab.cursor_col < state.columns {
+            let cursor_x = start_x + tab.cursor_col * CELL_WIDTH;
             let cursor_y = start_y + cursor_visible_row * CELL_HEIGHT;
             fill_rect(bytes, cursor_x, cursor_y + CELL_HEIGHT - 2, CELL_WIDTH, 2, ui::ACCENT);
         }
     }
 }
 
-fn first_visible_line(state: &TerminalState, visible_rows: usize) -> usize {
-    let scroll_offset = state
+fn selection_contains(selection: Option<Selection>, line: usize, col: usize) -> bool {
+    let Some(selection) = selection else {
+        return false;
+    };
+    let (start, end) = ordered_selection(selection);
+    if line < start.line || line > end.line {
+        return false;
+    }
+    if start.line == end.line {
+        return line == start.line && col >= start.col && col <= end.col;
+    }
+    if line == start.line {
+        return col >= start.col;
+    }
+    if line == end.line {
+        return col <= end.col;
+    }
+    true
+}
+
+fn ordered_selection(selection: Selection) -> (CellPos, CellPos) {
+    if selection.anchor.line < selection.focus.line
+        || (selection.anchor.line == selection.focus.line && selection.anchor.col <= selection.focus.col)
+    {
+        (selection.anchor, selection.focus)
+    } else {
+        (selection.focus, selection.anchor)
+    }
+}
+
+fn first_visible_line(tab: &TerminalTab, visible_rows: usize) -> usize {
+    let scroll_offset = tab
         .scroll_offset
-        .min(state.line_count.saturating_sub(visible_rows));
-    state.line_count.saturating_sub(visible_rows + scroll_offset)
+        .min(tab.line_count.saturating_sub(visible_rows));
+    tab.line_count.saturating_sub(visible_rows + scroll_offset)
 }
 
-fn clamp_scroll_offset(state: &mut TerminalState) {
-    let max_offset = state.line_count.saturating_sub(state.rows.min(MAX_SCROLLBACK_LINES));
-    state.scroll_offset = state.scroll_offset.min(max_offset);
+fn clamp_scroll_offset(tab: &mut TerminalTab, rows: usize) {
+    let max_offset = tab.line_count.saturating_sub(rows.min(MAX_SCROLLBACK_LINES));
+    tab.scroll_offset = tab.scroll_offset.min(max_offset);
 }
 
-fn scroll_up_view(state: &mut TerminalState, lines: usize) {
-    let max_offset = state.line_count.saturating_sub(state.rows.min(MAX_SCROLLBACK_LINES));
-    state.scroll_offset = state.scroll_offset.saturating_add(lines).min(max_offset);
+fn scroll_up_view(tab: &mut TerminalTab, lines: usize, rows: usize) {
+    let max_offset = tab.line_count.saturating_sub(rows.min(MAX_SCROLLBACK_LINES));
+    tab.scroll_offset = tab.scroll_offset.saturating_add(lines).min(max_offset);
 }
 
-fn scroll_down_view(state: &mut TerminalState, lines: usize) {
-    state.scroll_offset = state.scroll_offset.saturating_sub(lines);
+fn scroll_down_view(tab: &mut TerminalTab, lines: usize) {
+    tab.scroll_offset = tab.scroll_offset.saturating_sub(lines);
+}
+
+fn copy_selection(state: &mut TerminalState) {
+    let Some(selection) = state.selection else {
+        return;
+    };
+    let lines = unsafe { GRIDS.tab(state.active_tab) };
+    let (start, end) = ordered_selection(selection);
+    let mut len = 0usize;
+    for line in start.line..=end.line {
+        let start_col = if line == start.line { start.col } else { 0 };
+        let end_col = if line == end.line { end.col } else { state.columns.saturating_sub(1) };
+        for col in start_col..=end_col.min(MAX_COLS.saturating_sub(1)) {
+            if len >= state.clipboard.len() {
+                break;
+            }
+            state.clipboard[len] = lines[line.min(MAX_SCROLLBACK_LINES - 1)][col];
+            len += 1;
+        }
+        if line != end.line && len < state.clipboard.len() {
+            state.clipboard[len] = b'\n';
+            len += 1;
+        }
+        if len >= state.clipboard.len() {
+            break;
+        }
+    }
+    state.clipboard_len = len;
+}
+
+fn tab_strip_hit_index(_state: &TerminalState, x: i32, y: i32) -> Option<usize> {
+    let strip_y = ui::TITLEBAR_HEIGHT as i32 + 4;
+    if y < strip_y || y >= strip_y + TAB_STRIP_HEIGHT as i32 {
+        return None;
+    }
+    let local_x = x - CONTENT_PADDING_X as i32;
+    if local_x < 0 {
+        return None;
+    }
+    let index = (local_x as usize) / TAB_WIDTH;
+    (index < MAX_TABS).then_some(index)
+}
+
+fn pointer_to_cell(state: &TerminalState, x: i32, y: i32) -> Option<CellPos> {
+    let tab = active_tab_ref(state)?;
+    let start_x = CONTENT_PADDING_X as i32;
+    let start_y = (ui::TITLEBAR_HEIGHT as usize + TAB_STRIP_HEIGHT + CONTENT_PADDING_Y) as i32;
+    if x < start_x || y < start_y {
+        return None;
+    }
+    let col = ((x - start_x) as usize) / CELL_WIDTH;
+    let row = ((y - start_y) as usize) / CELL_HEIGHT;
+    if col >= state.columns || row >= state.rows {
+        return None;
+    }
+    let line = first_visible_line(tab, state.rows.min(MAX_SCROLLBACK_LINES)) + row;
+    Some(CellPos { line, col })
 }
 
 fn fill_rect(bytes: &mut [u8], x: usize, y: usize, width: usize, height: usize, rgb: u32) {

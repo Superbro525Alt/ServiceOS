@@ -1,16 +1,15 @@
-use core::ptr;
+use core::{ptr, slice};
 
 use serviceos_userspace_runtime as rt;
 use rt::DisplayPixelFormat;
 
 use crate::types::{
-    DEFAULT_BACKGROUND_RGB, DamageRect, MAX_BUFFER_ROW_BYTES, MAX_FRAMEBUFFER_BYTES, SurfaceSlot,
-    Surfaces, is_cursor_surface,
+    DEFAULT_BACKGROUND_RGB, DamageRect, MAX_FRAMEBUFFER_BYTES, SurfaceSlot, Surfaces,
+    is_cursor_surface,
 };
 
 static mut FRAMEBUFFER_BYTES: [u8; MAX_FRAMEBUFFER_BYTES] = [0; MAX_FRAMEBUFFER_BYTES];
 static mut BASE_FRAMEBUFFER_BYTES: [u8; MAX_FRAMEBUFFER_BYTES] = [0; MAX_FRAMEBUFFER_BYTES];
-static mut BLIT_ROW_BYTES: [u8; MAX_BUFFER_ROW_BYTES] = [0; MAX_BUFFER_ROW_BYTES];
 
 pub(crate) fn compose_and_present(
     output_handle: rt::Handle,
@@ -160,11 +159,6 @@ fn draw_surface_buffer(frame: &mut [u8], output: rt::DisplayOutputInfo, surface:
         return;
     }
 
-    let row_bytes = width as usize * 4;
-    if row_bytes > MAX_BUFFER_ROW_BYTES {
-        return;
-    }
-
     let start_x = surface.x.max(0) as usize;
     let start_y = surface.y.max(0) as usize;
     let end_x = ((surface.x + width as i32).max(0) as usize).min(output.width as usize);
@@ -176,17 +170,26 @@ fn draw_surface_buffer(frame: &mut [u8], output: rt::DisplayOutputInfo, surface:
     let clip_left = if surface.x < 0 { (-surface.x) as usize } else { 0 };
     let clip_top = if surface.y < 0 { (-surface.y) as usize } else { 0 };
     let visible_width = end_x - start_x;
-    let row = blit_row_slice(row_bytes);
+    let total_bytes = buffer.height as usize * buffer.stride_pixels as usize * 4;
+    if buffer.mapped_ptr.is_null() || total_bytes == 0 {
+        return;
+    }
+    let bytes = unsafe { slice::from_raw_parts(buffer.mapped_ptr as *const u8, total_bytes) };
 
     for row_index in 0..(end_y - start_y) {
         let source_y = clip_top + row_index;
         let source_offset = ((source_y * buffer.stride_pixels as usize) + clip_left) * 4;
-        if rt::memory_read(buffer.handle, source_offset, &mut row[..row_bytes]).is_err() {
-            break;
-        }
         for column in 0..visible_width {
-            let base = column * 4;
-            let rgb = u32::from_le_bytes([row[base], row[base + 1], row[base + 2], row[base + 3]]);
+            let base = source_offset + column * 4;
+            if base + 3 >= bytes.len() {
+                break;
+            }
+            let rgb = u32::from_le_bytes([
+                bytes[base],
+                bytes[base + 1],
+                bytes[base + 2],
+                bytes[base + 3],
+            ]);
             write_pixel(frame, output, start_x + column, start_y + row_index, rgb & 0x00ff_ffff);
         }
     }
@@ -302,8 +305,4 @@ fn base_framebuffer_slice(len: usize) -> &'static mut [u8] {
             len,
         )
     }
-}
-
-fn blit_row_slice(len: usize) -> &'static mut [u8] {
-    unsafe { core::slice::from_raw_parts_mut(ptr::addr_of_mut!(BLIT_ROW_BYTES).cast::<u8>(), len) }
 }

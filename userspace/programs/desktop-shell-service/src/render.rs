@@ -30,13 +30,18 @@ pub(crate) fn render_desktop(state: &mut DesktopState) -> rt::Result<()> {
     let mut network_buf = FixedLogBuffer::<48>::new();
     write_network_status(&mut network_buf, status_snapshot.ipv4_address);
     let network_text = str::from_utf8(network_buf.as_bytes()).unwrap_or("NET OFFLINE");
+    let notification_text = if state.notification_len != 0 {
+        str::from_utf8(&state.notification[..state.notification_len]).unwrap_or("NOTICE")
+    } else {
+        "NO NOTIFICATIONS"
+    };
 
     ui::render_panel(
         state.chrome.topbar_handle,
         state.chrome.output_width,
         TOPBAR_HEIGHT,
         "SERVICEOS DESKTOP",
-        &[running_text, focus_text, network_text],
+        &[running_text, focus_text, notification_text],
     )?;
 
     let launcher_lines = [
@@ -72,7 +77,7 @@ pub(crate) fn render_desktop(state: &mut DesktopState) -> rt::Result<()> {
             (heartbeat_text, ui::STATUS_OK),
             (tick_text, ui::TEXT_SECONDARY),
             (focus_text, ui::TEXT_SECONDARY),
-            ("POINTER READY", ui::TEXT_MUTED),
+            (notification_text, ui::TEXT_MUTED),
         ],
     )?;
 

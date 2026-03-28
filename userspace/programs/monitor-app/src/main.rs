@@ -12,8 +12,6 @@ const BUFFER_WIDTH: u32 = 640;
 const BUFFER_HEIGHT: u32 = 480;
 const BUFFER_BYTES: usize = BUFFER_WIDTH as usize * BUFFER_HEIGHT as usize * 4;
 
-static mut BUFFER: [u8; BUFFER_BYTES] = [0; BUFFER_BYTES];
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct MonitorSnapshot {
     heartbeat_count: u64,
@@ -60,6 +58,13 @@ fn main() -> u64 {
         let _ = rt::handle_close(buffer_handle);
         return 0xf207;
     }
+    let mut mapped_buffer = match rt::MappedMemory::map(buffer_handle, BUFFER_BYTES, true) {
+        Ok(buffer) => buffer,
+        Err(_) => {
+            let _ = rt::handle_close(buffer_handle);
+            return 0xf208;
+        }
+    };
 
     let mut next_refresh = 0u64;
     let mut last_snapshot: Option<MonitorSnapshot> = None;
@@ -74,7 +79,7 @@ fn main() -> u64 {
             Ok(ControlFlow::Idle) => {}
             Ok(ControlFlow::Worked) => {
                 if let Some(snapshot) = last_snapshot {
-                    let _ = render(surface_handle, buffer_handle, width, height, focused, snapshot);
+                    let _ = render(surface_handle, &mut mapped_buffer, width, height, focused, snapshot);
                 }
                 continue;
             }
@@ -86,7 +91,7 @@ fn main() -> u64 {
         if now >= next_refresh {
             let snapshot = sample_snapshot(status_handle, network_handle);
             if last_snapshot != Some(snapshot) {
-                let _ = render(surface_handle, buffer_handle, width, height, focused, snapshot);
+                let _ = render(surface_handle, &mut mapped_buffer, width, height, focused, snapshot);
                 last_snapshot = Some(snapshot);
             }
             next_refresh = now.saturating_add(REFRESH_TICKS);
@@ -100,13 +105,13 @@ fn main() -> u64 {
 
 fn render(
     surface_handle: rt::Handle,
-    buffer_handle: rt::Handle,
+    buffer: &mut rt::MappedMemory,
     width: u32,
     height: u32,
     focused: bool,
     snapshot: MonitorSnapshot,
 ) -> rt::Result<()> {
-    render_buffer(buffer_handle, width, height, snapshot)?;
+    render_buffer(buffer.as_slice_mut(), width, height, snapshot);
 
     let mut line0 = FixedLogBuffer::<48>::new();
     let _ = write!(&mut line0, "HEARTBEAT {}", snapshot.heartbeat_count);
@@ -146,6 +151,13 @@ fn render(
             str::from_utf8(line3.as_bytes()).unwrap_or("ADDR ?"),
         ],
         focused,
+    )?;
+    rt::surface_present_buffer(
+        surface_handle,
+        0,
+        0,
+        width.min(BUFFER_WIDTH),
+        height.min(BUFFER_HEIGHT),
     )
 }
 
@@ -190,19 +202,12 @@ fn poll_control(
     }
 }
 
-fn render_buffer(
-    buffer_handle: rt::Handle,
-    width: u32,
-    height: u32,
-    snapshot: MonitorSnapshot,
-) -> rt::Result<()> {
+fn render_buffer(bytes: &mut [u8], width: u32, height: u32, snapshot: MonitorSnapshot) {
     let width = width.min(BUFFER_WIDTH) as usize;
     let height = height.min(BUFFER_HEIGHT) as usize;
     if width == 0 || height == 0 {
-        return Ok(());
+        return;
     }
-
-    let bytes = unsafe { &mut BUFFER[..BUFFER_BYTES] };
     for y in 0..height {
         let blue = 0x18 + ((y * 20) / height.max(1)) as u32;
         let rgb = (0x16 << 16) | (0x21 << 8) | blue;
@@ -230,8 +235,6 @@ fn render_buffer(
         let y = height.saturating_sub(32 + bar_height);
         fill_rect(bytes, x, y, 18, bar_height, ui::STATUS_OK);
     }
-
-    rt::memory_write(buffer_handle, 0, &bytes[..BUFFER_BYTES]).map(|_| ())
 }
 
 fn fill_rect(bytes: &mut [u8], x: usize, y: usize, width: usize, height: usize, rgb: u32) {

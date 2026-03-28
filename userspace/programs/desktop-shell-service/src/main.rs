@@ -29,9 +29,16 @@ const WINDOW_MIN_HEIGHT: u32 = 160;
 const RESIZE_GRIP_SIZE: i32 = 20;
 const CURSOR_SIZE: u32 = 14;
 const CURSOR_Z_ORDER: u32 = 4_096;
+const NOTIFICATION_TIMEOUT_TICKS: u64 = 300;
+const MAX_NOTIFICATION_BYTES: usize = 96;
+const MOD_SHIFT: u32 = 1 << 0;
 const MOD_ALT: u32 = 1 << 1;
 const KEY_TAB: u32 = 15;
 const KEY_F4: u32 = 62;
+const KEY_1: u32 = 2;
+const KEY_2: u32 = 3;
+const KEY_3: u32 = 4;
+const KEY_4: u32 = 5;
 
 #[derive(Clone, Copy)]
 struct Chrome {
@@ -211,6 +218,9 @@ struct DesktopState {
     pointer_y: i32,
     drag_state: Option<DragState>,
     content_capture: Option<ContentCapture>,
+    notification: [u8; MAX_NOTIFICATION_BYTES],
+    notification_len: usize,
+    notification_deadline: u64,
 }
 
 rt::entry!(main);
@@ -283,6 +293,9 @@ fn main() -> u64 {
         pointer_y: (output.height / 2) as i32,
         drag_state: None,
         content_capture: None,
+        notification: [0; MAX_NOTIFICATION_BYTES],
+        notification_len: 0,
+        notification_deadline: 0,
     };
 
     if render::render_desktop(&mut state).is_err() {
@@ -332,6 +345,12 @@ fn main() -> u64 {
             Ok(now) => now,
             Err(_) => return 0xfe11,
         };
+        if state.notification_len != 0 && now >= state.notification_deadline {
+            state.notification_len = 0;
+            if render::render_desktop(&mut state).is_err() {
+                return 0xfe15;
+            }
+        }
         if now >= state.next_status_refresh {
             if render::refresh_desktop_status(&mut state).is_err() {
                 return 0xfe12;

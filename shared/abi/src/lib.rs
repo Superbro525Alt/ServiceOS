@@ -530,6 +530,12 @@ pub enum DesktopTag {
     LaunchAppReply = 0xa05,
     FocusAppRequest = 0xa06,
     FocusAppReply = 0xa07,
+    ListWindowsRequest = 0xa08,
+    ListWindowsReply = 0xa09,
+    WindowActionRequest = 0xa0a,
+    WindowActionReply = 0xa0b,
+    InputRequest = 0xa0c,
+    InputReply = 0xa0d,
 }
 
 #[repr(u32)]
@@ -547,6 +553,35 @@ pub enum DesktopAppId {
     Settings = 1,
     Files = 2,
     Monitor = 3,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DesktopWindowAction {
+    Focus = 1,
+    Close = 2,
+    Minimize = 3,
+    Restore = 4,
+    Move = 5,
+    Resize = 6,
+    FocusNext = 7,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DesktopInputAction {
+    PointerDown = 1,
+    PointerMove = 2,
+    PointerUp = 3,
+    Click = 4,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DesktopDragMode {
+    None = 0,
+    Move = 1,
+    Resize = 2,
 }
 
 #[repr(u32)]
@@ -602,4 +637,12 @@ pub enum SessionStatus {
 pub enum SessionInputSource {
     None = 0,
     ServiceControl = 1,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AppControlTag {
+    FocusChanged = 0xac0,
+    Resize = 0xac1,
+    Close = 0xac2,
 }

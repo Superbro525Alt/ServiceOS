@@ -6,18 +6,25 @@ use core::{fmt::Write, str};
 use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
 use rt::{
-    ControlTag, DesktopAppId, DesktopStatus, DesktopTag, FixedLogBuffer, LifecycleEvent,
-    LogDomain, LogEvent, LogSeverity, RawMessage, ServiceId, ServiceImageId, StartupHandle,
+    ControlTag, DesktopAppId, DesktopDragMode, DesktopInputAction, DesktopStatus, DesktopTag,
+    DesktopWindowAction, FixedLogBuffer, LifecycleEvent, LogDomain, LogEvent, LogSeverity,
+    RawMessage, ServiceId, ServiceImageId, StartupHandle,
 };
 
 const SESSION_ID: u32 = 1;
 const APP_COUNT: usize = 3;
+const WINDOW_PAGE_SIZE: usize = 2;
 const STATUS_REFRESH_TICKS: u64 = 100;
 const TOPBAR_HEIGHT: u32 = 42;
 const LAUNCHER_WIDTH: u32 = 250;
 const PANEL_MARGIN: u32 = 20;
 const STATUS_PANEL_WIDTH: u32 = 280;
-const STATUS_PANEL_HEIGHT: u32 = 144;
+const STATUS_PANEL_HEIGHT: u32 = 160;
+const LAUNCHER_ITEM_START_Y: i32 = 54;
+const LAUNCHER_ITEM_STEP: i32 = 18;
+const WINDOW_MIN_WIDTH: u32 = 280;
+const WINDOW_MIN_HEIGHT: u32 = 160;
+const RESIZE_GRIP_SIZE: i32 = 20;
 
 #[derive(Clone, Copy)]
 struct Chrome {
@@ -30,11 +37,44 @@ struct Chrome {
 }
 
 #[derive(Clone, Copy)]
+struct WindowState {
+    surface_id: u32,
+    surface_handle: rt::Handle,
+    control_handle: rt::Handle,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    z_order: u32,
+    minimized: bool,
+}
+
+impl WindowState {
+    const fn empty() -> Self {
+        Self {
+            surface_id: 0,
+            surface_handle: rt::INVALID_HANDLE,
+            control_handle: rt::INVALID_HANDLE,
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+            z_order: 0,
+            minimized: false,
+        }
+    }
+
+    fn visible(&self) -> bool {
+        self.surface_id != 0 && !self.minimized
+    }
+}
+
+#[derive(Clone, Copy)]
 struct AppSlot {
     app_id: DesktopAppId,
     image_id: ServiceImageId,
     task_handle: rt::Handle,
-    surface_id: u32,
+    window: WindowState,
     running: bool,
 }
 
@@ -44,10 +84,65 @@ impl AppSlot {
             app_id,
             image_id,
             task_handle: rt::INVALID_HANDLE,
-            surface_id: 0,
+            window: WindowState::empty(),
             running: false,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct DesktopStatusSnapshot {
+    running_apps: u32,
+    focused_app: Option<DesktopAppId>,
+    heartbeat_count: u64,
+    heartbeat_tick: u64,
+    ipv4_address: u32,
+    pointer_x: i32,
+    pointer_y: i32,
+    drag_mode: DesktopDragMode,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DragState {
+    Move {
+        app_id: DesktopAppId,
+        grab_offset_x: i32,
+        grab_offset_y: i32,
+    },
+    Resize {
+        app_id: DesktopAppId,
+        origin_x: i32,
+        origin_y: i32,
+        start_width: u32,
+        start_height: u32,
+    },
+}
+
+impl DragState {
+    fn mode(self) -> DesktopDragMode {
+        match self {
+            Self::Move { .. } => DesktopDragMode::Move,
+            Self::Resize { .. } => DesktopDragMode::Resize,
+        }
+    }
+}
+
+enum HitTarget {
+    Background,
+    Launcher(DesktopAppId),
+    WindowContent(DesktopAppId),
+    WindowMove {
+        app_id: DesktopAppId,
+        grab_offset_x: i32,
+        grab_offset_y: i32,
+    },
+    WindowResize {
+        app_id: DesktopAppId,
+        origin_x: i32,
+        origin_y: i32,
+    },
+    WindowClose(DesktopAppId),
+    WindowMinimize(DesktopAppId),
 }
 
 struct DesktopState {
@@ -62,15 +157,10 @@ struct DesktopState {
     focused_app: Option<DesktopAppId>,
     next_status_refresh: u64,
     last_status_snapshot: Option<DesktopStatusSnapshot>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct DesktopStatusSnapshot {
-    running_apps: u32,
-    focused_app: Option<DesktopAppId>,
-    heartbeat_count: u64,
-    heartbeat_tick: u64,
-    ipv4_address: u32,
+    next_z_order: u32,
+    pointer_x: i32,
+    pointer_y: i32,
+    drag_state: Option<DragState>,
 }
 
 rt::entry!(main);
@@ -137,6 +227,10 @@ fn main() -> u64 {
         focused_app: None,
         next_status_refresh: 0,
         last_status_snapshot: None,
+        next_z_order: 10,
+        pointer_x: 0,
+        pointer_y: 0,
+        drag_state: None,
     };
 
     if render_desktop(&mut state).is_err() {
@@ -227,7 +321,7 @@ fn create_chrome(
         PANEL_MARGIN as i32,
         (TOPBAR_HEIGHT + PANEL_MARGIN) as i32,
         LAUNCHER_WIDTH,
-        248,
+        264,
         2,
         ui::BG_PANEL,
         false,
@@ -270,11 +364,15 @@ fn handle_request(state: &mut DesktopState, request: &RawMessage) -> rt::Result<
             }
             let reply_handle = request.handles[0];
             let mut reply = RawMessage::empty(DesktopTag::StatusReply as u32);
-            reply.word_count = 4;
+            reply.word_count = 7;
             reply.words[0] = DesktopStatus::Ok as u32 as u64;
             reply.words[1] = SESSION_ID as u64;
             reply.words[2] = state.focused_app.map(|app| app as u32 as u64).unwrap_or(0);
             reply.words[3] = running_app_count(&state.apps) as u64;
+            reply.words[4] = focused_surface_id(state) as u64;
+            reply.words[5] = state.drag_state.map(|drag| drag.mode()).unwrap_or(DesktopDragMode::None)
+                as u32 as u64;
+            reply.words[6] = pack_i32_pair(state.pointer_x, state.pointer_y);
             let _ = rt::channel_send(reply_handle, &reply);
             let _ = rt::handle_close(reply_handle);
         }
@@ -292,7 +390,7 @@ fn handle_request(state: &mut DesktopState, request: &RawMessage) -> rt::Result<
                 reply.words[base] = slot.app_id as u32 as u64;
                 reply.words[base + 1] = u64::from(slot.running);
                 reply.words[base + 2] = u64::from(state.focused_app == Some(slot.app_id));
-                reply.words[base + 3] = slot.surface_id as u64;
+                reply.words[base + 3] = slot.window.surface_id as u64;
             }
             let _ = rt::channel_send(reply_handle, &reply);
             let _ = rt::handle_close(reply_handle);
@@ -305,24 +403,8 @@ fn handle_request(state: &mut DesktopState, request: &RawMessage) -> rt::Result<
             let mut reply = RawMessage::empty(DesktopTag::LaunchAppReply as u32);
             reply.word_count = 2;
             match desktop_app_from_word(request.words[0]) {
-                Some(app_id) => match launch_or_focus_app(state, app_id) {
-                    Ok(surface_id) => {
-                        reply.words[0] = DesktopStatus::Ok as u32 as u64;
-                        reply.words[1] = surface_id as u64;
-                    }
-                    Err(rt::Error::PermissionDenied) => {
-                        reply.words[0] = DesktopStatus::Denied as u32 as u64;
-                    }
-                    Err(rt::Error::NotFound) => {
-                        reply.words[0] = DesktopStatus::NotFound as u32 as u64;
-                    }
-                    Err(_) => {
-                        reply.words[0] = DesktopStatus::Busy as u32 as u64;
-                    }
-                },
-                None => {
-                    reply.words[0] = DesktopStatus::NotFound as u32 as u64;
-                }
+                Some(app_id) => reply_for_surface(&mut reply, launch_or_focus_app(state, app_id)),
+                None => reply.words[0] = DesktopStatus::NotFound as u32 as u64,
             }
             let _ = rt::channel_send(reply_handle, &reply);
             let _ = rt::handle_close(reply_handle);
@@ -335,22 +417,85 @@ fn handle_request(state: &mut DesktopState, request: &RawMessage) -> rt::Result<
             let mut reply = RawMessage::empty(DesktopTag::FocusAppReply as u32);
             reply.word_count = 2;
             match desktop_app_from_word(request.words[0]) {
-                Some(app_id) => match focus_app(state, app_id) {
-                    Ok(surface_id) => {
-                        reply.words[0] = DesktopStatus::Ok as u32 as u64;
-                        reply.words[1] = surface_id as u64;
-                    }
-                    Err(rt::Error::NotFound) => {
-                        reply.words[0] = DesktopStatus::NotFound as u32 as u64;
-                    }
-                    Err(_) => {
-                        reply.words[0] = DesktopStatus::Busy as u32 as u64;
-                    }
-                },
-                None => {
-                    reply.words[0] = DesktopStatus::NotFound as u32 as u64;
-                }
+                Some(app_id) => reply_for_surface(&mut reply, focus_app(state, app_id)),
+                None => reply.words[0] = DesktopStatus::NotFound as u32 as u64,
             }
+            let _ = rt::channel_send(reply_handle, &reply);
+            let _ = rt::handle_close(reply_handle);
+        }
+        x if x == DesktopTag::ListWindowsRequest as u32 => {
+            if request.handle_count < 1 {
+                return Ok(());
+            }
+            let start = request.words[0] as usize;
+            let reply_handle = request.handles[0];
+            let mut reply = RawMessage::empty(DesktopTag::ListWindowsReply as u32);
+            reply.word_count = 3;
+            reply.words[0] = DesktopStatus::Ok as u32 as u64;
+            encode_window_page(state, start, &mut reply);
+            let _ = rt::channel_send(reply_handle, &reply);
+            let _ = rt::handle_close(reply_handle);
+        }
+        x if x == DesktopTag::WindowActionRequest as u32 => {
+            if request.word_count < 4 || request.handle_count < 1 {
+                return Ok(());
+            }
+            let reply_handle = request.handles[0];
+            let mut reply = RawMessage::empty(DesktopTag::WindowActionReply as u32);
+            reply.word_count = 2;
+            let action = desktop_window_action_from_word(request.words[0]);
+            let app_id = desktop_app_from_word(request.words[1]);
+            let result = match action {
+                Some(DesktopWindowAction::Focus) => app_id
+                    .ok_or(rt::Error::NotFound)
+                    .and_then(|app| focus_app(state, app)),
+                Some(DesktopWindowAction::Close) => app_id
+                    .ok_or(rt::Error::NotFound)
+                    .and_then(|app| close_app(state, app).map(|_| 0)),
+                Some(DesktopWindowAction::Minimize) => app_id
+                    .ok_or(rt::Error::NotFound)
+                    .and_then(|app| minimize_app(state, app)),
+                Some(DesktopWindowAction::Restore) => app_id
+                    .ok_or(rt::Error::NotFound)
+                    .and_then(|app| restore_app(state, app)),
+                Some(DesktopWindowAction::Move) => app_id.ok_or(rt::Error::NotFound).and_then(|app| {
+                    move_app(
+                        state,
+                        app,
+                        request.words[2] as i64 as i32,
+                        request.words[3] as i64 as i32,
+                    )
+                }),
+                Some(DesktopWindowAction::Resize) => app_id.ok_or(rt::Error::NotFound).and_then(|app| {
+                    resize_app(
+                        state,
+                        app,
+                        request.words[2] as u32,
+                        request.words[3] as u32,
+                    )
+                }),
+                Some(DesktopWindowAction::FocusNext) => focus_next_app(state),
+                None => Err(rt::Error::NotFound),
+            };
+            reply_for_surface(&mut reply, result);
+            let _ = rt::channel_send(reply_handle, &reply);
+            let _ = rt::handle_close(reply_handle);
+        }
+        x if x == DesktopTag::InputRequest as u32 => {
+            if request.word_count < 3 || request.handle_count < 1 {
+                return Ok(());
+            }
+            let action = desktop_input_action_from_word(request.words[0]);
+            let x = request.words[1] as i64 as i32;
+            let y = request.words[2] as i64 as i32;
+            let reply_handle = request.handles[0];
+            let mut reply = RawMessage::empty(DesktopTag::InputReply as u32);
+            reply.word_count = 2;
+            let result = match action {
+                Some(action) => handle_input(state, action, x, y),
+                None => Err(rt::Error::NotFound),
+            };
+            reply_for_surface(&mut reply, result);
             let _ = rt::channel_send(reply_handle, &reply);
             let _ = rt::handle_close(reply_handle);
         }
@@ -360,15 +505,31 @@ fn handle_request(state: &mut DesktopState, request: &RawMessage) -> rt::Result<
     Ok(())
 }
 
+fn reply_for_surface(reply: &mut RawMessage, result: rt::Result<u32>) {
+    match result {
+        Ok(surface_id) => {
+            reply.words[0] = DesktopStatus::Ok as u32 as u64;
+            reply.words[1] = surface_id as u64;
+        }
+        Err(rt::Error::PermissionDenied) => reply.words[0] = DesktopStatus::Denied as u32 as u64,
+        Err(rt::Error::NotFound) => reply.words[0] = DesktopStatus::NotFound as u32 as u64,
+        Err(_) => reply.words[0] = DesktopStatus::Busy as u32 as u64,
+    }
+}
+
 fn launch_or_focus_app(state: &mut DesktopState, app_id: DesktopAppId) -> rt::Result<u32> {
-    let Some(slot_index) = app_slot_index(&state.apps, app_id) else {
+    let Some(index) = app_slot_index(&state.apps, app_id) else {
         return Err(rt::Error::NotFound);
     };
-    if state.apps[slot_index].running {
+    if state.apps[index].running {
+        if state.apps[index].window.minimized {
+            return restore_app(state, app_id);
+        }
         return focus_app(state, app_id);
     }
 
-    let (x, y, width, height, z_order, fill_rgb) = app_layout(state.chrome.output_width, app_id);
+    let (x, y, width, height, fill_rgb) = initial_window_layout(state.chrome.output_width, app_id);
+    let z_order = allocate_z_order(state);
     let (surface_id, surface_handle) = rt::graphics_surface_create(
         state.graphics_handle,
         SESSION_ID,
@@ -380,34 +541,52 @@ fn launch_or_focus_app(state: &mut DesktopState, app_id: DesktopAppId) -> rt::Re
         fill_rgb,
         false,
     )?;
-    let _ = ui::render_window(
+    let surface_transfer = rt::handle_duplicate(
         surface_handle,
-        width,
-        height,
-        fill_rgb,
-        ui::ACCENT_DIM,
-        app_title(app_id),
-        &["LAUNCHING", "PLEASE WAIT"],
-    );
-    let _ = rt::surface_set_visibility(surface_handle, true);
+        rt::rights::SEND | rt::rights::RECEIVE | rt::rights::DUPLICATE | rt::rights::TRANSFER,
+    )?;
+    let control = rt::channel_create()?;
 
     let task_handle = rt::manager_launch_program_with_payload(
         state.bootstrap,
-        state.apps[slot_index].image_id,
-        &[surface_id as u64, width as u64, height as u64],
-        &[StartupHandle {
-            handle: surface_handle,
-            rights: rt::rights::SEND
-                | rt::rights::RECEIVE
-                | rt::rights::DUPLICATE
-                | rt::rights::TRANSFER,
-        }],
+        state.apps[index].image_id,
+        &[surface_id as u64, width as u64, height as u64, 1],
+        &[
+            StartupHandle {
+                handle: surface_transfer,
+                rights: rt::rights::SEND
+                    | rt::rights::RECEIVE
+                    | rt::rights::DUPLICATE
+                    | rt::rights::TRANSFER,
+            },
+            StartupHandle {
+                handle: control.second,
+                rights: rt::rights::SEND
+                    | rt::rights::RECEIVE
+                    | rt::rights::DUPLICATE
+                    | rt::rights::TRANSFER,
+            },
+        ],
     )?;
+    let _ = rt::handle_close(surface_transfer);
+    let _ = rt::handle_close(control.second);
 
-    state.apps[slot_index].task_handle = task_handle;
-    state.apps[slot_index].surface_id = surface_id;
-    state.apps[slot_index].running = true;
-    let _ = focus_app(state, app_id)?;
+    state.apps[index].task_handle = task_handle;
+    state.apps[index].window = WindowState {
+        surface_id,
+        surface_handle,
+        control_handle: control.first,
+        x,
+        y,
+        width,
+        height,
+        z_order,
+        minimized: false,
+    };
+    state.apps[index].running = true;
+    sync_window_surface(&state.apps[index])?;
+    let _ = rt::app_control_resize(control.first, width, height);
+    let surface_id = focus_app(state, app_id)?;
     let _ = emit_log(
         state.log_handle,
         LogSeverity::Info,
@@ -415,18 +594,39 @@ fn launch_or_focus_app(state: &mut DesktopState, app_id: DesktopAppId) -> rt::Re
         app_id as u32 as u64,
         surface_id as u64,
     );
-    render_desktop(state)?;
     Ok(surface_id)
 }
 
 fn focus_app(state: &mut DesktopState, app_id: DesktopAppId) -> rt::Result<u32> {
-    let Some(slot_index) = app_slot_index(&state.apps, app_id) else {
+    let Some(index) = app_slot_index(&state.apps, app_id) else {
         return Err(rt::Error::NotFound);
     };
-    if !state.apps[slot_index].running || state.apps[slot_index].surface_id == 0 {
+    if !state.apps[index].running || state.apps[index].window.surface_id == 0 {
         return Err(rt::Error::NotFound);
     }
-    let surface_id = state.apps[slot_index].surface_id;
+    if state.apps[index].window.minimized {
+        state.apps[index].window.minimized = false;
+        sync_window_surface(&state.apps[index])?;
+    }
+
+    if let Some(previous) = state.focused_app {
+        if previous != app_id {
+            if let Some(previous_index) = app_slot_index(&state.apps, previous) {
+                let previous_control = state.apps[previous_index].window.control_handle;
+                if previous_control != rt::INVALID_HANDLE {
+                    let _ = rt::app_control_focus(previous_control, false);
+                }
+            }
+        }
+    }
+
+    state.apps[index].window.z_order = allocate_z_order(state);
+    apply_window_geometry(&state.apps[index])?;
+    let control_handle = state.apps[index].window.control_handle;
+    if control_handle != rt::INVALID_HANDLE {
+        let _ = rt::app_control_focus(control_handle, true);
+    }
+    let surface_id = state.apps[index].window.surface_id;
     let _ = rt::session_focus(state.session_handle, SESSION_ID, surface_id)?;
     state.focused_app = Some(app_id);
     let _ = emit_log(
@@ -440,6 +640,116 @@ fn focus_app(state: &mut DesktopState, app_id: DesktopAppId) -> rt::Result<u32> 
     Ok(surface_id)
 }
 
+fn minimize_app(state: &mut DesktopState, app_id: DesktopAppId) -> rt::Result<u32> {
+    let Some(index) = app_slot_index(&state.apps, app_id) else {
+        return Err(rt::Error::NotFound);
+    };
+    if !state.apps[index].running {
+        return Err(rt::Error::NotFound);
+    }
+    state.apps[index].window.minimized = true;
+    sync_window_surface(&state.apps[index])?;
+    if state.focused_app == Some(app_id) {
+        state.focused_app = None;
+        let _ = rt::session_focus(state.session_handle, SESSION_ID, 0);
+        let _ = focus_next_visible_without_cycle(state);
+    }
+    let _ = emit_text_log(
+        "desktop",
+        format_args!("window minimized app={}", app_title(app_id)),
+    );
+    render_desktop(state)?;
+    Ok(state.apps[index].window.surface_id)
+}
+
+fn restore_app(state: &mut DesktopState, app_id: DesktopAppId) -> rt::Result<u32> {
+    let Some(index) = app_slot_index(&state.apps, app_id) else {
+        return Err(rt::Error::NotFound);
+    };
+    if !state.apps[index].running {
+        return Err(rt::Error::NotFound);
+    }
+    state.apps[index].window.minimized = false;
+    sync_window_surface(&state.apps[index])?;
+    focus_app(state, app_id)
+}
+
+fn move_app(state: &mut DesktopState, app_id: DesktopAppId, x: i32, y: i32) -> rt::Result<u32> {
+    let Some(index) = app_slot_index(&state.apps, app_id) else {
+        return Err(rt::Error::NotFound);
+    };
+    if !state.apps[index].running {
+        return Err(rt::Error::NotFound);
+    }
+    state.apps[index].window.x = clamp_window_x(state.chrome.output_width, state.apps[index].window.width, x);
+    state.apps[index].window.y = clamp_window_y(state.chrome.output_height, state.apps[index].window.height, y);
+    apply_window_geometry(&state.apps[index])?;
+    render_desktop(state)?;
+    let _ = emit_text_log(
+        "desktop",
+        format_args!(
+            "window moved app={} x={} y={}",
+            app_title(app_id),
+            state.apps[index].window.x,
+            state.apps[index].window.y
+        ),
+    );
+    Ok(state.apps[index].window.surface_id)
+}
+
+fn resize_app(
+    state: &mut DesktopState,
+    app_id: DesktopAppId,
+    width: u32,
+    height: u32,
+) -> rt::Result<u32> {
+    let Some(index) = app_slot_index(&state.apps, app_id) else {
+        return Err(rt::Error::NotFound);
+    };
+    if !state.apps[index].running {
+        return Err(rt::Error::NotFound);
+    }
+    let width = width.clamp(WINDOW_MIN_WIDTH, state.chrome.output_width.saturating_sub(PANEL_MARGIN));
+    let height = height.clamp(
+        WINDOW_MIN_HEIGHT,
+        state.chrome
+            .output_height
+            .saturating_sub(TOPBAR_HEIGHT + PANEL_MARGIN),
+    );
+    state.apps[index].window.width = width;
+    state.apps[index].window.height = height;
+    state.apps[index].window.x =
+        clamp_window_x(state.chrome.output_width, width, state.apps[index].window.x);
+    state.apps[index].window.y =
+        clamp_window_y(state.chrome.output_height, height, state.apps[index].window.y);
+    apply_window_geometry(&state.apps[index])?;
+    let control_handle = state.apps[index].window.control_handle;
+    if control_handle != rt::INVALID_HANDLE {
+        let _ = rt::app_control_resize(control_handle, width, height);
+    }
+    render_desktop(state)?;
+    let _ = emit_text_log(
+        "desktop",
+        format_args!("window resized app={} size={}x{}", app_title(app_id), width, height),
+    );
+    Ok(state.apps[index].window.surface_id)
+}
+
+fn close_app(state: &mut DesktopState, app_id: DesktopAppId) -> rt::Result<()> {
+    let Some(index) = app_slot_index(&state.apps, app_id) else {
+        return Err(rt::Error::NotFound);
+    };
+    if !state.apps[index].running {
+        return Err(rt::Error::NotFound);
+    }
+    let control_handle = state.apps[index].window.control_handle;
+    if control_handle != rt::INVALID_HANDLE {
+        let _ = rt::app_control_close(control_handle);
+    }
+    let _ = emit_text_log("desktop", format_args!("window close requested app={}", app_title(app_id)));
+    Ok(())
+}
+
 fn refresh_apps(state: &mut DesktopState) -> rt::Result<()> {
     let mut changed = false;
     for slot in &mut state.apps {
@@ -451,11 +761,18 @@ fn refresh_apps(state: &mut DesktopState) -> rt::Result<()> {
             continue;
         }
         let exited_app = slot.app_id;
-        let exited_surface = slot.surface_id;
+        let exited_surface = slot.window.surface_id;
         let exit_code = status.exit_code;
+        if slot.window.surface_handle != rt::INVALID_HANDLE {
+            let _ = rt::surface_close(slot.window.surface_handle);
+            let _ = rt::handle_close(slot.window.surface_handle);
+        }
+        if slot.window.control_handle != rt::INVALID_HANDLE {
+            let _ = rt::handle_close(slot.window.control_handle);
+        }
         let _ = rt::handle_close(slot.task_handle);
         slot.task_handle = rt::INVALID_HANDLE;
-        slot.surface_id = 0;
+        slot.window = WindowState::empty();
         slot.running = false;
         if state.focused_app == Some(exited_app) {
             state.focused_app = None;
@@ -472,6 +789,7 @@ fn refresh_apps(state: &mut DesktopState) -> rt::Result<()> {
         changed = true;
     }
     if changed {
+        let _ = focus_next_visible_without_cycle(state);
         render_desktop(state)?;
     }
     Ok(())
@@ -486,7 +804,7 @@ fn render_desktop(state: &mut DesktopState) -> rt::Result<()> {
     let _ = write!(&mut running_buf, "RUNNING {}", status_snapshot.running_apps);
     let running_text = str::from_utf8(running_buf.as_bytes()).unwrap_or("RUNNING ?");
 
-    let mut focus_buf = FixedLogBuffer::<32>::new();
+    let mut focus_buf = FixedLogBuffer::<40>::new();
     let _ = write!(
         &mut focus_buf,
         "FOCUS {}",
@@ -497,6 +815,17 @@ fn render_desktop(state: &mut DesktopState) -> rt::Result<()> {
     let mut network_buf = FixedLogBuffer::<48>::new();
     write_network_status(&mut network_buf, status_snapshot.ipv4_address);
     let network_text = str::from_utf8(network_buf.as_bytes()).unwrap_or("NET OFFLINE");
+
+    let mut pointer_buf = FixedLogBuffer::<40>::new();
+    let _ = write!(
+        &mut pointer_buf,
+        "POINTER {},{} {:?}",
+        status_snapshot.pointer_x,
+        status_snapshot.pointer_y,
+        status_snapshot.drag_mode
+    );
+    let pointer_text = str::from_utf8(pointer_buf.as_bytes()).unwrap_or("POINTER ?");
+
     ui::render_panel(
         state.chrome.topbar_handle,
         state.chrome.output_width,
@@ -505,23 +834,20 @@ fn render_desktop(state: &mut DesktopState) -> rt::Result<()> {
         &[running_text, focus_text, network_text],
     )?;
 
-    let mut app_lines = [
+    let launcher_lines = [
         "LAUNCHER",
-        "SETTINGS OFF",
-        "FILES OFF",
-        "MONITOR OFF",
-        "SERIAL: DESKTOP LAUNCH",
-        "SERIAL: DESKTOP FOCUS",
+        launcher_line(state.apps[0]),
+        launcher_line(state.apps[1]),
+        launcher_line(state.apps[2]),
+        "CLICK ITEMS OR USE SHELL",
+        "DRAG TITLEBAR / GRIP",
     ];
-    for (index, slot) in state.apps.iter().copied().enumerate() {
-        app_lines[index + 1] = app_state_label(slot.app_id, slot.running);
-    }
     ui::render_panel(
         state.chrome.launcher_handle,
         LAUNCHER_WIDTH,
-        248,
+        264,
         "LAUNCHER",
-        &app_lines,
+        &launcher_lines,
     )?;
 
     let mut hb_buf = FixedLogBuffer::<32>::new();
@@ -542,6 +868,7 @@ fn render_desktop(state: &mut DesktopState) -> rt::Result<()> {
             (heartbeat_text, ui::STATUS_OK),
             (tick_text, ui::TEXT_SECONDARY),
             (focus_text, ui::TEXT_SECONDARY),
+            (pointer_text, ui::TEXT_MUTED),
         ],
     )?;
 
@@ -571,7 +898,374 @@ fn sample_desktop_status(state: &DesktopState) -> DesktopStatusSnapshot {
         heartbeat_count,
         heartbeat_tick,
         ipv4_address,
+        pointer_x: state.pointer_x,
+        pointer_y: state.pointer_y,
+        drag_mode: state
+            .drag_state
+            .map(|drag| drag.mode())
+            .unwrap_or(DesktopDragMode::None),
     }
+}
+
+fn handle_input(
+    state: &mut DesktopState,
+    action: DesktopInputAction,
+    x: i32,
+    y: i32,
+) -> rt::Result<u32> {
+    state.pointer_x = x;
+    state.pointer_y = y;
+    let result = match action {
+        DesktopInputAction::PointerDown => handle_pointer_down(state, x, y),
+        DesktopInputAction::PointerMove => handle_pointer_move(state, x, y),
+        DesktopInputAction::PointerUp => {
+            state.drag_state = None;
+            Ok(focused_surface_id(state))
+        }
+        DesktopInputAction::Click => {
+            let _ = handle_pointer_down(state, x, y)?;
+            state.drag_state = None;
+            Ok(focused_surface_id(state))
+        }
+    }?;
+    render_desktop(state)?;
+    Ok(result)
+}
+
+fn handle_pointer_down(state: &mut DesktopState, x: i32, y: i32) -> rt::Result<u32> {
+    match hit_test(state, x, y) {
+        HitTarget::Background => {
+            state.drag_state = None;
+            Ok(focused_surface_id(state))
+        }
+        HitTarget::Launcher(app_id) => launch_or_focus_app(state, app_id),
+        HitTarget::WindowContent(app_id) => {
+            state.drag_state = None;
+            focus_app(state, app_id)
+        }
+        HitTarget::WindowMove {
+            app_id,
+            grab_offset_x,
+            grab_offset_y,
+        } => {
+            let surface_id = focus_app(state, app_id)?;
+            state.drag_state = Some(DragState::Move {
+                app_id,
+                grab_offset_x,
+                grab_offset_y,
+            });
+            Ok(surface_id)
+        }
+        HitTarget::WindowResize {
+            app_id,
+            origin_x,
+            origin_y,
+        } => {
+            let surface_id = focus_app(state, app_id)?;
+            let index = app_slot_index(&state.apps, app_id).ok_or(rt::Error::NotFound)?;
+            state.drag_state = Some(DragState::Resize {
+                app_id,
+                origin_x,
+                origin_y,
+                start_width: state.apps[index].window.width,
+                start_height: state.apps[index].window.height,
+            });
+            Ok(surface_id)
+        }
+        HitTarget::WindowClose(app_id) => {
+            close_app(state, app_id)?;
+            Ok(focused_surface_id(state))
+        }
+        HitTarget::WindowMinimize(app_id) => minimize_app(state, app_id),
+    }
+}
+
+fn handle_pointer_move(state: &mut DesktopState, x: i32, y: i32) -> rt::Result<u32> {
+    match state.drag_state {
+        Some(DragState::Move {
+            app_id,
+            grab_offset_x,
+            grab_offset_y,
+        }) => move_app(state, app_id, x - grab_offset_x, y - grab_offset_y),
+        Some(DragState::Resize {
+            app_id,
+            origin_x,
+            origin_y,
+            start_width,
+            start_height,
+        }) => {
+            let delta_x = (x - origin_x).max(-(start_width as i32) + WINDOW_MIN_WIDTH as i32);
+            let delta_y = (y - origin_y).max(-(start_height as i32) + WINDOW_MIN_HEIGHT as i32);
+            resize_app(
+                state,
+                app_id,
+                (start_width as i32 + delta_x) as u32,
+                (start_height as i32 + delta_y) as u32,
+            )
+        }
+        None => Ok(focused_surface_id(state)),
+    }
+}
+
+fn sort_app_ids_by_z(state: &DesktopState, values: &mut [DesktopAppId]) {
+    let mut index = 1usize;
+    while index < values.len() {
+        let current = values[index];
+        let current_z = app_slot_index(&state.apps, current)
+            .map(|slot_index| state.apps[slot_index].window.z_order)
+            .unwrap_or(0);
+        let mut scan = index;
+        while scan > 0 {
+            let prev = values[scan - 1];
+            let prev_z = app_slot_index(&state.apps, prev)
+                .map(|slot_index| state.apps[slot_index].window.z_order)
+                .unwrap_or(0);
+            if prev_z <= current_z {
+                break;
+            }
+            values[scan] = prev;
+            scan -= 1;
+        }
+        values[scan] = current;
+        index += 1;
+    }
+}
+
+fn hit_test(state: &DesktopState, x: i32, y: i32) -> HitTarget {
+    if let Some(app_id) = launcher_hit_app(state, x, y) {
+        return HitTarget::Launcher(app_id);
+    }
+
+    let mut order = [DesktopAppId::Settings; APP_COUNT];
+    let mut count = 0usize;
+    for slot in state.apps.iter().copied() {
+        if slot.running && slot.window.visible() {
+            order[count] = slot.app_id;
+            count += 1;
+        }
+    }
+    sort_app_ids_by_z(state, &mut order[..count]);
+
+    for app_id in order[..count].iter().copied().rev() {
+        let index = app_slot_index(&state.apps, app_id).unwrap();
+        let window = state.apps[index].window;
+        if x < window.x
+            || y < window.y
+            || x >= window.x + window.width as i32
+            || y >= window.y + window.height as i32
+        {
+            continue;
+        }
+
+        let local_x = x - window.x;
+        let local_y = y - window.y;
+        if local_y < ui::TITLEBAR_HEIGHT as i32 {
+            let close_left =
+                window.width as i32 - ui::WINDOW_BUTTON_RIGHT_MARGIN - ui::WINDOW_BUTTON_SIZE as i32;
+            let minimize_left = close_left - ui::WINDOW_BUTTON_GAP - ui::WINDOW_BUTTON_SIZE as i32;
+            if local_x >= close_left && local_x < close_left + ui::WINDOW_BUTTON_SIZE as i32 {
+                return HitTarget::WindowClose(app_id);
+            }
+            if local_x >= minimize_left
+                && local_x < minimize_left + ui::WINDOW_BUTTON_SIZE as i32
+            {
+                return HitTarget::WindowMinimize(app_id);
+            }
+            return HitTarget::WindowMove {
+                app_id,
+                grab_offset_x: local_x,
+                grab_offset_y: local_y,
+            };
+        }
+
+        if local_x >= window.width as i32 - RESIZE_GRIP_SIZE
+            && local_y >= window.height as i32 - RESIZE_GRIP_SIZE
+        {
+            return HitTarget::WindowResize {
+                app_id,
+                origin_x: x,
+                origin_y: y,
+            };
+        }
+
+        return HitTarget::WindowContent(app_id);
+    }
+
+    HitTarget::Background
+}
+
+fn launcher_hit_app(state: &DesktopState, x: i32, y: i32) -> Option<DesktopAppId> {
+    let launcher_x = PANEL_MARGIN as i32;
+    let launcher_y = (TOPBAR_HEIGHT + PANEL_MARGIN) as i32;
+    if x < launcher_x
+        || y < launcher_y
+        || x >= launcher_x + LAUNCHER_WIDTH as i32
+        || y >= launcher_y + 264
+    {
+        return None;
+    }
+
+    let local_y = y - launcher_y;
+    let row = (local_y - LAUNCHER_ITEM_START_Y) / LAUNCHER_ITEM_STEP;
+    match row {
+        0 => Some(state.apps[0].app_id),
+        1 => Some(state.apps[1].app_id),
+        2 => Some(state.apps[2].app_id),
+        _ => None,
+    }
+}
+
+fn focus_next_app(state: &mut DesktopState) -> rt::Result<u32> {
+    let mut candidates = [DesktopAppId::Settings; APP_COUNT];
+    let mut count = 0usize;
+    for slot in state.apps.iter().copied() {
+        if slot.running && slot.window.visible() {
+            candidates[count] = slot.app_id;
+            count += 1;
+        }
+    }
+    if count == 0 {
+        return Err(rt::Error::NotFound);
+    }
+    sort_app_ids_by_z(state, &mut candidates[..count]);
+
+    let next = if let Some(current) = state.focused_app {
+        let current_index = candidates[..count]
+            .iter()
+            .position(|candidate| *candidate == current)
+            .unwrap_or(usize::MAX);
+        if current_index == usize::MAX {
+            candidates[count - 1]
+        } else {
+            candidates[(current_index + 1) % count]
+        }
+    } else {
+        candidates[count - 1]
+    };
+    focus_app(state, next)
+}
+
+fn focus_next_visible_without_cycle(state: &mut DesktopState) -> rt::Result<u32> {
+    let mut best: Option<(u32, DesktopAppId)> = None;
+    for slot in state.apps.iter().copied() {
+        if !slot.running || !slot.window.visible() {
+            continue;
+        }
+        match best {
+            Some((z_order, _)) if z_order >= slot.window.z_order => {}
+            _ => best = Some((slot.window.z_order, slot.app_id)),
+        }
+    }
+    match best {
+        Some((_, app_id)) => focus_app(state, app_id),
+        None => Ok(0),
+    }
+}
+
+fn encode_window_page(state: &DesktopState, start: usize, reply: &mut RawMessage) {
+    let mut windows = [WindowState::empty(); APP_COUNT];
+    let mut app_ids = [DesktopAppId::Settings; APP_COUNT];
+    let mut total = 0usize;
+    for slot in state.apps.iter().copied() {
+        if !slot.running || slot.window.surface_id == 0 {
+            continue;
+        }
+        windows[total] = slot.window;
+        app_ids[total] = slot.app_id;
+        total += 1;
+    }
+    for index in 0..total {
+        let mut best = index;
+        for candidate in index + 1..total {
+            if windows[candidate].z_order < windows[best].z_order {
+                best = candidate;
+            }
+        }
+        windows.swap(index, best);
+        app_ids.swap(index, best);
+    }
+
+    let mut returned = 0usize;
+    for index in start..total.min(start + WINDOW_PAGE_SIZE) {
+        let base = 3 + returned * 5;
+        let app_id = app_ids[index];
+        let window = windows[index];
+        reply.words[base] = app_id as u32 as u64;
+        reply.words[base + 1] = window.surface_id as u64;
+        reply.words[base + 2] = pack_window_flags(
+            window.z_order,
+            state.focused_app == Some(app_id),
+            window.minimized,
+            window.visible(),
+        );
+        reply.words[base + 3] = pack_i32_pair(window.x, window.y);
+        reply.words[base + 4] = pack_u32_pair(window.width, window.height);
+        returned += 1;
+    }
+    reply.words[1] = returned as u64;
+    reply.words[2] = if start + returned >= total {
+        u32::MAX as u64
+    } else {
+        (start + returned) as u64
+    };
+    reply.word_count = (3 + returned * 5) as u32;
+}
+
+fn apply_window_geometry(slot: &AppSlot) -> rt::Result<()> {
+    rt::surface_set_geometry(
+        slot.window.surface_handle,
+        slot.window.x,
+        slot.window.y,
+        slot.window.width,
+        slot.window.height,
+        slot.window.z_order,
+    )
+}
+
+fn sync_window_surface(slot: &AppSlot) -> rt::Result<()> {
+    apply_window_geometry(slot)?;
+    rt::surface_set_visibility(slot.window.surface_handle, slot.window.visible())
+}
+
+fn allocate_z_order(state: &mut DesktopState) -> u32 {
+    let z_order = state.next_z_order;
+    state.next_z_order = state.next_z_order.saturating_add(1);
+    z_order
+}
+
+fn focused_surface_id(state: &DesktopState) -> u32 {
+    state
+        .focused_app
+        .and_then(|app_id| app_slot_index(&state.apps, app_id))
+        .map(|index| state.apps[index].window.surface_id)
+        .unwrap_or(0)
+}
+
+fn initial_window_layout(output_width: u32, app_id: DesktopAppId) -> (i32, i32, u32, u32, u32) {
+    match app_id {
+        DesktopAppId::Settings => (292, 92, 420, 240, ui::BG_WINDOW),
+        DesktopAppId::Files => (336, 168, 560, 276, ui::BG_WINDOW_ALT),
+        DesktopAppId::Monitor => (
+            output_width.saturating_sub(500 + PANEL_MARGIN) as i32,
+            108,
+            480,
+            240,
+            ui::BG_WINDOW,
+        ),
+    }
+}
+
+fn clamp_window_x(output_width: u32, width: u32, requested: i32) -> i32 {
+    let max_x = output_width.saturating_sub(width + PANEL_MARGIN) as i32;
+    requested.clamp(PANEL_MARGIN as i32, max_x.max(PANEL_MARGIN as i32))
+}
+
+fn clamp_window_y(output_height: u32, height: u32, requested: i32) -> i32 {
+    let min_y = (TOPBAR_HEIGHT + PANEL_MARGIN) as i32;
+    let max_y = output_height
+        .saturating_sub(height + PANEL_MARGIN)
+        .max(TOPBAR_HEIGHT + PANEL_MARGIN) as i32;
+    requested.clamp(min_y, max_y)
 }
 
 fn write_network_status(buffer: &mut FixedLogBuffer<48>, ipv4_address: u32) {
@@ -589,27 +1283,26 @@ fn write_network_status(buffer: &mut FixedLogBuffer<48>, ipv4_address: u32) {
     );
 }
 
-fn app_layout(output_width: u32, app_id: DesktopAppId) -> (i32, i32, u32, u32, u32, u32) {
-    match app_id {
-        DesktopAppId::Settings => (290, 84, 400, 220, 10, ui::BG_WINDOW),
-        DesktopAppId::Files => (290, 324, 540, 240, 11, ui::BG_WINDOW_ALT),
-        DesktopAppId::Monitor => (
-            (output_width.saturating_sub(480 + PANEL_MARGIN)) as i32,
-            84,
-            460,
-            220,
-            12,
-            ui::BG_WINDOW,
-        ),
+fn launcher_line(slot: AppSlot) -> &'static str {
+    match (slot.app_id, slot.running, slot.window.minimized) {
+        (DesktopAppId::Settings, true, false) => "SETTINGS RUN",
+        (DesktopAppId::Settings, true, true) => "SETTINGS MIN",
+        (DesktopAppId::Settings, false, _) => "SETTINGS OFF",
+        (DesktopAppId::Files, true, false) => "FILES RUN",
+        (DesktopAppId::Files, true, true) => "FILES MIN",
+        (DesktopAppId::Files, false, _) => "FILES OFF",
+        (DesktopAppId::Monitor, true, false) => "MONITOR RUN",
+        (DesktopAppId::Monitor, true, true) => "MONITOR MIN",
+        (DesktopAppId::Monitor, false, _) => "MONITOR OFF",
     }
-}
-
-fn app_slot_index(apps: &[AppSlot; APP_COUNT], app_id: DesktopAppId) -> Option<usize> {
-    apps.iter().position(|slot| slot.app_id == app_id)
 }
 
 fn running_app_count(apps: &[AppSlot; APP_COUNT]) -> usize {
     apps.iter().filter(|slot| slot.running).count()
+}
+
+fn app_slot_index(apps: &[AppSlot; APP_COUNT], app_id: DesktopAppId) -> Option<usize> {
+    apps.iter().position(|slot| slot.app_id == app_id)
 }
 
 fn desktop_app_from_word(value: u64) -> Option<DesktopAppId> {
@@ -617,6 +1310,29 @@ fn desktop_app_from_word(value: u64) -> Option<DesktopAppId> {
         x if x == DesktopAppId::Settings as u32 => Some(DesktopAppId::Settings),
         x if x == DesktopAppId::Files as u32 => Some(DesktopAppId::Files),
         x if x == DesktopAppId::Monitor as u32 => Some(DesktopAppId::Monitor),
+        _ => None,
+    }
+}
+
+fn desktop_window_action_from_word(value: u64) -> Option<DesktopWindowAction> {
+    match value as u32 {
+        x if x == DesktopWindowAction::Focus as u32 => Some(DesktopWindowAction::Focus),
+        x if x == DesktopWindowAction::Close as u32 => Some(DesktopWindowAction::Close),
+        x if x == DesktopWindowAction::Minimize as u32 => Some(DesktopWindowAction::Minimize),
+        x if x == DesktopWindowAction::Restore as u32 => Some(DesktopWindowAction::Restore),
+        x if x == DesktopWindowAction::Move as u32 => Some(DesktopWindowAction::Move),
+        x if x == DesktopWindowAction::Resize as u32 => Some(DesktopWindowAction::Resize),
+        x if x == DesktopWindowAction::FocusNext as u32 => Some(DesktopWindowAction::FocusNext),
+        _ => None,
+    }
+}
+
+fn desktop_input_action_from_word(value: u64) -> Option<DesktopInputAction> {
+    match value as u32 {
+        x if x == DesktopInputAction::PointerDown as u32 => Some(DesktopInputAction::PointerDown),
+        x if x == DesktopInputAction::PointerMove as u32 => Some(DesktopInputAction::PointerMove),
+        x if x == DesktopInputAction::PointerUp as u32 => Some(DesktopInputAction::PointerUp),
+        x if x == DesktopInputAction::Click as u32 => Some(DesktopInputAction::Click),
         _ => None,
     }
 }
@@ -629,15 +1345,26 @@ fn app_title(app_id: DesktopAppId) -> &'static str {
     }
 }
 
-fn app_state_label(app_id: DesktopAppId, running: bool) -> &'static str {
-    match (app_id, running) {
-        (DesktopAppId::Settings, true) => "SETTINGS RUN",
-        (DesktopAppId::Settings, false) => "SETTINGS OFF",
-        (DesktopAppId::Files, true) => "FILES RUN",
-        (DesktopAppId::Files, false) => "FILES OFF",
-        (DesktopAppId::Monitor, true) => "MONITOR RUN",
-        (DesktopAppId::Monitor, false) => "MONITOR OFF",
+fn pack_window_flags(z_order: u32, focused: bool, minimized: bool, visible: bool) -> u64 {
+    let mut flags = (z_order as u64) << 32;
+    if focused {
+        flags |= 0x1;
     }
+    if minimized {
+        flags |= 0x2;
+    }
+    if visible {
+        flags |= 0x4;
+    }
+    flags
+}
+
+fn pack_i32_pair(first: i32, second: i32) -> u64 {
+    (first as u32 as u64) | ((second as u32 as u64) << 32)
+}
+
+fn pack_u32_pair(first: u32, second: u32) -> u64 {
+    first as u64 | ((second as u64) << 32)
 }
 
 fn poll_lifecycle(bootstrap: rt::Handle) -> rt::Result<bool> {
@@ -681,4 +1408,8 @@ fn emit_log(
         arg0,
         arg1,
     )
+}
+
+fn emit_text_log(domain: &str, args: core::fmt::Arguments<'_>) -> rt::Result<()> {
+    rt::write_logf(domain, args)
 }

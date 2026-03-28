@@ -5,7 +5,7 @@ use core::str;
 
 use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
-use rt::{ControlTag, LifecycleEvent, LogDomain, LogEvent, LogSeverity, RawMessage, ServiceId};
+use rt::{AppControlTag, ControlTag, LifecycleEvent, RawMessage};
 
 rt::entry!(main);
 
@@ -15,34 +15,39 @@ fn main() -> u64 {
     if rt::channel_receive_blocking(bootstrap, &mut startup).is_err() {
         return 0xf101;
     }
-    if startup.tag != ControlTag::Startup as u32 || startup.handle_count < 3 || startup.word_count < 3 {
+    if startup.tag != ControlTag::Startup as u32 || startup.handle_count < 3 || startup.word_count < 4 {
         return 0xf102;
     }
 
     let surface_handle = startup.handles[0];
-    let log_handle = startup.handles[1];
+    let control_handle = startup.handles[1];
     let storage_handle = startup.handles[2];
     let width = startup.words[1] as u32;
     let height = startup.words[2] as u32;
+    let mut focused = startup.words[3] != 0;
+    let mut width = width;
+    let mut height = height;
 
-    if render(surface_handle, width, height, storage_handle).is_err() {
+    if render(surface_handle, width, height, focused, storage_handle).is_err() {
         return 0xf103;
     }
-    let _ = rt::send_log_record(
-        log_handle,
-        ServiceId::DesktopShell,
-        LogSeverity::Info,
-        LogDomain::App,
-        LogEvent::AppRendered,
-        2,
-        startup.words[0],
-    );
-
     loop {
         match poll_lifecycle(bootstrap) {
             Ok(true) => return 0,
             Ok(false) => {}
             Err(_) => return 0xf104,
+        }
+        match poll_control(
+            control_handle,
+            surface_handle,
+            &mut width,
+            &mut height,
+            &mut focused,
+            storage_handle,
+        ) {
+            Ok(ControlFlow::Continue) => {}
+            Ok(ControlFlow::Exit) => return 0,
+            Err(_) => return 0xf106,
         }
         if rt::yield_current().is_err() {
             return 0xf105;
@@ -54,6 +59,7 @@ fn render(
     surface_handle: rt::Handle,
     width: u32,
     height: u32,
+    focused: bool,
     storage_handle: rt::Handle,
 ) -> rt::Result<()> {
     let mut path_bytes = [[0u8; 64]; 4];
@@ -81,7 +87,7 @@ fn render(
     let line2 = file_line_text(line_states[2], &path_bytes[2], path_lens[2]);
     let line3 = file_line_text(line_states[3], &path_bytes[3], path_lens[3]);
 
-    ui::render_window(
+    ui::render_window_state(
         surface_handle,
         width,
         height,
@@ -89,7 +95,41 @@ fn render(
         ui::ACCENT_DIM,
         "FILES",
         &[line0, line1, line2, line3],
+        focused,
     )
+}
+
+enum ControlFlow {
+    Continue,
+    Exit,
+}
+
+fn poll_control(
+    control_handle: rt::Handle,
+    surface_handle: rt::Handle,
+    width: &mut u32,
+    height: &mut u32,
+    focused: &mut bool,
+    storage_handle: rt::Handle,
+) -> rt::Result<ControlFlow> {
+    let mut message = RawMessage::empty(0);
+    match rt::channel_receive_nonblocking(control_handle, &mut message) {
+        Ok(()) if message.tag == AppControlTag::FocusChanged as u32 && message.word_count > 0 => {
+            *focused = message.words[0] != 0;
+            render(surface_handle, *width, *height, *focused, storage_handle)?;
+            Ok(ControlFlow::Continue)
+        }
+        Ok(()) if message.tag == AppControlTag::Resize as u32 && message.word_count >= 2 => {
+            *width = message.words[0] as u32;
+            *height = message.words[1] as u32;
+            render(surface_handle, *width, *height, *focused, storage_handle)?;
+            Ok(ControlFlow::Continue)
+        }
+        Ok(()) if message.tag == AppControlTag::Close as u32 => Ok(ControlFlow::Exit),
+        Ok(()) => Ok(ControlFlow::Continue),
+        Err(rt::Error::QueueEmpty) => Ok(ControlFlow::Continue),
+        Err(error) => Err(error),
+    }
 }
 
 #[derive(Clone, Copy)]

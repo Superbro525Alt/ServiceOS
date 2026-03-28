@@ -5,7 +5,9 @@ use core::{fmt::Write, str};
 
 use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
-use rt::{ControlTag, FixedLogBuffer, LifecycleEvent, LogDomain, LogEvent, LogSeverity, RawMessage, ServiceId};
+use rt::{
+    AppControlTag, ControlTag, FixedLogBuffer, LifecycleEvent, RawMessage,
+};
 
 const REFRESH_TICKS: u64 = 100;
 
@@ -25,26 +27,19 @@ fn main() -> u64 {
     if rt::channel_receive_blocking(bootstrap, &mut startup).is_err() {
         return 0xf201;
     }
-    if startup.tag != ControlTag::Startup as u32 || startup.handle_count < 4 || startup.word_count < 3 {
+    if startup.tag != ControlTag::Startup as u32 || startup.handle_count < 4 || startup.word_count < 4 {
         return 0xf202;
     }
 
     let surface_handle = startup.handles[0];
-    let log_handle = startup.handles[1];
+    let control_handle = startup.handles[1];
     let status_handle = startup.handles[2];
     let network_handle = startup.handles[3];
     let width = startup.words[1] as u32;
     let height = startup.words[2] as u32;
-
-    let _ = rt::send_log_record(
-        log_handle,
-        ServiceId::DesktopShell,
-        LogSeverity::Info,
-        LogDomain::App,
-        LogEvent::AppRendered,
-        3,
-        startup.words[0],
-    );
+    let mut focused = startup.words[3] != 0;
+    let mut width = width;
+    let mut height = height;
 
     let mut next_refresh = 0u64;
     let mut last_snapshot: Option<MonitorSnapshot> = None;
@@ -55,11 +50,17 @@ fn main() -> u64 {
             Err(_) => return 0xf203,
         }
 
+        match poll_control(control_handle, &mut width, &mut height, &mut focused) {
+            Ok(ControlFlow::Continue) => {}
+            Ok(ControlFlow::Exit) => return 0,
+            Err(_) => return 0xf205,
+        }
+
         let now = rt::monotonic_now().unwrap_or(0);
         if now >= next_refresh {
             let snapshot = sample_snapshot(status_handle, network_handle);
             if last_snapshot != Some(snapshot) {
-                let _ = render(surface_handle, width, height, snapshot);
+                let _ = render(surface_handle, width, height, focused, snapshot);
                 last_snapshot = Some(snapshot);
             }
             next_refresh = now.saturating_add(REFRESH_TICKS);
@@ -75,6 +76,7 @@ fn render(
     surface_handle: rt::Handle,
     width: u32,
     height: u32,
+    focused: bool,
     snapshot: MonitorSnapshot,
 ) -> rt::Result<()> {
     let mut line0 = FixedLogBuffer::<48>::new();
@@ -101,7 +103,7 @@ fn render(
         let _ = write!(&mut line3, "LINK DOWN");
     }
 
-    ui::render_window(
+    ui::render_window_state(
         surface_handle,
         width,
         height,
@@ -114,7 +116,37 @@ fn render(
             str::from_utf8(line2.as_bytes()).unwrap_or("LAST ?"),
             str::from_utf8(line3.as_bytes()).unwrap_or("ADDR ?"),
         ],
+        focused,
     )
+}
+
+enum ControlFlow {
+    Continue,
+    Exit,
+}
+
+fn poll_control(
+    control_handle: rt::Handle,
+    width: &mut u32,
+    height: &mut u32,
+    focused: &mut bool,
+) -> rt::Result<ControlFlow> {
+    let mut message = RawMessage::empty(0);
+    match rt::channel_receive_nonblocking(control_handle, &mut message) {
+        Ok(()) if message.tag == AppControlTag::FocusChanged as u32 && message.word_count > 0 => {
+            *focused = message.words[0] != 0;
+            Ok(ControlFlow::Continue)
+        }
+        Ok(()) if message.tag == AppControlTag::Resize as u32 && message.word_count >= 2 => {
+            *width = message.words[0] as u32;
+            *height = message.words[1] as u32;
+            Ok(ControlFlow::Continue)
+        }
+        Ok(()) if message.tag == AppControlTag::Close as u32 => Ok(ControlFlow::Exit),
+        Ok(()) => Ok(ControlFlow::Continue),
+        Err(rt::Error::QueueEmpty) => Ok(ControlFlow::Continue),
+        Err(error) => Err(error),
+    }
 }
 
 fn sample_snapshot(status_handle: rt::Handle, network_handle: rt::Handle) -> MonitorSnapshot {

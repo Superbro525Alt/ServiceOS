@@ -5,7 +5,9 @@ use core::{fmt::Write, str};
 
 use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
-use rt::{ConfigKey, ControlTag, FixedLogBuffer, LifecycleEvent, LogDomain, LogEvent, LogSeverity, RawMessage, ServiceId};
+use rt::{
+    AppControlTag, ConfigKey, ControlTag, FixedLogBuffer, LifecycleEvent, RawMessage,
+};
 
 rt::entry!(main);
 
@@ -15,35 +17,42 @@ fn main() -> u64 {
     if rt::channel_receive_blocking(bootstrap, &mut startup).is_err() {
         return 0xf001;
     }
-    if startup.tag != ControlTag::Startup as u32 || startup.handle_count < 4 || startup.word_count < 3 {
+    if startup.tag != ControlTag::Startup as u32 || startup.handle_count < 4 || startup.word_count < 4 {
         return 0xf002;
     }
 
     let surface_handle = startup.handles[0];
-    let log_handle = startup.handles[1];
+    let control_handle = startup.handles[1];
     let config_handle = startup.handles[2];
     let network_handle = startup.handles[3];
     let width = startup.words[1] as u32;
     let height = startup.words[2] as u32;
+    let mut focused = startup.words[3] != 0;
 
-    if render(surface_handle, width, height, config_handle, network_handle).is_err() {
+    let mut width = width;
+    let mut height = height;
+
+    if render(surface_handle, width, height, focused, config_handle, network_handle).is_err() {
         return 0xf003;
     }
-    let _ = rt::send_log_record(
-        log_handle,
-        ServiceId::DesktopShell,
-        LogSeverity::Info,
-        LogDomain::App,
-        LogEvent::AppRendered,
-        1,
-        startup.words[0],
-    );
-
     loop {
         match poll_lifecycle(bootstrap) {
             Ok(true) => return 0,
             Ok(false) => {}
             Err(_) => return 0xf004,
+        }
+        match poll_control(
+            control_handle,
+            surface_handle,
+            &mut width,
+            &mut height,
+            &mut focused,
+            config_handle,
+            network_handle,
+        ) {
+            Ok(ControlFlow::Continue) => {}
+            Ok(ControlFlow::Exit) => return 0,
+            Err(_) => return 0xf006,
         }
         if rt::yield_current().is_err() {
             return 0xf005;
@@ -55,6 +64,7 @@ fn render(
     surface_handle: rt::Handle,
     width: u32,
     height: u32,
+    focused: bool,
     config_handle: rt::Handle,
     network_handle: rt::Handle,
 ) -> rt::Result<()> {
@@ -97,7 +107,7 @@ fn render(
         let _ = write!(&mut line3, "GATEWAY UNAVAILABLE");
     }
 
-    ui::render_window(
+    ui::render_window_state(
         surface_handle,
         width,
         height,
@@ -110,7 +120,42 @@ fn render(
             str::from_utf8(line2.as_bytes()).unwrap_or("IP ?"),
             str::from_utf8(line3.as_bytes()).unwrap_or("GATEWAY ?"),
         ],
+        focused,
     )
+}
+
+enum ControlFlow {
+    Continue,
+    Exit,
+}
+
+fn poll_control(
+    control_handle: rt::Handle,
+    surface_handle: rt::Handle,
+    width: &mut u32,
+    height: &mut u32,
+    focused: &mut bool,
+    config_handle: rt::Handle,
+    network_handle: rt::Handle,
+) -> rt::Result<ControlFlow> {
+    let mut message = RawMessage::empty(0);
+    match rt::channel_receive_nonblocking(control_handle, &mut message) {
+        Ok(()) if message.tag == AppControlTag::FocusChanged as u32 && message.word_count > 0 => {
+            *focused = message.words[0] != 0;
+            render(surface_handle, *width, *height, *focused, config_handle, network_handle)?;
+            Ok(ControlFlow::Continue)
+        }
+        Ok(()) if message.tag == AppControlTag::Resize as u32 && message.word_count >= 2 => {
+            *width = message.words[0] as u32;
+            *height = message.words[1] as u32;
+            render(surface_handle, *width, *height, *focused, config_handle, network_handle)?;
+            Ok(ControlFlow::Continue)
+        }
+        Ok(()) if message.tag == AppControlTag::Close as u32 => Ok(ControlFlow::Exit),
+        Ok(()) => Ok(ControlFlow::Continue),
+        Err(rt::Error::QueueEmpty) => Ok(ControlFlow::Continue),
+        Err(error) => Err(error),
+    }
 }
 
 fn poll_lifecycle(bootstrap: rt::Handle) -> rt::Result<bool> {

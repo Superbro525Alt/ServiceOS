@@ -1091,14 +1091,6 @@ fn append_launch_grants(
             append_service_launch_handle(
                 slots,
                 service_count,
-                ServiceId::Log,
-                rights::SEND | rights::TRANSFER,
-                startup,
-                handle_index,
-            )?;
-            append_service_launch_handle(
-                slots,
-                service_count,
                 ServiceId::Config,
                 rights::SEND | rights::TRANSFER,
                 startup,
@@ -1117,14 +1109,6 @@ fn append_launch_grants(
             append_service_launch_handle(
                 slots,
                 service_count,
-                ServiceId::Log,
-                rights::SEND | rights::TRANSFER,
-                startup,
-                handle_index,
-            )?;
-            append_service_launch_handle(
-                slots,
-                service_count,
                 ServiceId::Storage,
                 rights::SEND | rights::TRANSFER,
                 startup,
@@ -1132,14 +1116,6 @@ fn append_launch_grants(
             )?;
         }
         ServiceImageId::MonitorApp => {
-            append_service_launch_handle(
-                slots,
-                service_count,
-                ServiceId::Log,
-                rights::SEND | rights::TRANSFER,
-                startup,
-                handle_index,
-            )?;
             append_service_launch_handle(
                 slots,
                 service_count,

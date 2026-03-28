@@ -13,6 +13,11 @@ pub const TEXT_SECONDARY: u32 = 0xa6b9cf;
 pub const TEXT_MUTED: u32 = 0x6e8198;
 pub const STATUS_OK: u32 = 0x8de19d;
 pub const STATUS_WARN: u32 = 0xf2c36b;
+pub const TITLEBAR_HEIGHT: u32 = 28;
+pub const WINDOW_BUTTON_SIZE: u32 = 12;
+pub const WINDOW_BUTTON_TOP: i32 = 8;
+pub const WINDOW_BUTTON_RIGHT_MARGIN: i32 = 10;
+pub const WINDOW_BUTTON_GAP: i32 = 8;
 
 pub fn render_window(
     surface: rt::Handle,
@@ -23,24 +28,71 @@ pub fn render_window(
     title: &str,
     lines: &[&str],
 ) -> rt::Result<()> {
+    render_window_state(
+        surface,
+        width,
+        height,
+        background_rgb,
+        accent_rgb,
+        title,
+        lines,
+        true,
+    )
+}
+
+pub fn render_window_state(
+    surface: rt::Handle,
+    width: u32,
+    height: u32,
+    background_rgb: u32,
+    accent_rgb: u32,
+    title: &str,
+    lines: &[&str],
+    focused: bool,
+) -> rt::Result<()> {
+    let titlebar_rgb = if focused { accent_rgb } else { ACCENT_DIM };
     rt::surface_set_fill(surface, background_rgb)?;
     rt::surface_clear_scene(surface)?;
-    rt::surface_set_rect(surface, 0, 0, 0, width, 28, accent_rgb, true)?;
+    rt::surface_set_rect(surface, 0, 0, 0, width, TITLEBAR_HEIGHT, titlebar_rgb, true)?;
     rt::surface_set_rect(
         surface,
         1,
         0,
-        28,
+        TITLEBAR_HEIGHT as i32,
         width,
-        height.saturating_sub(28),
+        height.saturating_sub(TITLEBAR_HEIGHT),
         background_rgb,
         true,
     )?;
     rt::surface_set_label(surface, 0, 10, 9, TEXT_PRIMARY, title)?;
+    let close_x = width as i32 - WINDOW_BUTTON_RIGHT_MARGIN - WINDOW_BUTTON_SIZE as i32;
+    let minimize_x = close_x - WINDOW_BUTTON_GAP - WINDOW_BUTTON_SIZE as i32;
+    rt::surface_set_rect(
+        surface,
+        2,
+        minimize_x,
+        WINDOW_BUTTON_TOP,
+        WINDOW_BUTTON_SIZE,
+        WINDOW_BUTTON_SIZE,
+        TEXT_MUTED,
+        true,
+    )?;
+    rt::surface_set_rect(
+        surface,
+        3,
+        close_x,
+        WINDOW_BUTTON_TOP,
+        WINDOW_BUTTON_SIZE,
+        WINDOW_BUTTON_SIZE,
+        STATUS_WARN,
+        true,
+    )?;
+    rt::surface_set_label(surface, 14, minimize_x + 3, WINDOW_BUTTON_TOP + 2, BG_PANEL, "_")?;
+    rt::surface_set_label(surface, 15, close_x + 3, WINDOW_BUTTON_TOP + 2, BG_PANEL, "X")?;
     for (index, line) in lines.iter().copied().enumerate() {
         rt::surface_set_label(
             surface,
-            (index + 1) as u32,
+            (index + 1 + 4) as u32,
             12,
             42 + (index as i32 * 14),
             if index == 0 { TEXT_PRIMARY } else { TEXT_SECONDARY },
@@ -57,7 +109,7 @@ pub fn render_panel(
     title: &str,
     lines: &[&str],
 ) -> rt::Result<()> {
-    render_window(surface, width, height, BG_PANEL, ACCENT_DIM, title, lines)
+    render_window_state(surface, width, height, BG_PANEL, ACCENT_DIM, title, lines, true)
 }
 
 pub fn render_status_panel(

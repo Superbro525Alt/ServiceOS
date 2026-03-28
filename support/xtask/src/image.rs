@@ -86,8 +86,8 @@ fn create_raspi_bundle(
             "enable_uart=1",
             "kernel=kernel8.img",
             &device_tree_line,
-            "# ServiceOS Raspberry Pi 5 native bring-up image",
-            "# The userspace boot-store is staged under serviceos/bootstore.bin for later platform phases.",
+            "# ServiceOS Raspberry Pi 5 serial-first boot image",
+            "# The userspace boot-store is staged under serviceos/bootstore.bin and embedded into the Pi kernel image for early bootstrap.",
             "",
         ]
         .join("\n"),
@@ -95,7 +95,7 @@ fn create_raspi_bundle(
     fs::write(
         &readme,
         format!(
-            "ServiceOS Raspberry Pi 5 bring-up image\n\nProfile: {release_mode}\nPlatform: raspi5\n\nStaged files:\n- config.txt\n- kernel8.img\n- serviceos/bootstore.bin\n- serviceos/serviceos-kernel.elf\n\nDeployment:\n1. Copy the contents of this directory to a Raspberry Pi 5 FAT boot partition.\n2. If this directory does not include bcm2712-rpi-5-b.dtb, use an existing Pi boot partition that already has the matching DTB, or set RASPI5_DTB before running xtask image.\n3. Connect the Raspberry Pi 5 debug UART and power on.\n\nCurrent state:\n- native AArch64 entry, DTB parsing, memory discovery, and PL011 UART logging are implemented\n- full ServiceOS kernel/userspace bootstrap on Raspberry Pi 5 remains deferred to later platform bring-up work\n- graphics, input, networking, and storage backends remain x86_64/qemu-virtio only for now\n"
+            "ServiceOS Raspberry Pi 5 boot image\n\nProfile: {release_mode}\nPlatform: raspi5\n\nStaged files:\n- config.txt\n- kernel8.img\n- serviceos/bootstore.bin\n- serviceos/serviceos-kernel.elf\n\nDeployment:\n1. Copy the contents of this directory to a Raspberry Pi 5 FAT boot partition.\n2. If this directory does not include bcm2712-rpi-5-b.dtb, use an existing Pi boot partition that already has the matching DTB, or set RASPI5_DTB before running xtask image.\n3. Connect the Raspberry Pi 5 debug UART and power on.\n\nCurrent state:\n- native AArch64 entry, DTB parsing, memory discovery, and PL011 UART bring-up are implemented\n- the Pi path now reaches generic kernel initialization, embedded-boot-store image resolution, root-manager launch, and a serial-first userspace service graph\n- graphics, pointer/keyboard, networking, and writable storage backends remain deferred on Raspberry Pi 5\n"
         ),
     )?;
 

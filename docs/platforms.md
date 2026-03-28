@@ -49,14 +49,18 @@ Implemented today:
 - `xtask` platform selection and raw `kernel8.img` generation
 - Raspberry Pi firmware boot-partition staging with `config.txt`
 - DTB-backed memory discovery and stdout-UART resolution
-- PL011 debug-UART logging after native AArch64 entry
+- PL011 debug-UART logging and console input after native AArch64 entry
+- `arch/aarch64` MMU, trap, syscall, and EL0 user-thread bring-up
+- generic `kernel/core` initialization on Raspberry Pi 5
+- embedded boot-store image resolution and root-manager launch on Raspberry Pi 5
+- serial-first foundational service graph bring-up on Raspberry Pi 5:
+  `storage-service`, `console-service`, `config-service`, `log-service`,
+  `status-service`, `package-service`, and `shell-service`
 
 Still deferred:
 
-- full generic-kernel initialization on `aarch64`
-- real `aarch64` exception, MMU, syscall, and user-transition code
 - Raspberry Pi display, input, networking, and storage backends
-- userspace service bootstrap on Raspberry Pi 5
+- graphical and network-backed service graph expansion on Raspberry Pi 5
 
 ## Xtask model
 
@@ -82,8 +86,8 @@ Current behavior:
   the UEFI kernel image, the userspace catalog, and then creates a raw disk
   image
 - `raspi5` builds the aarch64 arch crate, the Raspberry Pi 5 platform crate,
-  the native Raspberry Pi image crate, the userspace catalog, and stages a Pi
-  boot-partition bundle with a real `kernel8.img`
+  the native Raspberry Pi image crate, the aarch64 userspace catalog, and
+  stages a Pi boot-partition bundle with a real `kernel8.img`
 
 ## Temporary but explicit gaps
 
@@ -93,3 +97,6 @@ Current behavior:
   main serial backend is already under `platform/x86_64/qemu_virtio`
 - the Raspberry Pi 5 target is a real native bring-up image, not a complete
   ServiceOS hardware port yet
+- the Raspberry Pi 5 path now boots through generic kernel init and root
+  userspace bootstrap, but it is still serial-first because no Pi framebuffer,
+  input, network, or writable storage backend is implemented yet

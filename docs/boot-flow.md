@@ -60,7 +60,7 @@ QEMU
 
 ## Secondary target bring-up
 
-`cargo xtask image --platform raspi5` now stages a real Raspberry Pi 5 bring-up
+`cargo xtask image --platform raspi5` now stages a real Raspberry Pi 5 boot
 image:
 
 - `config.txt`
@@ -76,20 +76,28 @@ The current control flow on that path is:
 Raspberry Pi firmware
   -> kernel8.img
     -> platform/aarch64/raspi5/image::_start
-      -> AArch64 stack setup and BSS clear
+      -> AArch64 stack setup, BSS clear, and EL2 -> EL1 drop when needed
       -> DTB parse through platform/aarch64/raspi5::dtb
       -> normalize memory ranges into BootInfo
       -> resolve the chosen stdout UART from the DTB
       -> initialize PL011 debug UART
-      -> log native bring-up state and halt
+      -> build AArch64 page tables and enable the MMU
+      -> install the EL1 exception vector
+      -> initialize generic kernel memory, object, IPC, scheduler, and syscall state
+      -> register UART-backed debug log and console hooks
+      -> resolve userspace images from the embedded boot-store
+      -> create the root userspace task and bootstrap channel
+      -> enter EL0
+      -> root manager starts the serial-first foundational service graph
+      -> shell-service opens the serial console session
 ```
 
 What is still deferred on that path:
 
-- full `kernel/core` initialization on `aarch64`
-- page-table, trap-table, syscall, and userspace transition bring-up
-- boot-store-backed root userspace bootstrap
-- Raspberry Pi graphics, input, networking, and storage backends
+- Raspberry Pi framebuffer backend
+- Raspberry Pi input backend beyond the debug UART console path
+- Raspberry Pi networking backend
+- writable storage or boot-store update path on Raspberry Pi
 
 ## What is intentionally deferred
 

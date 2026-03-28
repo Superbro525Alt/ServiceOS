@@ -184,10 +184,15 @@ Current `raspi5` image behavior:
 - builds `arch/aarch64`, `platform/aarch64/raspi5`, and the native Pi image
   crate
 - emits a real `kernel8.img` plus `serviceos/serviceos-kernel.elf`
-- stages `serviceos/bootstore.bin` for later platform work
+- stages `serviceos/bootstore.bin` and embeds the same boot-store into the Pi
+  kernel image for early userspace bootstrap
 - parses the Raspberry Pi DTB at boot to discover memory and the debug UART
-- logs native bring-up state over the Pi 5 debug UART
-- does not yet bring the full ServiceOS kernel/userspace stack up on Pi 5
+- brings up the `aarch64` MMU, EL1 trap/syscall path, and EL0 user-thread
+  execution path
+- initializes `kernel/core` and launches a serial-first userspace graph on the
+  Pi 5 debug UART
+- does not yet provide Raspberry Pi-native graphics, pointer/keyboard, network,
+  or writable storage backends
 
 ## What The System Can Do Right Now
 

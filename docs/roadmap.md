@@ -39,7 +39,7 @@
 - `platform/x86_64/qemu_virtio` for UEFI, serial, framebuffer, input, and
   VirtIO backend wiring
 - `arch/aarch64` and `platform/aarch64/raspi5` as first-class targets with a
-  native Raspberry Pi 5 bring-up image
+  native Raspberry Pi 5 image and serial-first userspace bootstrap
 - platform-first `xtask` build, image, and run selection
 - normalized `BootInfo` handoff into generic kernel initialization
 
@@ -71,9 +71,8 @@
 
 ## Next
 
-- extend the Raspberry Pi 5 bring-up path from native image + DTB + UART into
-  full `kernel/core` initialization, userspace bootstrap, and platform service
-  bring-up on `aarch64`
+- add Raspberry Pi 5 framebuffer, input, networking, and writable-boot-store
+  backends behind the current `platform/aarch64/raspi5` contracts
 - evolve the flat-image bootstrap into a richer executable-loading model when
   the current userspace service graph outgrows it
 - add writable storage and directory capabilities

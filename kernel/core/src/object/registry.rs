@@ -24,6 +24,7 @@ use super::{
 struct ObjectRegistryState {
     next_id: u64,
     live: BTreeMap<ObjectId, KernelObjectWeak>,
+    creates_since_gc: usize,
 }
 
 pub struct ObjectRegistry {
@@ -37,11 +38,14 @@ pub struct ObjectRegistrySnapshot {
 }
 
 impl ObjectRegistry {
+    pub(crate) const GC_CREATE_INTERVAL: usize = 64;
+
     pub fn new() -> Self {
         Self {
             state: Mutex::new(ObjectRegistryState {
                 next_id: 1,
                 live: BTreeMap::new(),
+                creates_since_gc: 0,
             }),
         }
     }
@@ -217,10 +221,7 @@ impl ObjectRegistry {
     }
 
     pub fn collect_garbage(&self) {
-        self.state
-            .lock()
-            .live
-            .retain(|_, object| object.strong_count() > 0);
+        collect_dead_objects(&mut self.state.lock());
     }
 
     pub fn snapshot(&self) -> ObjectRegistrySnapshot {
@@ -242,10 +243,17 @@ impl ObjectRegistry {
 
     fn register(&self, object: KernelObjectRecord) -> KernelObjectRef {
         let object = Arc::new(object);
-        self.state
-            .lock()
-            .live
-            .insert(object.id(), Arc::downgrade(&object));
+        let mut state = self.state.lock();
+        state.creates_since_gc = state.creates_since_gc.saturating_add(1);
+        if state.creates_since_gc >= Self::GC_CREATE_INTERVAL {
+            collect_dead_objects(&mut state);
+        }
+        state.live.insert(object.id(), Arc::downgrade(&object));
         object
     }
+}
+
+fn collect_dead_objects(state: &mut ObjectRegistryState) {
+    state.live.retain(|_, object| object.strong_count() > 0);
+    state.creates_since_gc = 0;
 }

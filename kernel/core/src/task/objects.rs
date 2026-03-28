@@ -80,14 +80,6 @@ impl TaskObject {
     }
 }
 
-impl Drop for TaskObject {
-    fn drop(&mut self) {
-        if let Some(runtime) = crate::user::runtime() {
-            runtime.release_task(self.id);
-        }
-    }
-}
-
 pub struct ThreadObject {
     id: ThreadId,
     state: Mutex<ThreadState>,
@@ -151,13 +143,5 @@ impl ThreadObject {
         thread_state.execution_state = state;
         thread_state.wait_target = wait_target;
         thread_state.last_wake_reason = wake_reason;
-    }
-}
-
-impl Drop for ThreadObject {
-    fn drop(&mut self) {
-        if let Some(runtime) = crate::user::runtime() {
-            runtime.release_thread(self.id);
-        }
     }
 }

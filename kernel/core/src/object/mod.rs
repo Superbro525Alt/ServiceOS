@@ -48,6 +48,21 @@ mod tests {
     }
 
     #[test]
+    fn registry_collects_stale_weak_entries_during_runtime_registration() {
+        let registry = ObjectRegistry::new();
+        for _ in 0..ObjectRegistry::GC_CREATE_INTERVAL {
+            let event = registry.create_event(false);
+            drop(event);
+        }
+
+        let fresh = registry.create_event(false);
+        let snapshot = registry.snapshot();
+
+        assert!(snapshot.tracked_objects <= 2);
+        assert!(registry.lookup(fresh.id()).is_some());
+    }
+
+    #[test]
     fn memory_object_reports_page_count() {
         let memory = MemoryObject::new(8193, true);
 

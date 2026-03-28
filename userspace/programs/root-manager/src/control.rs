@@ -313,6 +313,7 @@ fn handle_launch_request(
     if caller != ServiceId::Shell
         && caller != ServiceId::DesktopShell
         && caller != ServiceId::Runtime
+        && caller != ServiceId::Developer
     {
         reply.words[0] = ManagerStatus::Denied as u32 as u64;
         let result = rt::channel_send(slots[service_index].control_handle, &reply);
@@ -574,6 +575,7 @@ fn launch_is_authorized(caller: ServiceId, image_id: ServiceImageId) -> bool {
     match caller {
         ServiceId::Shell | ServiceId::Terminal => image_id == ServiceImageId::SysinfoTool,
         ServiceId::Runtime => image_id == ServiceImageId::PosixHostTool,
+        ServiceId::Developer => image_id == ServiceImageId::CrossBuilderTool,
         ServiceId::DesktopShell => matches!(
             image_id,
             ServiceImageId::SettingsApp

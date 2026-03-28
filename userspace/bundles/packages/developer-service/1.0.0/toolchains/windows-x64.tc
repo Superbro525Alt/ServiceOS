@@ -1,0 +1,5 @@
+name=windows-x64
+target=windows-x64
+state=installed
+format=pe32+
+sdk_root=packages/developer-service/1.0.0/sdk/windows

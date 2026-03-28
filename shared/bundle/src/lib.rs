@@ -11,9 +11,9 @@ pub const BOOT_STORE_INDEX_TEXT_MAX: usize = 2048;
 pub const BOOT_STORE_MANIFEST_TEXT_MAX: usize = 2048;
 pub const BOOT_STORE_MAX_DEPENDENCIES: usize = 12;
 pub const BOOT_STORE_MAX_GRANTS: usize = 4;
-pub const BOOT_STORE_MAX_LOOKUPS: usize = 12;
+pub const BOOT_STORE_MAX_LOOKUPS: usize = 16;
 pub const BOOT_STORE_MAX_RESOURCES: usize = 4;
-pub const BOOT_STORE_MAX_PACKAGE_CONTENTS: usize = 6;
+pub const BOOT_STORE_MAX_PACKAGE_CONTENTS: usize = 16;
 pub const BOOT_STORE_MAX_PACKAGE_DEPENDENCIES: usize = 4;
 
 #[repr(u32)]
@@ -539,6 +539,7 @@ fn parse_service_id(value: &str) -> Result<ServiceId, BootStoreError> {
         "terminal-service" => Ok(ServiceId::Terminal),
         "audio-service" => Ok(ServiceId::Audio),
         "runtime-service" => Ok(ServiceId::Runtime),
+        "developer-service" => Ok(ServiceId::Developer),
         _ => Err(BootStoreError::InvalidManifest),
     }
 }
@@ -564,6 +565,8 @@ fn parse_image_id(value: &str) -> Result<ServiceImageId, BootStoreError> {
         "audio-service" => Ok(ServiceImageId::AudioService),
         "runtime-service" => Ok(ServiceImageId::RuntimeService),
         "posix-host-tool" => Ok(ServiceImageId::PosixHostTool),
+        "developer-service" => Ok(ServiceImageId::DeveloperService),
+        "cross-builder-tool" => Ok(ServiceImageId::CrossBuilderTool),
         _ => Err(BootStoreError::InvalidManifest),
     }
 }

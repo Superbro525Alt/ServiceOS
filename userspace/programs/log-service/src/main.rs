@@ -253,6 +253,7 @@ fn service_id_from_word(value: u64) -> ServiceId {
         x if x == ServiceId::Terminal as u32 => ServiceId::Terminal,
         x if x == ServiceId::Audio as u32 => ServiceId::Audio,
         x if x == ServiceId::Runtime as u32 => ServiceId::Runtime,
+        x if x == ServiceId::Developer as u32 => ServiceId::Developer,
         _ => ServiceId::RootManager,
     }
 }
@@ -286,6 +287,7 @@ fn domain_from_word(value: u64) -> LogDomain {
         x if x == LogDomain::App as u32 => LogDomain::App,
         x if x == LogDomain::Audio as u32 => LogDomain::Audio,
         x if x == LogDomain::Runtime as u32 => LogDomain::Runtime,
+        x if x == LogDomain::Developer as u32 => LogDomain::Developer,
         _ => LogDomain::Service,
     }
 }
@@ -345,6 +347,11 @@ fn event_from_word(value: u64) -> LogEvent {
         x if x == LogEvent::RuntimeLaunchStarted as u32 => LogEvent::RuntimeLaunchStarted,
         x if x == LogEvent::RuntimeLaunchExited as u32 => LogEvent::RuntimeLaunchExited,
         x if x == LogEvent::RuntimeMappedRead as u32 => LogEvent::RuntimeMappedRead,
+        x if x == LogEvent::DeveloperCatalogLoaded as u32 => LogEvent::DeveloperCatalogLoaded,
+        x if x == LogEvent::DeveloperBuildStarted as u32 => LogEvent::DeveloperBuildStarted,
+        x if x == LogEvent::DeveloperBuildFinished as u32 => LogEvent::DeveloperBuildFinished,
+        x if x == LogEvent::DeveloperBuildFailed as u32 => LogEvent::DeveloperBuildFailed,
+        x if x == LogEvent::DeveloperArtifactOpened as u32 => LogEvent::DeveloperArtifactOpened,
         _ => LogEvent::LookupGranted,
     }
 }

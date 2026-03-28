@@ -11,7 +11,7 @@ use rt::{
 };
 
 const MAX_INDEX_BYTES: usize = 512;
-const MAX_PACKAGE_BYTES: usize = 512;
+const MAX_PACKAGE_BYTES: usize = 2048;
 const MAX_PACKAGE_SLOTS: usize = 4;
 const MAX_PACKAGE_VERSIONS: usize = 4;
 
@@ -796,6 +796,7 @@ fn service_id_from_word(value: u64) -> ServiceId {
         x if x == ServiceId::Terminal as u32 => ServiceId::Terminal,
         x if x == ServiceId::Audio as u32 => ServiceId::Audio,
         x if x == ServiceId::Runtime as u32 => ServiceId::Runtime,
+        x if x == ServiceId::Developer as u32 => ServiceId::Developer,
         _ => ServiceId::RootManager,
     }
 }

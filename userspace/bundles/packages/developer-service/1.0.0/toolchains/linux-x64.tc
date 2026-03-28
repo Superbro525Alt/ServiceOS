@@ -1,0 +1,5 @@
+name=linux-x64
+target=linux-x64
+state=installed
+format=elf64
+sdk_root=packages/developer-service/1.0.0/sdk/linux

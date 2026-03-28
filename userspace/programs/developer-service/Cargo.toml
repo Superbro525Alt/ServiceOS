@@ -1,0 +1,11 @@
+[package]
+name = "serviceos-developer-service"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "serviceos-developer-service"
+path = "src/main.rs"
+
+[dependencies]
+serviceos-userspace-runtime = { path = "../runtime" }

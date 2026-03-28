@@ -88,6 +88,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "serviceos-cross-builder-tool"
+version = "0.1.0"
+dependencies = [
+ "serviceos-userspace-runtime",
+]
+
+[[package]]
 name = "serviceos-desktop-shell-service"
 version = "0.1.0"
 dependencies = [
@@ -97,6 +104,13 @@ dependencies = [
 
 [[package]]
 name = "serviceos-desktop-ui"
+version = "0.1.0"
+dependencies = [
+ "serviceos-userspace-runtime",
+]
+
+[[package]]
+name = "serviceos-developer-service"
 version = "0.1.0"
 dependencies = [
  "serviceos-userspace-runtime",

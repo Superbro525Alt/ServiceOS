@@ -1,0 +1,8 @@
+service=developer-service
+image=developer-service
+startup=eager
+restart=on-failure:2
+depends=log-service,storage-service
+grant=log-service:send
+grant=storage-service:send
+resource=packages/developer-service/1.0.0/catalog.cfg

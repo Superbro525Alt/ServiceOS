@@ -110,6 +110,13 @@ const PROGRAMS: &[Program] = &[
         service_id: 16,
     },
     Program {
+        package: "serviceos-developer-service",
+        bin_name: "serviceos-developer-service",
+        image_id: 23,
+        service_path: "services/developer-service/program.img",
+        service_id: 17,
+    },
+    Program {
         package: "serviceos-graphics-service",
         bin_name: "serviceos-graphics-service",
         image_id: 12,
@@ -170,6 +177,13 @@ const PROGRAMS: &[Program] = &[
         bin_name: "serviceos-posix-host-tool",
         image_id: 22,
         service_path: "tools/posix-host-tool/program.img",
+        service_id: 0,
+    },
+    Program {
+        package: "serviceos-cross-builder-tool",
+        bin_name: "serviceos-cross-builder-tool",
+        image_id: 24,
+        service_path: "tools/cross-builder-tool/program.img",
         service_id: 0,
     },
 ];

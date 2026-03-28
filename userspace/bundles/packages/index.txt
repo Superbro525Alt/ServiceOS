@@ -1,3 +1,4 @@
 packages/announce-service/1.0.0/package.pkg
 packages/announce-service/1.1.0/package.pkg
 packages/runtime-service/1.0.0/package.pkg
+packages/developer-service/1.0.0/package.pkg

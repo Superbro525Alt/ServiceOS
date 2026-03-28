@@ -14,6 +14,7 @@ members = [
     "network-service",
     "audio-service",
     "runtime-service",
+    "developer-service",
     "session-service",
     "desktop-shell-service",
     "shell-service",
@@ -24,6 +25,7 @@ members = [
     "terminal-app",
     "announce-service",
     "posix-host-tool",
+    "cross-builder-tool",
     "sysinfo-tool",
 ]
 

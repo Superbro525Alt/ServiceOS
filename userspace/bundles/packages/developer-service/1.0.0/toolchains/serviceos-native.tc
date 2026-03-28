@@ -1,0 +1,5 @@
+name=serviceos-native
+target=native-x64
+state=installed
+format=serviceos-flat
+sdk_root=packages/developer-service/1.0.0/sdk/native

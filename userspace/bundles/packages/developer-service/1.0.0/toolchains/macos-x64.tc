@@ -1,0 +1,5 @@
+name=macos-x64
+target=macos-x64
+state=remote-only
+format=macho64
+sdk_root=packages/developer-service/1.0.0/sdk/macos

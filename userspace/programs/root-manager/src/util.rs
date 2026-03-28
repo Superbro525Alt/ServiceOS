@@ -216,6 +216,7 @@ pub(crate) fn service_id_from_word(value: u64) -> ServiceId {
         x if x == ServiceId::Terminal as u32 => ServiceId::Terminal,
         x if x == ServiceId::Audio as u32 => ServiceId::Audio,
         x if x == ServiceId::Runtime as u32 => ServiceId::Runtime,
+        x if x == ServiceId::Developer as u32 => ServiceId::Developer,
         _ => ServiceId::RootManager,
     }
 }
@@ -245,6 +246,8 @@ pub(crate) fn image_id_from_word(value: u64) -> ServiceImageId {
         x if x == ServiceImageId::AudioService as u32 => ServiceImageId::AudioService,
         x if x == ServiceImageId::RuntimeService as u32 => ServiceImageId::RuntimeService,
         x if x == ServiceImageId::PosixHostTool as u32 => ServiceImageId::PosixHostTool,
+        x if x == ServiceImageId::DeveloperService as u32 => ServiceImageId::DeveloperService,
+        x if x == ServiceImageId::CrossBuilderTool as u32 => ServiceImageId::CrossBuilderTool,
         _ => ServiceImageId::RootManager,
     }
 }
@@ -287,6 +290,7 @@ pub(crate) fn service_name(service_id: ServiceId) -> &'static str {
         ServiceId::Terminal => "terminal-service",
         ServiceId::Audio => "audio-service",
         ServiceId::Runtime => "runtime-service",
+        ServiceId::Developer => "developer-service",
     }
 }
 
@@ -357,6 +361,11 @@ pub(crate) fn event_name(event: LogEvent) -> &'static str {
         LogEvent::RuntimeLaunchStarted => "runtime-launch-started",
         LogEvent::RuntimeLaunchExited => "runtime-launch-exited",
         LogEvent::RuntimeMappedRead => "runtime-mapped-read",
+        LogEvent::DeveloperCatalogLoaded => "developer-catalog-loaded",
+        LogEvent::DeveloperBuildStarted => "developer-build-started",
+        LogEvent::DeveloperBuildFinished => "developer-build-finished",
+        LogEvent::DeveloperBuildFailed => "developer-build-failed",
+        LogEvent::DeveloperArtifactOpened => "developer-artifact-opened",
     }
 }
 

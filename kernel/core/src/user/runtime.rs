@@ -50,6 +50,14 @@ impl UserRuntime {
         };
         state.tasks.insert(task_id, TaskExitStatus::Exited { code });
     }
+
+    pub fn release_thread(&self, thread_id: ThreadId) {
+        self.state.lock().threads.remove(&thread_id);
+    }
+
+    pub fn release_task(&self, task_id: TaskId) {
+        self.state.lock().tasks.remove(&task_id);
+    }
 }
 
 static USER_RUNTIME: Once<UserRuntime> = Once::new();

@@ -277,7 +277,10 @@ impl Scheduler {
             None,
             Some(ThreadWakeReason::Explicit),
         );
+        remove_from_wait_queues(&mut state, current);
+        state.runnable.retain(|thread_id| *thread_id != current);
         state.current = None;
+        state.threads.remove(&current);
 
         schedule_next_locked(&mut state, ScheduleTrigger::Explicit, Some(current))
     }

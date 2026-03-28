@@ -1,0 +1,744 @@
+use serviceos_abi::{
+    DisplayOutputInfo as AbiDisplayOutputInfo, Handle, HandlePair, INPUT_SOURCE_FLAG_NONBLOCK,
+    IPC_FLAG_NONBLOCK, IPC_MAX_HANDLES, IPC_MAX_WORDS, InputEventInfo as AbiInputEventInfo,
+    InputSourceInfo as AbiInputSourceInfo, PACKET_INTERFACE_FLAG_NONBLOCK,
+    PacketInterfaceInfo as AbiPacketInterfaceInfo, RawMessage, TaskStateCode,
+    TaskStatus as AbiTaskStatus,
+};
+
+use crate::{
+    capability::{
+        CapabilityError, CapabilityHandle, CapabilityResolver, CapabilityRights, TransferMode,
+    },
+    ipc::{self, IpcError, MessageTag, OutgoingMessage},
+    task::TaskRole,
+    time,
+    user::{self, AddressSpacePreparationError, LoadError, SpawnError},
+};
+
+use super::{
+    SYSCALL_ABI_VERSION, SyscallAction, SyscallContext, SyscallError, SyscallReturn, user_mut,
+    user_ref, user_slice, user_slice_mut,
+};
+
+pub(super) static DEBUG_LOG_WRITER: spin::Once<fn(&[u8])> = spin::Once::new();
+pub(super) static DEBUG_CONSOLE_READER: spin::Once<fn() -> Option<u8>> = spin::Once::new();
+pub(super) static DEBUG_CONSOLE_WRITER: spin::Once<fn(&[u8])> = spin::Once::new();
+
+pub(super) fn handle_abi_version(_context: &SyscallContext) -> SyscallReturn {
+    SyscallReturn::success(SYSCALL_ABI_VERSION)
+}
+
+pub(super) fn handle_monotonic_now(_context: &SyscallContext) -> SyscallReturn {
+    match time::manager() {
+        Some(manager) => SyscallReturn::success(manager.now().0),
+        None => SyscallReturn::error(SyscallError::NotInitialized),
+    }
+}
+
+pub(super) fn handle_thread_exit(context: &SyscallContext) -> SyscallReturn {
+    SyscallReturn::exit_current_thread(context.arguments[0])
+}
+
+pub(super) fn handle_yield_current(_context: &SyscallContext) -> SyscallReturn {
+    SyscallReturn::action(0, SyscallAction::YieldCurrentThread)
+}
+
+pub(super) fn handle_debug_log_write(context: &SyscallContext) -> SyscallReturn {
+    let Some(writer) = DEBUG_LOG_WRITER.get().copied() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Ok(length) = usize::try_from(context.arguments[1]) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Ok(bytes) = (unsafe { user_slice(context.arguments[0], length) }) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    writer(bytes);
+    SyscallReturn::success(length as u64)
+}
+
+pub(super) fn handle_channel_create(context: &SyscallContext) -> SyscallReturn {
+    let Some(current_task) = user::current_task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(task) = current_task.task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(ipc) = ipc::kernel() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(objects) = crate::object::model() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+
+    let (first, second) = ipc.create_channel_pair(objects);
+    let first_handle =
+        match task
+            .capability_space()
+            .install(first, CapabilityRights::channel_endpoint(), None)
+        {
+            Ok(handle) => handle,
+            Err(error) => return SyscallReturn::error(map_capability_error(error)),
+        };
+    let second_handle =
+        match task
+            .capability_space()
+            .install(second, CapabilityRights::channel_endpoint(), None)
+        {
+            Ok(handle) => handle,
+            Err(error) => return SyscallReturn::error(map_capability_error(error)),
+        };
+    let Ok(pair_out) = (unsafe { user_mut::<HandlePair>(context.arguments[0]) }) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    *pair_out = HandlePair {
+        first: first_handle.0,
+        second: second_handle.0,
+    };
+    SyscallReturn::success(0)
+}
+
+pub(super) fn handle_channel_send(context: &SyscallContext) -> SyscallReturn {
+    let Some(current_task) = user::current_task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(task) = current_task.task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(ipc) = ipc::kernel() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Ok(raw) = (unsafe { user_ref::<RawMessage>(context.arguments[1]) }) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+
+    let word_count = raw.word_count as usize;
+    let handle_count = raw.handle_count as usize;
+    if word_count > IPC_MAX_WORDS || handle_count > IPC_MAX_HANDLES {
+        return SyscallReturn::error(SyscallError::BufferTooSmall);
+    }
+
+    let mut message = match OutgoingMessage::new(MessageTag(raw.tag), &raw.words[..word_count]) {
+        Ok(message) => message,
+        Err(error) => return SyscallReturn::error(map_ipc_error(error)),
+    };
+    for (index, handle) in raw.handles[..handle_count].iter().copied().enumerate() {
+        let Some(descriptor) = task
+            .capability_space()
+            .resolve_descriptor(CapabilityHandle(handle))
+        else {
+            return SyscallReturn::error(SyscallError::NotFound);
+        };
+        let requested_bits = raw.handle_rights[index];
+        let transfer_rights = if requested_bits == 0 {
+            descriptor
+                .rights
+                .without(CapabilityRights::DUPLICATE.union(CapabilityRights::TRANSFER))
+        } else {
+            CapabilityRights::from_bits(requested_bits)
+        };
+        let transfer = match task.capability_space().prepare_transfer(
+            CapabilityHandle(handle),
+            transfer_rights,
+            TransferMode::Copy,
+        ) {
+            Ok(transfer) => transfer,
+            Err(error) => return SyscallReturn::error(map_capability_error(error)),
+        };
+        message = match message.add_transfer(transfer) {
+            Ok(message) => message,
+            Err(error) => return SyscallReturn::error(map_ipc_error(error)),
+        };
+    }
+
+    match ipc.send(
+        task.capability_space(),
+        CapabilityHandle(context.arguments[0] as Handle),
+        message,
+    ) {
+        Ok(_) => SyscallReturn::success(0),
+        Err(error) => SyscallReturn::error(map_ipc_error(error)),
+    }
+}
+
+pub(super) fn handle_channel_receive(context: &SyscallContext) -> SyscallReturn {
+    let Some(current_task) = user::current_task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(task) = current_task.task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(ipc_kernel) = ipc::kernel() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Ok(message_out) = (unsafe { user_mut::<RawMessage>(context.arguments[1]) }) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+
+    match ipc_kernel.receive(
+        task.capability_space(),
+        CapabilityHandle(context.arguments[0] as Handle),
+    ) {
+        Ok(message) => {
+            if message.words.len() > IPC_MAX_WORDS
+                || message.transferred_capabilities.len() > IPC_MAX_HANDLES
+            {
+                return SyscallReturn::error(SyscallError::BufferTooSmall);
+            }
+
+            let mut raw = RawMessage::empty(message.tag.0);
+            raw.word_count = message.words.len() as u32;
+            raw.handle_count = message.transferred_capabilities.len() as u32;
+            raw.flags = message_out.flags;
+            for (index, word) in message.words.iter().copied().enumerate() {
+                raw.words[index] = word;
+            }
+            for (index, handle) in message.transferred_capabilities.iter().copied().enumerate() {
+                raw.handles[index] = handle.0;
+            }
+            *message_out = raw;
+            SyscallReturn::success(message.tag.0 as u64)
+        }
+        Err(IpcError::QueueEmpty) if message_out.flags & IPC_FLAG_NONBLOCK != 0 => {
+            SyscallReturn::error(SyscallError::QueueEmpty)
+        }
+        Err(IpcError::QueueEmpty) => {
+            let endpoint = match ipc_kernel.endpoint_object_id(
+                task.capability_space(),
+                CapabilityHandle(context.arguments[0] as Handle),
+                CapabilityRights::RECEIVE,
+            ) {
+                Ok(endpoint) => endpoint,
+                Err(error) => return SyscallReturn::error(map_ipc_error(error)),
+            };
+            SyscallReturn::error_with_action(
+                SyscallError::QueueEmpty,
+                SyscallAction::BlockCurrentThreadOnReceive { endpoint },
+            )
+        }
+        Err(error) => SyscallReturn::error(map_ipc_error(error)),
+    }
+}
+
+pub(super) fn handle_handle_duplicate(context: &SyscallContext) -> SyscallReturn {
+    let Some(current_task) = user::current_task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(task) = current_task.task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let rights = CapabilityRights::from_bits(context.arguments[1]);
+    match task.capability_space().duplicate(
+        CapabilityHandle(context.arguments[0] as Handle),
+        rights,
+        None,
+    ) {
+        Ok(handle) => SyscallReturn::success(handle.0 as u64),
+        Err(error) => SyscallReturn::error(map_capability_error(error)),
+    }
+}
+
+pub(super) fn handle_handle_close(context: &SyscallContext) -> SyscallReturn {
+    let Some(current_task) = user::current_task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(task) = current_task.task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    match task
+        .capability_space()
+        .close(CapabilityHandle(context.arguments[0] as Handle))
+    {
+        Ok(_) => SyscallReturn::success(0),
+        Err(error) => SyscallReturn::error(map_capability_error(error)),
+    }
+}
+
+pub(super) fn handle_service_spawn(context: &SyscallContext) -> SyscallReturn {
+    let Some(current_task) = user::current_task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(task) = current_task.task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let authority = match task.capability_space().resolve(
+        CapabilityHandle(context.arguments[1] as Handle),
+        CapabilityRights::bootstrap(),
+    ) {
+        Ok(authority) => authority,
+        Err(error) => return SyscallReturn::error(map_capability_error(error)),
+    };
+    if authority.object.bootstrap_capability().is_none() {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    }
+
+    let bootstrap_transfer = if context.arguments[2] == 0 {
+        None
+    } else {
+        let handle = CapabilityHandle(context.arguments[2] as Handle);
+        let Some(descriptor) = task.capability_space().resolve_descriptor(handle) else {
+            return SyscallReturn::error(SyscallError::NotFound);
+        };
+        match task.capability_space().prepare_transfer(
+            handle,
+            descriptor.rights,
+            TransferMode::Move,
+        ) {
+            Ok(transfer) => Some(transfer),
+            Err(error) => return SyscallReturn::error(map_capability_error(error)),
+        }
+    };
+
+    let spawned = match user::spawn_builtin_task(
+        context.arguments[0] as u32,
+        TaskRole::SystemService,
+        bootstrap_transfer,
+    ) {
+        Ok(spawned) => spawned,
+        Err(SpawnError::ImageNotFound) => return SyscallReturn::error(SyscallError::NotFound),
+        Err(SpawnError::Capability(error)) => {
+            return SyscallReturn::error(map_capability_error(error));
+        }
+        Err(SpawnError::Scheduler(_)) => return SyscallReturn::error(SyscallError::Busy),
+        Err(SpawnError::AddressSpace(AddressSpacePreparationError::Load(
+            LoadError::FrameExhausted,
+        )))
+        | Err(SpawnError::AddressSpace(AddressSpacePreparationError::Mapping(
+            crate::memory::MappingError::FrameAllocationFailed,
+        ))) => {
+            return SyscallReturn::error(SyscallError::CapacityExceeded);
+        }
+        Err(_) => return SyscallReturn::error(SyscallError::NotInitialized),
+    };
+
+    match task
+        .capability_space()
+        .install(spawned.task, CapabilityRights::task(), None)
+    {
+        Ok(handle) => SyscallReturn::success(handle.0 as u64),
+        Err(error) => SyscallReturn::error(map_capability_error(error)),
+    }
+}
+
+pub(super) fn handle_task_status(context: &SyscallContext) -> SyscallReturn {
+    let Some(current_task) = user::current_task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(task) = current_task.task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(descriptor) = task
+        .capability_space()
+        .resolve_descriptor(CapabilityHandle(context.arguments[0] as Handle))
+    else {
+        return SyscallReturn::error(SyscallError::NotFound);
+    };
+    let Some(object) =
+        crate::object::model().and_then(|model| model.registry().lookup(descriptor.object))
+    else {
+        return SyscallReturn::error(SyscallError::NotFound);
+    };
+    let Some(target_task) = object.task() else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Ok(status_out) = (unsafe { user_mut::<AbiTaskStatus>(context.arguments[1]) }) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+
+    *status_out = match target_task.exit_status() {
+        user::TaskExitStatus::Running => AbiTaskStatus {
+            state: TaskStateCode::Running,
+            exit_code: 0,
+        },
+        user::TaskExitStatus::Exited { code } => AbiTaskStatus {
+            state: TaskStateCode::Exited,
+            exit_code: code,
+        },
+    };
+
+    SyscallReturn::success(0)
+}
+
+pub(super) fn handle_memory_read(context: &SyscallContext) -> SyscallReturn {
+    let Some(current_task) = user::current_task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(task) = current_task.task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(descriptor) = task
+        .capability_space()
+        .resolve_descriptor(CapabilityHandle(context.arguments[0] as Handle))
+    else {
+        return SyscallReturn::error(SyscallError::NotFound);
+    };
+    if !descriptor.rights.contains(CapabilityRights::READ) {
+        return SyscallReturn::error(SyscallError::PermissionDenied);
+    }
+    let Some(object) =
+        crate::object::model().and_then(|model| model.registry().lookup(descriptor.object))
+    else {
+        return SyscallReturn::error(SyscallError::NotFound);
+    };
+    let Some(memory) = object.memory_object() else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Ok(offset) = usize::try_from(context.arguments[1]) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Ok(length) = usize::try_from(context.arguments[3]) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Ok(destination) = (unsafe { user_slice_mut(context.arguments[2], length) }) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+
+    SyscallReturn::success(memory.read(offset, destination) as u64)
+}
+
+pub(super) fn handle_debug_console_read(_context: &SyscallContext) -> SyscallReturn {
+    let Some(reader) = DEBUG_CONSOLE_READER.get().copied() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+
+    match reader() {
+        Some(byte) => SyscallReturn::success(byte as u64),
+        None => SyscallReturn::error(SyscallError::QueueEmpty),
+    }
+}
+
+pub(super) fn handle_debug_console_write(context: &SyscallContext) -> SyscallReturn {
+    let Some(writer) = DEBUG_CONSOLE_WRITER.get().copied() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Ok(length) = usize::try_from(context.arguments[1]) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Ok(bytes) = (unsafe { user_slice(context.arguments[0], length) }) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    writer(bytes);
+    SyscallReturn::success(length as u64)
+}
+
+pub(super) fn handle_packet_interface_info(context: &SyscallContext) -> SyscallReturn {
+    let Some(current_task) = user::current_task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(task) = current_task.task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(descriptor) = task
+        .capability_space()
+        .resolve_descriptor(CapabilityHandle(context.arguments[0] as Handle))
+    else {
+        return SyscallReturn::error(SyscallError::NotFound);
+    };
+    if !descriptor.rights.contains(CapabilityRights::READ) {
+        return SyscallReturn::error(SyscallError::PermissionDenied);
+    }
+    let Some(object) =
+        crate::object::model().and_then(|model| model.registry().lookup(descriptor.object))
+    else {
+        return SyscallReturn::error(SyscallError::NotFound);
+    };
+    let Some(interface) = object.packet_interface() else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Ok(info_out) = (unsafe { user_mut::<AbiPacketInterfaceInfo>(context.arguments[1]) }) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+
+    *info_out = interface.info();
+    SyscallReturn::success(0)
+}
+
+pub(super) fn handle_packet_interface_receive(context: &SyscallContext) -> SyscallReturn {
+    let Some(current_task) = user::current_task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(task) = current_task.task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(descriptor) = task
+        .capability_space()
+        .resolve_descriptor(CapabilityHandle(context.arguments[0] as Handle))
+    else {
+        return SyscallReturn::error(SyscallError::NotFound);
+    };
+    if !descriptor
+        .rights
+        .contains(CapabilityRights::READ.union(CapabilityRights::WAIT))
+    {
+        return SyscallReturn::error(SyscallError::PermissionDenied);
+    }
+    let Some(object) =
+        crate::object::model().and_then(|model| model.registry().lookup(descriptor.object))
+    else {
+        return SyscallReturn::error(SyscallError::NotFound);
+    };
+    let Some(interface) = object.packet_interface() else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Ok(length) = usize::try_from(context.arguments[2]) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Ok(buffer) = (unsafe { user_slice_mut(context.arguments[1], length) }) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+
+    match interface.receive(buffer) {
+        Ok(received) => SyscallReturn::success(received as u64),
+        Err(crate::network::PacketInterfaceError::QueueEmpty)
+            if context.arguments[3] as u32 & PACKET_INTERFACE_FLAG_NONBLOCK != 0 =>
+        {
+            SyscallReturn::error(SyscallError::QueueEmpty)
+        }
+        Err(crate::network::PacketInterfaceError::QueueEmpty) => SyscallReturn::error_with_action(
+            SyscallError::QueueEmpty,
+            SyscallAction::BlockCurrentThreadOnPacketReceive {
+                interface: descriptor.object,
+            },
+        ),
+        Err(crate::network::PacketInterfaceError::BufferTooSmall) => {
+            SyscallReturn::error(SyscallError::BufferTooSmall)
+        }
+        Err(crate::network::PacketInterfaceError::Busy) => SyscallReturn::error(SyscallError::Busy),
+        Err(crate::network::PacketInterfaceError::Unsupported) => {
+            SyscallReturn::error(SyscallError::Unsupported)
+        }
+    }
+}
+
+pub(super) fn handle_packet_interface_transmit(context: &SyscallContext) -> SyscallReturn {
+    let Some(current_task) = user::current_task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(task) = current_task.task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(descriptor) = task
+        .capability_space()
+        .resolve_descriptor(CapabilityHandle(context.arguments[0] as Handle))
+    else {
+        return SyscallReturn::error(SyscallError::NotFound);
+    };
+    if !descriptor.rights.contains(CapabilityRights::WRITE) {
+        return SyscallReturn::error(SyscallError::PermissionDenied);
+    }
+    let Some(object) =
+        crate::object::model().and_then(|model| model.registry().lookup(descriptor.object))
+    else {
+        return SyscallReturn::error(SyscallError::NotFound);
+    };
+    let Some(interface) = object.packet_interface() else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Ok(length) = usize::try_from(context.arguments[2]) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Ok(buffer) = (unsafe { user_slice(context.arguments[1], length) }) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+
+    match interface.transmit(buffer) {
+        Ok(()) => SyscallReturn::success(length as u64),
+        Err(crate::network::PacketInterfaceError::QueueEmpty) => {
+            SyscallReturn::error(SyscallError::QueueEmpty)
+        }
+        Err(crate::network::PacketInterfaceError::BufferTooSmall) => {
+            SyscallReturn::error(SyscallError::BufferTooSmall)
+        }
+        Err(crate::network::PacketInterfaceError::Busy) => SyscallReturn::error(SyscallError::Busy),
+        Err(crate::network::PacketInterfaceError::Unsupported) => {
+            SyscallReturn::error(SyscallError::Unsupported)
+        }
+    }
+}
+
+pub(super) fn handle_display_output_info(context: &SyscallContext) -> SyscallReturn {
+    let Some(current_task) = user::current_task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(task) = current_task.task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(descriptor) = task
+        .capability_space()
+        .resolve_descriptor(CapabilityHandle(context.arguments[0] as Handle))
+    else {
+        return SyscallReturn::error(SyscallError::NotFound);
+    };
+    if !descriptor.rights.contains(CapabilityRights::READ) {
+        return SyscallReturn::error(SyscallError::PermissionDenied);
+    }
+    let Some(object) =
+        crate::object::model().and_then(|model| model.registry().lookup(descriptor.object))
+    else {
+        return SyscallReturn::error(SyscallError::NotFound);
+    };
+    let Some(output) = object.display_output() else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Ok(info_out) = (unsafe { user_mut::<AbiDisplayOutputInfo>(context.arguments[1]) }) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+
+    *info_out = output.info();
+    SyscallReturn::success(0)
+}
+
+pub(super) fn handle_display_output_present(context: &SyscallContext) -> SyscallReturn {
+    let Some(current_task) = user::current_task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(task) = current_task.task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(descriptor) = task
+        .capability_space()
+        .resolve_descriptor(CapabilityHandle(context.arguments[0] as Handle))
+    else {
+        return SyscallReturn::error(SyscallError::NotFound);
+    };
+    if !descriptor.rights.contains(CapabilityRights::WRITE) {
+        return SyscallReturn::error(SyscallError::PermissionDenied);
+    }
+    let Some(object) =
+        crate::object::model().and_then(|model| model.registry().lookup(descriptor.object))
+    else {
+        return SyscallReturn::error(SyscallError::NotFound);
+    };
+    let Some(output) = object.display_output() else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Ok(length) = usize::try_from(context.arguments[2]) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Ok(buffer) = (unsafe { user_slice(context.arguments[1], length) }) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+
+    match output.present(buffer) {
+        Ok(()) => SyscallReturn::success(length as u64),
+        Err(crate::display::DisplayOutputError::BufferTooSmall) => {
+            SyscallReturn::error(SyscallError::BufferTooSmall)
+        }
+        Err(crate::display::DisplayOutputError::Busy) => SyscallReturn::error(SyscallError::Busy),
+        Err(crate::display::DisplayOutputError::Unsupported) => {
+            SyscallReturn::error(SyscallError::Unsupported)
+        }
+    }
+}
+
+pub(super) fn handle_input_source_info(context: &SyscallContext) -> SyscallReturn {
+    let Some(current_task) = user::current_task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(task) = current_task.task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(descriptor) = task
+        .capability_space()
+        .resolve_descriptor(CapabilityHandle(context.arguments[0] as Handle))
+    else {
+        return SyscallReturn::error(SyscallError::NotFound);
+    };
+    if !descriptor.rights.contains(CapabilityRights::READ) {
+        return SyscallReturn::error(SyscallError::PermissionDenied);
+    }
+    let Some(object) =
+        crate::object::model().and_then(|model| model.registry().lookup(descriptor.object))
+    else {
+        return SyscallReturn::error(SyscallError::NotFound);
+    };
+    let Some(source) = object.input_source() else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Ok(info_out) = (unsafe { user_mut::<AbiInputSourceInfo>(context.arguments[1]) }) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+
+    *info_out = source.info();
+    SyscallReturn::success(0)
+}
+
+pub(super) fn handle_input_source_receive(context: &SyscallContext) -> SyscallReturn {
+    let Some(current_task) = user::current_task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(task) = current_task.task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(descriptor) = task
+        .capability_space()
+        .resolve_descriptor(CapabilityHandle(context.arguments[0] as Handle))
+    else {
+        return SyscallReturn::error(SyscallError::NotFound);
+    };
+    if !descriptor
+        .rights
+        .contains(CapabilityRights::READ.union(CapabilityRights::WAIT))
+    {
+        return SyscallReturn::error(SyscallError::PermissionDenied);
+    }
+    let Some(object) =
+        crate::object::model().and_then(|model| model.registry().lookup(descriptor.object))
+    else {
+        return SyscallReturn::error(SyscallError::NotFound);
+    };
+    let Some(source) = object.input_source() else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Ok(event_out) = (unsafe { user_mut::<AbiInputEventInfo>(context.arguments[1]) }) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+
+    match source.receive() {
+        Ok(event) => {
+            *event_out = event;
+            SyscallReturn::success(0)
+        }
+        Err(crate::input::InputSourceError::QueueEmpty)
+            if context.arguments[2] as u32 & INPUT_SOURCE_FLAG_NONBLOCK != 0 =>
+        {
+            SyscallReturn::error(SyscallError::QueueEmpty)
+        }
+        Err(crate::input::InputSourceError::QueueEmpty) => SyscallReturn::error_with_action(
+            SyscallError::QueueEmpty,
+            SyscallAction::BlockCurrentThreadOnInputReceive {
+                source: descriptor.object,
+            },
+        ),
+        Err(crate::input::InputSourceError::Busy) => SyscallReturn::error(SyscallError::Busy),
+        Err(crate::input::InputSourceError::Unsupported) => {
+            SyscallReturn::error(SyscallError::Unsupported)
+        }
+    }
+}
+
+pub(super) fn map_capability_error(error: CapabilityError) -> SyscallError {
+    match error {
+        CapabilityError::InvalidHandle => SyscallError::NotFound,
+        CapabilityError::HandleSpaceExhausted => SyscallError::CapacityExceeded,
+        CapabilityError::RightsViolation { .. }
+        | CapabilityError::DuplicateForbidden
+        | CapabilityError::TransferForbidden
+        | CapabilityError::RequestedRightsExceedSource => SyscallError::PermissionDenied,
+    }
+}
+
+pub(super) fn map_ipc_error(error: IpcError) -> SyscallError {
+    match error {
+        IpcError::Capability(error) => map_capability_error(error),
+        IpcError::EndpointNotReady | IpcError::EndpointClosed => SyscallError::Busy,
+        IpcError::BufferShapeInvalid
+        | IpcError::ObjectKindMismatch
+        | IpcError::InvalidReplyEndpoint => SyscallError::InvalidArgument,
+        IpcError::QueueEmpty => SyscallError::QueueEmpty,
+        IpcError::QueueFull { .. }
+        | IpcError::MessageTooLarge { .. }
+        | IpcError::TooManyTransfers { .. } => SyscallError::CapacityExceeded,
+    }
+}

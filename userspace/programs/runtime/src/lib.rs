@@ -19,10 +19,11 @@ pub use serviceos_abi::{
     NetworkSocketKind, NetworkSocketState, NetworkSocketTag, NetworkStatus, NetworkTag,
     PACKET_INTERFACE_FLAG_NONBLOCK, PacketInterfaceBackend, PacketInterfaceInfo,
     PacketInterfaceLinkState, PackageStatus, PackageTag, RawMessage, ServiceId, ServiceImageId,
-    RuntimeEnvState, RuntimeKind, RuntimeRunState, RuntimeStatus, RuntimeTag, RuntimeWorkloadKind,
-    SessionInputSource, SessionStatus, SessionTag, StatusTag, StorageEntryKind, StorageStatus,
-    StorageTag, SurfaceTag, SyscallErrorCode, SyscallNumber, TaskStateCode, TaskStatus,
-    TerminalStatus, TerminalTag,
+    DeveloperArtifactFormat, DeveloperJobState, DeveloperStatus, DeveloperTag, DeveloperTarget,
+    DeveloperToolchainState, RuntimeEnvState, RuntimeKind, RuntimeRunState, RuntimeStatus,
+    RuntimeTag, RuntimeWorkloadKind, SessionInputSource, SessionStatus, SessionTag, StatusTag,
+    StorageEntryKind, StorageStatus, StorageTag, SurfaceTag, SyscallErrorCode, SyscallNumber,
+    TaskStateCode, TaskStatus, TerminalStatus, TerminalTag,
 };
 pub use serviceos_abi::{audio_capability, input_capability, rights, runtime_capability};
 
@@ -30,6 +31,7 @@ mod app_control;
 mod audio;
 mod bootstrap;
 mod config;
+mod developer;
 mod compat;
 mod console;
 mod desktop;
@@ -54,6 +56,7 @@ pub use app_control::*;
 pub use audio::*;
 pub use bootstrap::*;
 pub use config::*;
+pub use developer::*;
 pub use compat::*;
 pub use console::*;
 pub use desktop::*;
@@ -242,6 +245,7 @@ fn service_id_from_word(value: u64) -> ServiceId {
         x if x == ServiceId::Terminal as u32 => ServiceId::Terminal,
         x if x == ServiceId::Audio as u32 => ServiceId::Audio,
         x if x == ServiceId::Runtime as u32 => ServiceId::Runtime,
+        x if x == ServiceId::Developer as u32 => ServiceId::Developer,
         _ => ServiceId::RootManager,
     }
 }
@@ -275,6 +279,7 @@ fn domain_from_word(value: u64) -> LogDomain {
         x if x == LogDomain::App as u32 => LogDomain::App,
         x if x == LogDomain::Audio as u32 => LogDomain::Audio,
         x if x == LogDomain::Runtime as u32 => LogDomain::Runtime,
+        x if x == LogDomain::Developer as u32 => LogDomain::Developer,
         _ => LogDomain::Service,
     }
 }
@@ -337,6 +342,11 @@ fn event_from_word(value: u64) -> LogEvent {
         x if x == LogEvent::RuntimeLaunchStarted as u32 => LogEvent::RuntimeLaunchStarted,
         x if x == LogEvent::RuntimeLaunchExited as u32 => LogEvent::RuntimeLaunchExited,
         x if x == LogEvent::RuntimeMappedRead as u32 => LogEvent::RuntimeMappedRead,
+        x if x == LogEvent::DeveloperCatalogLoaded as u32 => LogEvent::DeveloperCatalogLoaded,
+        x if x == LogEvent::DeveloperBuildStarted as u32 => LogEvent::DeveloperBuildStarted,
+        x if x == LogEvent::DeveloperBuildFinished as u32 => LogEvent::DeveloperBuildFinished,
+        x if x == LogEvent::DeveloperBuildFailed as u32 => LogEvent::DeveloperBuildFailed,
+        x if x == LogEvent::DeveloperArtifactOpened as u32 => LogEvent::DeveloperArtifactOpened,
         _ => LogEvent::LookupGranted,
     }
 }
@@ -538,6 +548,62 @@ fn runtime_workload_kind_from_word(value: u64) -> RuntimeWorkloadKind {
         x if x == RuntimeWorkloadKind::Mounts as u32 => RuntimeWorkloadKind::Mounts,
         x if x == RuntimeWorkloadKind::Cat as u32 => RuntimeWorkloadKind::Cat,
         _ => RuntimeWorkloadKind::Inspect,
+    }
+}
+
+fn developer_status_from_word(value: u64) -> DeveloperStatus {
+    match value as u32 {
+        x if x == DeveloperStatus::Ok as u32 => DeveloperStatus::Ok,
+        x if x == DeveloperStatus::NotFound as u32 => DeveloperStatus::NotFound,
+        x if x == DeveloperStatus::Busy as u32 => DeveloperStatus::Busy,
+        x if x == DeveloperStatus::Denied as u32 => DeveloperStatus::Denied,
+        x if x == DeveloperStatus::Unsupported as u32 => DeveloperStatus::Unsupported,
+        _ => DeveloperStatus::Busy,
+    }
+}
+
+fn developer_status_error(status: DeveloperStatus) -> Error {
+    match status {
+        DeveloperStatus::Ok => Error::InvalidArgument,
+        DeveloperStatus::NotFound => Error::NotFound,
+        DeveloperStatus::Busy => Error::Busy,
+        DeveloperStatus::Denied => Error::PermissionDenied,
+        DeveloperStatus::Unsupported => Error::Unsupported,
+    }
+}
+
+fn developer_target_from_word(value: u64) -> DeveloperTarget {
+    match value as u32 {
+        x if x == DeveloperTarget::LinuxX64 as u32 => DeveloperTarget::LinuxX64,
+        x if x == DeveloperTarget::WindowsX64 as u32 => DeveloperTarget::WindowsX64,
+        x if x == DeveloperTarget::MacosX64 as u32 => DeveloperTarget::MacosX64,
+        _ => DeveloperTarget::NativeX64,
+    }
+}
+
+fn developer_toolchain_state_from_word(value: u64) -> DeveloperToolchainState {
+    match value as u32 {
+        x if x == DeveloperToolchainState::RemoteOnly as u32 => DeveloperToolchainState::RemoteOnly,
+        _ => DeveloperToolchainState::Installed,
+    }
+}
+
+fn developer_artifact_format_from_word(value: u64) -> DeveloperArtifactFormat {
+    match value as u32 {
+        x if x == DeveloperArtifactFormat::Elf64 as u32 => DeveloperArtifactFormat::Elf64,
+        x if x == DeveloperArtifactFormat::Pe32Plus as u32 => DeveloperArtifactFormat::Pe32Plus,
+        x if x == DeveloperArtifactFormat::MachO64 as u32 => DeveloperArtifactFormat::MachO64,
+        _ => DeveloperArtifactFormat::ServiceOsFlat,
+    }
+}
+
+fn developer_job_state_from_word(value: u64) -> DeveloperJobState {
+    match value as u32 {
+        x if x == DeveloperJobState::Running as u32 => DeveloperJobState::Running,
+        x if x == DeveloperJobState::Succeeded as u32 => DeveloperJobState::Succeeded,
+        x if x == DeveloperJobState::Failed as u32 => DeveloperJobState::Failed,
+        x if x == DeveloperJobState::Unsupported as u32 => DeveloperJobState::Unsupported,
+        _ => DeveloperJobState::Queued,
     }
 }
 

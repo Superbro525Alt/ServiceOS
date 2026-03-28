@@ -1,6 +1,7 @@
 use crate::{
     AudioEndpointBackend, AudioEndpointDirection, AudioEndpointState, AudioStreamDirection,
     AudioStreamState, DesktopAppId, DesktopDragMode, DisplayOutputBackend, DisplayOutputState,
+    DeveloperArtifactFormat, DeveloperJobState, DeveloperTarget, DeveloperToolchainState,
     DisplayPixelFormat, LogDomain, LogEvent, LogSeverity, ManagerServicePhase,
     NetworkConfigMode, NetworkConfigState, NetworkSocketKind, NetworkSocketState,
     PacketInterfaceBackend, PacketInterfaceLinkState, RuntimeEnvState, RuntimeKind,
@@ -122,6 +123,39 @@ pub struct RuntimeRunInfo {
     pub workload: RuntimeWorkloadKind,
     pub state: RuntimeRunState,
     pub exit_code: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DeveloperToolchainInfo {
+    pub toolchain_id: u32,
+    pub target: DeveloperTarget,
+    pub state: DeveloperToolchainState,
+    pub format: DeveloperArtifactFormat,
+    pub name_len: u32,
+    pub name: [u8; 64],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DeveloperWorkspaceInfo {
+    pub workspace_id: u32,
+    pub target_mask: u32,
+    pub name_len: u32,
+    pub name: [u8; 64],
+    pub source_path_len: u32,
+    pub source_path: [u8; 96],
+    pub toolchains: [u32; 4],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DeveloperJobInfo {
+    pub job_id: u32,
+    pub workspace_id: u32,
+    pub target: DeveloperTarget,
+    pub state: DeveloperJobState,
+    pub format: DeveloperArtifactFormat,
+    pub artifact_size: usize,
+    pub artifact_name_len: u32,
+    pub artifact_name: [u8; 64],
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

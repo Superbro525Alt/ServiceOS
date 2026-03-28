@@ -18,7 +18,7 @@ pub use serviceos_abi::{
     NetworkTag,
     PACKET_INTERFACE_FLAG_NONBLOCK, PacketInterfaceBackend, PacketInterfaceInfo,
     PacketInterfaceLinkState, PackageStatus, PackageTag, RawMessage, ServiceId, ServiceImageId,
-    SessionInputSource, SessionStatus, SessionTag, StatusTag, StorageStatus, StorageTag,
+    SessionInputSource, SessionStatus, SessionTag, StatusTag, StorageEntryKind, StorageStatus, StorageTag,
     SurfaceTag, SyscallErrorCode, SyscallNumber, TaskStateCode, TaskStatus, TerminalStatus,
     TerminalTag,
 };

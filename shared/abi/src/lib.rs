@@ -319,6 +319,8 @@ pub enum StorageTag {
     ListRequest = 0x504,
     ListReply = 0x505,
     CloseRequest = 0x506,
+    DirectoryListRequest = 0x507,
+    DirectoryListReply = 0x508,
 }
 
 #[repr(u32)]
@@ -330,6 +332,13 @@ pub enum StorageStatus {
     InvalidOffset = 3,
     End = 4,
     Busy = 5,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StorageEntryKind {
+    File = 0,
+    Directory = 1,
 }
 
 #[repr(u32)]

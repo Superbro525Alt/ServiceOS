@@ -551,10 +551,20 @@ fn reload_directory(state: &mut ExplorerState, storage_handle: rt::Handle) -> rt
     let mut index = 0usize;
     let mut path_buffer = [0u8; MAX_STORAGE_PATH];
     loop {
-        match rt::storage_list(storage_handle, prefix, index, &mut path_buffer) {
-            Ok(Some((_status, path_len))) => {
-                collect_entry(state, &path_buffer[..path_len]);
-                index += 1;
+        match rt::storage_list_directory(storage_handle, prefix, index, &mut path_buffer) {
+            Ok(Some((next_index, kind, path_len))) => {
+                insert_unique_entry(
+                    state,
+                    match kind {
+                        rt::StorageEntryKind::Directory => EntryKind::Directory,
+                        rt::StorageEntryKind::File => EntryKind::File,
+                    },
+                    &path_buffer[..path_len],
+                );
+                if next_index <= index {
+                    break;
+                }
+                index = next_index;
             }
             Ok(None) => break,
             Err(error) => {
@@ -567,38 +577,6 @@ fn reload_directory(state: &mut ExplorerState, storage_handle: rt::Handle) -> rt
     sort_entries(state);
     clamp_view(state);
     Ok(())
-}
-
-fn collect_entry(state: &mut ExplorerState, full_path: &[u8]) {
-    let prefix_len = state.current_path_len;
-    if full_path.len() < prefix_len || full_path[..prefix_len] != state.current_path[..prefix_len] {
-        return;
-    }
-    let relative = &full_path[prefix_len..];
-    if relative.is_empty() {
-        return;
-    }
-
-    if let Some(separator) = relative.iter().position(|byte| *byte == b'/') {
-        if separator == 0 {
-            return;
-        }
-        let child_name = &relative[..separator];
-        let mut child_path = [0u8; MAX_STORAGE_PATH];
-        let mut path_len = 0usize;
-        child_path[..prefix_len].copy_from_slice(&state.current_path[..prefix_len]);
-        path_len += prefix_len;
-        if path_len + child_name.len() + 1 > MAX_STORAGE_PATH {
-            return;
-        }
-        child_path[path_len..path_len + child_name.len()].copy_from_slice(child_name);
-        path_len += child_name.len();
-        child_path[path_len] = b'/';
-        path_len += 1;
-        insert_unique_entry(state, EntryKind::Directory, &child_path[..path_len]);
-    } else {
-        insert_unique_entry(state, EntryKind::File, full_path);
-    }
 }
 
 fn insert_unique_entry(state: &mut ExplorerState, kind: EntryKind, path: &[u8]) {

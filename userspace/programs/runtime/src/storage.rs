@@ -1,6 +1,6 @@
 use crate::{
     channel_create, channel_receive_blocking, channel_send, handle_close, pack_bytes, rights,
-    unpack_bytes, Error, Handle, RawMessage, Result, StorageStatus, StorageTag, IPC_MAX_WORDS,
+    unpack_bytes, Error, Handle, RawMessage, Result, StorageEntryKind, StorageStatus, StorageTag, IPC_MAX_WORDS,
 };
 
 pub fn storage_open(storage_handle: Handle, path: &str) -> Result<(Handle, usize)> {
@@ -144,4 +144,56 @@ pub fn storage_read_all(
         offset += read;
     }
     Ok(offset)
+}
+
+pub fn storage_list_directory(
+    storage_handle: Handle,
+    prefix: &str,
+    cursor: usize,
+    path_buffer: &mut [u8],
+) -> Result<Option<(usize, StorageEntryKind, usize)>> {
+    let prefix_bytes = prefix.as_bytes();
+    let max_inline_bytes = (IPC_MAX_WORDS.saturating_sub(2)) * 8;
+    if prefix_bytes.len() > max_inline_bytes {
+        return Err(Error::BufferTooSmall);
+    }
+
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(StorageTag::DirectoryListRequest as u32);
+    request.word_count = 2 + pack_bytes(prefix_bytes, &mut request.words[2..])?;
+    request.words[0] = cursor as u64;
+    request.words[1] = prefix_bytes.len() as u64;
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(storage_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != StorageTag::DirectoryListReply as u32 || response.word_count < 4 {
+        return Err(Error::InvalidArgument);
+    }
+
+    let status = match response.words[0] as u32 {
+        x if x == StorageStatus::Ok as u32 => StorageStatus::Ok,
+        x if x == StorageStatus::End as u32 => StorageStatus::End,
+        x if x == StorageStatus::Busy as u32 => StorageStatus::Busy,
+        x if x == StorageStatus::InvalidPath as u32 => StorageStatus::InvalidPath,
+        _ => return Err(Error::InvalidArgument),
+    };
+    if status == StorageStatus::End {
+        return Ok(None);
+    }
+
+    let next_cursor = response.words[1] as usize;
+    let entry_kind = match response.words[2] as u32 {
+        x if x == StorageEntryKind::File as u32 => StorageEntryKind::File,
+        x if x == StorageEntryKind::Directory as u32 => StorageEntryKind::Directory,
+        _ => return Err(Error::InvalidArgument),
+    };
+    let path_len = response.words[3] as usize;
+    unpack_bytes(&response.words[4..response.word_count as usize], path_len, path_buffer)?;
+    Ok(Some((next_cursor, entry_kind, path_len)))
 }

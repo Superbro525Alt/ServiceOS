@@ -7,8 +7,8 @@ use serviceos_bundle::{
 };
 use serviceos_userspace_runtime as rt;
 use rt::{
-    rights, ControlTag, Handle, LifecycleEvent, RawMessage, ServiceId, StorageStatus, StorageTag,
-    IPC_MAX_WORDS,
+    rights, ControlTag, Handle, LifecycleEvent, RawMessage, ServiceId, StorageEntryKind, StorageStatus,
+    StorageTag, IPC_MAX_WORDS,
 };
 
 const MAX_BOOTSTORE_ENTRIES: usize = 64;
@@ -201,6 +201,7 @@ fn handle_root_request(
     match message.tag {
         x if x == StorageTag::OpenRequest as u32 => handle_open_request(entries, sessions, message),
         x if x == StorageTag::ListRequest as u32 => handle_list_request(entries, message),
+        x if x == StorageTag::DirectoryListRequest as u32 => handle_directory_list_request(entries, message),
         _ => Ok(()),
     }
 }
@@ -288,6 +289,77 @@ fn handle_list_request(entries: &[EntrySlot], message: &RawMessage) -> rt::Resul
         reply.words[1] = entry.kind as u32 as u64;
         reply.words[2] = entry.path_len as u64;
         reply.word_count += pack_bytes(&entry.path[..entry.path_len], &mut reply.words[3..])?;
+    }
+
+    let _ = rt::channel_send(reply_handle, &reply);
+    let _ = rt::handle_close(reply_handle);
+    Ok(())
+}
+
+fn handle_directory_list_request(entries: &[EntrySlot], message: &RawMessage) -> rt::Result<()> {
+    if message.word_count < 2 || message.handle_count < 1 {
+        return Ok(());
+    }
+
+    let cursor = message.words[0] as usize;
+    let prefix_len = message.words[1] as usize;
+    let mut prefix = [0u8; serviceos_bundle::BOOT_STORE_PATH_MAX];
+    if unpack_bytes(&message.words[2..message.word_count as usize], prefix_len, &mut prefix).is_err()
+    {
+        return Ok(());
+    }
+
+    let reply_handle = message.handles[0];
+    let mut reply = RawMessage::empty(StorageTag::DirectoryListReply as u32);
+    reply.word_count = 4;
+    reply.words[0] = StorageStatus::End as u32 as u64;
+    reply.words[1] = cursor as u64;
+    reply.words[2] = StorageEntryKind::File as u32 as u64;
+    reply.words[3] = 0;
+
+    let prefix = &prefix[..prefix_len];
+    let mut index = cursor.min(entries.len());
+    while index < entries.len() {
+        let entry = &entries[index];
+        if !entry.matches_prefix(prefix) || entry.path_len == prefix_len {
+            index += 1;
+            continue;
+        }
+
+        let relative = &entry.path[prefix_len..entry.path_len];
+        let Some(component_len) = relative.iter().position(|byte| *byte == b'/') else {
+            reply.words[0] = StorageStatus::Ok as u32 as u64;
+            reply.words[1] = (index + 1) as u64;
+            reply.words[2] = StorageEntryKind::File as u32 as u64;
+            reply.words[3] = entry.path_len as u64;
+            reply.word_count += pack_bytes(&entry.path[..entry.path_len], &mut reply.words[4..])?;
+            break;
+        };
+        if component_len == 0 {
+            index += 1;
+            continue;
+        }
+
+        let child_len = prefix_len + component_len + 1;
+        let child_path = &entry.path[..child_len];
+        let mut next_index = index + 1;
+        while next_index < entries.len() {
+            let candidate = &entries[next_index];
+            if candidate.path_len < child_len {
+                break;
+            }
+            if candidate.path[..child_len] != *child_path {
+                break;
+            }
+            next_index += 1;
+        }
+
+        reply.words[0] = StorageStatus::Ok as u32 as u64;
+        reply.words[1] = next_index as u64;
+        reply.words[2] = StorageEntryKind::Directory as u32 as u64;
+        reply.words[3] = child_len as u64;
+        reply.word_count += pack_bytes(child_path, &mut reply.words[4..])?;
+        break;
     }
 
     let _ = rt::channel_send(reply_handle, &reply);

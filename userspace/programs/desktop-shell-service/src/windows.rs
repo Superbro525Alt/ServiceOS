@@ -469,18 +469,18 @@ pub(crate) fn clamp_window_y(output_height: u32, height: u32, requested: i32) ->
 
 pub(crate) fn launcher_line(slot: AppSlot) -> &'static str {
     match (slot.app_id, slot.running, slot.window.minimized) {
-        (DesktopAppId::Settings, true, false) => "SETTINGS RUN",
-        (DesktopAppId::Settings, true, true) => "SETTINGS MIN",
-        (DesktopAppId::Settings, false, _) => "SETTINGS OFF",
-        (DesktopAppId::Files, true, false) => "FILES RUN",
-        (DesktopAppId::Files, true, true) => "FILES MIN",
-        (DesktopAppId::Files, false, _) => "FILES OFF",
-        (DesktopAppId::Monitor, true, false) => "MONITOR RUN",
-        (DesktopAppId::Monitor, true, true) => "MONITOR MIN",
-        (DesktopAppId::Monitor, false, _) => "MONITOR OFF",
-        (DesktopAppId::Terminal, true, false) => "TERMINAL RUN",
-        (DesktopAppId::Terminal, true, true) => "TERMINAL MIN",
-        (DesktopAppId::Terminal, false, _) => "TERMINAL OFF",
+        (DesktopAppId::Settings, true, false) => "SETTINGS  OPEN",
+        (DesktopAppId::Settings, true, true) => "SETTINGS  MIN",
+        (DesktopAppId::Settings, false, _) => "SETTINGS",
+        (DesktopAppId::Files, true, false) => "FILES     OPEN",
+        (DesktopAppId::Files, true, true) => "FILES     MIN",
+        (DesktopAppId::Files, false, _) => "FILES",
+        (DesktopAppId::Monitor, true, false) => "MONITOR   OPEN",
+        (DesktopAppId::Monitor, true, true) => "MONITOR   MIN",
+        (DesktopAppId::Monitor, false, _) => "MONITOR",
+        (DesktopAppId::Terminal, true, false) => "TERMINAL  OPEN",
+        (DesktopAppId::Terminal, true, true) => "TERMINAL  MIN",
+        (DesktopAppId::Terminal, false, _) => "TERMINAL",
     }
 }
 

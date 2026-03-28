@@ -365,14 +365,14 @@ fn launcher_hit_app(state: &DesktopState, x: i32, y: i32) -> Option<DesktopAppId
     if x < launcher_x
         || y < launcher_y
         || x >= launcher_x + crate::LAUNCHER_WIDTH as i32
-        || y >= launcher_y + 278
+        || y >= launcher_y + crate::LAUNCHER_HEIGHT as i32
     {
         return None;
     }
 
     let local_y = y - launcher_y;
     for index in 0..APP_COUNT {
-        let line_y = ui::PANEL_LINE_START_Y + ((index as i32 + 1) * ui::PANEL_LINE_STEP);
+        let line_y = ui::PANEL_LINE_START_Y + (index as i32 * ui::PANEL_LINE_STEP);
         let line_top = line_y - 2;
         let line_bottom = line_top + ui::PANEL_LINE_STEP;
         if local_y >= line_top && local_y < line_bottom {

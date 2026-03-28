@@ -6,8 +6,8 @@ use rt::FixedLogBuffer;
 
 use crate::{
     windows::{app_title, launcher_line, running_app_count},
-    DesktopState, DesktopStatusSnapshot, CURSOR_SIZE, CURSOR_Z_ORDER, STATUS_PANEL_HEIGHT,
-    STATUS_PANEL_WIDTH, TOPBAR_HEIGHT, LAUNCHER_WIDTH,
+    DesktopState, DesktopStatusSnapshot, CURSOR_SIZE, CURSOR_Z_ORDER, LAUNCHER_HEIGHT,
+    LAUNCHER_WIDTH, STATUS_PANEL_HEIGHT, STATUS_PANEL_WIDTH, TOPBAR_HEIGHT,
 };
 
 pub(crate) fn render_desktop(state: &mut DesktopState) -> rt::Result<()> {
@@ -40,19 +40,16 @@ pub(crate) fn render_desktop(state: &mut DesktopState) -> rt::Result<()> {
     )?;
 
     let launcher_lines = [
-        "LAUNCHER",
         launcher_line(state.apps[0]),
         launcher_line(state.apps[1]),
         launcher_line(state.apps[2]),
         launcher_line(state.apps[3]),
-        "CLICK ITEMS OR USE SHELL",
-        "DRAG TITLEBAR / GRIP",
     ];
     ui::render_panel(
         state.chrome.launcher_handle,
         LAUNCHER_WIDTH,
-        278,
-        "LAUNCHER",
+        LAUNCHER_HEIGHT,
+        "APPS",
         &launcher_lines,
     )?;
 

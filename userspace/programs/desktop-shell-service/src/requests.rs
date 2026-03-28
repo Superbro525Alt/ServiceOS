@@ -141,14 +141,15 @@ pub(crate) fn handle_request(state: &mut DesktopState, request: &RawMessage) -> 
             let _ = rt::handle_close(reply_handle);
         }
         x if x == DesktopTag::InputRequest as u32 => {
-            if request.word_count < 3 {
+            if request.word_count < 4 {
                 return Ok(());
             }
             let action = desktop_input_action_from_word(request.words[0]);
             let x = request.words[1] as i64 as i32;
             let y = request.words[2] as i64 as i32;
+            let detail = request.words[3] as i64 as i32;
             let result = match action {
-                Some(action) => handle_input(state, action, x, y),
+                Some(action) => handle_input(state, action, x, y, detail),
                 None => Err(rt::Error::NotFound),
             };
             if request.handle_count >= 1 {
@@ -211,6 +212,7 @@ fn desktop_input_action_from_word(value: u64) -> Option<DesktopInputAction> {
         x if x == DesktopInputAction::KeyDown as u32 => Some(DesktopInputAction::KeyDown),
         x if x == DesktopInputAction::KeyUp as u32 => Some(DesktopInputAction::KeyUp),
         x if x == DesktopInputAction::TextInput as u32 => Some(DesktopInputAction::TextInput),
+        x if x == DesktopInputAction::PointerScroll as u32 => Some(DesktopInputAction::PointerScroll),
         _ => None,
     }
 }

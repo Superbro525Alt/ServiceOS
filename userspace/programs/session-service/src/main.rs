@@ -5,7 +5,6 @@ use serviceos_userspace_runtime as rt;
 use rt::{
     ControlTag, DesktopInputAction, InputButton, InputEventKind, LifecycleEvent, LogDomain,
     LogEvent, LogSeverity, RawMessage, ServiceId, SessionInputSource, SessionStatus, SessionTag,
-    input_capability,
 };
 
 const SESSION_ID: u32 = 1;
@@ -258,6 +257,14 @@ fn process_input_event(
                     state.pointer_y,
                 ))?;
             }
+        }
+        x if x == InputEventKind::PointerScroll as u32 => {
+            tolerate_input_backpressure(rt::desktop_pointer_scroll_input_async(
+                desktop_handle,
+                state.pointer_x,
+                state.pointer_y,
+                event.value1,
+            ))?;
         }
         x if x == InputEventKind::Key as u32 => {
             update_modifier_state(state, event.code, event.value0 != 0);

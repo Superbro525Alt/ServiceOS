@@ -537,6 +537,7 @@ pub enum InputEventKind {
     PointerButton = 2,
     Key = 3,
     PointerDelta = 4,
+    PointerScroll = 5,
 }
 
 #[repr(u32)]
@@ -734,6 +735,7 @@ pub enum DesktopInputAction {
     KeyDown = 5,
     KeyUp = 6,
     TextInput = 7,
+    PointerScroll = 8,
 }
 
 #[repr(u32)]
@@ -819,6 +821,7 @@ pub enum AppPointerAction {
     Down = 1,
     Move = 2,
     Up = 3,
+    Scroll = 4,
 }
 
 #[repr(u32)]

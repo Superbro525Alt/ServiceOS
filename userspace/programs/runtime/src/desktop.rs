@@ -311,13 +311,15 @@ fn desktop_input_request(
     action: DesktopInputAction,
     x: i32,
     y: i32,
+    detail: i32,
     expect_reply: bool,
 ) -> Result<Option<u32>> {
     let mut request = RawMessage::empty(DesktopTag::InputRequest as u32);
-    request.word_count = 3;
+    request.word_count = 4;
     request.words[0] = action as u32 as u64;
     request.words[1] = x as i64 as u64;
     request.words[2] = y as i64 as u64;
+    request.words[3] = detail as i64 as u64;
     let mut reply = None;
     if expect_reply {
         let pair = channel_create()?;
@@ -351,7 +353,8 @@ pub fn desktop_pointer_input(
     x: i32,
     y: i32,
 ) -> Result<u32> {
-    desktop_input_request(desktop_handle, action, x, y, true).map(|surface| surface.unwrap_or(0))
+    desktop_input_request(desktop_handle, action, x, y, 0, true)
+        .map(|surface| surface.unwrap_or(0))
 }
 
 pub fn desktop_pointer_input_async(
@@ -360,7 +363,24 @@ pub fn desktop_pointer_input_async(
     x: i32,
     y: i32,
 ) -> Result<()> {
-    desktop_input_request(desktop_handle, action, x, y, false).map(|_| ())
+    desktop_input_request(desktop_handle, action, x, y, 0, false).map(|_| ())
+}
+
+pub fn desktop_pointer_scroll_input_async(
+    desktop_handle: Handle,
+    x: i32,
+    y: i32,
+    delta_y: i32,
+) -> Result<()> {
+    desktop_input_request(
+        desktop_handle,
+        DesktopInputAction::PointerScroll,
+        x,
+        y,
+        delta_y,
+        false,
+    )
+    .map(|_| ())
 }
 
 pub fn desktop_pointer_click(desktop_handle: Handle, x: i32, y: i32) -> Result<u32> {

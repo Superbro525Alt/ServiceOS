@@ -149,11 +149,11 @@ fn main() -> u64 {
             Err(_) => return 0xfa06,
         }
 
-        match poll_control(control_handle, &mut state, &mut width, &mut height, &mut focused) {
-            Ok(ControlFlow::Continue) => {}
-            Ok(ControlFlow::Exit) => break,
+        let mut changed = match poll_control(control_handle, &mut state, &mut width, &mut height, &mut focused) {
+            Ok((ControlFlow::Continue, control_changed)) => control_changed,
+            Ok((ControlFlow::Exit, _)) => break,
             Err(_) => return 0xfa07,
-        }
+        };
 
         if width != state.width || height != state.height || focused != state.focused {
             state.width = width;
@@ -170,7 +170,6 @@ fn main() -> u64 {
             let _ = render(surface_handle, buffer_handle, &state);
         }
 
-        let mut changed = false;
         let mut data = [0u8; (rt::IPC_MAX_WORDS - 1) * 8];
         loop {
             match receive_terminal_message(state.session_handle, &mut data) {
@@ -216,24 +215,36 @@ fn poll_control(
     width: &mut u32,
     height: &mut u32,
     focused: &mut bool,
-) -> rt::Result<ControlFlow> {
+) -> rt::Result<(ControlFlow, bool)> {
+    let mut changed = false;
     loop {
         let mut message = RawMessage::empty(0);
         match rt::channel_receive_nonblocking(control_handle, &mut message) {
             Ok(()) if message.tag == AppControlTag::FocusChanged as u32 && message.word_count > 0 => {
                 *focused = message.words[0] != 0;
+                changed = true;
             }
             Ok(()) if message.tag == AppControlTag::Resize as u32 && message.word_count >= 2 => {
                 *width = message.words[0] as u32;
                 *height = message.words[1] as u32;
+                changed = true;
             }
-            Ok(()) if message.tag == AppControlTag::Close as u32 => return Ok(ControlFlow::Exit),
+            Ok(()) if message.tag == AppControlTag::Close as u32 => return Ok((ControlFlow::Exit, false)),
+            Ok(()) if message.tag == AppControlTag::Pointer as u32 && message.word_count >= 5 => {
+                let action = app_pointer_action_from_word(message.words[0]);
+                let detail = message.words[4] as i64 as i32;
+                if matches!(action, Some(rt::AppPointerAction::Scroll)) {
+                    handle_pointer_scroll(state, detail);
+                    changed = true;
+                }
+            }
             Ok(()) if message.tag == AppControlTag::Text as u32 && message.word_count > 0 => {
                 if let Some(ch) = core::char::from_u32(message.words[0] as u32) {
                     let mut bytes = [0u8; 4];
                     let encoded = ch.encode_utf8(&mut bytes);
                     state.scroll_offset = 0;
                     let _ = rt::terminal_session_send_input(state.session_handle, encoded.as_bytes());
+                    changed = true;
                 }
             }
             Ok(()) if message.tag == AppControlTag::Key as u32 && message.word_count >= 2 => {
@@ -241,7 +252,7 @@ fn poll_control(
                 if action == rt::AppKeyAction::Down as u32 {
                     let key_code = message.words[1] as u32;
                     let modifiers = message.words.get(2).copied().unwrap_or(0) as u32;
-                    handle_key_down(state, key_code, modifiers)?;
+                    changed |= handle_key_down(state, key_code, modifiers)?;
                 }
             }
             Ok(()) => {}
@@ -249,30 +260,50 @@ fn poll_control(
             Err(error) => return Err(error),
         }
     }
-    Ok(ControlFlow::Continue)
+    Ok((ControlFlow::Continue, changed))
 }
 
-fn handle_key_down(state: &mut TerminalState, key_code: u32, modifiers: u32) -> rt::Result<()> {
+fn handle_key_down(state: &mut TerminalState, key_code: u32, modifiers: u32) -> rt::Result<bool> {
     if modifiers & MOD_CTRL != 0 && key_code == 46 {
         state.scroll_offset = 0;
-        return rt::terminal_session_send_input(state.session_handle, &[0x03]);
+        rt::terminal_session_send_input(state.session_handle, &[0x03])?;
+        return Ok(true);
     }
     if key_code == KEY_PAGE_UP || (modifiers & MOD_SHIFT != 0 && key_code == KEY_UP) {
         scroll_up_view(state, if key_code == KEY_PAGE_UP { state.rows.saturating_sub(1).max(1) } else { 1 });
-        return Ok(());
+        return Ok(true);
     }
     if key_code == KEY_PAGE_DOWN || (modifiers & MOD_SHIFT != 0 && key_code == KEY_DOWN) {
         scroll_down_view(state, if key_code == KEY_PAGE_DOWN { state.rows.saturating_sub(1).max(1) } else { 1 });
-        return Ok(());
+        return Ok(true);
     }
     state.scroll_offset = 0;
     match key_code {
-        KEY_BACKSPACE => rt::terminal_session_send_input(state.session_handle, &[0x7f]),
-        KEY_UP => rt::terminal_session_send_input(state.session_handle, b"\x1b[A"),
-        KEY_DOWN => rt::terminal_session_send_input(state.session_handle, b"\x1b[B"),
-        KEY_RIGHT => rt::terminal_session_send_input(state.session_handle, b"\x1b[C"),
-        KEY_LEFT => rt::terminal_session_send_input(state.session_handle, b"\x1b[D"),
-        _ => Ok(()),
+        KEY_BACKSPACE => rt::terminal_session_send_input(state.session_handle, &[0x7f])?,
+        KEY_UP => rt::terminal_session_send_input(state.session_handle, b"\x1b[A")?,
+        KEY_DOWN => rt::terminal_session_send_input(state.session_handle, b"\x1b[B")?,
+        KEY_RIGHT => rt::terminal_session_send_input(state.session_handle, b"\x1b[C")?,
+        KEY_LEFT => rt::terminal_session_send_input(state.session_handle, b"\x1b[D")?,
+        _ => return Ok(false),
+    }
+    Ok(true)
+}
+
+fn app_pointer_action_from_word(value: u64) -> Option<rt::AppPointerAction> {
+    match value as u32 {
+        x if x == rt::AppPointerAction::Down as u32 => Some(rt::AppPointerAction::Down),
+        x if x == rt::AppPointerAction::Move as u32 => Some(rt::AppPointerAction::Move),
+        x if x == rt::AppPointerAction::Up as u32 => Some(rt::AppPointerAction::Up),
+        x if x == rt::AppPointerAction::Scroll as u32 => Some(rt::AppPointerAction::Scroll),
+        _ => None,
+    }
+}
+
+fn handle_pointer_scroll(state: &mut TerminalState, delta_y: i32) {
+    if delta_y > 0 {
+        scroll_up_view(state, delta_y as usize);
+    } else if delta_y < 0 {
+        scroll_down_view(state, (-delta_y) as usize);
     }
 }
 

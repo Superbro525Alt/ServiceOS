@@ -36,6 +36,7 @@ const EV_ABS: u16 = 0x03;
 const SYN_REPORT: u16 = 0x00;
 const REL_X: u16 = 0x00;
 const REL_Y: u16 = 0x01;
+const REL_WHEEL: u16 = 0x08;
 const ABS_X: u16 = 0x00;
 const ABS_Y: u16 = 0x01;
 
@@ -302,6 +303,14 @@ fn normalize_event(device: &mut InputDeviceState, event: InputEvent) -> Option<I
                     REL_Y => {
                         device.pending_y = device.pending_y.saturating_add(event.value as i32);
                         device.motion_dirty = true;
+                    }
+                    REL_WHEEL => {
+                        return Some(InputEventInfo {
+                            kind: InputEventKind::PointerScroll as u32,
+                            code: 0,
+                            value0: 0,
+                            value1: event.value as i32,
+                        });
                     }
                     _ => {}
                 }

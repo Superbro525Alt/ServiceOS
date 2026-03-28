@@ -19,6 +19,7 @@ pub(crate) fn handle_input(
     action: DesktopInputAction,
     x: i32,
     y: i32,
+    detail: i32,
 ) -> rt::Result<u32> {
     let result = match action {
         DesktopInputAction::PointerDown => {
@@ -47,6 +48,11 @@ pub(crate) fn handle_input(
             state.content_capture = None;
             Ok(focused_surface_id(state))
         }
+        DesktopInputAction::PointerScroll => {
+            state.pointer_x = x;
+            state.pointer_y = y;
+            handle_pointer_scroll(state, x, y, detail)
+        }
         DesktopInputAction::KeyDown => handle_key_input(state, AppKeyAction::Down, x as u32, y as u32),
         DesktopInputAction::KeyUp => handle_key_input(state, AppKeyAction::Up, x as u32, y as u32),
         DesktopInputAction::TextInput => handle_text_input(state, x as u32),
@@ -72,7 +78,7 @@ fn handle_pointer_down(state: &mut DesktopState, x: i32, y: i32) -> rt::Result<u
             state.content_capture = Some(ContentCapture { app_id, button: 1 });
             let surface_id = focus_app(state, app_id)?;
             let (local_x, local_y) = app_local_coords(state, app_id, x, y)?;
-            dispatch_pointer_to_app(state, app_id, AppPointerAction::Down, local_x, local_y, 1)?;
+            dispatch_pointer_to_app(state, app_id, AppPointerAction::Down, local_x, local_y, 1, 0)?;
             Ok(surface_id)
         }
         HitTarget::WindowMove {
@@ -157,6 +163,7 @@ fn handle_pointer_move(state: &mut DesktopState, x: i32, y: i32) -> rt::Result<u
                     local_x,
                     local_y,
                     capture.button,
+                    0,
                 )?;
             }
             Ok(focused_surface_id(state))
@@ -174,9 +181,30 @@ fn handle_pointer_up(state: &mut DesktopState, x: i32, y: i32) -> rt::Result<u32
             local_x,
             local_y,
             capture.button,
+            0,
         )?;
     }
     Ok(focused_surface_id(state))
+}
+
+fn handle_pointer_scroll(state: &mut DesktopState, x: i32, y: i32, delta_y: i32) -> rt::Result<u32> {
+    match hit_test(state, x, y) {
+        HitTarget::WindowContent(app_id) => {
+            let surface_id = focus_app(state, app_id)?;
+            let (local_x, local_y) = app_local_coords(state, app_id, x, y)?;
+            dispatch_pointer_to_app(
+                state,
+                app_id,
+                AppPointerAction::Scroll,
+                local_x,
+                local_y,
+                0,
+                delta_y,
+            )?;
+            Ok(surface_id)
+        }
+        _ => Ok(focused_surface_id(state)),
+    }
 }
 
 fn handle_key_input(
@@ -404,6 +432,7 @@ pub(crate) fn dispatch_pointer_to_app(
     local_x: i32,
     local_y: i32,
     button: u32,
+    detail: i32,
 ) -> rt::Result<()> {
     let Some(index) = app_slot_index(&state.apps, app_id) else {
         return Err(rt::Error::NotFound);
@@ -412,7 +441,7 @@ pub(crate) fn dispatch_pointer_to_app(
     if control == rt::INVALID_HANDLE {
         return Err(rt::Error::NotFound);
     }
-    rt::app_control_pointer(control, action, local_x, local_y, button)
+    rt::app_control_pointer(control, action, local_x, local_y, button, detail)
 }
 
 fn app_local_coords(

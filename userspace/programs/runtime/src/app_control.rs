@@ -28,13 +28,15 @@ pub fn app_control_pointer(
     x: i32,
     y: i32,
     button: u32,
+    detail: i32,
 ) -> Result<()> {
     let mut request = RawMessage::empty(AppControlTag::Pointer as u32);
-    request.word_count = 4;
+    request.word_count = 5;
     request.words[0] = action as u32 as u64;
     request.words[1] = x as i64 as u64;
     request.words[2] = y as i64 as u64;
     request.words[3] = button as u64;
+    request.words[4] = detail as i64 as u64;
     channel_send(control_handle, &request)
 }
 

@@ -73,8 +73,9 @@ userspace service contracts.
 ## Current architectural choices
 
 - `x86_64` + `qemu-virtio` is the current working bring-up path
-- `aarch64` + `raspi5` now exists as a first-class structural target, but it is
-  still boot-scaffold-only
+- `aarch64` + `raspi5` now exists as a first-class native bring-up target with
+  a real boot image, DTB parsing, and UART logging, but not yet a full kernel
+  and userspace stack
 - generic kernel code owns abstract memory and address-space concepts
 - generic kernel code also owns objects, capabilities, IPC semantics, and
   lifetime rules

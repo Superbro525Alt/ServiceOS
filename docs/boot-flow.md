@@ -58,20 +58,38 @@ QEMU
 - privilege transition into ring 3 and return through the syscall exit path
 - launch of a persisted-manifest service graph after root-manager entry
 
-## Secondary target scaffold
+## Secondary target bring-up
 
-`cargo xtask image --platform raspi5` now stages the future Raspberry Pi 5 boot
-layout:
+`cargo xtask image --platform raspi5` now stages a real Raspberry Pi 5 bring-up
+image:
 
 - `config.txt`
+- `kernel8.img`
 - `serviceos/bootstore.bin`
+- `serviceos/serviceos-kernel.elf`
+- an optional `bcm2712-rpi-5-b.dtb` copy when available locally
 - a boot-partition directory layout under `target/images/<profile>/raspi5/boot`
+
+The current control flow on that path is:
+
+```text
+Raspberry Pi firmware
+  -> kernel8.img
+    -> platform/aarch64/raspi5/image::_start
+      -> AArch64 stack setup and BSS clear
+      -> DTB parse through platform/aarch64/raspi5::dtb
+      -> normalize memory ranges into BootInfo
+      -> resolve the chosen stdout UART from the DTB
+      -> initialize PL011 debug UART
+      -> log native bring-up state and halt
+```
 
 What is still deferred on that path:
 
-- native Raspberry Pi firmware parsing into `BootInfo`
-- DTB consumption
-- a working `aarch64` kernel image and entry path
+- full `kernel/core` initialization on `aarch64`
+- page-table, trap-table, syscall, and userspace transition bring-up
+- boot-store-backed root userspace bootstrap
+- Raspberry Pi graphics, input, networking, and storage backends
 
 ## What is intentionally deferred
 

@@ -40,21 +40,23 @@ Implemented today:
 - Arch crate: `arch/aarch64`
 - Platform crate: `platform/aarch64/raspi5`
 - Boot model: Raspberry Pi firmware
-- Run model: image staging only for now
+- Run model: native boot-image staging and manual deployment
 
 Implemented today:
 
 - first-class workspace target and crate layout
-- `xtask` platform selection and image scaffolding
-- boot-partition staging with `config.txt` and `serviceos/bootstore.bin`
+- native `platform/aarch64/raspi5/image` kernel image crate
+- `xtask` platform selection and raw `kernel8.img` generation
+- Raspberry Pi firmware boot-partition staging with `config.txt`
+- DTB-backed memory discovery and stdout-UART resolution
+- PL011 debug-UART logging after native AArch64 entry
 
 Still deferred:
 
-- native firmware handoff parsing into `BootInfo`
-- DTB consumption
-- real `aarch64` exception, MMU, and user-transition code
-- a bootable Raspberry Pi kernel image
+- full generic-kernel initialization on `aarch64`
+- real `aarch64` exception, MMU, syscall, and user-transition code
 - Raspberry Pi display, input, networking, and storage backends
+- userspace service bootstrap on Raspberry Pi 5
 
 ## Xtask model
 
@@ -80,8 +82,8 @@ Current behavior:
   the UEFI kernel image, the userspace catalog, and then creates a raw disk
   image
 - `raspi5` builds the aarch64 arch crate, the Raspberry Pi 5 platform crate,
-  the userspace catalog, and stages a boot-partition scaffold without claiming
-  that the native kernel path is finished
+  the native Raspberry Pi image crate, the userspace catalog, and stages a Pi
+  boot-partition bundle with a real `kernel8.img`
 
 ## Temporary but explicit gaps
 
@@ -89,5 +91,5 @@ Current behavior:
   `arch/x86_64`, because there is only one x86 platform target today
 - x86 trap-time emergency serial output is still local to `arch/x86_64`; the
   main serial backend is already under `platform/x86_64/qemu_virtio`
-- the Raspberry Pi 5 target is a structural first-class target, not a complete
-  hardware bring-up yet
+- the Raspberry Pi 5 target is a real native bring-up image, not a complete
+  ServiceOS hardware port yet

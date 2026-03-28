@@ -8,8 +8,8 @@ durable userspace platform layer.
 - the kernel provides mechanisms, not service policy
 - authority flows through handles in per-task capability spaces
 - communication flows through explicit IPC objects, not ambient global access
-- architecture-specific code stays in `kernel/arch/*`; generic policy-neutral
-  code stays in `kernel/core`
+- architecture-specific code stays in `arch/*`; generic policy-neutral code
+  stays in `kernel/core`
 - unsafe code is concentrated around firmware handoff, page-table mutation,
   interrupt/syscall entry, and userspace transition
 

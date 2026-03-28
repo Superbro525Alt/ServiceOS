@@ -106,10 +106,10 @@ compatibility runtimes, or a mature app ecosystem.
 |   `-- x86_64/
 |-- docs/
 |-- kernel/
-|   |-- core/
-|   `-- image/x86_64/
+|   `-- core/
 |-- platform/
 |   |-- aarch64/raspi5/
+|   |   `-- image/
 |   `-- x86_64/qemu_virtio/
 |       `-- image/
 |-- shared/
@@ -127,13 +127,14 @@ Important directories:
 
 - `kernel/core`: generic kernel subsystems and object model
 - `arch/x86_64`: x86_64 CPU, MMU, trap, syscall, and user-transition code
-- `arch/aarch64`: aarch64 architecture scaffolding for the future Pi port
+- `arch/aarch64`: aarch64 CPU and early bring-up primitives for the Pi port
 - `platform/x86_64/qemu_virtio`: UEFI, serial, framebuffer, input, and VirtIO
   backend wiring for the current QEMU target
 - `platform/x86_64/qemu_virtio/image`: bootable UEFI image crate for the
   current QEMU/VirtIO platform
-- `platform/aarch64/raspi5`: Raspberry Pi 5 platform scaffolding and boot image
-  layout contracts
+- `platform/aarch64/raspi5`: Raspberry Pi 5 firmware, DTB, and UART bring-up
+  code
+- `platform/aarch64/raspi5/image`: native Raspberry Pi 5 `kernel8.img` crate
 - `shared/abi`: syscall, IPC, service, graphics, network, and package ABI
 - `shared/bundle`: service/package/boot-store bundle format support
 - `support/xtask`: platform-aware build, image, and run orchestration
@@ -180,10 +181,13 @@ Current `qemu-virtio` run defaults:
 
 Current `raspi5` image behavior:
 
-- builds the new `arch/aarch64` and `platform/aarch64/raspi5` crates
-- stages `serviceos/bootstore.bin`
-- writes a Raspberry Pi boot-partition scaffold with `config.txt`
-- does not claim a working native Pi kernel image yet
+- builds `arch/aarch64`, `platform/aarch64/raspi5`, and the native Pi image
+  crate
+- emits a real `kernel8.img` plus `serviceos/serviceos-kernel.elf`
+- stages `serviceos/bootstore.bin` for later platform work
+- parses the Raspberry Pi DTB at boot to discover memory and the debug UART
+- logs native bring-up state over the Pi 5 debug UART
+- does not yet bring the full ServiceOS kernel/userspace stack up on Pi 5
 
 ## What The System Can Do Right Now
 

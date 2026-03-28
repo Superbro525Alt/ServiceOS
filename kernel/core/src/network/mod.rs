@@ -1,107 +1,15 @@
-use alloc::{sync::Arc, vec::Vec};
-use serviceos_abi::PacketInterfaceInfo;
-use spin::{Mutex, Once};
+mod backend;
+mod core;
 
-const MAX_REGISTERED_INTERFACES: usize = 8;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PacketInterfaceError {
-    QueueEmpty,
-    BufferTooSmall,
-    Busy,
-    Unsupported,
-}
-
-pub trait PacketBackend: Send + Sync {
-    fn info(&self) -> PacketInterfaceInfo;
-    fn transmit(&self, frame: &[u8]) -> Result<(), PacketInterfaceError>;
-    fn receive(&self, buffer: &mut [u8]) -> Result<usize, PacketInterfaceError>;
-    fn poll(&self) -> bool;
-}
-
-pub struct PacketInterfaceObject {
-    backend: Arc<dyn PacketBackend>,
-}
-
-impl PacketInterfaceObject {
-    pub fn new(backend: Arc<dyn PacketBackend>) -> Self {
-        Self { backend }
-    }
-
-    pub fn info(&self) -> PacketInterfaceInfo {
-        self.backend.info()
-    }
-
-    pub fn transmit(&self, frame: &[u8]) -> Result<(), PacketInterfaceError> {
-        self.backend.transmit(frame)
-    }
-
-    pub fn receive(&self, buffer: &mut [u8]) -> Result<usize, PacketInterfaceError> {
-        self.backend.receive(buffer)
-    }
-
-    pub fn backend(&self) -> Arc<dyn PacketBackend> {
-        Arc::clone(&self.backend)
-    }
-}
-
-#[derive(Clone)]
-struct RegisteredInterface {
-    object_id: u64,
-    backend: Arc<dyn PacketBackend>,
-}
-
-pub struct NetworkCore {
-    interfaces: Mutex<Vec<RegisteredInterface>>,
-}
-
-impl NetworkCore {
-    fn new() -> Self {
-        Self {
-            interfaces: Mutex::new(Vec::new()),
-        }
-    }
-
-    pub fn register_interface(&self, object_id: u64, backend: Arc<dyn PacketBackend>) -> bool {
-        let mut interfaces = self.interfaces.lock();
-        if interfaces.len() >= MAX_REGISTERED_INTERFACES
-            || interfaces.iter().any(|entry| entry.object_id == object_id)
-        {
-            return false;
-        }
-        interfaces.push(RegisteredInterface { object_id, backend });
-        true
-    }
-
-    pub fn poll_ready<F>(&self, mut notify_ready: F)
-    where
-        F: FnMut(u64),
-    {
-        let interfaces = self.interfaces.lock();
-        for interface in interfaces.iter() {
-            if interface.backend.poll() {
-                notify_ready(interface.object_id);
-            }
-        }
-    }
-}
-
-static NETWORK_CORE: Once<NetworkCore> = Once::new();
-
-pub fn initialize() -> &'static NetworkCore {
-    NETWORK_CORE.call_once(NetworkCore::new)
-}
-
-pub fn manager() -> Option<&'static NetworkCore> {
-    NETWORK_CORE.get()
-}
+pub use backend::{PacketBackend, PacketInterfaceError, PacketInterfaceObject};
+pub use core::{NetworkCore, initialize, manager};
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ::core::sync::atomic::{AtomicBool, Ordering};
     use alloc::sync::Arc;
-    use core::sync::atomic::{AtomicBool, Ordering};
-    use serviceos_abi::{PacketInterfaceBackend, PacketInterfaceLinkState};
+    use serviceos_abi::{PacketInterfaceBackend, PacketInterfaceInfo, PacketInterfaceLinkState};
 
     struct FakeBackend {
         polled: AtomicBool,

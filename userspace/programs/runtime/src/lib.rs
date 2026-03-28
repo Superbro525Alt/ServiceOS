@@ -535,14 +535,21 @@ fn raw_syscall(
     arg4: u64,
     arg5: u64,
 ) -> (u64, u64) {
-    let mut value = number;
-    let mut arg2_inout = arg2;
-
+    let value: u64;
+    let error: u64;
     unsafe {
-        asm!("", out("rax") value, out("rdx") arg2_inout);
+        asm!(
+            "int 0x80",
+            inlateout("rax") number => value,
+            in("rdi") arg0,
+            in("rsi") arg1,
+            inlateout("rdx") arg2 => error,
+            in("r10") arg3,
+            in("r8") arg4,
+            in("r9") arg5,
+        );
     }
-
-    (value, arg2_inout)
+    (value, error)
 }
 
 #[cfg(target_arch = "aarch64")]

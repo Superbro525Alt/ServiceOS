@@ -42,11 +42,7 @@ fn run_qemu(disk_image: &Path) -> Result<(), Box<dyn Error>> {
     )?;
     let headless = qemu_headless();
     if !disk_image.exists() {
-        return Err(format!(
-            "QEMU disk image is missing: {}",
-            disk_image.display()
-        )
-        .into());
+        return Err(format!("QEMU disk image is missing: {}", disk_image.display()).into());
     }
 
     println!("Launching QEMU with:");
@@ -58,16 +54,24 @@ fn run_qemu(disk_image: &Path) -> Result<(), Box<dyn Error>> {
         "  display mode: {}",
         if headless { "headless" } else { "graphical" }
     );
+    let accel = qemu_accel_mode();
+    println!("  accelerator: {}", accel_name(accel));
 
     let mut command = Command::new(&qemu_binary);
     command.args(["-machine", "q35"]);
     command.args(["-m", "512"]);
     command.args(["-smp", "2"]);
     command.args(["-cpu", "max"]);
-    if kvm_available() {
-        command.args(["-accel", "kvm"]);
-    } else {
-        command.args(["-accel", "tcg,thread=multi"]);
+    match accel {
+        QemuAccelMode::Tcg => {
+            command.args(["-accel", "tcg,thread=multi"]);
+        }
+        QemuAccelMode::Kvm => {
+            if !kvm_available() {
+                return Err("QEMU accel mode 'kvm' requested but /dev/kvm is not available".into());
+            }
+            command.args(["-accel", "kvm"]);
+        }
     }
     command.args(["-serial", "stdio"]);
     if headless {
@@ -121,6 +125,27 @@ fn qemu_headless() -> bool {
     )
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum QemuAccelMode {
+    Tcg,
+    Kvm,
+}
+
+fn qemu_accel_mode() -> QemuAccelMode {
+    match env::var("QEMU_ACCEL").ok().as_deref() {
+        Some("kvm") => QemuAccelMode::Kvm,
+        Some("tcg") => QemuAccelMode::Tcg,
+        _ => QemuAccelMode::Tcg,
+    }
+}
+
+fn accel_name(mode: QemuAccelMode) -> &'static str {
+    match mode {
+        QemuAccelMode::Tcg => "tcg,thread=multi",
+        QemuAccelMode::Kvm => "kvm",
+    }
+}
+
 fn kvm_available() -> bool {
     Path::new("/dev/kvm").exists()
 }
@@ -162,7 +187,7 @@ fn find_ovmf_vars_template() -> Option<PathBuf> {
         ]
         .into_iter()
         .map(PathBuf::from)
-            .find(|path| path.exists())
+        .find(|path| path.exists())
     })
 }
 
@@ -178,9 +203,12 @@ fn find_qemu_binary() -> Option<PathBuf> {
             })
         })
         .or_else(|| {
-            ["/usr/bin/qemu-system-x86_64", "/usr/sbin/qemu-system-x86_64"]
-                .into_iter()
-                .map(PathBuf::from)
-                .find(|path| path.exists())
+            [
+                "/usr/bin/qemu-system-x86_64",
+                "/usr/sbin/qemu-system-x86_64",
+            ]
+            .into_iter()
+            .map(PathBuf::from)
+            .find(|path| path.exists())
         })
 }

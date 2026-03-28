@@ -284,6 +284,7 @@ fn launch_root_manager(
     bootstrap_display: Option<serviceos_kernel_core::object::KernelObjectRef>,
     bootstrap_input: Option<serviceos_kernel_core::object::KernelObjectRef>,
 ) -> Result<RootBootstrapSummary, BootstrapError> {
+    log_line("bootstrap", "preparing root-manager bootstrap channel");
     let ipc_kernel = ipc::kernel().ok_or(BootstrapError::MissingBootStore)?;
     let bootstrap_task = kernel
         .objects()
@@ -307,6 +308,10 @@ fn launch_root_manager(
         CapabilityRights::channel_endpoint(),
         TransferMode::Move,
     )?;
+    log_line(
+        "bootstrap",
+        "creating root-manager boot-store and authority transfers",
+    );
     let boot_store_bytes = kernel
         .boot_context()
         .boot_store
@@ -382,11 +387,13 @@ fn launch_root_manager(
         None
     };
 
+    log_line("bootstrap", "spawning root-manager task");
     let root = kernel_user::spawn_builtin_task(
         ServiceImageId::RootManager as u32,
         TaskRole::SystemService,
         Some(root_bootstrap_transfer),
     )?;
+    log_line("bootstrap", "sending root-manager startup message");
     let mut startup = OutgoingMessage::new(
         MessageTag(ControlTag::Startup as u32),
         &[
@@ -422,6 +429,7 @@ fn launch_root_manager(
         .ok_or(BootstrapError::MissingRootThread)?
         .id();
 
+    log_line("bootstrap", "entering userspace executor");
     let _ = kernel.tasks().scheduler().yield_current()?;
     run_userspace_executor(kernel, root_task)?;
 

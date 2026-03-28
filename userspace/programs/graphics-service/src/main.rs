@@ -16,11 +16,14 @@ const MAX_SURFACE_LABELS: usize = 16;
 const MAX_LABEL_BYTES: usize = 56;
 const DEFAULT_BACKGROUND_RGB: u32 = 0x10151d;
 const PRESENT_COALESCE_TICKS: u64 = 2;
+const CURSOR_SURFACE_Z_ORDER_MIN: u32 = 4_096;
+const CURSOR_SURFACE_MAX_SIZE: u32 = 64;
 const LABEL_ADVANCE: usize = 6;
 const GLYPH_WIDTH: usize = 5;
 const GLYPH_HEIGHT: usize = 7;
 
 static mut FRAMEBUFFER_BYTES: [u8; MAX_FRAMEBUFFER_BYTES] = [0; MAX_FRAMEBUFFER_BYTES];
+static mut BASE_FRAMEBUFFER_BYTES: [u8; MAX_FRAMEBUFFER_BYTES] = [0; MAX_FRAMEBUFFER_BYTES];
 
 #[derive(Clone, Copy)]
 struct RectSlot {
@@ -107,6 +110,57 @@ impl SurfaceSlot {
     }
 }
 
+#[derive(Clone, Copy)]
+struct DamageRect {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+}
+
+impl DamageRect {
+    const fn empty() -> Self {
+        Self {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+        }
+    }
+
+    fn merge(self, other: Self) -> Self {
+        if self.width == 0 || self.height == 0 {
+            return other;
+        }
+        if other.width == 0 || other.height == 0 {
+            return self;
+        }
+        let left = self.x.min(other.x);
+        let top = self.y.min(other.y);
+        let right = self
+            .x
+            .saturating_add(self.width as i32)
+            .max(other.x.saturating_add(other.width as i32));
+        let bottom = self
+            .y
+            .saturating_add(self.height as i32)
+            .max(other.y.saturating_add(other.height as i32));
+        Self {
+            x: left,
+            y: top,
+            width: right.saturating_sub(left) as u32,
+            height: bottom.saturating_sub(top) as u32,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum DirtyState {
+    Clean,
+    CursorOnly(DamageRect),
+    Full { immediate: bool },
+}
+
 rt::entry!(main);
 
 fn main() -> u64 {
@@ -150,7 +204,7 @@ fn main() -> u64 {
     let mut next_surface_id = 1u32;
     let mut present_count = 0u64;
     let mut last_logged_surface_count = 0usize;
-    let mut dirty = true;
+    let mut dirty = DirtyState::Full { immediate: true };
     let mut present_deadline = 0u64;
 
     loop {
@@ -179,13 +233,25 @@ fn main() -> u64 {
             };
         let had_work = had_work || had_surface_work;
 
-        if dirty {
+        if !matches!(dirty, DirtyState::Clean) {
             let now = rt::monotonic_now().unwrap_or(0);
             if present_deadline == 0 {
                 present_deadline = now.saturating_add(PRESENT_COALESCE_TICKS);
             }
-            if !had_work && now >= present_deadline {
-                if compose_and_present(output_handle, output, &surfaces).is_err() {
+            let should_present = match dirty {
+                DirtyState::Clean => false,
+                DirtyState::CursorOnly(_) => true,
+                DirtyState::Full { immediate } => immediate || (!had_work && now >= present_deadline),
+            };
+            if should_present {
+                let result = match dirty {
+                    DirtyState::CursorOnly(damage) => {
+                        cursor_present(output_handle, output, &surfaces, damage)
+                    }
+                    DirtyState::Full { .. } => compose_and_present(output_handle, output, &surfaces),
+                    DirtyState::Clean => Ok(()),
+                };
+                if result.is_err() {
                     return 0xfc0b;
                 }
                 present_count = present_count.saturating_add(1);
@@ -200,7 +266,7 @@ fn main() -> u64 {
                     );
                     last_logged_surface_count = active_surface_count;
                 }
-                dirty = false;
+                dirty = DirtyState::Clean;
                 present_deadline = 0;
             }
         } else {
@@ -220,7 +286,7 @@ fn handle_public_request(
     present_count: u64,
     surfaces: &mut [SurfaceSlot; MAX_SURFACES],
     next_surface_id: &mut u32,
-    dirty: &mut bool,
+    dirty: &mut DirtyState,
 ) -> rt::Result<()> {
     match request.tag {
         x if x == GraphicsTag::OutputListRequest as u32 => {
@@ -335,7 +401,7 @@ fn handle_public_request(
             slot.occupied = true;
             slot.rects = [RectSlot::empty(); MAX_SURFACE_RECTS];
             slot.labels = [LabelSlot::empty(); MAX_SURFACE_LABELS];
-            *dirty = true;
+            *dirty = DirtyState::Full { immediate: true };
 
             let mut reply = RawMessage::empty(GraphicsTag::SurfaceCreateReply as u32);
             reply.word_count = 2;
@@ -369,7 +435,7 @@ fn drain_public_requests(
     present_count: u64,
     surfaces: &mut [SurfaceSlot; MAX_SURFACES],
     next_surface_id: &mut u32,
-    dirty: &mut bool,
+    dirty: &mut DirtyState,
 ) -> rt::Result<bool> {
     let mut had_work = false;
     loop {
@@ -396,7 +462,7 @@ fn drain_public_requests(
 fn drain_surface_requests(
     log_handle: rt::Handle,
     surfaces: &mut [SurfaceSlot; MAX_SURFACES],
-    dirty: &mut bool,
+    dirty: &mut DirtyState,
 ) -> rt::Result<bool> {
     let mut had_work = false;
     for surface in surfaces {
@@ -413,7 +479,7 @@ fn drain_surface_requests(
                 Err(rt::Error::QueueEmpty) => break,
                 Err(_) => {
                     release_surface(surface);
-                    *dirty = true;
+                    *dirty = DirtyState::Full { immediate: true };
                     break;
                 }
             }
@@ -426,19 +492,29 @@ fn handle_surface_request(
     log_handle: rt::Handle,
     surface: &mut SurfaceSlot,
     message: &RawMessage,
-    dirty: &mut bool,
+    dirty: &mut DirtyState,
 ) -> rt::Result<()> {
     match message.tag {
         x if x == SurfaceTag::SetGeometryRequest as u32 => {
-            if message.word_count < 5 || message.handle_count < 1 {
+            if message.word_count < 5 {
                 return Ok(());
             }
+            let old_rect = surface_bounds(surface);
             surface.x = message.words[0] as i64 as i32;
             surface.y = message.words[1] as i64 as i32;
             surface.width = message.words[2] as u32;
             surface.height = message.words[3] as u32;
             surface.z_order = message.words[4] as u32;
-            *dirty = true;
+            let new_rect = surface_bounds(surface);
+            if is_cursor_surface(surface) && !matches!(dirty, DirtyState::Full { .. }) {
+                let damage = old_rect.merge(new_rect);
+                *dirty = match *dirty {
+                    DirtyState::CursorOnly(existing) => DirtyState::CursorOnly(existing.merge(damage)),
+                    _ => DirtyState::CursorOnly(damage),
+                };
+            } else {
+                *dirty = DirtyState::Full { immediate: true };
+            }
             let _ = emit_log(
                 log_handle,
                 LogSeverity::Debug,
@@ -446,14 +522,19 @@ fn handle_surface_request(
                 surface.id as u64,
                 0,
             );
-            reply_surface_status(message.handles[0], SurfaceTag::SetGeometryReply, GraphicsStatus::Ok);
+            reply_surface_status(
+                message.handles,
+                message.handle_count,
+                SurfaceTag::SetGeometryReply,
+                GraphicsStatus::Ok,
+            );
         }
         x if x == SurfaceTag::SetFillRequest as u32 => {
             if message.word_count < 1 || message.handle_count < 1 {
                 return Ok(());
             }
             surface.fill_rgb = message.words[0] as u32;
-            *dirty = true;
+            *dirty = DirtyState::Full { immediate: false };
             let _ = emit_log(
                 log_handle,
                 LogSeverity::Debug,
@@ -461,16 +542,22 @@ fn handle_surface_request(
                 surface.id as u64,
                 1,
             );
-            reply_surface_status(message.handles[0], SurfaceTag::SetFillReply, GraphicsStatus::Ok);
+            reply_surface_status(
+                message.handles,
+                message.handle_count,
+                SurfaceTag::SetFillReply,
+                GraphicsStatus::Ok,
+            );
         }
         x if x == SurfaceTag::SetVisibilityRequest as u32 => {
-            if message.word_count < 1 || message.handle_count < 1 {
+            if message.word_count < 1 {
                 return Ok(());
             }
             surface.visible = message.words[0] != 0;
-            *dirty = true;
+            *dirty = DirtyState::Full { immediate: true };
             reply_surface_status(
-                message.handles[0],
+                message.handles,
+                message.handle_count,
                 SurfaceTag::SetVisibilityReply,
                 GraphicsStatus::Ok,
             );
@@ -481,7 +568,7 @@ fn handle_surface_request(
             }
             surface.rects = [RectSlot::empty(); MAX_SURFACE_RECTS];
             surface.labels = [LabelSlot::empty(); MAX_SURFACE_LABELS];
-            *dirty = true;
+            *dirty = DirtyState::Full { immediate: false };
             let _ = emit_log(
                 log_handle,
                 LogSeverity::Debug,
@@ -489,7 +576,12 @@ fn handle_surface_request(
                 surface.id as u64,
                 2,
             );
-            reply_surface_status(message.handles[0], SurfaceTag::ClearSceneReply, GraphicsStatus::Ok);
+            reply_surface_status(
+                message.handles,
+                message.handle_count,
+                SurfaceTag::ClearSceneReply,
+                GraphicsStatus::Ok,
+            );
         }
         x if x == SurfaceTag::SetRectRequest as u32 => {
             if message.word_count < 7 || message.handle_count < 1 {
@@ -504,7 +596,7 @@ fn handle_surface_request(
                 slot.color_rgb = message.words[5] as u32;
                 slot.visible = message.words[6] != 0;
                 slot.occupied = slot.visible;
-                *dirty = true;
+                *dirty = DirtyState::Full { immediate: false };
                 let _ = emit_log(
                     log_handle,
                     LogSeverity::Debug,
@@ -516,7 +608,12 @@ fn handle_surface_request(
             } else {
                 GraphicsStatus::CapacityExceeded
             };
-            reply_surface_status(message.handles[0], SurfaceTag::SetRectReply, status);
+            reply_surface_status(
+                message.handles,
+                message.handle_count,
+                SurfaceTag::SetRectReply,
+                status,
+            );
         }
         x if x == SurfaceTag::SetLabelRequest as u32 => {
             if message.word_count < 5 || message.handle_count < 1 {
@@ -540,7 +637,7 @@ fn handle_surface_request(
                     slot.color_rgb = message.words[3] as u32;
                     slot.len = text_len;
                     slot.occupied = text_len != 0;
-                    *dirty = true;
+                    *dirty = DirtyState::Full { immediate: false };
                     let _ = emit_log(
                         log_handle,
                         LogSeverity::Debug,
@@ -553,11 +650,16 @@ fn handle_surface_request(
             } else {
                 GraphicsStatus::CapacityExceeded
             };
-            reply_surface_status(message.handles[0], SurfaceTag::SetLabelReply, status);
+            reply_surface_status(
+                message.handles,
+                message.handle_count,
+                SurfaceTag::SetLabelReply,
+                status,
+            );
         }
         x if x == SurfaceTag::CloseRequest as u32 => {
             release_surface(surface);
-            *dirty = true;
+            *dirty = DirtyState::Full { immediate: true };
         }
         _ => {}
     }
@@ -565,7 +667,11 @@ fn handle_surface_request(
     Ok(())
 }
 
-fn reply_surface_status(handle: rt::Handle, tag: SurfaceTag, status: GraphicsStatus) {
+fn reply_surface_status(handles: [rt::Handle; rt::IPC_MAX_HANDLES], handle_count: u32, tag: SurfaceTag, status: GraphicsStatus) {
+    if handle_count == 0 {
+        return;
+    }
+    let handle = handles[0];
     let mut reply = RawMessage::empty(tag as u32);
     reply.word_count = 1;
     reply.words[0] = status as u32 as u64;
@@ -579,18 +685,71 @@ fn compose_and_present(
     surfaces: &[SurfaceSlot; MAX_SURFACES],
 ) -> rt::Result<()> {
     let byte_len = output.byte_len as usize;
+    let base = base_framebuffer_slice(byte_len);
+    compose_base_frame(base, output, surfaces);
     let frame = framebuffer_slice(byte_len);
-    fill_frame(frame, output, DEFAULT_BACKGROUND_RGB);
+    frame.copy_from_slice(base);
+    overlay_cursor_surfaces(frame, output, surfaces);
+    let _ = rt::display_output_present(output_handle, &frame[..byte_len])?;
+    Ok(())
+}
 
+fn cursor_present(
+    output_handle: rt::Handle,
+    output: rt::DisplayOutputInfo,
+    surfaces: &[SurfaceSlot; MAX_SURFACES],
+    damage: DamageRect,
+) -> rt::Result<()> {
+    let byte_len = output.byte_len as usize;
+    let frame = framebuffer_slice(byte_len);
+    let base = base_framebuffer_slice(byte_len);
+    restore_damage_from_base(frame, base, output, damage);
+    overlay_cursor_surfaces(frame, output, surfaces);
+    let _ = rt::display_output_present(output_handle, &frame[..byte_len])?;
+    Ok(())
+}
+
+fn compose_base_frame(
+    frame: &mut [u8],
+    output: rt::DisplayOutputInfo,
+    surfaces: &[SurfaceSlot; MAX_SURFACES],
+) {
+    fill_frame(frame, output, DEFAULT_BACKGROUND_RGB);
     let mut order = [0usize; MAX_SURFACES];
     let mut count = 0usize;
     for (index, surface) in surfaces.iter().enumerate() {
-        if surface.occupied && surface.visible {
+        if surface.occupied && surface.visible && !is_cursor_surface(surface) {
             order[count] = index;
             count += 1;
         }
     }
-    for idx in 1..count {
+    sort_surfaces_by_z(&mut order[..count], surfaces);
+    for index in order[..count].iter().copied() {
+        draw_surface(frame, output, &surfaces[index]);
+    }
+}
+
+fn overlay_cursor_surfaces(
+    frame: &mut [u8],
+    output: rt::DisplayOutputInfo,
+    surfaces: &[SurfaceSlot; MAX_SURFACES],
+) {
+    let mut order = [0usize; MAX_SURFACES];
+    let mut count = 0usize;
+    for (index, surface) in surfaces.iter().enumerate() {
+        if surface.occupied && surface.visible && is_cursor_surface(surface) {
+            order[count] = index;
+            count += 1;
+        }
+    }
+    sort_surfaces_by_z(&mut order[..count], surfaces);
+    for index in order[..count].iter().copied() {
+        draw_surface(frame, output, &surfaces[index]);
+    }
+}
+
+fn sort_surfaces_by_z(order: &mut [usize], surfaces: &[SurfaceSlot; MAX_SURFACES]) {
+    for idx in 1..order.len() {
         let key = order[idx];
         let key_z = surfaces[key].z_order;
         let mut cursor = idx;
@@ -600,13 +759,43 @@ fn compose_and_present(
         }
         order[cursor] = key;
     }
+}
 
-    for index in order[..count].iter().copied() {
-        draw_surface(frame, output, &surfaces[index]);
+fn restore_damage_from_base(
+    frame: &mut [u8],
+    base: &[u8],
+    output: rt::DisplayOutputInfo,
+    damage: DamageRect,
+) {
+    let start_x = damage.x.max(0) as usize;
+    let start_y = damage.y.max(0) as usize;
+    let end_x = ((damage.x + damage.width as i32).max(0) as usize).min(output.width as usize);
+    let end_y = ((damage.y + damage.height as i32).max(0) as usize).min(output.height as usize);
+    if start_x >= end_x || start_y >= end_y {
+        return;
     }
 
-    let _ = rt::display_output_present(output_handle, &frame[..byte_len])?;
-    Ok(())
+    let bytes_per_pixel = output.bytes_per_pixel as usize;
+    for py in start_y..end_y {
+        let row_start = (py * output.stride as usize + start_x) * bytes_per_pixel;
+        let row_end = (py * output.stride as usize + end_x) * bytes_per_pixel;
+        frame[row_start..row_end].copy_from_slice(&base[row_start..row_end]);
+    }
+}
+
+fn surface_bounds(surface: &SurfaceSlot) -> DamageRect {
+    DamageRect {
+        x: surface.x,
+        y: surface.y,
+        width: surface.width,
+        height: surface.height,
+    }
+}
+
+fn is_cursor_surface(surface: &SurfaceSlot) -> bool {
+    surface.z_order >= CURSOR_SURFACE_Z_ORDER_MIN
+        && surface.width <= CURSOR_SURFACE_MAX_SIZE
+        && surface.height <= CURSOR_SURFACE_MAX_SIZE
 }
 
 fn fill_frame(frame: &mut [u8], output: rt::DisplayOutputInfo, rgb: u32) {
@@ -814,6 +1003,15 @@ fn write_pixel(frame: &mut [u8], output: rt::DisplayOutputInfo, x: usize, y: usi
 fn framebuffer_slice(len: usize) -> &'static mut [u8] {
     unsafe {
         core::slice::from_raw_parts_mut(ptr::addr_of_mut!(FRAMEBUFFER_BYTES).cast::<u8>(), len)
+    }
+}
+
+fn base_framebuffer_slice(len: usize) -> &'static mut [u8] {
+    unsafe {
+        core::slice::from_raw_parts_mut(
+            ptr::addr_of_mut!(BASE_FRAMEBUFFER_BYTES).cast::<u8>(),
+            len,
+        )
     }
 }
 

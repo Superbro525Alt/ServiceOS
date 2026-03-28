@@ -31,7 +31,14 @@ impl InputSourceObject {
     }
 
     pub fn receive(&self) -> Result<serviceos_abi::InputEventInfo, InputSourceError> {
-        self.backend.receive()
+        match self.backend.receive() {
+            Ok(event) => Ok(event),
+            Err(InputSourceError::QueueEmpty) => {
+                let _ = self.backend.poll();
+                self.backend.receive()
+            }
+            Err(error) => Err(error),
+        }
     }
 
     pub fn backend(&self) -> Arc<dyn InputBackend> {

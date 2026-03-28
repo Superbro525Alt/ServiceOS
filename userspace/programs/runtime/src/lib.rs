@@ -1979,6 +1979,24 @@ pub fn surface_set_geometry(
     }
 }
 
+pub fn surface_set_geometry_async(
+    surface_handle: Handle,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    z_order: u32,
+) -> Result<()> {
+    let mut request = RawMessage::empty(SurfaceTag::SetGeometryRequest as u32);
+    request.word_count = 5;
+    request.words[0] = x as i64 as u64;
+    request.words[1] = y as i64 as u64;
+    request.words[2] = width as u64;
+    request.words[3] = height as u64;
+    request.words[4] = z_order as u64;
+    channel_send(surface_handle, &request)
+}
+
 pub fn surface_set_fill(surface_handle: Handle, fill_rgb: u32) -> Result<()> {
     let reply = channel_create()?;
     let mut request = RawMessage::empty(SurfaceTag::SetFillRequest as u32);

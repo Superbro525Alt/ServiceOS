@@ -822,7 +822,14 @@ fn move_app(state: &mut DesktopState, app_id: DesktopAppId, x: i32, y: i32) -> r
     state.apps[index].window.maximized = false;
     state.apps[index].window.x = clamp_window_x(state.chrome.output_width, state.apps[index].window.width, x);
     state.apps[index].window.y = clamp_window_y(state.chrome.output_height, state.apps[index].window.height, y);
-    apply_window_geometry(&state.apps[index])?;
+    rt::surface_set_geometry_async(
+        state.apps[index].window.surface_handle,
+        state.apps[index].window.x,
+        state.apps[index].window.y,
+        state.apps[index].window.width,
+        state.apps[index].window.height,
+        state.apps[index].window.z_order,
+    )?;
     Ok(state.apps[index].window.surface_id)
 }
 
@@ -1071,7 +1078,7 @@ fn handle_input(
 }
 
 fn sync_cursor(state: &DesktopState) -> rt::Result<()> {
-    rt::surface_set_geometry(
+    rt::surface_set_geometry_async(
         state.chrome.cursor_handle,
         state.pointer_x,
         state.pointer_y,
@@ -1796,7 +1803,14 @@ fn resize_drag(
         clamp_window_y(state.chrome.output_height, new_height as u32, new_y);
     state.apps[index].window.width = new_width as u32;
     state.apps[index].window.height = new_height as u32;
-    apply_window_geometry(&state.apps[index])?;
+    rt::surface_set_geometry_async(
+        state.apps[index].window.surface_handle,
+        state.apps[index].window.x,
+        state.apps[index].window.y,
+        state.apps[index].window.width,
+        state.apps[index].window.height,
+        state.apps[index].window.z_order,
+    )?;
     if state.apps[index].window.control_handle != rt::INVALID_HANDLE {
         let _ = rt::app_control_resize(
             state.apps[index].window.control_handle,

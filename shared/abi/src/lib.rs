@@ -50,6 +50,8 @@ pub enum SyscallNumber {
     AudioEndpointInfo = 24,
     AudioEndpointPlayTone = 25,
     AudioEndpointStop = 26,
+    MemoryMap = 27,
+    TaskSpawnImage = 28,
 }
 
 #[repr(u32)]
@@ -109,6 +111,13 @@ pub enum BootstrapPlatform {
     Unknown = 0,
     QemuVirtio = 1,
     Raspi5 = 2,
+}
+
+pub mod bootstrap_resource {
+    pub const NETWORK: u64 = 1 << 0;
+    pub const DISPLAY: u64 = 1 << 1;
+    pub const INPUT: u64 = 1 << 2;
+    pub const AUDIO: u64 = 1 << 3;
 }
 
 #[repr(u32)]
@@ -195,6 +204,7 @@ pub enum LifecycleEvent {
 pub enum TaskStateCode {
     Running = 1,
     Exited = 2,
+    Faulted = 3,
 }
 
 #[repr(C)]
@@ -350,6 +360,16 @@ pub enum StorageTag {
     CloseRequest = 0x506,
     DirectoryListRequest = 0x507,
     DirectoryListReply = 0x508,
+    DirectoryOpenRequest = 0x509,
+    DirectoryOpenReply = 0x50a,
+    DirectoryCreateRequest = 0x50b,
+    DirectoryCreateReply = 0x50c,
+    DirectoryRemoveRequest = 0x50d,
+    DirectoryRemoveReply = 0x50e,
+    DirectoryOpenFileRequest = 0x50f,
+    DirectoryOpenFileReply = 0x510,
+    WriteRequest = 0x511,
+    WriteReply = 0x512,
 }
 
 #[repr(u32)]
@@ -361,6 +381,9 @@ pub enum StorageStatus {
     InvalidOffset = 3,
     End = 4,
     Busy = 5,
+    Denied = 6,
+    AlreadyExists = 7,
+    NotDirectory = 8,
 }
 
 #[repr(u32)]
@@ -392,6 +415,10 @@ pub enum ManagerTag {
     ActivateReply = 0x609,
     DeactivateRequest = 0x60a,
     DeactivateReply = 0x60b,
+    LaunchImageRequest = 0x60c,
+    LaunchImageReply = 0x60d,
+    LaunchStoredImageRequest = 0x60e,
+    LaunchStoredImageReply = 0x60f,
 }
 
 #[repr(u32)]
@@ -955,6 +982,8 @@ pub enum DesktopTag {
     WindowActionReply = 0xa0b,
     InputRequest = 0xa0c,
     InputReply = 0xa0d,
+    NotifyRequest = 0xa0e,
+    NotifyReply = 0xa0f,
 }
 
 #[repr(u32)]
@@ -1063,6 +1092,8 @@ pub enum SurfaceTag {
     SetLabelReply = 0x92c,
     AttachBufferRequest = 0x92d,
     AttachBufferReply = 0x92e,
+    PresentBufferRequest = 0x92f,
+    PresentBufferReply = 0x930,
 }
 
 #[repr(u32)]

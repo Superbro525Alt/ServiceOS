@@ -331,7 +331,7 @@ pub(crate) fn poll_run_exits(
         let Ok(status) = rt::task_status(run.task_handle) else {
             continue;
         };
-        if status.state != TaskStateCode::Exited {
+        if !matches!(status.state, TaskStateCode::Exited | TaskStateCode::Faulted) {
             continue;
         }
         run.exit_code = status.exit_code;

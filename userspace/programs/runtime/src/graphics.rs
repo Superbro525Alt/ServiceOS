@@ -408,7 +408,7 @@ pub fn surface_attach_buffer(
     request.handles[0] = reply.second;
     request.handle_rights[0] = rights::SEND;
     request.handles[1] = buffer_handle;
-    request.handle_rights[1] = rights::READ;
+    request.handle_rights[1] = rights::READ | rights::MAP;
     channel_send(surface_handle, &request)?;
     let _ = handle_close(reply.second);
 
@@ -422,4 +422,20 @@ pub fn surface_attach_buffer(
         GraphicsStatus::Ok => Ok(()),
         status => Err(graphics_status_error(status)),
     }
+}
+
+pub fn surface_present_buffer(
+    surface_handle: Handle,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> Result<()> {
+    let mut request = RawMessage::empty(SurfaceTag::PresentBufferRequest as u32);
+    request.word_count = 4;
+    request.words[0] = x as i64 as u64;
+    request.words[1] = y as i64 as u64;
+    request.words[2] = width as u64;
+    request.words[3] = height as u64;
+    channel_send(surface_handle, &request)
 }

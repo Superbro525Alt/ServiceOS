@@ -3,7 +3,7 @@
 
 use core::{fmt, panic::PanicInfo, str};
 
-use serviceos_abi::{ControlTag, ServiceImageId};
+use serviceos_abi::{ControlTag, ServiceImageId, bootstrap_resource};
 use serviceos_bundle::BootStore;
 use serviceos_kernel_arch_x86_64::{
     cpu,
@@ -427,12 +427,25 @@ fn launch_root_manager(
         Some(root_bootstrap_transfer),
     )?;
     log_line("bootstrap", "sending root-manager startup message");
+    let mut bootstrap_resource_flags = 0u64;
+    if network_transfer.is_some() {
+        bootstrap_resource_flags |= bootstrap_resource::NETWORK;
+    }
+    if display_transfer.is_some() {
+        bootstrap_resource_flags |= bootstrap_resource::DISPLAY;
+    }
+    if input_transfer.is_some() {
+        bootstrap_resource_flags |= bootstrap_resource::INPUT;
+    }
+    if audio_transfer.is_some() {
+        bootstrap_resource_flags |= bootstrap_resource::AUDIO;
+    }
     let mut startup = OutgoingMessage::new(
         MessageTag(ControlTag::Startup as u32),
         &[
             boot_store_bytes.len() as u64,
             serviceos_abi::BootstrapPlatform::QemuVirtio as u32 as u64,
-            0,
+            bootstrap_resource_flags,
         ],
     )?
     .add_transfer(boot_store_transfer)?

@@ -16,7 +16,7 @@ pub(crate) fn run() -> u64 {
     if rt::channel_receive_blocking(bootstrap, &mut startup).is_err() {
         return 0xfa01;
     }
-    if startup.tag != ControlTag::Startup as u32 || startup.handle_count < 2 || startup.word_count < 4 {
+    if startup.tag != ControlTag::Startup as u32 || startup.handle_count < 2 {
         return 0xfa02;
     }
 

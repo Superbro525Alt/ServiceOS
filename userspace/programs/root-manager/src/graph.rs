@@ -214,7 +214,7 @@ pub(crate) fn wait_until_ready(
             return Ok(());
         }
         let status = rt::task_status(slot.task_handle)?;
-        if status.state == TaskStateCode::Exited {
+        if matches!(status.state, TaskStateCode::Exited | TaskStateCode::Faulted) {
             let _ = crate::util::fallback_manager_event(
                 LogSeverity::Error,
                 LogEvent::ServiceFailed,
@@ -247,7 +247,7 @@ pub(crate) fn supervision_loop(
                 Ok(status) => status,
                 Err(_) => return 0xf611 + index as u64,
             };
-            if status.state != TaskStateCode::Exited {
+            if !matches!(status.state, TaskStateCode::Exited | TaskStateCode::Faulted) {
                 continue;
             }
 

@@ -1,4 +1,7 @@
-use crate::{syscall0, syscall1, syscall2, syscall3, Handle, Result, ServiceImageId, SyscallNumber, TaskStateCode, TaskStatus};
+use crate::{
+    syscall0, syscall1, syscall2, syscall3, Handle, Result, ServiceImageId, SyscallNumber,
+    TaskStateCode, TaskStatus,
+};
 
 pub fn abi_version() -> Result<u64> {
     syscall0(SyscallNumber::AbiVersion)
@@ -63,6 +66,20 @@ pub fn service_spawn(
     .map(|value| value as Handle)
 }
 
+pub fn task_spawn_image(
+    image_handle: Handle,
+    bootstrap_authority: Handle,
+    bootstrap_handle: Handle,
+) -> Result<Handle> {
+    syscall3(
+        SyscallNumber::TaskSpawnImage,
+        image_handle as u64,
+        bootstrap_authority as u64,
+        bootstrap_handle as u64,
+    )
+    .map(|value| value as Handle)
+}
+
 pub fn task_status(task_handle: Handle) -> Result<TaskStatus> {
     let mut status = TaskStatus {
         state: TaskStateCode::Running,
@@ -79,7 +96,7 @@ pub fn task_status(task_handle: Handle) -> Result<TaskStatus> {
 pub fn wait_for_exit(task_handle: Handle) -> Result<TaskStatus> {
     loop {
         let status = task_status(task_handle)?;
-        if status.state == TaskStateCode::Exited {
+        if matches!(status.state, TaskStateCode::Exited | TaskStateCode::Faulted) {
             return Ok(status);
         }
         yield_current()?;

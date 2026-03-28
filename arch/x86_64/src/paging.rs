@@ -62,6 +62,13 @@ impl OwnedPageTable {
     pub fn root_frame(&self) -> PhysicalAddress {
         self.root_frame
     }
+
+    pub unsafe fn from_root(root_frame: PhysicalAddress) -> Self {
+        Self {
+            root_frame,
+            inner: unsafe { OffsetPageTable::new(page_table_ptr(root_frame), VirtAddr::new(0)) },
+        }
+    }
 }
 
 impl PageMapper for ActivePageTable {

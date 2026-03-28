@@ -6,8 +6,11 @@ mod imp {
 
     use crate::mmu::{OwnedPageTable, current_page_table_root, load_page_table_root};
     use serviceos_kernel_core::{
-        memory::{self, MappingError, PhysicalAddress},
-        task::ThreadId,
+        memory::{
+            self, Frame, MappingError, MappingFlags, PageMapper, PageSize, PhysicalAddress,
+            VirtualAddress,
+        },
+        task::{AddressSpaceId, ThreadId},
         user::{
             self, AddressSpacePreparationError, LoadError, PreparedUserAddressSpace, UserArchHooks,
             UserThreadLaunch,
@@ -15,6 +18,7 @@ mod imp {
     };
 
     const MAX_USER_THREADS: usize = 32;
+    const MAX_USER_ADDRESS_SPACES: usize = 32;
 
     global_asm!(
         r#"
@@ -302,18 +306,71 @@ serviceos_aarch64_lower_el_sync:
         }
     }
 
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct SavedAddressSpace {
+        address_space_id: AddressSpaceId,
+        page_table_root: PhysicalAddress,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct AddressSpaceRuntime {
+        slots: [Option<SavedAddressSpace>; MAX_USER_ADDRESS_SPACES],
+    }
+
+    impl AddressSpaceRuntime {
+        const fn new() -> Self {
+            Self {
+                slots: [None; MAX_USER_ADDRESS_SPACES],
+            }
+        }
+
+        fn register(&mut self, address_space_id: AddressSpaceId, page_table_root: PhysicalAddress) {
+            for slot in &mut self.slots {
+                if slot.is_none() {
+                    *slot = Some(SavedAddressSpace {
+                        address_space_id,
+                        page_table_root,
+                    });
+                    return;
+                }
+            }
+            panic!("address space runtime capacity must cover bootstrap services");
+        }
+
+        fn root(&self, address_space_id: AddressSpaceId) -> Option<PhysicalAddress> {
+            self.slots
+                .iter()
+                .flatten()
+                .find(|entry| entry.address_space_id == address_space_id)
+                .map(|entry| entry.page_table_root)
+        }
+
+        fn release(&mut self, address_space_id: AddressSpaceId) {
+            if let Some(slot) = self.slots.iter_mut().find(|slot| {
+                slot.as_ref()
+                    .is_some_and(|entry| entry.address_space_id == address_space_id)
+            }) {
+                *slot = None;
+            }
+        }
+    }
+
     #[unsafe(no_mangle)]
     static mut serviceos_aarch64_current_context: u64 = 0;
     #[unsafe(no_mangle)]
     static mut serviceos_aarch64_kernel_return_sp: u64 = 0;
 
     static USER_THREADS: Mutex<UserThreadRuntime> = Mutex::new(UserThreadRuntime::new());
+    static ADDRESS_SPACES: Mutex<AddressSpaceRuntime> = Mutex::new(AddressSpaceRuntime::new());
 
     pub fn initialize() {
         user::register_arch_hooks(UserArchHooks {
             prepare_address_space,
             register_thread_launch,
             release_thread_runtime,
+            register_address_space,
+            release_address_space,
+            map_memory_object,
         });
     }
 
@@ -351,6 +408,51 @@ serviceos_aarch64_lower_el_sync:
         USER_THREADS.lock().release_thread(thread_id);
     }
 
+    pub fn register_address_space(
+        address_space_id: AddressSpaceId,
+        page_table_root: PhysicalAddress,
+    ) {
+        ADDRESS_SPACES
+            .lock()
+            .register(address_space_id, page_table_root);
+    }
+
+    pub fn release_address_space(address_space_id: AddressSpaceId) {
+        ADDRESS_SPACES.lock().release(address_space_id);
+    }
+
+    pub fn map_memory_object(
+        address_space_id: AddressSpaceId,
+        virtual_start: VirtualAddress,
+        frames: &[PhysicalAddress],
+        writable: bool,
+    ) -> Result<(), MappingError> {
+        let Some(root_frame) = ADDRESS_SPACES.lock().root(address_space_id) else {
+            return Err(MappingError::Unsupported);
+        };
+        let Some(memory) = memory::manager() else {
+            return Err(MappingError::FrameAllocationFailed);
+        };
+        let mut allocator = memory.frame_allocator().lock();
+        let mut mapper = unsafe { OwnedPageTable::from_root(root_frame) };
+        let mut flags = MappingFlags::USER_ACCESSIBLE;
+        if writable {
+            flags |= MappingFlags::WRITABLE;
+        }
+        for (index, frame_base) in frames.iter().copied().enumerate() {
+            mapper.map_page(
+                virtual_start.offset((index as u64) * 4096),
+                Frame {
+                    base: frame_base,
+                    size: PageSize::Size4KiB,
+                },
+                flags,
+                &mut allocator,
+            )?;
+        }
+        Ok(())
+    }
+
     pub fn run_thread(thread_id: ThreadId) -> Result<(), UserLaunchError> {
         let (page_table_root, context_ptr) = {
             let mut runtime = USER_THREADS.lock();
@@ -376,8 +478,8 @@ serviceos_aarch64_lower_el_sync:
 #[cfg(not(target_arch = "aarch64"))]
 mod imp {
     use serviceos_kernel_core::{
-        memory::MappingError,
-        task::ThreadId,
+        memory::{MappingError, PhysicalAddress, VirtualAddress},
+        task::{AddressSpaceId, ThreadId},
         user::{
             self, AddressSpacePreparationError, PreparedUserAddressSpace, UserArchHooks,
             UserThreadLaunch,
@@ -398,6 +500,9 @@ mod imp {
             prepare_address_space,
             register_thread_launch,
             release_thread_runtime,
+            register_address_space,
+            release_address_space,
+            map_memory_object,
         });
     }
 
@@ -411,12 +516,30 @@ mod imp {
 
     pub fn release_thread_runtime(_thread_id: ThreadId) {}
 
+    pub fn register_address_space(
+        _address_space_id: AddressSpaceId,
+        _page_table_root: PhysicalAddress,
+    ) {
+    }
+
+    pub fn release_address_space(_address_space_id: AddressSpaceId) {}
+
+    pub fn map_memory_object(
+        _address_space_id: AddressSpaceId,
+        _virtual_start: VirtualAddress,
+        _frames: &[PhysicalAddress],
+        _writable: bool,
+    ) -> Result<(), MappingError> {
+        Err(MappingError::Unsupported)
+    }
+
     pub fn run_thread(_thread_id: ThreadId) -> Result<(), UserLaunchError> {
         Err(UserLaunchError::Unsupported)
     }
 }
 
 pub use imp::{
-    SavedUserContext, UserLaunchError, initialize, prepare_address_space, register_thread_launch,
-    release_thread_runtime, run_thread,
+    SavedUserContext, UserLaunchError, initialize, map_memory_object, prepare_address_space,
+    register_address_space, register_thread_launch, release_address_space, release_thread_runtime,
+    run_thread,
 };

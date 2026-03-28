@@ -4,8 +4,11 @@ use spin::Mutex;
 
 use crate::{cpu, interrupts, paging::OwnedPageTable};
 use serviceos_kernel_core::{
-    memory::{self, MappingError, PhysicalAddress},
-    task::ThreadId,
+    memory::{
+        self, Frame, MappingError, MappingFlags, PageMapper, PageSize, PhysicalAddress,
+        VirtualAddress,
+    },
+    task::{AddressSpaceId, ThreadId},
     user::{
         self, AddressSpacePreparationError, LoadError, PreparedUserAddressSpace, UserArchHooks,
         UserThreadLaunch,
@@ -13,6 +16,7 @@ use serviceos_kernel_core::{
 };
 
 const MAX_USER_THREADS: usize = 64;
+const MAX_USER_ADDRESS_SPACES: usize = 64;
 
 global_asm!(
     r#"
@@ -206,16 +210,69 @@ impl UserThreadRuntime {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SavedAddressSpace {
+    address_space_id: AddressSpaceId,
+    page_table_root: PhysicalAddress,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct AddressSpaceRuntime {
+    slots: [Option<SavedAddressSpace>; MAX_USER_ADDRESS_SPACES],
+}
+
+impl AddressSpaceRuntime {
+    const fn new() -> Self {
+        Self {
+            slots: [None; MAX_USER_ADDRESS_SPACES],
+        }
+    }
+
+    fn register(&mut self, address_space_id: AddressSpaceId, page_table_root: PhysicalAddress) {
+        for slot in &mut self.slots {
+            if slot.is_none() {
+                *slot = Some(SavedAddressSpace {
+                    address_space_id,
+                    page_table_root,
+                });
+                return;
+            }
+        }
+        panic!("address space runtime capacity must cover bootstrap services");
+    }
+
+    fn root(&self, address_space_id: AddressSpaceId) -> Option<PhysicalAddress> {
+        self.slots
+            .iter()
+            .flatten()
+            .find(|entry| entry.address_space_id == address_space_id)
+            .map(|entry| entry.page_table_root)
+    }
+
+    fn release(&mut self, address_space_id: AddressSpaceId) {
+        if let Some(slot) = self.slots.iter_mut().find(|slot| {
+            slot.as_ref()
+                .is_some_and(|entry| entry.address_space_id == address_space_id)
+        }) {
+            *slot = None;
+        }
+    }
+}
+
 #[unsafe(no_mangle)]
 static mut serviceos_x86_64_user_return_stack: u64 = 0;
 
 static USER_THREADS: Mutex<UserThreadRuntime> = Mutex::new(UserThreadRuntime::new());
+static ADDRESS_SPACES: Mutex<AddressSpaceRuntime> = Mutex::new(AddressSpaceRuntime::new());
 
 pub fn initialize() {
     user::register_arch_hooks(UserArchHooks {
         prepare_address_space,
         register_thread_launch,
         release_thread_runtime,
+        register_address_space,
+        release_address_space,
+        map_memory_object,
     });
 }
 
@@ -251,6 +308,48 @@ pub fn register_thread_launch(launch: UserThreadLaunch) {
 
 pub fn release_thread_runtime(thread_id: ThreadId) {
     USER_THREADS.lock().release_thread(thread_id);
+}
+
+pub fn register_address_space(address_space_id: AddressSpaceId, page_table_root: PhysicalAddress) {
+    ADDRESS_SPACES
+        .lock()
+        .register(address_space_id, page_table_root);
+}
+
+pub fn release_address_space(address_space_id: AddressSpaceId) {
+    ADDRESS_SPACES.lock().release(address_space_id);
+}
+
+pub fn map_memory_object(
+    address_space_id: AddressSpaceId,
+    virtual_start: VirtualAddress,
+    frames: &[PhysicalAddress],
+    writable: bool,
+) -> Result<(), MappingError> {
+    let Some(root_frame) = ADDRESS_SPACES.lock().root(address_space_id) else {
+        return Err(MappingError::Unsupported);
+    };
+    let Some(memory) = memory::manager() else {
+        return Err(MappingError::FrameAllocationFailed);
+    };
+    let mut allocator = memory.frame_allocator().lock();
+    let mut mapper = unsafe { OwnedPageTable::from_root(root_frame) };
+    let mut flags = MappingFlags::USER_ACCESSIBLE;
+    if writable {
+        flags |= MappingFlags::WRITABLE;
+    }
+    for (index, frame_base) in frames.iter().copied().enumerate() {
+        mapper.map_page(
+            virtual_start.offset((index as u64) * 4096),
+            Frame {
+                base: frame_base,
+                size: PageSize::Size4KiB,
+            },
+            flags,
+            &mut allocator,
+        )?;
+    }
+    Ok(())
 }
 
 pub fn save_thread_context(thread_id: ThreadId, context: &SavedUserContext) {

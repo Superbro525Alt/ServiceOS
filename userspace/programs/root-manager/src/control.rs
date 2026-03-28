@@ -102,6 +102,24 @@ fn handle_control_message(
                 message,
             )?;
         }
+        x if x == ManagerTag::LaunchImageRequest as u32 => {
+            handle_launch_image_request(
+                slots,
+                *service_count,
+                service_index,
+                bootstrap_authority,
+                message,
+            )?;
+        }
+        x if x == ManagerTag::LaunchStoredImageRequest as u32 => {
+            handle_launch_stored_image_request(
+                slots,
+                *service_count,
+                service_index,
+                bootstrap_authority,
+                message,
+            )?;
+        }
         x if x == ManagerTag::ActivateRequest as u32 => {
             handle_activate_request(
                 slots,
@@ -388,6 +406,176 @@ fn handle_launch_request(
     Ok(())
 }
 
+fn handle_launch_image_request(
+    slots: &mut [ServiceSlot; MAX_SERVICE_SLOTS],
+    service_count: usize,
+    service_index: usize,
+    bootstrap_authority: rt::Handle,
+    message: &RawMessage,
+) -> rt::Result<()> {
+    let mut reply = RawMessage::empty(ManagerTag::LaunchImageReply as u32);
+    reply.word_count = 1;
+    let caller = slots[service_index].manifest.service_id;
+    if !launch_image_is_authorized(caller) || message.handle_count < 1 {
+        reply.words[0] = ManagerStatus::Denied as u32 as u64;
+        let result = rt::channel_send(slots[service_index].control_handle, &reply);
+        close_message_handles(message);
+        return result;
+    }
+
+    let startup_word_count = if message.word_count > 0 {
+        (message.words[0] as usize).min(IPC_MAX_WORDS.saturating_sub(1))
+    } else {
+        0
+    };
+    if (message.word_count as usize) < 1 + startup_word_count {
+        reply.words[0] = ManagerStatus::Failed as u32 as u64;
+        let result = rt::channel_send(slots[service_index].control_handle, &reply);
+        close_message_handles(message);
+        return result;
+    }
+    let task_handle = match launch_program_from_image(
+        slots,
+        service_count,
+        bootstrap_authority,
+        caller,
+        message.handles[0],
+        &message.words[1..1 + startup_word_count],
+        &message.handles[1..message.handle_count as usize],
+        &message.handle_rights[1..message.handle_count as usize],
+    ) {
+        Ok(task_handle) => task_handle,
+        Err(rt::Error::PermissionDenied) => {
+            reply.words[0] = ManagerStatus::Denied as u32 as u64;
+            let result = rt::channel_send(slots[service_index].control_handle, &reply);
+            close_message_handles(message);
+            return result;
+        }
+        Err(rt::Error::NotFound) => {
+            reply.words[0] = ManagerStatus::NotFound as u32 as u64;
+            let result = rt::channel_send(slots[service_index].control_handle, &reply);
+            close_message_handles(message);
+            return result;
+        }
+        Err(_) => {
+            reply.words[0] = ManagerStatus::Busy as u32 as u64;
+            let result = rt::channel_send(slots[service_index].control_handle, &reply);
+            close_message_handles(message);
+            return result;
+        }
+    };
+
+    reply.words[0] = ManagerStatus::Ok as u32 as u64;
+    reply.handle_count = 1;
+    reply.handles[0] = task_handle;
+    reply.handle_rights[0] = rights::READ;
+    rt::channel_send(slots[service_index].control_handle, &reply)?;
+    let _ = rt::handle_close(task_handle);
+    let _ = emit_manager_event(
+        slots,
+        service_count,
+        LogSeverity::Info,
+        LogEvent::ToolLaunched,
+        caller,
+        0xffff_ffff,
+    );
+    Ok(())
+}
+
+fn handle_launch_stored_image_request(
+    slots: &mut [ServiceSlot; MAX_SERVICE_SLOTS],
+    service_count: usize,
+    service_index: usize,
+    bootstrap_authority: rt::Handle,
+    message: &RawMessage,
+) -> rt::Result<()> {
+    let mut reply = RawMessage::empty(ManagerTag::LaunchStoredImageReply as u32);
+    reply.word_count = 1;
+    let caller = slots[service_index].manifest.service_id;
+    if !launch_image_is_authorized(caller) || message.word_count < 2 {
+        reply.words[0] = ManagerStatus::Denied as u32 as u64;
+        return rt::channel_send(slots[service_index].control_handle, &reply);
+    }
+
+    let startup_word_count = (message.words[0] as usize).min(IPC_MAX_WORDS.saturating_sub(2));
+    let path_len = message.words[1] as usize;
+    if (message.word_count as usize) < 2 + startup_word_count {
+        reply.words[0] = ManagerStatus::Failed as u32 as u64;
+        close_message_handles(message);
+        return rt::channel_send(slots[service_index].control_handle, &reply);
+    }
+
+    let mut path_bytes = [0u8; BOOT_STORE_PATH_MAX];
+    if unpack_bytes(
+        &message.words[2 + startup_word_count..message.word_count as usize],
+        path_len,
+        &mut path_bytes,
+    )
+    .is_err()
+    {
+        reply.words[0] = ManagerStatus::Failed as u32 as u64;
+        close_message_handles(message);
+        return rt::channel_send(slots[service_index].control_handle, &reply);
+    }
+    let path = core::str::from_utf8(&path_bytes[..path_len]).map_err(|_| rt::Error::InvalidArgument)?;
+
+    let image_handle = match load_image_from_storage(slots, service_count, path) {
+        Ok(handle) => handle,
+        Err(rt::Error::NotFound) => {
+            reply.words[0] = ManagerStatus::NotFound as u32 as u64;
+            close_message_handles(message);
+            return rt::channel_send(slots[service_index].control_handle, &reply);
+        }
+        Err(error) => {
+            let _ = crate::util::fallback_logf(format_args!(
+                "launch stored image load failed path={} error={:?}",
+                path, error
+            ));
+            reply.words[0] = ManagerStatus::Busy as u32 as u64;
+            close_message_handles(message);
+            return rt::channel_send(slots[service_index].control_handle, &reply);
+        }
+    };
+
+    let task_handle = match launch_program_from_image(
+        slots,
+        service_count,
+        bootstrap_authority,
+        caller,
+        image_handle,
+        &message.words[2..2 + startup_word_count],
+        &message.handles[..message.handle_count as usize],
+        &message.handle_rights[..message.handle_count as usize],
+    ) {
+        Ok(task_handle) => task_handle,
+        Err(rt::Error::PermissionDenied) => {
+            let _ = rt::handle_close(image_handle);
+            reply.words[0] = ManagerStatus::Denied as u32 as u64;
+            close_message_handles(message);
+            return rt::channel_send(slots[service_index].control_handle, &reply);
+        }
+        Err(error) => {
+            let _ = crate::util::fallback_logf(format_args!(
+                "launch stored image spawn failed path={} error={:?}",
+                path, error
+            ));
+            let _ = rt::handle_close(image_handle);
+            reply.words[0] = ManagerStatus::Busy as u32 as u64;
+            close_message_handles(message);
+            return rt::channel_send(slots[service_index].control_handle, &reply);
+        }
+    };
+
+    let _ = rt::handle_close(image_handle);
+    reply.words[0] = ManagerStatus::Ok as u32 as u64;
+    reply.handle_count = 1;
+    reply.handles[0] = task_handle;
+    reply.handle_rights[0] = rights::READ;
+    rt::channel_send(slots[service_index].control_handle, &reply)?;
+    let _ = rt::handle_close(task_handle);
+    Ok(())
+}
+
 fn close_message_handles(message: &RawMessage) {
     for handle in message.handles[..message.handle_count as usize]
         .iter()
@@ -571,6 +759,55 @@ fn launch_program(
     Ok(task_view)
 }
 
+fn launch_program_from_image(
+    slots: &[ServiceSlot; MAX_SERVICE_SLOTS],
+    service_count: usize,
+    bootstrap_authority: rt::Handle,
+    caller: ServiceId,
+    image_handle: rt::Handle,
+    startup_words: &[u64],
+    startup_handles: &[rt::Handle],
+    startup_handle_rights: &[u64],
+) -> rt::Result<rt::Handle> {
+    let bootstrap = rt::channel_create()?;
+    let task_handle = rt::task_spawn_image(image_handle, bootstrap_authority, bootstrap.second)?;
+    let task_view =
+        rt::handle_duplicate(task_handle, rights::READ | rights::DUPLICATE | rights::TRANSFER)?;
+
+    let mut startup = RawMessage::empty(ControlTag::Startup as u32);
+    if startup_words.len() > IPC_MAX_WORDS {
+        return Err(rt::Error::BufferTooSmall);
+    }
+    startup.word_count = startup_words.len() as u32;
+    for (index, word) in startup_words.iter().copied().enumerate() {
+        startup.words[index] = word;
+    }
+
+    let mut handle_index = 0usize;
+    for (index, handle) in startup_handles.iter().copied().enumerate() {
+        if handle_index >= IPC_MAX_HANDLES {
+            return Err(rt::Error::BufferTooSmall);
+        }
+        startup.handles[handle_index] = handle;
+        startup.handle_rights[handle_index] =
+            startup_handle_rights.get(index).copied().unwrap_or(0);
+        handle_index += 1;
+    }
+    append_dynamic_launch_grants(slots, service_count, caller, &mut startup, &mut handle_index)?;
+    startup.handle_count = handle_index as u32;
+
+    rt::channel_send(bootstrap.first, &startup)?;
+    for handle in startup.handles[..startup.handle_count as usize]
+        .iter()
+        .copied()
+    {
+        let _ = rt::handle_close(handle);
+    }
+    let _ = rt::handle_close(task_handle);
+    let _ = rt::handle_close(bootstrap.first);
+    Ok(task_view)
+}
+
 fn launch_is_authorized(caller: ServiceId, image_id: ServiceImageId) -> bool {
     match caller {
         ServiceId::Shell | ServiceId::Terminal => image_id == ServiceImageId::SysinfoTool,
@@ -585,6 +822,10 @@ fn launch_is_authorized(caller: ServiceId, image_id: ServiceImageId) -> bool {
         ),
         _ => false,
     }
+}
+
+fn launch_image_is_authorized(caller: ServiceId) -> bool {
+    matches!(caller, ServiceId::Shell | ServiceId::Runtime | ServiceId::Developer)
 }
 
 fn append_launch_grants(
@@ -670,6 +911,42 @@ fn append_launch_grants(
     Ok(())
 }
 
+fn append_dynamic_launch_grants(
+    slots: &[ServiceSlot; MAX_SERVICE_SLOTS],
+    service_count: usize,
+    caller: ServiceId,
+    startup: &mut RawMessage,
+    handle_index: &mut usize,
+) -> rt::Result<()> {
+    match caller {
+        ServiceId::Shell => append_service_launch_handle(
+            slots,
+            service_count,
+            ServiceId::Console,
+            rights::SEND | rights::TRANSFER,
+            startup,
+            handle_index,
+        ),
+        ServiceId::Runtime => append_service_launch_handle(
+            slots,
+            service_count,
+            ServiceId::Runtime,
+            rights::SEND | rights::TRANSFER,
+            startup,
+            handle_index,
+        ),
+        ServiceId::Developer => append_service_launch_handle(
+            slots,
+            service_count,
+            ServiceId::Developer,
+            rights::SEND | rights::TRANSFER,
+            startup,
+            handle_index,
+        ),
+        _ => Ok(()),
+    }
+}
+
 fn append_service_launch_handle(
     slots: &[ServiceSlot; MAX_SERVICE_SLOTS],
     service_count: usize,
@@ -707,6 +984,29 @@ pub(crate) fn load_manifest_from_storage(
     parse_manifest(&manifest_buffer[..loaded]).map_err(|_| rt::Error::InvalidArgument)
 }
 
+fn load_image_from_storage(
+    slots: &[ServiceSlot; MAX_SERVICE_SLOTS],
+    service_count: usize,
+    path: &str,
+) -> rt::Result<rt::Handle> {
+    let storage_index = find_slot_index(slots, service_count, ServiceId::Storage)?;
+    let storage_handle = slots[storage_index].public_handle;
+    let (blob_handle, blob_len) = rt::storage_open(storage_handle, path)?;
+    let image_handle = rt::memory_create(blob_len, true)?;
+    let mut offset = 0usize;
+    let mut chunk = [0u8; 96];
+    while offset < blob_len {
+        let read = rt::storage_read(blob_handle, offset, &mut chunk)?;
+        if read == 0 {
+            break;
+        }
+        let _ = rt::memory_write(image_handle, offset, &chunk[..read])?;
+        offset += read;
+    }
+    let _ = rt::storage_blob_close(blob_handle);
+    Ok(image_handle)
+}
+
 pub(crate) fn stop_service_slot(slot: &mut ServiceSlot) -> rt::Result<()> {
     if slot.control_handle != rt::INVALID_HANDLE {
         let _ = send_lifecycle(slot.control_handle, LifecycleEvent::Stopped);
@@ -714,7 +1014,7 @@ pub(crate) fn stop_service_slot(slot: &mut ServiceSlot) -> rt::Result<()> {
     if slot.task_handle != rt::INVALID_HANDLE {
         loop {
             match rt::task_status(slot.task_handle) {
-                Ok(status) if status.state == TaskStateCode::Exited => {
+                Ok(status) if matches!(status.state, TaskStateCode::Exited | TaskStateCode::Faulted) => {
                     slot.last_exit_code = status.exit_code;
                     break;
                 }

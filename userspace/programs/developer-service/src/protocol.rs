@@ -520,7 +520,7 @@ pub(crate) fn poll_job_exits(log_handle: rt::Handle, jobs: &mut [JobSlot; MAX_JO
             continue;
         }
         match rt::task_status(job.task_handle) {
-            Ok(status) if status.state == rt::TaskStateCode::Exited => {
+            Ok(status) if matches!(status.state, rt::TaskStateCode::Exited | rt::TaskStateCode::Faulted) => {
                 let _ = rt::handle_close(job.task_handle);
                 job.task_handle = rt::INVALID_HANDLE;
                 if job.state == DeveloperJobState::Running {

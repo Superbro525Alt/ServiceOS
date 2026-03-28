@@ -5,7 +5,7 @@ use serviceos_abi::{
     InputButton, InputEventInfo, InputEventKind, InputSourceBackend, InputSourceInfo,
     input_capability,
 };
-use serviceos_kernel_arch_x86_64::paging::ActivePageTable;
+use serviceos_kernel_arch_x86_64::{interrupts, paging::ActivePageTable};
 use serviceos_kernel_core::{
     input::{InputBackend, InputSourceError},
     memory::{self, PageMapper, PhysicalAddress, VirtualAddress},
@@ -54,6 +54,7 @@ pub struct InputBringupSummary {
 pub fn initialize() -> Option<Arc<dyn InputBackend>> {
     let mut root = PciRoot::new(IoPortPciConfigAccess);
     let mut devices = Vec::new();
+    let mut interrupt_lines = Vec::new();
     let mut keyboard_devices = 0u32;
     let mut pointer_devices = 0u32;
 
@@ -72,6 +73,7 @@ pub fn initialize() -> Option<Arc<dyn InputBackend>> {
 
             let transport = PciTransport::new::<KernelHal, _>(&mut root, device_function).ok()?;
             let mut device = VirtIOInput::<KernelHal, _>::new(transport).ok()?;
+            let interrupt_line = read_interrupt_line(device_function)?;
             let pointer = pointer_axes(&mut device).ok().flatten();
             let has_keys = device
                 .ev_bits(EV_KEY as u8)
@@ -93,6 +95,9 @@ pub fn initialize() -> Option<Arc<dyn InputBackend>> {
                 pending_y: 0,
                 motion_dirty: false,
             });
+            if !interrupt_lines.contains(&interrupt_line) {
+                interrupt_lines.push(interrupt_line);
+            }
         }
     }
 
@@ -105,6 +110,11 @@ pub fn initialize() -> Option<Arc<dyn InputBackend>> {
         keyboard_devices,
         pointer_devices,
     });
+    for interrupt_line in interrupt_lines {
+        if !interrupts::register_external_irq_handler(interrupt_line, handle_input_irq) {
+            return None;
+        }
+    }
 
     Some(Arc::new(VirtioInputBackend::new(
         devices,
@@ -123,6 +133,10 @@ pub fn poll_ready_sources() {
             let _ = task::notify_input_ready(ObjectId(object_id));
         });
     }
+}
+
+fn handle_input_irq(_irq_line: u8) {
+    poll_ready_sources();
 }
 
 static BRINGUP_SUMMARY: Once<InputBringupSummary> = Once::new();
@@ -422,6 +436,17 @@ fn pci_config_address(device_function: DeviceFunction, register_offset: u8) -> u
         | ((device_function.device as u32) << 11)
         | ((device_function.function as u32) << 8)
         | (register_offset as u32 & 0xfc)
+}
+
+fn read_interrupt_line(device_function: DeviceFunction) -> Option<u8> {
+    let access = IoPortPciConfigAccess;
+    let value = access.read_word(device_function, 0x3c);
+    let interrupt_line = (value & 0xff) as u8;
+    if interrupt_line == 0 || interrupt_line == 0xff {
+        None
+    } else {
+        Some(interrupt_line)
+    }
 }
 
 struct KernelHal;

@@ -9,10 +9,10 @@ use super::{
     handle_channel_receive, handle_channel_send, handle_debug_console_read,
     handle_debug_console_write, handle_debug_log_write, handle_display_output_info,
     handle_display_output_present, handle_handle_close, handle_handle_duplicate,
-    handle_input_source_info, handle_input_source_receive, handle_memory_create,
+    handle_input_source_info, handle_input_source_receive, handle_memory_create, handle_memory_map,
     handle_memory_read, handle_memory_write, handle_monotonic_now, handle_packet_interface_info,
     handle_packet_interface_receive, handle_packet_interface_transmit, handle_service_spawn,
-    handle_task_status, handle_thread_exit, handle_yield_current,
+    handle_task_spawn_image, handle_task_status, handle_thread_exit, handle_yield_current,
 };
 
 type Handler = fn(&SyscallContext) -> SyscallReturn;
@@ -91,6 +91,8 @@ pub fn initialize() -> &'static DispatchTable {
             Some(handle_audio_endpoint_info),
             Some(handle_audio_endpoint_play_tone),
             Some(handle_audio_endpoint_stop),
+            Some(handle_memory_map),
+            Some(handle_task_spawn_image),
         ])
     })
 }

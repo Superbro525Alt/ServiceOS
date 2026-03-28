@@ -14,6 +14,7 @@ pub(super) const USER_ENTRY_STACK_BIAS: u64 = 8;
 pub enum TaskExitStatus {
     Running,
     Exited { code: u64 },
+    Faulted { code: u64 },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -36,6 +37,10 @@ pub struct UserArchHooks {
         fn(&[u8]) -> Result<PreparedUserAddressSpace, AddressSpacePreparationError>,
     pub register_thread_launch: fn(UserThreadLaunch),
     pub release_thread_runtime: fn(ThreadId),
+    pub register_address_space: fn(AddressSpaceId, PhysicalAddress),
+    pub release_address_space: fn(AddressSpaceId),
+    pub map_memory_object:
+        fn(AddressSpaceId, VirtualAddress, &[PhysicalAddress], bool) -> Result<(), MappingError>,
 }
 
 #[derive(Clone)]

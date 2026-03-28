@@ -153,6 +153,84 @@ pub fn manager_launch_program_with_payload(
     }
 }
 
+pub fn manager_launch_image_with_payload(
+    bootstrap: Handle,
+    image_handle: Handle,
+    startup_words: &[u64],
+    startup_handles: &[StartupHandle],
+) -> Result<Handle> {
+    if startup_words.len() + 1 > IPC_MAX_WORDS || startup_handles.len() + 1 > IPC_MAX_HANDLES {
+        return Err(Error::BufferTooSmall);
+    }
+    let mut request = RawMessage::empty(ManagerTag::LaunchImageRequest as u32);
+    request.word_count = 1 + startup_words.len() as u32;
+    request.words[0] = startup_words.len() as u64;
+    for (index, word) in startup_words.iter().copied().enumerate() {
+        request.words[1 + index] = word;
+    }
+    request.handle_count = 1 + startup_handles.len() as u32;
+    request.handles[0] = image_handle;
+    request.handle_rights[0] = rights::READ | rights::MAP | rights::TRANSFER | rights::DUPLICATE;
+    for (index, startup_handle) in startup_handles.iter().copied().enumerate() {
+        request.handles[index + 1] = startup_handle.handle;
+        request.handle_rights[index + 1] = startup_handle.rights;
+    }
+    channel_send(bootstrap, &request)?;
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(bootstrap, &mut response)?;
+    if response.tag != ManagerTag::LaunchImageReply as u32 || response.word_count < 1 {
+        return Err(Error::InvalidArgument);
+    }
+    match manager_status_from_word(response.words[0]) {
+        ManagerStatus::Ok if response.handle_count > 0 => Ok(response.handles[0]),
+        ManagerStatus::Busy | ManagerStatus::Failed => Err(Error::Busy),
+        ManagerStatus::NotFound => Err(Error::NotFound),
+        ManagerStatus::Denied => Err(Error::PermissionDenied),
+        _ => Err(Error::InvalidArgument),
+    }
+}
+
+pub fn manager_launch_stored_program_with_payload(
+    bootstrap: Handle,
+    path: &str,
+    startup_words: &[u64],
+    startup_handles: &[StartupHandle],
+) -> Result<Handle> {
+    let path_bytes = path.as_bytes();
+    let packed_len = path_bytes.len().div_ceil(8);
+    if startup_words.len() + 2 + packed_len > IPC_MAX_WORDS || startup_handles.len() > IPC_MAX_HANDLES {
+        return Err(Error::BufferTooSmall);
+    }
+
+    let mut request = RawMessage::empty(ManagerTag::LaunchStoredImageRequest as u32);
+    request.word_count = 2 + startup_words.len() as u32 + pack_bytes(path_bytes, &mut request.words[2 + startup_words.len()..])?;
+    request.words[0] = startup_words.len() as u64;
+    request.words[1] = path_bytes.len() as u64;
+    for (index, word) in startup_words.iter().copied().enumerate() {
+        request.words[2 + index] = word;
+    }
+    for (index, startup_handle) in startup_handles.iter().copied().enumerate() {
+        request.handles[index] = startup_handle.handle;
+        request.handle_rights[index] = startup_handle.rights;
+    }
+    request.handle_count = startup_handles.len() as u32;
+    channel_send(bootstrap, &request)?;
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(bootstrap, &mut response)?;
+    if response.tag != ManagerTag::LaunchStoredImageReply as u32 || response.word_count < 1 {
+        return Err(Error::InvalidArgument);
+    }
+    match manager_status_from_word(response.words[0]) {
+        ManagerStatus::Ok if response.handle_count > 0 => Ok(response.handles[0]),
+        ManagerStatus::Busy | ManagerStatus::Failed => Err(Error::Busy),
+        ManagerStatus::NotFound => Err(Error::NotFound),
+        ManagerStatus::Denied => Err(Error::PermissionDenied),
+        _ => Err(Error::InvalidArgument),
+    }
+}
+
 pub fn manager_activate_service(bootstrap: Handle, manifest_path: &str) -> Result<ServiceId> {
     let path_bytes = manifest_path.as_bytes();
     let max_inline_bytes = (IPC_MAX_WORDS.saturating_sub(1)) * 8;

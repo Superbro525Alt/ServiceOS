@@ -1,7 +1,10 @@
-use alloc::{boxed::Box, sync::Arc, vec};
+use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
 use spin::Mutex;
 
-use crate::time::MonotonicInstant;
+use crate::{
+    memory::{self, PAGE_SIZE_BYTES, PhysicalAddress},
+    time::MonotonicInstant,
+};
 
 pub struct BootstrapCapabilityObject;
 
@@ -123,12 +126,23 @@ pub struct MemoryObject {
 
 enum MemoryStorage {
     ReadOnly(Arc<[u8]>),
-    Writable(Mutex<Box<[u8]>>),
+    Writable(Mutex<WritableMemoryState>),
+}
+
+struct WritableMemoryState {
+    backing: WritableMemoryBacking,
+}
+
+enum WritableMemoryBacking {
+    Linear(Box<[u8]>),
+    PageBacked(Arc<[PhysicalAddress]>),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MemoryAccessError {
     ReadOnly,
+    Busy,
+    Unsupported,
 }
 
 impl MemoryObject {
@@ -143,7 +157,9 @@ impl MemoryObject {
                 writable,
             },
             storage: if writable {
-                MemoryStorage::Writable(Mutex::new(zeroed))
+                MemoryStorage::Writable(Mutex::new(WritableMemoryState {
+                    backing: WritableMemoryBacking::Linear(zeroed),
+                }))
             } else {
                 MemoryStorage::ReadOnly(Arc::from(zeroed))
             },
@@ -179,12 +195,19 @@ impl MemoryObject {
             }
             MemoryStorage::Writable(bytes) => {
                 let bytes = bytes.lock();
-                let Some(source) = bytes.get(offset..) else {
-                    return 0;
-                };
-                let len = source.len().min(destination.len());
-                destination[..len].copy_from_slice(&source[..len]);
-                len
+                match &bytes.backing {
+                    WritableMemoryBacking::Linear(bytes) => {
+                        let Some(source) = bytes.get(offset..) else {
+                            return 0;
+                        };
+                        let len = source.len().min(destination.len());
+                        destination[..len].copy_from_slice(&source[..len]);
+                        len
+                    }
+                    WritableMemoryBacking::PageBacked(frames) => {
+                        read_page_backed(frames, self.info.size_bytes, offset, destination)
+                    }
+                }
             }
         }
     }
@@ -194,11 +217,129 @@ impl MemoryObject {
             return Err(MemoryAccessError::ReadOnly);
         };
         let mut bytes = bytes.lock();
-        let Some(destination) = bytes.get_mut(offset..) else {
-            return Ok(0);
-        };
-        let len = destination.len().min(source.len());
-        destination[..len].copy_from_slice(&source[..len]);
-        Ok(len)
+        match &mut bytes.backing {
+            WritableMemoryBacking::Linear(bytes) => {
+                let Some(destination) = bytes.get_mut(offset..) else {
+                    return Ok(0);
+                };
+                let len = destination.len().min(source.len());
+                destination[..len].copy_from_slice(&source[..len]);
+                Ok(len)
+            }
+            WritableMemoryBacking::PageBacked(frames) => Ok(write_page_backed(
+                frames,
+                self.info.size_bytes,
+                offset,
+                source,
+            )),
+        }
     }
+
+    pub fn page_frames(&self) -> Result<Arc<[PhysicalAddress]>, MemoryAccessError> {
+        let MemoryStorage::Writable(state) = &self.storage else {
+            return Err(MemoryAccessError::ReadOnly);
+        };
+        let mut state = state.lock();
+        match &state.backing {
+            WritableMemoryBacking::PageBacked(frames) => Ok(Arc::clone(frames)),
+            WritableMemoryBacking::Linear(bytes) => {
+                let frames = allocate_page_backing(bytes, self.info.page_count)?;
+                state.backing = WritableMemoryBacking::PageBacked(Arc::clone(&frames));
+                Ok(frames)
+            }
+        }
+    }
+}
+
+fn allocate_page_backing(
+    bytes: &[u8],
+    page_count: usize,
+) -> Result<Arc<[PhysicalAddress]>, MemoryAccessError> {
+    let Some(memory) = memory::manager() else {
+        return Err(MemoryAccessError::Busy);
+    };
+    let mut allocator = memory.frame_allocator().lock();
+    let mut frames = Vec::with_capacity(page_count);
+    for page_index in 0..page_count {
+        let Some(frame) = allocator.allocate_4kib() else {
+            return Err(MemoryAccessError::Busy);
+        };
+        let frame_base = frame.base;
+        let start = page_index * PAGE_SIZE_BYTES as usize;
+        let end = (start + PAGE_SIZE_BYTES as usize).min(bytes.len());
+        unsafe {
+            core::ptr::write_bytes(frame_base.as_u64() as *mut u8, 0, PAGE_SIZE_BYTES as usize);
+            if start < end {
+                core::ptr::copy_nonoverlapping(
+                    bytes[start..end].as_ptr(),
+                    frame_base.as_u64() as *mut u8,
+                    end - start,
+                );
+            }
+        }
+        frames.push(frame_base);
+    }
+    Ok(Arc::from(frames.into_boxed_slice()))
+}
+
+fn read_page_backed(
+    frames: &[PhysicalAddress],
+    size_bytes: usize,
+    offset: usize,
+    destination: &mut [u8],
+) -> usize {
+    if offset >= size_bytes {
+        return 0;
+    }
+    let mut remaining = destination.len().min(size_bytes - offset);
+    let mut destination_offset = 0usize;
+    let mut position = offset;
+    while remaining > 0 {
+        let page_index = position / PAGE_SIZE_BYTES as usize;
+        let page_offset = position % PAGE_SIZE_BYTES as usize;
+        let copy_len = remaining.min(PAGE_SIZE_BYTES as usize - page_offset);
+        let frame_base = frames[page_index].as_u64() as *const u8;
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                frame_base.add(page_offset),
+                destination.as_mut_ptr().add(destination_offset),
+                copy_len,
+            );
+        }
+        remaining -= copy_len;
+        destination_offset += copy_len;
+        position += copy_len;
+    }
+    destination_offset
+}
+
+fn write_page_backed(
+    frames: &[PhysicalAddress],
+    size_bytes: usize,
+    offset: usize,
+    source: &[u8],
+) -> usize {
+    if offset >= size_bytes {
+        return 0;
+    }
+    let mut remaining = source.len().min(size_bytes - offset);
+    let mut source_offset = 0usize;
+    let mut position = offset;
+    while remaining > 0 {
+        let page_index = position / PAGE_SIZE_BYTES as usize;
+        let page_offset = position % PAGE_SIZE_BYTES as usize;
+        let copy_len = remaining.min(PAGE_SIZE_BYTES as usize - page_offset);
+        let frame_base = frames[page_index].as_u64() as *mut u8;
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                source.as_ptr().add(source_offset),
+                frame_base.add(page_offset),
+                copy_len,
+            );
+        }
+        remaining -= copy_len;
+        source_offset += copy_len;
+        position += copy_len;
+    }
+    source_offset
 }

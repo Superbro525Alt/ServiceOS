@@ -1,14 +1,26 @@
 use alloc::collections::BTreeMap;
 use spin::{Mutex, Once};
 
-use crate::task::{AddressSpaceId, TaskId, ThreadId};
+use crate::{
+    memory::{PAGE_SIZE_BYTES, PhysicalAddress, VirtualAddress},
+    task::{AddressSpaceId, TaskId, ThreadId},
+};
 
 use super::TaskExitStatus;
+
+const FIRST_SHARED_MAPPING_BASE: u64 = 0x0000_6000_0000_0000;
+
+#[derive(Clone, Copy)]
+struct AddressSpaceRuntime {
+    root: PhysicalAddress,
+    next_mapping_base: VirtualAddress,
+}
 
 struct UserRuntimeState {
     next_address_space_id: u64,
     tasks: BTreeMap<TaskId, TaskExitStatus>,
     threads: BTreeMap<ThreadId, TaskId>,
+    address_spaces: BTreeMap<AddressSpaceId, AddressSpaceRuntime>,
 }
 
 pub struct UserRuntime {
@@ -22,6 +34,7 @@ impl UserRuntime {
                 next_address_space_id: 1,
                 tasks: BTreeMap::new(),
                 threads: BTreeMap::new(),
+                address_spaces: BTreeMap::new(),
             }),
         }
     }
@@ -39,16 +52,62 @@ impl UserRuntime {
         state.threads.insert(thread_id, task_id);
     }
 
+    pub fn register_address_space(&self, address_space_id: AddressSpaceId, root: PhysicalAddress) {
+        self.state.lock().address_spaces.insert(
+            address_space_id,
+            AddressSpaceRuntime {
+                root,
+                next_mapping_base: VirtualAddress::new(FIRST_SHARED_MAPPING_BASE),
+            },
+        );
+    }
+
+    pub fn address_space_root(&self, address_space_id: AddressSpaceId) -> Option<PhysicalAddress> {
+        self.state
+            .lock()
+            .address_spaces
+            .get(&address_space_id)
+            .map(|entry| entry.root)
+    }
+
+    pub fn reserve_mapping_range(
+        &self,
+        address_space_id: AddressSpaceId,
+        size_bytes: usize,
+    ) -> Option<VirtualAddress> {
+        let size_bytes = size_bytes.max(PAGE_SIZE_BYTES as usize);
+        let aligned = size_bytes.div_ceil(PAGE_SIZE_BYTES as usize) * PAGE_SIZE_BYTES as usize;
+        let mut state = self.state.lock();
+        let entry = state.address_spaces.get_mut(&address_space_id)?;
+        let base = entry.next_mapping_base;
+        entry.next_mapping_base = entry.next_mapping_base.offset(aligned as u64);
+        Some(base)
+    }
+
     pub fn task_exit_status(&self, task_id: TaskId) -> Option<TaskExitStatus> {
         self.state.lock().tasks.get(&task_id).copied()
     }
 
     pub fn mark_thread_exit(&self, thread_id: ThreadId, code: u64) {
         let mut state = self.state.lock();
-        let Some(task_id) = state.threads.get(&thread_id).copied() else {
+        let Some(task_id) = state.threads.remove(&thread_id) else {
             return;
         };
         state.tasks.insert(task_id, TaskExitStatus::Exited { code });
+    }
+
+    pub fn mark_thread_faulted(&self, thread_id: ThreadId, code: u64) {
+        let mut state = self.state.lock();
+        let Some(task_id) = state.threads.remove(&thread_id) else {
+            return;
+        };
+        state
+            .tasks
+            .insert(task_id, TaskExitStatus::Faulted { code });
+    }
+
+    pub fn release_address_space(&self, address_space_id: AddressSpaceId) {
+        self.state.lock().address_spaces.remove(&address_space_id);
     }
 }
 

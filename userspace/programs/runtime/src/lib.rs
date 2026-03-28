@@ -141,6 +141,10 @@ impl<const N: usize> FixedLogBuffer<N> {
     pub fn as_bytes(&self) -> &[u8] {
         &self.bytes[..self.len]
     }
+
+    pub fn as_str(&self) -> &str {
+        core::str::from_utf8(self.as_bytes()).unwrap_or("")
+    }
 }
 
 impl<const N: usize> Write for FixedLogBuffer<N> {

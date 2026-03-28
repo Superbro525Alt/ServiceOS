@@ -5,9 +5,13 @@ mod types;
 
 pub use loader::{load_flat_image, parse_flat_image};
 pub use runtime::{
-    UserRuntime, initialize_runtime, register_arch_hooks, register_image_resolver, runtime,
+    UserRuntime, arch_hooks, initialize_runtime, register_arch_hooks, register_image_resolver,
+    runtime,
 };
-pub use spawn::{current_task, mark_current_thread_exited, spawn_builtin_task};
+pub use spawn::{
+    current_task, mark_current_thread_exited, mark_current_thread_faulted, spawn_builtin_task,
+    spawn_image_bytes,
+};
 pub use types::{
     AddressSpacePreparationError, FlatImageHeader, LoadError, LoadedUserImage,
     PreparedUserAddressSpace, SpawnError, SpawnedUserTask, TaskExitStatus, UserArchHooks,

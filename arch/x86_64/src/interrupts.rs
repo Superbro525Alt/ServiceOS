@@ -39,6 +39,7 @@ const DOUBLE_FAULT_STACK_SIZE: usize = 16 * 1024;
 const PRIVILEGE_STACK_INDEX: usize = 0;
 const PRIVILEGE_STACK_SIZE: usize = 16 * 1024;
 const EXTERNAL_IRQ_LINES: usize = 16;
+const MAX_EXTERNAL_IRQ_HANDLERS_PER_LINE: usize = 4;
 
 pub const PIC_PRIMARY_OFFSET: u8 = 0x20;
 pub const PIC_SECONDARY_OFFSET: u8 = 0x28;
@@ -94,8 +95,9 @@ static PRIVILEGE_STACK: InterruptStack<PRIVILEGE_STACK_SIZE> =
 static TSS: Once<TaskStateSegment> = Once::new();
 static DESCRIPTOR_TABLES: Once<DescriptorTables> = Once::new();
 static IDT: Once<InterruptDescriptorTable> = Once::new();
-static EXTERNAL_IRQ_HANDLERS: spin::Mutex<[Option<fn(u8)>; EXTERNAL_IRQ_LINES]> =
-    spin::Mutex::new([None; EXTERNAL_IRQ_LINES]);
+static EXTERNAL_IRQ_HANDLERS: spin::Mutex<
+    [[Option<fn(u8)>; MAX_EXTERNAL_IRQ_HANDLERS_PER_LINE]; EXTERNAL_IRQ_LINES],
+> = spin::Mutex::new([[None; MAX_EXTERNAL_IRQ_HANDLERS_PER_LINE]; EXTERNAL_IRQ_LINES]);
 static TIMER_TICK_HOOK: spin::Mutex<Option<fn()>> = spin::Mutex::new(None);
 
 unsafe extern "C" {
@@ -356,15 +358,21 @@ pub fn register_external_irq_handler(irq_line: u8, handler: fn(u8)) -> bool {
     }
 
     let mut handlers = EXTERNAL_IRQ_HANDLERS.lock();
-    match handlers[irq_line as usize] {
-        Some(existing) if !core::ptr::fn_addr_eq(existing, handler) => false,
-        _ => {
-            handlers[irq_line as usize] = Some(handler);
+    let line_handlers = &mut handlers[irq_line as usize];
+    for existing in line_handlers.iter().flatten().copied() {
+        if core::ptr::fn_addr_eq(existing, handler) {
             drop(handlers);
             unmask_pic_irq_line(irq_line);
-            true
+            return true;
         }
     }
+    if let Some(slot) = line_handlers.iter_mut().find(|slot| slot.is_none()) {
+        *slot = Some(handler);
+        drop(handlers);
+        unmask_pic_irq_line(irq_line);
+        return true;
+    }
+    false
 }
 
 fn frame_view(frame: &InterruptStackFrame) -> TrapFrameView {
@@ -394,7 +402,7 @@ fn terminate_faulting_user_task(report: ExceptionReport) -> ! {
         "serviceos: interrupt: terminating faulting userspace task exit={:#x}\n",
         user_fault_exit_code(report)
     ));
-    serviceos_kernel_core::user::mark_current_thread_exited(user_fault_exit_code(report));
+    serviceos_kernel_core::user::mark_current_thread_faulted(user_fault_exit_code(report));
     if let Some(tasks) = task::system() {
         let _ = tasks.scheduler().terminate_current();
     }
@@ -490,7 +498,8 @@ extern "x86-interrupt" fn timer_interrupt_handler(_frame: InterruptStackFrame) {
 fn dispatch_external_irq(irq_line: u8) {
     let vector = PIC_PRIMARY_OFFSET + irq_line;
     interrupts::note_external_interrupt(InterruptVector(vector as u16));
-    if let Some(handler) = EXTERNAL_IRQ_HANDLERS.lock()[irq_line as usize] {
+    let handlers = EXTERNAL_IRQ_HANDLERS.lock();
+    for handler in handlers[irq_line as usize].iter().flatten().copied() {
         handler(irq_line);
     }
     acknowledge_pic(vector);

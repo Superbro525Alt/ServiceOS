@@ -180,7 +180,7 @@ serviceos_aarch64_fatal_vector:
                 code_segment: 0b11,
             },
         );
-        user::mark_current_thread_exited(0xffff_ffff_ffff_ff01);
+        user::mark_current_thread_faulted(0xffff_ffff_ffff_ff01);
         if let Some(tasks) = system() {
             let _ = tasks.scheduler().terminate_current();
         }

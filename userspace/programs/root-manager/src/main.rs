@@ -6,6 +6,7 @@ mod graph;
 mod state;
 mod util;
 
+use serviceos_abi::bootstrap_resource;
 use serviceos_userspace_runtime as rt;
 use rt::{ControlTag, LogEvent, LogSeverity, RawMessage, ServiceId, rights};
 
@@ -31,6 +32,11 @@ fn main() -> u64 {
     let bootstore_handle = startup.handles[0];
     let bootstrap_authority = startup.handles[1];
     let bootstore_len = startup.words[0] as usize;
+    let bootstrap_flags = if startup.word_count > 2 {
+        startup.words[2]
+    } else {
+        0
+    };
     let platform = if startup.word_count > 1 {
         match startup.words[1] as u32 {
             x if x == rt::BootstrapPlatform::QemuVirtio as u32 => rt::BootstrapPlatform::QemuVirtio,
@@ -40,42 +46,40 @@ fn main() -> u64 {
     } else {
         rt::BootstrapPlatform::Unknown
     };
-    let network_resource = if startup.handle_count > 2 {
-        Some(BootstrapResource {
-            handle: startup.handles[2],
-            len: 0,
-            rights: rights::READ | rights::WRITE | rights::WAIT,
-        })
-    } else {
-        None
-    };
-    let display_resource = if startup.handle_count > 3 {
-        Some(BootstrapResource {
-            handle: startup.handles[3],
-            len: 0,
-            rights: rights::READ | rights::WRITE,
-        })
-    } else {
-        None
-    };
-    let input_resource = if startup.handle_count > 4 {
-        Some(BootstrapResource {
-            handle: startup.handles[4],
-            len: 0,
-            rights: rights::READ | rights::WAIT,
-        })
-    } else {
-        None
-    };
-    let audio_resource = if startup.handle_count > 5 {
-        Some(BootstrapResource {
-            handle: startup.handles[5],
-            len: 0,
-            rights: rights::READ | rights::WRITE,
-        })
-    } else {
-        None
-    };
+    let mut next_handle = 2usize;
+    let take_bootstrap_resource =
+        |next_handle: &mut usize, present: bool, rights_mask: u64| -> Option<BootstrapResource> {
+            if !present || *next_handle >= startup.handle_count as usize {
+                return None;
+            }
+            let resource = BootstrapResource {
+                handle: startup.handles[*next_handle],
+                len: 0,
+                rights: rights_mask,
+            };
+            *next_handle += 1;
+            Some(resource)
+        };
+    let network_resource = take_bootstrap_resource(
+        &mut next_handle,
+        bootstrap_flags & bootstrap_resource::NETWORK != 0,
+        rights::READ | rights::WRITE | rights::WAIT,
+    );
+    let display_resource = take_bootstrap_resource(
+        &mut next_handle,
+        bootstrap_flags & bootstrap_resource::DISPLAY != 0,
+        rights::READ | rights::WRITE,
+    );
+    let input_resource = take_bootstrap_resource(
+        &mut next_handle,
+        bootstrap_flags & bootstrap_resource::INPUT != 0,
+        rights::READ | rights::WAIT,
+    );
+    let audio_resource = take_bootstrap_resource(
+        &mut next_handle,
+        bootstrap_flags & bootstrap_resource::AUDIO != 0,
+        rights::READ | rights::WRITE,
+    );
     let bootstrap_resources = BootstrapResources {
         bootstore: BootstrapResource {
             handle: bootstore_handle,

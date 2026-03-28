@@ -141,6 +141,10 @@ mod imp {
         pub fn root_frame(&self) -> PhysicalAddress {
             self.root_frame
         }
+
+        pub unsafe fn from_root(root_frame: PhysicalAddress) -> Self {
+            Self { root_frame }
+        }
     }
 
     impl PageMapper for ActivePageTable {

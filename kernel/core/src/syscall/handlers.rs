@@ -357,6 +357,10 @@ pub(super) fn handle_task_status(context: &SyscallContext) -> SyscallReturn {
             state: TaskStateCode::Exited,
             exit_code: code,
         },
+        user::TaskExitStatus::Faulted { code } => AbiTaskStatus {
+            state: TaskStateCode::Faulted,
+            exit_code: code,
+        },
     };
 
     SyscallReturn::success(0)
@@ -447,6 +451,146 @@ pub(super) fn handle_memory_write(context: &SyscallContext) -> SyscallReturn {
         Err(crate::object::MemoryAccessError::ReadOnly) => {
             SyscallReturn::error(SyscallError::PermissionDenied)
         }
+        Err(crate::object::MemoryAccessError::Busy) => SyscallReturn::error(SyscallError::Busy),
+        Err(crate::object::MemoryAccessError::Unsupported) => {
+            SyscallReturn::error(SyscallError::Unsupported)
+        }
+    }
+}
+
+pub(super) fn handle_memory_map(context: &SyscallContext) -> SyscallReturn {
+    let Ok(current_task) = current_task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let view = match resolve_object(
+        &current_task,
+        context.arguments[0] as Handle,
+        CapabilityRights::READ.union(CapabilityRights::MAP),
+    ) {
+        Ok(view) => view,
+        Err(error) => return SyscallReturn::error(error),
+    };
+    let Some(task) = current_task.task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(address_space_id) = task.address_space() else {
+        return SyscallReturn::error(SyscallError::Unsupported);
+    };
+    let Some(memory) = view.object.memory_object() else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let writable = context.arguments[1] != 0;
+    if writable && !view.rights.contains(CapabilityRights::WRITE) {
+        return SyscallReturn::error(SyscallError::PermissionDenied);
+    }
+    let Some(runtime) = user::runtime() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(hooks) = user::arch_hooks() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(base) = runtime.reserve_mapping_range(address_space_id, memory.info().size_bytes)
+    else {
+        return SyscallReturn::error(SyscallError::Busy);
+    };
+    let frames = match memory.page_frames() {
+        Ok(frames) => frames,
+        Err(crate::object::MemoryAccessError::ReadOnly) => {
+            return SyscallReturn::error(SyscallError::PermissionDenied);
+        }
+        Err(crate::object::MemoryAccessError::Busy) => {
+            return SyscallReturn::error(SyscallError::Busy);
+        }
+        Err(crate::object::MemoryAccessError::Unsupported) => {
+            return SyscallReturn::error(SyscallError::Unsupported);
+        }
+    };
+
+    match (hooks.map_memory_object)(address_space_id, base, frames.as_ref(), writable) {
+        Ok(()) => SyscallReturn::success(base.as_u64()),
+        Err(crate::memory::MappingError::AddressAlignment) => {
+            SyscallReturn::error(SyscallError::InvalidArgument)
+        }
+        Err(crate::memory::MappingError::AlreadyMapped) => SyscallReturn::error(SyscallError::Busy),
+        Err(crate::memory::MappingError::FrameAllocationFailed) => {
+            SyscallReturn::error(SyscallError::Busy)
+        }
+        Err(crate::memory::MappingError::Unsupported) => {
+            SyscallReturn::error(SyscallError::Unsupported)
+        }
+    }
+}
+
+pub(super) fn handle_task_spawn_image(context: &SyscallContext) -> SyscallReturn {
+    let Ok(current_task) = current_task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(task) = current_task.task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let authority = match task.capability_space().resolve(
+        CapabilityHandle(context.arguments[1] as Handle),
+        CapabilityRights::bootstrap(),
+    ) {
+        Ok(view) => view,
+        Err(error) => return SyscallReturn::error(map_capability_error(error)),
+    };
+    if authority.object.bootstrap_capability().is_none() {
+        return SyscallReturn::error(SyscallError::PermissionDenied);
+    }
+    let image_view = match resolve_object(
+        &current_task,
+        context.arguments[0] as Handle,
+        CapabilityRights::READ,
+    ) {
+        Ok(view) => view,
+        Err(error) => return SyscallReturn::error(error),
+    };
+    let Some(image_object) = image_view.object.memory_object() else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let image_len = image_object.info().size_bytes;
+    let mut image_bytes = alloc::vec![0u8; image_len];
+    let copied = image_object.read(0, &mut image_bytes);
+    image_bytes.truncate(copied);
+
+    let bootstrap_transfer = if context.arguments[2] == 0 {
+        None
+    } else {
+        match task.capability_space().prepare_transfer(
+            CapabilityHandle(context.arguments[2] as Handle),
+            CapabilityRights::channel_endpoint(),
+            TransferMode::Copy,
+        ) {
+            Ok(transfer) => Some(transfer),
+            Err(error) => return SyscallReturn::error(map_capability_error(error)),
+        }
+    };
+
+    let spawned =
+        match user::spawn_image_bytes(&image_bytes, TaskRole::UserService, bootstrap_transfer) {
+            Ok(spawned) => spawned,
+            Err(SpawnError::ImageNotFound) => return SyscallReturn::error(SyscallError::NotFound),
+            Err(SpawnError::Capability(error)) => {
+                return SyscallReturn::error(map_capability_error(error));
+            }
+            Err(SpawnError::Scheduler(_)) => return SyscallReturn::error(SyscallError::Busy),
+            Err(SpawnError::AddressSpace(AddressSpacePreparationError::Load(
+                LoadError::FrameExhausted,
+            )))
+            | Err(SpawnError::AddressSpace(AddressSpacePreparationError::Mapping(
+                crate::memory::MappingError::FrameAllocationFailed,
+            ))) => {
+                return SyscallReturn::error(SyscallError::CapacityExceeded);
+            }
+            Err(_) => return SyscallReturn::error(SyscallError::NotInitialized),
+        };
+    match task
+        .capability_space()
+        .install(spawned.task, CapabilityRights::task(), None)
+    {
+        Ok(handle) => SyscallReturn::success(handle.0 as u64),
+        Err(error) => SyscallReturn::error(map_capability_error(error)),
     }
 }
 

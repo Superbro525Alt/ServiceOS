@@ -15,6 +15,7 @@ use rt::{
 
 const SESSION_ID: u32 = 1;
 const APP_COUNT: usize = 4;
+const APP_PAGE_SIZE: usize = 3;
 const WINDOW_PAGE_SIZE: usize = 2;
 const STATUS_REFRESH_TICKS: u64 = 100;
 const TOPBAR_HEIGHT: u32 = 42;

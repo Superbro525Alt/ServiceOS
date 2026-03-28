@@ -39,18 +39,23 @@ pub(crate) fn handle_request(state: &mut DesktopState, request: &RawMessage) -> 
             if request.handle_count < 1 {
                 return Ok(());
             }
+            let start = request.words[0] as usize;
             let reply_handle = request.handles[0];
             let mut reply = RawMessage::empty(DesktopTag::ListAppsReply as u32);
-            reply.word_count = 2 + (state.apps.len() as u32 * 4);
+            reply.word_count = 3;
             reply.words[0] = DesktopStatus::Ok as u32 as u64;
-            reply.words[1] = state.apps.len() as u64;
-            for (index, slot) in state.apps.iter().copied().enumerate() {
-                let base = 2 + index * 4;
+            let end = (start + crate::APP_PAGE_SIZE).min(state.apps.len());
+            let count = end.saturating_sub(start);
+            reply.words[1] = count as u64;
+            reply.words[2] = end as u64;
+            for (page_index, slot) in state.apps[start..end].iter().copied().enumerate() {
+                let base = 3 + page_index * 4;
                 reply.words[base] = slot.app_id as u32 as u64;
                 reply.words[base + 1] = u64::from(slot.running);
                 reply.words[base + 2] = u64::from(state.focused_app == Some(slot.app_id));
                 reply.words[base + 3] = slot.window.surface_id as u64;
             }
+            reply.word_count += (count as u32) * 4;
             let _ = rt::channel_send(reply_handle, &reply);
             let _ = rt::handle_close(reply_handle);
         }

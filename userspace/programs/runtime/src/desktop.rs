@@ -51,39 +51,52 @@ pub fn desktop_status(desktop_handle: Handle) -> Result<DesktopShellStatusInfo> 
 }
 
 pub fn desktop_list_apps(desktop_handle: Handle, apps: &mut [DesktopAppInfo]) -> Result<usize> {
-    let reply = channel_create()?;
-    let mut request = RawMessage::empty(DesktopTag::ListAppsRequest as u32);
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(desktop_handle, &request)?;
-    let _ = handle_close(reply.second);
+    let mut filled = 0usize;
+    let mut start = 0usize;
 
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
-    if response.tag != DesktopTag::ListAppsReply as u32 || response.word_count < 2 {
-        return Err(Error::InvalidArgument);
+    loop {
+        let reply = channel_create()?;
+        let mut request = RawMessage::empty(DesktopTag::ListAppsRequest as u32);
+        request.word_count = 1;
+        request.words[0] = start as u64;
+        request.handle_count = 1;
+        request.handles[0] = reply.second;
+        request.handle_rights[0] = rights::SEND;
+        channel_send(desktop_handle, &request)?;
+        let _ = handle_close(reply.second);
+
+        let mut response = RawMessage::empty(0);
+        channel_receive_blocking(reply.first, &mut response)?;
+        let _ = handle_close(reply.first);
+        if response.tag != DesktopTag::ListAppsReply as u32 || response.word_count < 3 {
+            return Err(Error::InvalidArgument);
+        }
+        match desktop_status_from_word(response.words[0]) {
+            DesktopStatus::Ok => {}
+            status => return Err(desktop_status_error(status)),
+        }
+
+        let count = response.words[1] as usize;
+        let next = response.words[2] as usize;
+        if filled + count > apps.len() || response.word_count as usize != 3 + count * 4 {
+            return Err(Error::BufferTooSmall);
+        }
+        for page_index in 0..count {
+            let base = 3 + page_index * 4;
+            apps[filled + page_index] = DesktopAppInfo {
+                app_id: desktop_app_id_from_word(response.words[base])
+                    .map_err(|_| Error::InvalidArgument)?,
+                running: response.words[base + 1] != 0,
+                focused: response.words[base + 2] != 0,
+                surface_id: response.words[base + 3] as u32,
+            };
+        }
+        filled += count;
+        if count == 0 || next <= start {
+            return Ok(filled);
+        }
+        start = next;
     }
-    match desktop_status_from_word(response.words[0]) {
-        DesktopStatus::Ok => {}
-        status => return Err(desktop_status_error(status)),
-    }
-    let count = response.words[1] as usize;
-    if count > apps.len() || response.word_count as usize != 2 + count * 4 {
-        return Err(Error::BufferTooSmall);
-    }
-    for (index, app) in apps.iter_mut().enumerate().take(count) {
-        let base = 2 + index * 4;
-        *app = DesktopAppInfo {
-            app_id: desktop_app_id_from_word(response.words[base])
-                .map_err(|_| Error::InvalidArgument)?,
-            running: response.words[base + 1] != 0,
-            focused: response.words[base + 2] != 0,
-            surface_id: response.words[base + 3] as u32,
-        };
-    }
-    Ok(count)
 }
 
 pub fn desktop_launch_app(desktop_handle: Handle, app_id: DesktopAppId) -> Result<u32> {

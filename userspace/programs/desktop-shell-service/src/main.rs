@@ -301,6 +301,7 @@ fn main() -> u64 {
     );
 
     loop {
+        let mut did_work = false;
         match requests::poll_lifecycle(bootstrap) {
             Ok(true) => return 0,
             Ok(false) => {}
@@ -311,6 +312,7 @@ fn main() -> u64 {
             let mut request = RawMessage::empty(0);
             match rt::channel_receive_nonblocking(public.first, &mut request) {
                 Ok(()) => {
+                    did_work = true;
                     if requests::handle_request(&mut state, &request).is_err() {
                         return 0xfe0e;
                     }
@@ -333,6 +335,10 @@ fn main() -> u64 {
                 return 0xfe12;
             }
             state.next_status_refresh = now.saturating_add(STATUS_REFRESH_TICKS);
+        }
+
+        if did_work {
+            continue;
         }
 
         if rt::yield_current().is_err() {

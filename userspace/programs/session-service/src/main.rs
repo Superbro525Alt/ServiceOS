@@ -84,25 +84,34 @@ fn main() -> u64 {
     );
 
     loop {
+        let mut did_work = false;
         match poll_lifecycle(bootstrap) {
             Ok(true) => return 0,
             Ok(false) => {}
             Err(_) => return 0xfd05,
         }
 
-        let mut request = RawMessage::empty(0);
-        match rt::channel_receive_nonblocking(public.first, &mut request) {
-            Ok(()) => {
-                if handle_request(&request, log_handle, &mut state).is_err() {
-                    return 0xfd06;
+        loop {
+            let mut request = RawMessage::empty(0);
+            match rt::channel_receive_nonblocking(public.first, &mut request) {
+                Ok(()) => {
+                    did_work = true;
+                    if handle_request(&request, log_handle, &mut state).is_err() {
+                        return 0xfd06;
+                    }
                 }
+                Err(rt::Error::QueueEmpty) => break,
+                Err(_) => return 0xfd07,
             }
-            Err(rt::Error::QueueEmpty) => {}
-            Err(_) => return 0xfd07,
         }
 
-        if poll_input(bootstrap, &mut state).is_err() {
-            return 0xfd0b;
+        match poll_input(bootstrap, &mut state) {
+            Ok(processed_input) => did_work |= processed_input,
+            Err(_) => return 0xfd0b,
+        }
+
+        if did_work {
+            continue;
         }
 
         if rt::yield_current().is_err() {
@@ -200,11 +209,15 @@ fn handle_request(
     Ok(())
 }
 
-fn poll_input(bootstrap: rt::Handle, state: &mut SessionState) -> rt::Result<()> {
+fn poll_input(bootstrap: rt::Handle, state: &mut SessionState) -> rt::Result<bool> {
+    let mut processed = false;
     loop {
         let event = match rt::input_source_receive_nonblocking(state.input_handle) {
-            Ok(event) => event,
-            Err(rt::Error::QueueEmpty) => return Ok(()),
+            Ok(event) => {
+                processed = true;
+                event
+            }
+            Err(rt::Error::QueueEmpty) => return Ok(processed),
             Err(error) => return Err(error),
         };
         process_input_event(bootstrap, state, event)?;

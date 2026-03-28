@@ -144,6 +144,7 @@ fn main() -> u64 {
     let _ = render(surface_handle, buffer_handle, &state);
 
     loop {
+        let mut did_work = false;
         match poll_lifecycle(bootstrap) {
             Ok(true) => break,
             Ok(false) => {}
@@ -151,7 +152,10 @@ fn main() -> u64 {
         }
 
         let mut changed = match poll_control(control_handle, &mut state, &mut width, &mut height, &mut focused) {
-            Ok((ControlFlow::Continue, control_changed)) => control_changed,
+            Ok((ControlFlow::Continue, control_changed)) => {
+                did_work |= control_changed;
+                control_changed
+            }
             Ok((ControlFlow::Exit, _)) => break,
             Err(_) => return 0xfa07,
         };
@@ -177,6 +181,7 @@ fn main() -> u64 {
                 Ok(Some(TerminalMessage::Output(len))) => {
                     apply_output(&mut state, &data[..len]);
                     changed = true;
+                    did_work = true;
                 }
                 Ok(Some(TerminalMessage::Closed)) => return 0,
                 Ok(None) => break,
@@ -187,6 +192,10 @@ fn main() -> u64 {
 
         if changed {
             let _ = render(surface_handle, buffer_handle, &state);
+        }
+
+        if did_work {
+            continue;
         }
 
         if rt::yield_current().is_err() {

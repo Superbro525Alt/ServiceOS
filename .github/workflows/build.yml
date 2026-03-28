@@ -1,0 +1,88 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  quality:
+    name: Quality Checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Check workspace
+        run: cargo check --workspace
+
+      - name: Test workspace
+        run: cargo test --workspace
+
+  matrix:
+    name: Resolve Build Matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.generate.outputs.matrix }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Generate platform matrix
+        id: generate
+        run: |
+          echo "matrix=$(cargo run --package xtask -- ci-matrix)" >> "$GITHUB_OUTPUT"
+
+  build-images:
+    name: Build ${{ matrix.platform }} (${{ matrix.profile }})
+    runs-on: ubuntu-latest
+    needs:
+      - quality
+      - matrix
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.matrix.outputs.matrix) }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install host build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y llvm mtools
+
+      - name: Install Rust targets
+        shell: bash
+        run: |
+          IFS=',' read -ra targets <<< "${{ matrix.rust_targets }}"
+          rustup target add "${targets[@]}"
+
+      - name: Build platform image
+        shell: bash
+        run: |
+          args=(xtask image --platform "${{ matrix.platform }}")
+          if [[ "${{ matrix.release }}" == "true" ]]; then
+            args+=(--release)
+          fi
+          cargo "${args[@]}"
+
+      - name: Upload platform artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: serviceos-${{ matrix.artifact }}
+          path: target/images/${{ matrix.profile }}/${{ matrix.platform }}
+          if-no-files-found: error

@@ -70,12 +70,12 @@ mod tests {
             .receive(&receiver_space, right_handle)
             .expect("receive should succeed");
         assert_eq!(received.tag, MessageTag(7));
-        assert_eq!(received.words, alloc::vec![1, 2, 3]);
-        assert_eq!(received.transferred_capabilities.len(), 1);
+        assert_eq!(received.words(), &[1, 2, 3]);
+        assert_eq!(received.transferred_capabilities().len(), 1);
 
         let transferred = receiver_space
             .resolve(
-                received.transferred_capabilities[0],
+                received.transferred_capabilities()[0],
                 CapabilityRights::READ.union(CapabilityRights::MAP),
             )
             .expect("receiver should get reduced rights");

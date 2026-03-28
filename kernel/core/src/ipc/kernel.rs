@@ -1,4 +1,3 @@
-use alloc::vec::Vec;
 use spin::Once;
 
 use crate::{
@@ -60,13 +59,21 @@ impl IpcKernel {
             });
         }
 
-        peer_state.queue.push_back(MessageEnvelope {
-            tag: message.tag,
-            words: message.words,
-            capabilities: message.capabilities,
-            reply_endpoint: message.reply_endpoint,
-            shared_memory_hint: message.shared_memory_hint,
-        });
+        peer_state
+            .queue
+            .push_back(MessageEnvelope {
+                tag: message.tag,
+                word_count: message.word_count,
+                words: message.words,
+                capability_count: message.capability_count,
+                capabilities: message.capabilities,
+                reply_endpoint: message.reply_endpoint,
+                shared_memory_hint: message.shared_memory_hint,
+            })
+            .map_err(|_| IpcError::QueueFull {
+                queued_messages: MAX_QUEUED_MESSAGES_PER_ENDPOINT,
+                max_messages: MAX_QUEUED_MESSAGES_PER_ENDPOINT,
+            })?;
         let _ = crate::task::notify_channel_ready(peer.id());
 
         Ok(MessageReceipt {
@@ -88,11 +95,19 @@ impl IpcKernel {
             return Err(IpcError::QueueEmpty);
         };
 
-        let transferred_capabilities = message
+        let mut transferred_capabilities = [CapabilityHandle(0); super::MAX_MESSAGE_CAPABILITIES];
+        let mut transferred_capability_count = 0usize;
+        for transfer in message
             .capabilities
             .into_iter()
-            .map(|transfer| receiver_space.accept_transfer(transfer))
-            .collect::<Result<Vec<_>, _>>()?;
+            .take(message.capability_count)
+        {
+            let handle = receiver_space.accept_transfer(
+                transfer.expect("capability slots up to capability_count are populated"),
+            )?;
+            transferred_capabilities[transferred_capability_count] = handle;
+            transferred_capability_count += 1;
+        }
         let reply_endpoint = message
             .reply_endpoint
             .map(|transfer| receiver_space.accept_transfer(transfer))
@@ -100,7 +115,9 @@ impl IpcKernel {
 
         Ok(ReceivedMessage {
             tag: message.tag,
+            word_count: message.word_count,
             words: message.words,
+            transferred_capability_count,
             transferred_capabilities,
             reply_endpoint,
             shared_memory_hint: message.shared_memory_hint,

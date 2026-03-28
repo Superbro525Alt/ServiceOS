@@ -192,6 +192,26 @@ pub fn memory_read(handle: Handle, offset: usize, buffer: &mut [u8]) -> Result<u
     .map(|value| value as usize)
 }
 
+pub fn memory_create(size_bytes: usize, writable: bool) -> Result<Handle> {
+    syscall2(
+        SyscallNumber::MemoryCreate,
+        size_bytes as u64,
+        u64::from(writable),
+    )
+    .map(|value| value as Handle)
+}
+
+pub fn memory_write(handle: Handle, offset: usize, bytes: &[u8]) -> Result<usize> {
+    syscall4(
+        SyscallNumber::MemoryWrite,
+        handle as u64,
+        offset as u64,
+        bytes.as_ptr() as u64,
+        bytes.len() as u64,
+    )
+    .map(|value| value as usize)
+}
+
 pub fn packet_interface_info(handle: Handle) -> Result<PacketInterfaceInfo> {
     let mut info = PacketInterfaceInfo {
         backend: PacketInterfaceBackend::Unknown as u32,
@@ -2145,6 +2165,39 @@ pub fn surface_set_label(
 pub fn surface_close(surface_handle: Handle) -> Result<()> {
     let request = RawMessage::empty(SurfaceTag::CloseRequest as u32);
     channel_send(surface_handle, &request).map(|_| ())
+}
+
+pub fn surface_attach_buffer(
+    surface_handle: Handle,
+    buffer_handle: Handle,
+    width: u32,
+    height: u32,
+    stride_pixels: u32,
+) -> Result<()> {
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(SurfaceTag::AttachBufferRequest as u32);
+    request.word_count = 3;
+    request.words[0] = width as u64;
+    request.words[1] = height as u64;
+    request.words[2] = stride_pixels as u64;
+    request.handle_count = 2;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    request.handles[1] = buffer_handle;
+    request.handle_rights[1] = rights::READ;
+    channel_send(surface_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != SurfaceTag::AttachBufferReply as u32 || response.word_count < 1 {
+        return Err(Error::InvalidArgument);
+    }
+    match graphics_status_from_word(response.words[0]) {
+        GraphicsStatus::Ok => Ok(()),
+        status => Err(graphics_status_error(status)),
+    }
 }
 
 pub fn app_control_focus(control_handle: Handle, focused: bool) -> Result<()> {

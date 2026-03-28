@@ -1,5 +1,3 @@
-use alloc::vec::Vec;
-
 use crate::{
     capability::{CapabilityError, CapabilityHandle, PreparedTransfer},
     object::ObjectId,
@@ -31,8 +29,10 @@ pub struct SharedMemoryHint {
 #[derive(Clone)]
 pub struct OutgoingMessage {
     pub(super) tag: MessageTag,
-    pub(super) words: Vec<u64>,
-    pub(super) capabilities: Vec<PreparedTransfer>,
+    pub(super) word_count: usize,
+    pub(super) words: [u64; MAX_MESSAGE_WORDS],
+    pub(super) capability_count: usize,
+    pub(super) capabilities: [Option<PreparedTransfer>; MAX_MESSAGE_CAPABILITIES],
     pub(super) reply_endpoint: Option<PreparedTransfer>,
     pub(super) shared_memory_hint: Option<SharedMemoryHint>,
 }
@@ -46,24 +46,29 @@ impl OutgoingMessage {
             });
         }
 
-        Ok(Self {
+        let mut message = Self {
             tag,
-            words: Vec::from(words),
-            capabilities: Vec::new(),
+            word_count: words.len(),
+            words: [0; MAX_MESSAGE_WORDS],
+            capability_count: 0,
+            capabilities: core::array::from_fn(|_| None),
             reply_endpoint: None,
             shared_memory_hint: None,
-        })
+        };
+        message.words[..words.len()].copy_from_slice(words);
+        Ok(message)
     }
 
     pub fn add_transfer(mut self, transfer: PreparedTransfer) -> Result<Self, IpcError> {
-        if self.capabilities.len() == MAX_MESSAGE_CAPABILITIES {
+        if self.capability_count == MAX_MESSAGE_CAPABILITIES {
             return Err(IpcError::TooManyTransfers {
-                transfer_count: self.capabilities.len() + 1,
+                transfer_count: self.capability_count + 1,
                 max_transfers: MAX_MESSAGE_CAPABILITIES,
             });
         }
 
-        self.capabilities.push(transfer);
+        self.capabilities[self.capability_count] = Some(transfer);
+        self.capability_count += 1;
         Ok(self)
     }
 
@@ -79,8 +84,8 @@ impl OutgoingMessage {
 
     pub fn descriptor(&self) -> MessageBufferDescriptor {
         MessageBufferDescriptor {
-            word_count: self.words.len(),
-            transfers_capability: !self.capabilities.is_empty() || self.reply_endpoint.is_some(),
+            word_count: self.word_count,
+            transfers_capability: self.capability_count != 0 || self.reply_endpoint.is_some(),
         }
     }
 }
@@ -88,8 +93,10 @@ impl OutgoingMessage {
 #[derive(Clone)]
 pub(super) struct MessageEnvelope {
     pub(super) tag: MessageTag,
-    pub(super) words: Vec<u64>,
-    pub(super) capabilities: Vec<PreparedTransfer>,
+    pub(super) word_count: usize,
+    pub(super) words: [u64; MAX_MESSAGE_WORDS],
+    pub(super) capability_count: usize,
+    pub(super) capabilities: [Option<PreparedTransfer>; MAX_MESSAGE_CAPABILITIES],
     pub(super) reply_endpoint: Option<PreparedTransfer>,
     pub(super) shared_memory_hint: Option<SharedMemoryHint>,
 }
@@ -97,10 +104,22 @@ pub(super) struct MessageEnvelope {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReceivedMessage {
     pub tag: MessageTag,
-    pub words: Vec<u64>,
-    pub transferred_capabilities: Vec<CapabilityHandle>,
+    pub word_count: usize,
+    pub words: [u64; MAX_MESSAGE_WORDS],
+    pub transferred_capability_count: usize,
+    pub transferred_capabilities: [CapabilityHandle; MAX_MESSAGE_CAPABILITIES],
     pub reply_endpoint: Option<CapabilityHandle>,
     pub shared_memory_hint: Option<SharedMemoryHint>,
+}
+
+impl ReceivedMessage {
+    pub fn words(&self) -> &[u64] {
+        &self.words[..self.word_count]
+    }
+
+    pub fn transferred_capabilities(&self) -> &[CapabilityHandle] {
+        &self.transferred_capabilities[..self.transferred_capability_count]
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

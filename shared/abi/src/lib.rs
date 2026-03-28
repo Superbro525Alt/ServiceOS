@@ -45,6 +45,8 @@ pub enum SyscallNumber {
     DisplayOutputPresent = 19,
     InputSourceInfo = 20,
     InputSourceReceive = 21,
+    MemoryCreate = 22,
+    MemoryWrite = 23,
 }
 
 #[repr(u32)]
@@ -667,6 +669,8 @@ pub enum SurfaceTag {
     SetRectReply = 0x92a,
     SetLabelRequest = 0x92b,
     SetLabelReply = 0x92c,
+    AttachBufferRequest = 0x92d,
+    AttachBufferReply = 0x92e,
 }
 
 #[repr(u32)]

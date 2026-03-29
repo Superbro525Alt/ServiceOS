@@ -61,7 +61,7 @@ fn run_qemu(disk_image: &Path) -> Result<(), Box<dyn Error>> {
 
     let mut command = Command::new(&qemu_binary);
     command.args(["-machine", "q35,pcspk-audiodev=speaker"]);
-    command.args(["-m", "512"]);
+    command.args(["-m", "1048"]);
     command.args(["-smp", "2"]);
     command.args(["-cpu", "max"]);
     match accel {

@@ -18,7 +18,7 @@ members = [
 edition = "2024"
 license = "MIT OR Apache-2.0"
 authors = ["Paul H"]
-repository = "https://example.invalid/serviceos"
+repository = "https://github.com/Superbro525Alt/ServiceOS"
 rust-version = "1.85"
 
 [profile.dev]

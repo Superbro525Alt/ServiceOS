@@ -22,18 +22,22 @@ mod imp {
         ((current_el >> 2) & 0b11) as u8
     }
 
-    pub fn core_id() -> u64 {
+    pub fn core_id() -> u32 {
         let mpidr: u64;
         unsafe {
-            asm!("mrs {value}, MPIDR_EL1", value = out(reg) mpidr, options(nomem, nostack, preserves_flags));
+            asm!(
+                "mrs {value}, MPIDR_EL1",
+                value = out(reg) mpidr,
+                options(nomem, nostack, preserves_flags)
+            );
         }
-        mpidr & 0xff
-    }
 
-    pub fn data_synchronization_barrier() {
-        unsafe {
-            asm!("dsb sy", options(nomem, nostack, preserves_flags));
-        }
+        let aff0 = (mpidr & 0xff) as u32;
+        let aff1 = ((mpidr >> 8) & 0xff) as u32;
+        let aff2 = ((mpidr >> 16) & 0xff) as u32;
+        let aff3 = ((mpidr >> 32) & 0xff) as u32;
+
+        aff0 | (aff1 << 8) | (aff2 << 16) | (aff3 << 24)
     }
 
     pub fn instruction_synchronization_barrier() {

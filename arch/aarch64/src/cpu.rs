@@ -40,6 +40,12 @@ mod imp {
         aff0 | (aff1 << 8) | (aff2 << 16) | (aff3 << 24)
     }
 
+    pub fn data_synchronization_barrier() {
+        unsafe {
+            asm!("dsb sy", options(nomem, nostack, preserves_flags));
+        }
+    }
+
     pub fn instruction_synchronization_barrier() {
         unsafe {
             asm!("isb", options(nomem, nostack, preserves_flags));

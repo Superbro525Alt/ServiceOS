@@ -184,13 +184,8 @@ This is intentionally QEMU-friendly but not QEMU-locked. Later work can add
 real display, GPU, and input backends without redefining the public service
 contracts.
 
-## Deferred
+## Roadmap note
 
-Still intentionally deferred:
-
-- multiple outputs
-- multiple graphical sessions
-- damage tracking and multi-buffer client presentation
-- richer client-render protocol details beyond the current mapped-buffer present
-  path
-- GPU acceleration and richer display mode management
+Open graphics and presentation follow-on work is tracked centrally in
+[docs/roadmap.md](roadmap.md). This page intentionally stays focused on the
+current graphics/session architecture and implemented behavior.

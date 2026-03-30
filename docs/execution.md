@@ -74,13 +74,8 @@ The runtime model is also less bootstrap-bound than before:
 That keeps loading policy in the manager/runtime layer rather than scattering
 it into shell or app launch code.
 
-## Still deferred
+## Roadmap note
 
-- actual CPU register context switching between unrelated kernel threads
-- preemptive time-slice enforcement
-- SMP scheduling
-- richer user-fault upcalls and user-directed recovery policy beyond the
-  current fault-state propagation, manager supervision, and desktop fault
-  surfacing
-- richer executable formats, dependency loading, and policy beyond the current
-  stored flat-image loader path
+Open scheduler, fault-handling, and executable-loading follow-on work is
+tracked centrally in [docs/roadmap.md](roadmap.md). This page intentionally
+stays focused on the current execution model and implemented behavior.

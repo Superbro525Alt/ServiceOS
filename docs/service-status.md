@@ -50,8 +50,8 @@ Reply:
 - can suppress heartbeat logs entirely when `status.heartbeat_log_period=0`
 - mirrors every Nth heartbeat to `console-service`
 
-## Deferred
+## Roadmap note
 
-- richer health reporting
-- subscription-based monitoring
-- integration with future shell/session status views
+Open status and health follow-on work is tracked centrally in
+[docs/roadmap.md](roadmap.md). This page intentionally stays focused on the
+current status-service boundary and implemented behavior.

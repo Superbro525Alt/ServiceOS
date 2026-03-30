@@ -92,16 +92,8 @@ Raspberry Pi firmware
       -> shell-service opens the serial console session
 ```
 
-What is still deferred on that path:
+## Roadmap note
 
-- Raspberry Pi framebuffer backend
-- Raspberry Pi input backend beyond the debug UART console path
-- Raspberry Pi networking backend
-- writable storage or boot-store update path on Raspberry Pi
-
-## What is intentionally deferred
-
-- switching to fully kernel-owned page tables
-- direct-map installation for all physical memory
-- fast `SYSCALL/SYSRET`
-- general executable loading beyond the boot-store bootstrap path
+Open boot-path and platform follow-on work is tracked centrally in
+[docs/roadmap.md](roadmap.md). This page intentionally stays focused on the
+current boot flow and implemented handoff model.

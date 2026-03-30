@@ -74,10 +74,8 @@ The generic time layer supports:
 
 That foundation now directly drives the long-running `status-service`.
 
-## Deferred work
+## Roadmap note
 
-- LAPIC or HPET timer sources
-- SMP interrupt routing
-- fast `SYSCALL/SYSRET`
-- richer user fault recovery or upcall policy
-- full preemption or CPU-local run queues
+Open scheduler and interrupt follow-on work is tracked centrally in
+[docs/roadmap.md](roadmap.md). This page intentionally stays focused on the
+current control-flow model and implemented behavior.

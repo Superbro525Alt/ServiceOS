@@ -94,8 +94,8 @@ The kernel tests and runtime bootstrap exercise exactly this rule by
 transferring object handles over channels, closing them, and verifying that the
 registry contracts back to the remaining live roots.
 
-## Still deferred
+## Roadmap note
 
-- userspace-visible memory-object mapping
-- shared-memory IPC policy
-- richer object inspection and wait primitives
+Open object-model and IPC follow-on work is tracked centrally in
+[docs/roadmap.md](roadmap.md). This page intentionally stays focused on the
+current object contracts and implemented behavior.

@@ -184,15 +184,8 @@ That proves:
 - cross-target artifact generation
 - honest unsupported-target reporting
 
-## Deferred
+## Roadmap note
 
-This phase intentionally does not implement:
-
-- writable project directories and persistent build outputs
-- full Rust/C/C++ language ecosystems
-- local macOS SDK/sign/notarization support
-- full Linux ABI/runtime execution of arbitrary foreign binaries
-- Windows runtime support
-- IDE/editor integration
-- remote build farms or signing services
-- stronger sandbox/container isolation for build workers
+Open developer-tooling follow-on work is tracked centrally in
+[docs/roadmap.md](roadmap.md). This page intentionally stays focused on the
+current toolchain and build-workflow foundation.

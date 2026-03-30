@@ -82,9 +82,8 @@ Reply:
 - service-manager lifecycle events and shell events share the same stream
 - the shell uses the query interface rather than bypassing the log service
 
-## Deferred
+## Roadmap note
 
-- persistent log storage
-- subscriptions or streaming readers
-- richer structured payload schemas
-- log ingestion from kernel traps beyond the current debug route
+Open follow-on logging work is tracked centrally in
+[docs/roadmap.md](roadmap.md). This page intentionally stays focused on the
+current logging design and implemented behavior.

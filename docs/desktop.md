@@ -267,15 +267,6 @@ The graphical desktop does not replace the serial/operator path.
 That coexistence is intentional. It keeps bring-up and debugging usable while
 the graphical product layer matures.
 
-## Deferred
-
-Still intentionally deferred:
-
-- a richer notification center and history model
-- broader gesture and snap policy
-- permissions-aware desktop prompts and policy UX
-- more advanced task switcher visuals
-
 ## Current limitations
 
 The current desktop layer is real, but still early:
@@ -290,13 +281,8 @@ The current desktop layer is real, but still early:
 - global shortcuts are intentionally minimal and app text input is still
   primitive
 
-## Deferred
+## Roadmap note
 
-- richer pointer gestures, multiple buttons, and broader keyboard shortcut
-  policy
-- richer task switching, snap, and animation policy
-- notifications and richer system-status UX
-- package/software-center UI
-- richer file workflows and open-with policy
-- broader graphical app model and toolkit work
-- desktop permissions UX and user-facing security prompts
+Open desktop-shell and graphical-UX follow-on work is tracked centrally in
+[docs/roadmap.md](roadmap.md). This page intentionally stays focused on the
+current desktop architecture and implemented behavior.

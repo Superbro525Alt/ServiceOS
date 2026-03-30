@@ -57,10 +57,9 @@ Implemented today:
   `storage-service`, `console-service`, `config-service`, `log-service`,
   `status-service`, `package-service`, and `shell-service`
 
-Still deferred:
-
-- Raspberry Pi display, input, networking, and storage backends
-- graphical and network-backed service graph expansion on Raspberry Pi 5
+Open platform follow-on work is tracked centrally in
+[docs/roadmap.md](roadmap.md). This page intentionally stays focused on the
+current platform split and implemented targets.
 
 ## Xtask model
 

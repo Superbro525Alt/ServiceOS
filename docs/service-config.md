@@ -48,8 +48,8 @@ The current default config keeps the operator shell quiet:
 Set `status.heartbeat_log_period=1` when you want every heartbeat recorded for
 debugging.
 
-## Deferred
+## Roadmap note
 
-- namespaced service configuration trees
-- write/update policy
-- validation and schema migration logic
+Open configuration-service follow-on work is tracked centrally in
+[docs/roadmap.md](roadmap.md). This page intentionally stays focused on the
+current config-service contract and implemented behavior.

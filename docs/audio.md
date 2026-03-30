@@ -173,18 +173,8 @@ The default QEMU run path configures the PC speaker backend against a WAV sink,
 so the current bring-up path is both observable in logs and captureable from
 the host.
 
-## Current limitations
+## Roadmap note
 
-This phase intentionally defers:
-
-- PCM playback and shared audio buffers
-- capture/input streams
-- per-app volume controls and richer session policy
-- multiple simultaneous output streams with mixing
-- notifications/media controls UX
-- codecs, containers, and richer media pipelines
-- broader hardware backends beyond the current QEMU PC speaker path
-- Raspberry Pi-native audio backend work
-
-Those are next-layer concerns on top of the current service and endpoint
-boundaries, not reasons to redesign them now.
+Open audio and media follow-on work is tracked centrally in
+[docs/roadmap.md](roadmap.md). This page intentionally stays focused on the
+current audio-service architecture and implemented behavior.

@@ -65,16 +65,8 @@ That is the correct architectural direction for the project.
 - `package-service`: owns package metadata, install/update/remove, and rollback
   policy in userspace
 
-## Deferred responsibilities
+## Roadmap note
 
-The kernel is intentionally not doing the following yet:
-
-- package-feed trust and repository distribution policy
-- general-purpose filesystems
-- networking stacks
-- audio pipelines
-- graphics/compositor policy
-- desktop shell behavior
-- foreign ABI support and stronger compatibility isolation
-
-Those remain later userspace responsibilities.
+Open userspace follow-on work remains tracked centrally in
+[docs/roadmap.md](roadmap.md). This page intentionally documents kernel
+responsibilities and the boundaries the kernel does not cross.

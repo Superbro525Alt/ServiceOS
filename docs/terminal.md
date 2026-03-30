@@ -173,11 +173,8 @@ The terminal is now materially more practical for daily use:
 - broader ANSI/CSI handling for cursor motion, positioning, and clear actions
 - resize-aware redraw behavior across window geometry changes
 
-## Deferred
+## Roadmap note
 
-- split panes
-- broader ANSI/VT coverage, including more styling and alternate-screen behavior
-- clipboard integration beyond the current terminal-local copy/paste buffer
-- richer resize semantics for future process-group and PTY growth
-- terminal themes and profiles
-- remote terminal and SSH-oriented workflows
+Open terminal follow-on work is tracked centrally in
+[docs/roadmap.md](roadmap.md). This page intentionally stays focused on the
+current terminal architecture and implemented behavior.

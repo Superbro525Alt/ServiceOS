@@ -146,13 +146,8 @@ This keeps capability distribution honest:
 - transient tool-launch handles can be returned to the shell without granting
   broader manager authority
 
-## Future evolution
+## Roadmap note
 
-The format is intentionally small, but it is ready to grow with:
-
-- richer boot-store indexes and signatures
-- trust metadata and signature policy
-- richer health-check definitions
-- on-demand activation policy
-- directory capabilities and writable storage objects
-- repository-backed install roots and rollback journals
+Open manifest and activation follow-on work is tracked centrally in
+[docs/roadmap.md](roadmap.md). This page intentionally stays focused on the
+current manifest format and implemented behavior.

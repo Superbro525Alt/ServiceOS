@@ -1,5 +1,9 @@
 # Roadmap
 
+This file is the single source of truth for deferred and future work.
+Other docs in `docs/` should describe the current implemented state and point
+back here instead of carrying their own deferred-work lists.
+
 ## Kernel foundation completed
 
 - firmware handoff, memory discovery, paging, and kernel heap bootstrap
@@ -93,44 +97,128 @@
 - shared shell/terminal operator integration for toolchain inspection, build
   submission, job inspection, and artifact export
 
-## Next
+## Open work
 
-- add Raspberry Pi 5 framebuffer, input, networking, and writable-boot-store
-  backends behind the current `platform/aarch64/raspi5` contracts
-- grow the current storage layer beyond the mutable in-memory namespace overlay
-  into persistent writable backing, broader directory policy, and fuller
-  application-facing filesystem APIs
+### Platform and hardware follow-on
+
+- add Raspberry Pi 5 framebuffer, graphical input, networking, writable
+  boot-store, and audio backends behind the current
+  `platform/aarch64/raspi5` contracts
+- expand Raspberry Pi 5 beyond the current serial-first bootstrap into the
+  normal graphical and network-backed service graph
+- split the remaining x86 PC interrupt-controller details out of
+  `arch/x86_64` if a second x86 platform target is added
+
+### Kernel scheduling, memory, and fault handling
+
+- complete real CPU register context switching between unrelated kernel threads
+  instead of the current bootstrap-oriented path
+- add preemptive time-slice enforcement, CPU-local run queues, and SMP
+  scheduling and interrupt routing
+- add alternate x86 timer and interrupt sources such as LAPIC and HPET where
+  they improve wake behavior and scheduling fidelity
+- switch from the current boot-derived paging path to fully kernel-owned page
+  tables and a fuller physical direct map
+- add fast `SYSCALL/SYSRET` on x86_64 alongside the current interrupt-gate
+  syscall path
 - extend the current fault-state propagation, manager supervision, and desktop
   fault surfacing into richer user-fault upcalls and recovery policy
-- grow the current networking surface beyond DHCP/DNS/ICMP/outbound TCP into
-  UDP, inbound/listening transports, richer routing, and IPv6
-- grow the current audio surface beyond tone playback into PCM output, capture
-  streams, mixing, per-app policy, and broader hardware backends
+- expose richer VM and memory-mapping syscalls needed for stronger runtimes,
+  DMA-safe engines, and future process models
+- generalize memory-object mapping and shared-memory IPC beyond the current
+  graphics-oriented use, and add richer object inspection and wait primitives
+
+### Storage, filesystem, packages, and configuration
+
+- replace the current in-memory writable overlay with persistent writable
+  backing
+- add block-device service contracts, mount management, namespace composition,
+  and broader application-facing file and directory protocols
+- add broader user-home and storage policy, plus writable project/workspace
+  directories and persistent build outputs
+- add network-backed repositories, signed feeds, trust metadata, writable
+  install roots, install journals, and rollback policy for packages
+- add dynamic service installation, on-demand activation policy, and richer
+  health-check definitions in manifests and package flows
+- add GUI package management and software-center style package UX
+- add whole-system image update workflows on top of the package/update
+  foundation
+- add namespaced service configuration trees, write and update policy, and
+  schema validation and migration
+
+### Execution, loading, compatibility, and runtimes
+
+- grow the current stored flat-image loader into ELF and other richer
+  executable formats, dependency loading, and broader runtime policy
+- add a general process loader for user-supplied images instead of only
+  manager-owned stored images
 - grow the current compatibility/runtime foundation beyond hosted `posix`
-  environments into Linux-oriented ABI expansion, richer runtime packaging, and
-  desktop launch UX for runtime-hosted apps
+  environments into Linux-oriented ABI expansion, arbitrary ELF execution,
+  richer runtime packaging, and desktop launch UX for runtime-hosted apps
+- add explicit capability grants for network, graphics, input, and audio to
+  compatibility workloads
+- add Windows runtime support and broader cross-platform application execution
+- add stronger sandboxing and container-style isolation for compatibility
+  workloads
+
+### Networking
+
+- grow the current networking surface beyond DHCP/DNS/ICMP/outbound TCP into
+  UDP, inbound/listening transports, richer routing, multi-interface policy,
+  and IPv6
+- add long-lived resolver caching, richer DNS record support, firewalling, and
+  broader network policy
+- move beyond copied-frame transport into packet-buffer sharing and zero-copy
+  networking
+- add richer NIC interrupt models such as MSI/MSI-X, additional virtual
+  backends, and real NIC driver hosts beyond current QEMU/VirtIO
+
+### Graphics, input, desktop, terminal, and shell
+
+- grow the current mapped-buffer graphics path into damage-tracked multi-buffer
+  presentation, multiple outputs and sessions, and a broader client-render
+  protocol
+- add richer display mode management and eventual GPU-accelerated composition
+  without collapsing graphics policy into the desktop shell
+- add support for multiple physical input hosts and broader pointer/button
+  routing beyond the current single-host desktop path
+- grow the desktop shell beyond current shortcuts, notifications, and task
+  switching into notification history, gesture/snap/tiling/animation policy,
+  file-opening/open-with flows, permissions UX, and richer system-status
+  surfaces
+- add broader graphical application and toolkit/runtime layers on top of the
+  current app and window foundations
+- add multiple shell and operator sessions, login/session ownership policy,
+  package-installed command discovery, job control/pipelines, richer process
+  environments, and richer operator history/status views
+- grow the graphical terminal beyond current tabs, selection/copy-paste, and
+  ANSI subset into split panes, fuller ANSI/VT coverage, richer clipboard
+  integration, themes/profiles, better PTY resize semantics, and remote
+  terminal/SSH workflows
+- add graphical console surfaces and operator-session handoff/routing on top of
+  the current serial console model
+
+### Audio and media
+
+- grow the current audio surface beyond tone playback into PCM/shared-buffer
+  output, capture streams, mixing, per-app volume/session policy, and
+  notification/media controls
+- add codecs, containers, richer media pipelines, DMA-safe memory-object
+  policy, and broader hardware backends beyond the current QEMU PC speaker path
+
+### Developer workflows and observability
+
 - grow the current developer tooling foundation beyond packaged sample
-  workspaces into writable project directories, persistent build outputs,
-  broader SDK/toolchain distribution, and richer language ecosystems
-- add remote macOS build/sign/notarization integration on top of the current
-  remote-only target metadata model
-- add stronger isolation and sandboxing policy for build workers and developer
-  toolchains
-- add stronger isolation and sandboxing policy for compatibility workloads
-- split the remaining x86 PC interrupt-controller details out of `arch/x86_64`
-  if a second x86 platform target is added
-- grow the current mapped-buffer graphics path into damage-tracked
-  multi-buffer presentation and a broader client-render protocol
-- grow the desktop shell beyond the current shortcuts, notifications, and task
-  switching into richer gesture, permissions, and system-status UX
-- grow the graphical terminal beyond tabs, selection/copy-paste, and the
-  current ANSI/VT subset into fuller terminal emulation and richer clipboard
-  integration
-- grow the current stored flat-image loader into richer executable formats,
-  dependency loading, and broader runtime policy
-
-## Later
-
-- richer storage/filesystem services
-- broader graphical application and toolkit ecosystem
-- Windows runtime support and broader cross-platform application execution
+  workspaces into broader SDK/toolchain distribution, richer language
+  ecosystems, runtime-aware build/run workflows, and stronger build-worker
+  sandboxing
+- add remote build farms and remote macOS build/sign/notarization integration
+  on top of the current honest remote-only target model
+- add IDE/editor integration and desktop-facing developer workflow UX without
+  bypassing the shared shell/runtime path
+- add persistent log storage, streaming log subscriptions, richer structured
+  payload schemas, and better kernel trap ingestion into the log pipeline
+- add richer service health reporting, subscription-based status monitoring,
+  and shell/session status views
+- add richer root-manager supervision and health policy without moving service
+  lifecycle policy back into the kernel

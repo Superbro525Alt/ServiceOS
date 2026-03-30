@@ -375,18 +375,8 @@ Transient tools are separate from long-running services. The manager launches
 them on shell request, binds any requested session handles, and returns only a
 task handle back to the shell for observation.
 
-## Deferred
+## Roadmap note
 
-This platform layer still does not implement:
-
-- writable or user-owned storage
-- directory capabilities for general applications
-- network-backed package repositories or signed update feeds
-- dynamic service installation
-- broader Linux-oriented runtime expansion, Windows runtime support, and
-  stronger compatibility sandboxing
-- richer routing, TCP/UDP socket services, audio, and media policy
-- richer terminal features and login/session policy
-- signed repositories, writable install roots, and package-feed transport
-- input-device hosts, shared-memory presentation buffers, and richer desktop
-  shell policy beyond the current launcher/status/app surface model
+Open platform-service follow-on work is tracked centrally in
+[docs/roadmap.md](roadmap.md). This page intentionally stays focused on the
+current service boundaries and implemented contracts.

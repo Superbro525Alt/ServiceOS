@@ -150,18 +150,8 @@ Graphical apps follow the same model:
 - the root manager injects only the app's explicit startup handles
 - the app renders into its assigned surface and remains a normal isolated task
 
-## Still deferred
+## Roadmap note
 
-The current userspace layer still does not include:
-
-- ELF loading
-- richer user-fault upcalls beyond the current terminate-on-fault isolation
-- a general process loader that accepts arbitrary user-supplied images
-- writable storage or user-owned files
-- directory capabilities for general applications
-- a richer VM syscall surface
-- richer terminal semantics, login/session policy, and the broader
-  platform-service graph beyond the current foundations
-- shared graphical buffers and richer display backends
-- richer desktop product policy, notifications, and broader graphical app
-  platform work
+Open userspace follow-on work is tracked centrally in
+[docs/roadmap.md](roadmap.md). This page intentionally stays focused on the
+current userspace structure and implemented boundaries.

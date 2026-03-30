@@ -191,17 +191,8 @@ desktop comes up.
 That split is deliberate. The desktop can evolve without sacrificing bring-up
 and debugging access.
 
-## Deferred
+## Roadmap note
 
-- multiple sessions and routing policy
-- job control and pipelines
-- environment variables and richer process environments
-- login/account/session ownership
-- package-installed command discovery
-- broader runtime-hosted command sets and desktop launch UX
-- richer project editing flows, writable workspaces, and broader language
-  ecosystem commands
-- richer package UX and operator history views
-- tabs, panes, and richer terminal emulation on top of the current
-  terminal-service boundary
-- richer graphical session tooling beyond the current desktop window controls
+Open shell and operator-workflow follow-on work is tracked centrally in
+[docs/roadmap.md](roadmap.md). This page intentionally stays focused on the
+current shared shell model and implemented commands.

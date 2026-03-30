@@ -79,9 +79,8 @@ The current session contract is line-oriented and single-reader per session.
 - transient tools such as `sysinfo-tool` write through a shell-granted session
   handle
 
-## Deferred
+## Roadmap note
 
-- multiple concurrent operator sessions with routing policy
-- terminal capabilities beyond simple line input and text output
-- ownership transfer between shells or richer session managers
-- terminal emulation and graphical console surfaces
+Open operator-console follow-on work is tracked centrally in
+[docs/roadmap.md](roadmap.md). This page intentionally stays focused on the
+current console-service boundary and implemented behavior.

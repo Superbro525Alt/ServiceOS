@@ -107,13 +107,8 @@ The live shell now uses the real writable-storage path for:
 That makes simple project output, notes, state files, and config writing
 practical inside the current system.
 
-## Deferred
+## Roadmap note
 
-Still intentionally deferred:
-
-- persistent writable backing beyond the current in-memory mutable overlay
-- broader user home/storage policy
-- mount management
-- integrity/signature policy
-- package/update logic
-- broader application-facing filesystem APIs
+Open storage and writable-capability follow-on work is tracked centrally in
+[docs/roadmap.md](roadmap.md). This page intentionally stays focused on the
+current storage architecture and implemented behavior.

@@ -191,18 +191,8 @@ The current end-to-end operator workflow on `qemu-virtio` is:
 6. `net http example.com /` opens a real TCP stream through `network-service`
    and returns an HTTP response
 
-## Current limitations
+## Roadmap note
 
-The networking layer still intentionally defers:
-
-- UDP client transport
-- listening sockets and inbound service transports
-- IPv6
-- richer routing and multi-interface policy
-- long-lived resolver caching and richer DNS record support
-- firewalling and richer network policy
-- zero-copy buffer sharing
-- backend-native real NIC support beyond the current QEMU/VirtIO path
-
-Those are next-layer concerns on top of the current service and packet
-boundaries, not reasons to redesign them.
+Open networking follow-on work is tracked centrally in
+[docs/roadmap.md](roadmap.md). This page intentionally stays focused on the
+current networking architecture and implemented behavior.

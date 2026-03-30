@@ -228,14 +228,8 @@ The current end-to-end workflow is:
 That proves package-backed activation, environment creation, explicit resource
 mapping, manager-mediated launch, output relay, run inspection, and teardown.
 
-## Deferred
+## Roadmap note
 
-This phase intentionally does not implement:
-
-- Linux syscall or ABI compatibility
-- arbitrary ELF loading inside the compatibility environment
-- Windows `.exe` support
-- runtime-backed desktop app launch UX
-- network, graphics, input, or audio grants for compatibility workloads
-- stronger sandboxing or container-style isolation
-- richer runtime package feeds, SDKs, or toolchain distribution
+Open compatibility/runtime follow-on work is tracked centrally in
+[docs/roadmap.md](roadmap.md). This page intentionally stays focused on the
+current runtime-service foundation and implemented behavior.

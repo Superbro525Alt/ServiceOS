@@ -141,14 +141,8 @@ The developer workflow uses the same lifecycle:
 4. build workers are launched later by `developer-service`, not by
    `package-service`
 
-## Deferred
+## Roadmap note
 
-This phase intentionally does not implement:
-
-- network-backed repositories
-- signed package feeds
-- writable install roots or persistent install journals
-- GUI package management
-- whole-system image updates
-- richer runtime package metadata and distribution
-- broader SDK/toolchain distribution and writable project install roots
+Open package and update follow-on work is tracked centrally in
+[docs/roadmap.md](roadmap.md). This page intentionally stays focused on the
+current package/update architecture and implemented behavior.

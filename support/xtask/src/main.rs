@@ -15,7 +15,14 @@ use image::create_platform_image;
 use platform::PlatformSpec;
 use run::run_platform;
 
-fn main() -> Result<(), Box<dyn Error>> {
+fn main() {
+    if let Err(err) = try_main() {
+        eprintln!("{err}");
+        std::process::exit(1);
+    }
+}
+
+fn try_main() -> Result<(), Box<dyn Error>> {
     let options = Options::parse(std::env::args().skip(1).collect())?;
     if matches!(options.command, CommandKind::CiMatrix) {
         print_github_matrix();

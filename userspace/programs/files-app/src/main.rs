@@ -58,6 +58,7 @@ struct ExplorerState {
     width: u32,
     height: u32,
     focused: bool,
+    current_directory_handle: rt::Handle,
     current_path: [u8; MAX_STORAGE_PATH],
     current_path_len: usize,
     entries: [ExplorerEntry; MAX_ENTRIES],
@@ -89,6 +90,7 @@ fn main() -> u64 {
         width: startup.words[1] as u32,
         height: startup.words[2] as u32,
         focused: startup.words[3] != 0,
+        current_directory_handle: rt::INVALID_HANDLE,
         current_path: [0; MAX_STORAGE_PATH],
         current_path_len: 0,
         entries: [ExplorerEntry::empty(); MAX_ENTRIES],
@@ -122,7 +124,8 @@ fn main() -> u64 {
         }
     };
 
-    let _ = reload_directory(&mut state, storage_handle);
+    let _ = reopen_directory(&mut state, storage_handle);
+    let _ = reload_directory(&mut state);
     let _ = render(surface_handle, &mut mapped_buffer, &state);
 
     loop {
@@ -150,6 +153,9 @@ fn main() -> u64 {
         }
     }
 
+    if state.current_directory_handle != rt::INVALID_HANDLE {
+        let _ = rt::handle_close(state.current_directory_handle);
+    }
     let _ = rt::handle_close(buffer_handle);
     0
 }
@@ -316,7 +322,8 @@ fn handle_key_down(
             }
             if state.current_path_len != 0 {
                 navigate_parent(state);
-                reload_directory(state, storage_handle)?;
+                reopen_directory(state, storage_handle)?;
+                reload_directory(state)?;
                 return Ok(true);
             }
         }
@@ -556,7 +563,18 @@ fn visible_row_count(state: &ExplorerState) -> usize {
         .unwrap_or(0)
 }
 
-fn reload_directory(state: &mut ExplorerState, storage_handle: rt::Handle) -> rt::Result<()> {
+fn reopen_directory(state: &mut ExplorerState, storage_handle: rt::Handle) -> rt::Result<()> {
+    if state.current_directory_handle != rt::INVALID_HANDLE {
+        let _ = rt::handle_close(state.current_directory_handle);
+        state.current_directory_handle = rt::INVALID_HANDLE;
+    }
+
+    let prefix = str::from_utf8(&state.current_path[..state.current_path_len]).unwrap_or("");
+    state.current_directory_handle = rt::storage_open_directory(storage_handle, prefix, false)?;
+    Ok(())
+}
+
+fn reload_directory(state: &mut ExplorerState) -> rt::Result<()> {
     state.entry_count = 0;
     state.scroll_offset = 0;
     state.selected_index = 0;
@@ -568,15 +586,10 @@ fn reload_directory(state: &mut ExplorerState, storage_handle: rt::Handle) -> rt
         state.entries[0].path_len = parent_len;
         state.entry_count = 1;
     }
-
-    let mut prefix_bytes = [0u8; MAX_STORAGE_PATH];
-    prefix_bytes[..state.current_path_len]
-        .copy_from_slice(&state.current_path[..state.current_path_len]);
-    let prefix = str::from_utf8(&prefix_bytes[..state.current_path_len]).unwrap_or("");
     let mut index = 0usize;
     let mut path_buffer = [0u8; MAX_STORAGE_PATH];
     loop {
-        match rt::storage_list_directory(storage_handle, prefix, index, &mut path_buffer) {
+        match rt::storage_directory_read(state.current_directory_handle, index, &mut path_buffer) {
             Ok(Some((next_index, kind, path_len))) => {
                 insert_unique_entry(
                     state,
@@ -743,7 +756,8 @@ fn open_selected(state: &mut ExplorerState, storage_handle: rt::Handle) -> rt::R
             state.current_path_len = selected.path_len;
             state.current_path[..selected.path_len]
                 .copy_from_slice(&selected.path[..selected.path_len]);
-            reload_directory(state, storage_handle)
+            reopen_directory(state, storage_handle)?;
+            reload_directory(state)
         }
         EntryKind::File => Ok(()),
     }

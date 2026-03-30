@@ -43,6 +43,9 @@ Its public contract is:
 - `DirectoryOpenRequest`
   - input: exact directory path plus writable intent
   - output: scoped directory capability
+- `DirectoryReadRequest`
+  - input: directory capability plus enumeration cursor
+  - output: next child entry kind and path under that scoped directory
 - `DirectoryCreateRequest`
   - input: directory capability plus child name and kind
   - output: status only
@@ -56,8 +59,9 @@ Its public contract is:
   - input: writable blob capability, offset, total length, byte payload
   - output: written length and updated file length
 
-Exact-path opens are still service-mediated. Mutation now goes through explicit
-directory or writable-file capabilities instead of an ambient writable root.
+Exact-path opens are still service-mediated. Enumeration and mutation now go
+through explicit directory or writable-file capabilities instead of an ambient
+writable root.
 
 ## Capability model
 
@@ -106,6 +110,11 @@ The live shell now uses the real writable-storage path for:
 
 That makes simple project output, notes, state files, and config writing
 practical inside the current system.
+
+`files-app` now also enumerates directories through an opened directory
+capability rather than through root-handle path walking. That keeps browsing,
+create, open-for-write, and removal flows aligned around the same scoped
+authority model.
 
 ## Roadmap note
 

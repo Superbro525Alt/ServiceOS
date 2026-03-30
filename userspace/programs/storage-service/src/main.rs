@@ -609,6 +609,9 @@ fn handle_directory_request(
     }
 
     match message.tag {
+        x if x == StorageTag::DirectoryReadRequest as u32 => {
+            handle_directory_read_request(entries, mutable_entries, session, message)
+        }
         x if x == StorageTag::DirectoryCreateRequest as u32 => {
             handle_directory_create_request(mutable_entries, session, message)
         }
@@ -620,6 +623,88 @@ fn handle_directory_request(
         }
         _ => Ok(()),
     }
+}
+
+fn handle_directory_read_request(
+    entries: &[EntrySlot],
+    mutable_entries: &[MutableEntry; MAX_MUTABLE_ENTRIES],
+    session: &DirectorySession,
+    message: &RawMessage,
+) -> rt::Result<()> {
+    if message.word_count < 1 || message.handle_count < 1 {
+        return Ok(());
+    }
+
+    let cursor = message.words[0] as usize;
+    let prefix = &session.path[..session.path_len];
+    let reply_handle = message.handles[0];
+
+    let mut reply = RawMessage::empty(StorageTag::DirectoryReadReply as u32);
+    reply.word_count = 4;
+    reply.words[0] = StorageStatus::End as u32 as u64;
+    reply.words[1] = cursor as u64;
+    reply.words[2] = StorageEntryKind::File as u32 as u64;
+    reply.words[3] = 0;
+
+    let mut seen = 0usize;
+    if prefix.is_empty() {
+        for root in MUTABLE_ROOTS {
+            if mutable_root_has_materialized_children(entries, mutable_entries, root) {
+                continue;
+            }
+            if seen == cursor {
+                reply.words[0] = StorageStatus::Ok as u32 as u64;
+                reply.words[1] = (seen + 1) as u64;
+                reply.words[2] = StorageEntryKind::Directory as u32 as u64;
+                reply.words[3] = root.len() as u64;
+                reply.word_count += pack_bytes(root, &mut reply.words[4..])?;
+                let _ = rt::channel_send(reply_handle, &reply);
+                let _ = rt::handle_close(reply_handle);
+                return Ok(());
+            }
+            seen += 1;
+        }
+    }
+
+    for entry in entries {
+        if let Some((child_path, child_kind)) =
+            directory_child_from_path(&entry.path[..entry.path_len], prefix)
+        {
+            if seen == cursor {
+                reply.words[0] = StorageStatus::Ok as u32 as u64;
+                reply.words[1] = (seen + 1) as u64;
+                reply.words[2] = child_kind as u32 as u64;
+                reply.words[3] = child_path.len() as u64;
+                reply.word_count += pack_bytes(child_path, &mut reply.words[4..])?;
+                let _ = rt::channel_send(reply_handle, &reply);
+                let _ = rt::handle_close(reply_handle);
+                return Ok(());
+            }
+            seen += 1;
+        }
+    }
+
+    for entry in mutable_entries.iter().filter(|entry| entry.occupied) {
+        if let Some((child_path, child_kind)) =
+            directory_child_from_path(&entry.path[..entry.path_len], prefix)
+        {
+            if seen == cursor {
+                reply.words[0] = StorageStatus::Ok as u32 as u64;
+                reply.words[1] = (seen + 1) as u64;
+                reply.words[2] = child_kind as u32 as u64;
+                reply.words[3] = child_path.len() as u64;
+                reply.word_count += pack_bytes(child_path, &mut reply.words[4..])?;
+                let _ = rt::channel_send(reply_handle, &reply);
+                let _ = rt::handle_close(reply_handle);
+                return Ok(());
+            }
+            seen += 1;
+        }
+    }
+
+    let _ = rt::channel_send(reply_handle, &reply);
+    let _ = rt::handle_close(reply_handle);
+    Ok(())
 }
 
 fn handle_directory_create_request(

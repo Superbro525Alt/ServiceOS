@@ -370,6 +370,8 @@ pub enum StorageTag {
     DirectoryOpenFileReply = 0x510,
     WriteRequest = 0x511,
     WriteReply = 0x512,
+    DirectoryReadRequest = 0x513,
+    DirectoryReadReply = 0x514,
 }
 
 #[repr(u32)]

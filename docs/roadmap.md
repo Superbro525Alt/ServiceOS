@@ -53,7 +53,7 @@
 | Status | Area | Work Item |
 |---|---|---|
 | &#x2B1C; | Storage / filesystem | Replace the current in-memory writable overlay with persistent writable backing |
-| &#x2B1C; | Storage / filesystem | Add writable storage and directory capabilities as first-class scoped authorities instead of broad ambient write access |
+| &#x2705; | Storage / filesystem | Add writable storage and directory capabilities as first-class scoped authorities instead of broad ambient write access |
 | &#x2B1C; | Storage / filesystem | Add block-device service contracts, mount management, namespace composition, and broader application-facing file and directory protocols |
 | &#x2B1C; | Storage / policy | Add broader user-home and storage policy, plus writable project/workspace directories and persistent build outputs |
 | &#x2B1C; | Configuration | Add namespaced service configuration trees, write and update policy, and schema validation and migration |

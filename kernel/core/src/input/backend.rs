@@ -38,6 +38,10 @@ impl InputSourceObject {
         }
     }
 
+    pub fn try_receive(&self) -> Result<InputEventInfo, InputSourceError> {
+        self.backend.receive()
+    }
+
     pub fn backend(&self) -> Arc<dyn InputBackend> {
         Arc::clone(&self.backend)
     }

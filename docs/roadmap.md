@@ -112,7 +112,7 @@
 | &#x2B1C; | Graphics | Grow the current mapped-buffer graphics path into damage-tracked multi-buffer presentation, multiple outputs and sessions, and a broader client-render protocol |
 | &#x2B1C; | Graphics | Grow the current shared-buffer graphics path into mapped or zero-copy presentation buffers and a broader client-render protocol for richer clients |
 | &#x2B1C; | Graphics | Add richer display mode management and eventual GPU-accelerated composition without collapsing graphics policy into the desktop shell |
-| &#x2B1C; | Input | Move input delivery from PIT polling to device-driven wakeups, mirroring the packet-interface path |
+| &#x2705; | Input | Move active input delivery from polling to device-driven wakeups through the platform IRQ path, while keeping a blocking receive-side fallback for missed edges |
 | &#x2B1C; | Input | Add support for multiple physical input hosts and broader pointer/button routing beyond the current single-host desktop path |
 | &#x2B1C; | Session / composition | Add richer session switching, seat ownership, session handoff, and isolation policy across multiple graphical and operator sessions |
 

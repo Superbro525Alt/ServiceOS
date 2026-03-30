@@ -823,7 +823,13 @@ pub(super) fn handle_input_source_receive(context: &SyscallContext) -> SyscallRe
         return SyscallReturn::error(SyscallError::InvalidArgument);
     };
 
-    match source.receive() {
+    let receive_result = if context.arguments[2] as u32 & INPUT_SOURCE_FLAG_NONBLOCK != 0 {
+        source.try_receive()
+    } else {
+        source.receive()
+    };
+
+    match receive_result {
         Ok(event) => {
             *event_out = event;
             SyscallReturn::success(0)

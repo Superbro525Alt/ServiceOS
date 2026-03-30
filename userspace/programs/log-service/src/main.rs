@@ -254,6 +254,7 @@ fn service_id_from_word(value: u64) -> ServiceId {
         x if x == ServiceId::Audio as u32 => ServiceId::Audio,
         x if x == ServiceId::Runtime as u32 => ServiceId::Runtime,
         x if x == ServiceId::Developer as u32 => ServiceId::Developer,
+        x if x == ServiceId::Clipboard as u32 => ServiceId::Clipboard,
         _ => ServiceId::RootManager,
     }
 }

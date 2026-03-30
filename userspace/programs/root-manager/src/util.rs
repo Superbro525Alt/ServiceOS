@@ -217,6 +217,7 @@ pub(crate) fn service_id_from_word(value: u64) -> ServiceId {
         x if x == ServiceId::Audio as u32 => ServiceId::Audio,
         x if x == ServiceId::Runtime as u32 => ServiceId::Runtime,
         x if x == ServiceId::Developer as u32 => ServiceId::Developer,
+        x if x == ServiceId::Clipboard as u32 => ServiceId::Clipboard,
         _ => ServiceId::RootManager,
     }
 }
@@ -248,6 +249,7 @@ pub(crate) fn image_id_from_word(value: u64) -> ServiceImageId {
         x if x == ServiceImageId::PosixHostTool as u32 => ServiceImageId::PosixHostTool,
         x if x == ServiceImageId::DeveloperService as u32 => ServiceImageId::DeveloperService,
         x if x == ServiceImageId::CrossBuilderTool as u32 => ServiceImageId::CrossBuilderTool,
+        x if x == ServiceImageId::ClipboardService as u32 => ServiceImageId::ClipboardService,
         _ => ServiceImageId::RootManager,
     }
 }
@@ -291,6 +293,7 @@ pub(crate) fn service_name(service_id: ServiceId) -> &'static str {
         ServiceId::Audio => "audio-service",
         ServiceId::Runtime => "runtime-service",
         ServiceId::Developer => "developer-service",
+        ServiceId::Clipboard => "clipboard-service",
     }
 }
 

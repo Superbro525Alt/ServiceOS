@@ -117,6 +117,13 @@ const PROGRAMS: &[Program] = &[
         service_id: 17,
     },
     Program {
+        package: "serviceos-clipboard-service",
+        bin_name: "serviceos-clipboard-service",
+        image_id: 25,
+        service_path: "services/clipboard-service/program.img",
+        service_id: 18,
+    },
+    Program {
         package: "serviceos-graphics-service",
         bin_name: "serviceos-graphics-service",
         image_id: 12,

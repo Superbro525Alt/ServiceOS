@@ -143,7 +143,7 @@
 | Status | Area | Work Item |
 |---|---|---|
 | &#x2B1C; | Shell / sessions | Add multiple shell and operator sessions, login/session ownership policy, package-installed command discovery, job control/pipelines, richer process environments, and richer operator history/status views |
-| &#x2B1C; | Terminal | Grow the graphical terminal beyond current tabs, selection/copy-paste, and ANSI subset into split panes, fuller ANSI/VT coverage, richer clipboard integration, themes/profiles, better PTY resize semantics, and remote terminal/SSH workflows |
+| &#x2B1C; | Terminal | Finish the remaining graphical-terminal expansion with split panes, explicit session profiles, and remote terminal/SSH-backed sessions on top of the current richer ANSI/VT handling, shared clipboard path, themes, and resize/reflow semantics |
 | &#x2B1C; | Terminal | Add terminal session persistence/reattach, command bookmarking, session restore, and richer command/result inspection |
 | &#x2B1C; | Console | Add graphical console surfaces and operator-session handoff/routing on top of the current serial console model |
 | &#x2B1C; | Operator UX | Add richer shell/operator diagnostics, log-following, structured status views, and app/runtime inspection tooling without bypassing service contracts |

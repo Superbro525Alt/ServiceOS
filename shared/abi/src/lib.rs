@@ -147,6 +147,7 @@ pub enum ServiceImageId {
     PosixHostTool = 22,
     DeveloperService = 23,
     CrossBuilderTool = 24,
+    ClipboardService = 25,
 }
 
 #[repr(u32)]
@@ -169,6 +170,7 @@ pub enum ServiceId {
     Audio = 15,
     Runtime = 16,
     Developer = 17,
+    Clipboard = 18,
 }
 
 #[repr(u32)]
@@ -1030,6 +1032,23 @@ pub enum TerminalStatus {
     NotFound = 2,
     Denied = 3,
     Closed = 4,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClipboardTag {
+    ReadRequest = 0xb20,
+    ReadReply = 0xb21,
+    WriteRequest = 0xb22,
+    WriteReply = 0xb23,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClipboardStatus {
+    Ok = 0,
+    NotFound = 1,
+    Denied = 2,
 }
 
 #[repr(u32)]

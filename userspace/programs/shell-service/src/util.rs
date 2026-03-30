@@ -192,6 +192,7 @@ pub(crate) fn service_name(service_id: ServiceId) -> &'static str {
         ServiceId::Audio => "audio-service",
         ServiceId::Runtime => "runtime-service",
         ServiceId::Developer => "developer-service",
+        ServiceId::Clipboard => "clipboard-service",
     }
 }
 

@@ -21,6 +21,8 @@ shell-service
 terminal-app
   -> terminal-service session
        -> shared shell command/runtime library
+  -> clipboard-service
+       -> shared terminal clipboard path
 
 desktop-shell-service
   -> launches terminal-app through root-manager
@@ -35,6 +37,7 @@ This keeps the boundaries explicit:
   - reuses the shared shell command/runtime code
 - `terminal-app`
   - is only the graphical terminal UI and keyboard/presentation layer
+  - uses `clipboard-service` for shared copy/paste data when available
 - `desktop-shell-service`
   - remains responsible for app launch, focus, and window management
 
@@ -87,8 +90,10 @@ The current model is intentionally simple:
 
 - shell execution is synchronous per session
 - terminal output is text-oriented rather than a full PTY byte stream
-- ANSI/CSI handling now covers the practical cursor and clear-screen subset
-  needed for normal shell use
+- session kind is still local-shell only
+- ANSI/CSI handling now covers a broader practical VT subset including cursor
+  save/restore, visibility, line and character insertion/deletion, clear
+  actions, and SGR color attributes
 
 That is enough for real shell use without hardwiring shell behavior into the
 graphical UI.
@@ -131,11 +136,13 @@ It currently:
 - attaches one writable shared buffer
 - draws its own titlebar and terminal content into that buffer
 - tracks a scrollback grid
+- reflows scrollback across column changes
 - renders a simple monospaced bitmap font
 - shows a focused cursor
 - handles redraw on output, resize, focus changes, and scroll movement
-- supports in-window text selection and local copy/paste
+- supports in-window text selection and shared clipboard copy/paste
 - supports mouse-wheel and keyboard scrollback navigation
+- supports selectable terminal themes without changing shell semantics
 
 The terminal window therefore uses the same graphics/session/window model as
 other desktop apps instead of bypassing the compositor.
@@ -147,7 +154,7 @@ Launch flow:
 1. `desktop-shell-service` requests `TerminalApp` launch through the root
    manager
 2. the root manager grants the app its surface handle, app-control channel, and
-   a rights-scoped handle to `terminal-service`
+   rights-scoped handles to `terminal-service` and `clipboard-service`
 3. `terminal-app` opens a terminal session from `terminal-service`
 4. `terminal-service` creates a session channel and emits a
    `terminal-session-opened` lifecycle record
@@ -169,9 +176,12 @@ The terminal is now materially more practical for daily use:
 - multiple tabs inside one terminal window
 - per-tab terminal sessions
 - scrollback with keyboard and mouse-wheel control
-- selection with copy and paste inside the current terminal app
-- broader ANSI/CSI handling for cursor motion, positioning, and clear actions
-- resize-aware redraw behavior across window geometry changes
+- selection with copy and paste through a shared clipboard path
+- broader ANSI/VT handling for cursor motion, positioning, line editing, title
+  updates, cursor visibility, and SGR colors
+- resize-aware redraw behavior with scrollback reflow across window geometry
+  changes
+- multiple built-in terminal themes that stay inside the terminal UI layer
 
 ## Roadmap note
 

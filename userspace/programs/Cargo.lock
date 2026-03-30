@@ -72,6 +72,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "serviceos-clipboard-service"
+version = "0.1.0"
+dependencies = [
+ "serviceos-abi",
+ "serviceos-userspace-runtime",
+]
+
+[[package]]
 name = "serviceos-config-service"
 version = "0.1.0"
 dependencies = [

@@ -8,7 +8,8 @@ use core::{
 pub use serviceos_abi::{
     AppControlTag, AppKeyAction, AppPointerAction, AudioEndpointBackend, AudioEndpointDirection,
     AudioEndpointInfo, AudioEndpointState, AudioStatus, AudioStreamDirection, AudioStreamState,
-    AudioTag, AudioToneRequest, BootstrapPlatform, ConfigKey, ConfigTag, ConfigValueKind,
+    AudioTag, AudioToneRequest, BootstrapPlatform, ClipboardStatus, ClipboardTag, ConfigKey,
+    ConfigTag, ConfigValueKind,
     ConsoleTag, ControlTag, DesktopAppId, DesktopDragMode, DesktopInputAction, DesktopStatus,
     DesktopTag, DesktopWindowAction, DisplayOutputBackend, DisplayOutputInfo, DisplayOutputState,
     DisplayPixelFormat, GraphicsStatus, GraphicsTag, Handle, HandlePair, IPC_FLAG_NONBLOCK,
@@ -30,6 +31,7 @@ pub use serviceos_abi::{audio_capability, input_capability, rights, runtime_capa
 mod app_control;
 mod audio;
 mod bootstrap;
+mod clipboard;
 mod config;
 mod developer;
 mod compat;
@@ -55,6 +57,7 @@ mod types;
 pub use app_control::*;
 pub use audio::*;
 pub use bootstrap::*;
+pub use clipboard::*;
 pub use config::*;
 pub use developer::*;
 pub use compat::*;
@@ -250,6 +253,7 @@ fn service_id_from_word(value: u64) -> ServiceId {
         x if x == ServiceId::Audio as u32 => ServiceId::Audio,
         x if x == ServiceId::Runtime as u32 => ServiceId::Runtime,
         x if x == ServiceId::Developer as u32 => ServiceId::Developer,
+        x if x == ServiceId::Clipboard as u32 => ServiceId::Clipboard,
         _ => ServiceId::RootManager,
     }
 }

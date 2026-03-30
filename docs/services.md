@@ -19,6 +19,7 @@ root-manager
   -> audio-service
        depends on log-service
        consumes one startup-granted audio-endpoint capability
+  -> clipboard-service
   -> graphics-service
        depends on log-service
        consumes one startup-granted display-output capability
@@ -218,11 +219,17 @@ Current lookup permissions:
 - owns audio endpoint and playback stream policy in userspace
 - consumes the explicit kernel audio-endpoint capability
 - exposes endpoint status and playback-stream control through a stable service
-  contract
 - associates playback streams with session ids without collapsing session or
   desktop policy into the backend
 - keeps the current QEMU PC-speaker backend behind a backend-neutral boundary
   so later hardware backends can fit the same service contract
+
+### `clipboard-service`
+
+- owns a small shared text clipboard buffer in userspace
+- exposes explicit read/write clipboard operations through a service contract
+- gives desktop apps a shared clipboard path without pushing clipboard policy
+  into `desktop-shell-service` or per-app local state
 
 ### `graphics-service`
 

@@ -61,18 +61,18 @@ mod tests {
     }
 
     #[test]
-    fn nonblocking_receive_does_not_poll_backend() {
+    fn nonblocking_receive_performs_one_shot_backend_poll_fallback() {
         let backend = Arc::new(FakeBackend {
             polls: AtomicUsize::new(0),
             receives: AtomicUsize::new(0),
         });
         let source = InputSourceObject::new(backend.clone());
 
-        let error = source
-            .try_receive()
-            .expect_err("nonblocking receive should surface queue empty");
-        assert_eq!(error, InputSourceError::QueueEmpty);
-        assert_eq!(backend.polls.load(Ordering::SeqCst), 0);
-        assert_eq!(backend.receives.load(Ordering::SeqCst), 1);
+        let event = source
+            .try_receive_with_fallback()
+            .expect("nonblocking receive should retry after poll");
+        assert_eq!(event.kind, 1);
+        assert_eq!(backend.polls.load(Ordering::SeqCst), 1);
+        assert_eq!(backend.receives.load(Ordering::SeqCst), 2);
     }
 }

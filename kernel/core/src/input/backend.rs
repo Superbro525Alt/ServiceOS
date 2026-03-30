@@ -42,6 +42,17 @@ impl InputSourceObject {
         self.backend.receive()
     }
 
+    pub fn try_receive_with_fallback(&self) -> Result<InputEventInfo, InputSourceError> {
+        match self.backend.receive() {
+            Ok(event) => Ok(event),
+            Err(InputSourceError::QueueEmpty) => {
+                let _ = self.backend.poll();
+                self.backend.receive()
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     pub fn backend(&self) -> Arc<dyn InputBackend> {
         Arc::clone(&self.backend)
     }

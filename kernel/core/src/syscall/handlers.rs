@@ -824,7 +824,7 @@ pub(super) fn handle_input_source_receive(context: &SyscallContext) -> SyscallRe
     };
 
     let receive_result = if context.arguments[2] as u32 & INPUT_SOURCE_FLAG_NONBLOCK != 0 {
-        source.try_receive()
+        source.try_receive_with_fallback()
     } else {
         source.receive()
     };

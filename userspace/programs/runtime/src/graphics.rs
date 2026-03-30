@@ -163,7 +163,7 @@ pub fn graphics_surface_status(
     let mut response = RawMessage::empty(0);
     channel_receive_blocking(reply.first, &mut response)?;
     let _ = handle_close(reply.first);
-    if response.tag != GraphicsTag::SurfaceStatusReply as u32 || response.word_count < 11 {
+    if response.tag != GraphicsTag::SurfaceStatusReply as u32 || response.word_count < 16 {
         return Err(Error::InvalidArgument);
     }
 
@@ -186,6 +186,14 @@ pub fn graphics_surface_status(
         z_order: response.words[8] as u32,
         fill_rgb: response.words[9] as u32,
         visible: response.words[10] != 0,
+        attached_buffer_count: response.words[11] as u32,
+        active_buffer_slot: match response.words[12] as u32 {
+            u32::MAX => None,
+            slot => Some(slot),
+        },
+        active_buffer_width: response.words[13] as u32,
+        active_buffer_height: response.words[14] as u32,
+        active_buffer_stride_pixels: response.words[15] as u32,
     }))
 }
 
@@ -398,12 +406,24 @@ pub fn surface_attach_buffer(
     height: u32,
     stride_pixels: u32,
 ) -> Result<()> {
+    surface_attach_buffer_slot(surface_handle, 0, buffer_handle, width, height, stride_pixels)
+}
+
+pub fn surface_attach_buffer_slot(
+    surface_handle: Handle,
+    slot: u32,
+    buffer_handle: Handle,
+    width: u32,
+    height: u32,
+    stride_pixels: u32,
+) -> Result<()> {
     let reply = channel_create()?;
     let mut request = RawMessage::empty(SurfaceTag::AttachBufferRequest as u32);
-    request.word_count = 3;
-    request.words[0] = width as u64;
-    request.words[1] = height as u64;
-    request.words[2] = stride_pixels as u64;
+    request.word_count = 4;
+    request.words[0] = slot as u64;
+    request.words[1] = width as u64;
+    request.words[2] = height as u64;
+    request.words[3] = stride_pixels as u64;
     request.handle_count = 2;
     request.handles[0] = reply.second;
     request.handle_rights[0] = rights::SEND;
@@ -431,11 +451,46 @@ pub fn surface_present_buffer(
     width: u32,
     height: u32,
 ) -> Result<()> {
+    surface_present_buffer_slot(surface_handle, 0, x, y, width, height)
+}
+
+pub fn surface_present_buffer_slot(
+    surface_handle: Handle,
+    slot: u32,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> Result<()> {
     let mut request = RawMessage::empty(SurfaceTag::PresentBufferRequest as u32);
-    request.word_count = 4;
-    request.words[0] = x as i64 as u64;
-    request.words[1] = y as i64 as u64;
-    request.words[2] = width as u64;
-    request.words[3] = height as u64;
+    request.word_count = 5;
+    request.words[0] = slot as u64;
+    request.words[1] = x as i64 as u64;
+    request.words[2] = y as i64 as u64;
+    request.words[3] = width as u64;
+    request.words[4] = height as u64;
     channel_send(surface_handle, &request)
+}
+
+pub fn surface_release_buffer(surface_handle: Handle, slot: u32) -> Result<()> {
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(SurfaceTag::ReleaseBufferRequest as u32);
+    request.word_count = 1;
+    request.words[0] = slot as u64;
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(surface_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != SurfaceTag::ReleaseBufferReply as u32 || response.word_count < 1 {
+        return Err(Error::InvalidArgument);
+    }
+    match graphics_status_from_word(response.words[0]) {
+        GraphicsStatus::Ok => Ok(()),
+        status => Err(graphics_status_error(status)),
+    }
 }

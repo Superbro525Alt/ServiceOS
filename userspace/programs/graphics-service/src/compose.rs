@@ -5,7 +5,7 @@ use rt::DisplayPixelFormat;
 
 use crate::types::{
     DEFAULT_BACKGROUND_RGB, DamageRect, MAX_FRAMEBUFFER_BYTES, SurfaceSlot, Surfaces,
-    is_cursor_surface,
+    active_buffer, is_cursor_surface,
 };
 
 static mut FRAMEBUFFER_BYTES: [u8; MAX_FRAMEBUFFER_BYTES] = [0; MAX_FRAMEBUFFER_BYTES];
@@ -41,6 +41,22 @@ pub(crate) fn cursor_present(
     Ok(())
 }
 
+pub(crate) fn compose_damage_and_present(
+    output_handle: rt::Handle,
+    output: rt::DisplayOutputInfo,
+    surfaces: &Surfaces,
+    damage: DamageRect,
+) -> rt::Result<()> {
+    let byte_len = output.byte_len as usize;
+    let base = base_framebuffer_slice(byte_len);
+    compose_base_damage(base, output, surfaces, damage);
+    let frame = framebuffer_slice(byte_len);
+    restore_damage_from_base(frame, base, output, damage);
+    overlay_cursor_surfaces_damage(frame, output, surfaces, damage);
+    let _ = rt::display_output_present(output_handle, &frame[..byte_len])?;
+    Ok(())
+}
+
 fn compose_base_frame(frame: &mut [u8], output: rt::DisplayOutputInfo, surfaces: &Surfaces) {
     fill_frame(frame, output, DEFAULT_BACKGROUND_RGB);
     let mut order = [0usize; crate::types::MAX_SURFACES];
@@ -57,6 +73,36 @@ fn compose_base_frame(frame: &mut [u8], output: rt::DisplayOutputInfo, surfaces:
     }
 }
 
+fn compose_base_damage(
+    frame: &mut [u8],
+    output: rt::DisplayOutputInfo,
+    surfaces: &Surfaces,
+    damage: DamageRect,
+) {
+    draw_rect_clipped(
+        frame,
+        output,
+        0,
+        0,
+        output.width,
+        output.height,
+        DEFAULT_BACKGROUND_RGB,
+        damage,
+    );
+    let mut order = [0usize; crate::types::MAX_SURFACES];
+    let mut count = 0usize;
+    for (index, surface) in surfaces.iter().enumerate() {
+        if surface.occupied && surface.visible && !is_cursor_surface(surface) {
+            order[count] = index;
+            count += 1;
+        }
+    }
+    sort_surfaces_by_z(&mut order[..count], surfaces);
+    for index in order[..count].iter().copied() {
+        draw_surface_clipped(frame, output, &surfaces[index], Some(damage));
+    }
+}
+
 fn overlay_cursor_surfaces(frame: &mut [u8], output: rt::DisplayOutputInfo, surfaces: &Surfaces) {
     let mut order = [0usize; crate::types::MAX_SURFACES];
     let mut count = 0usize;
@@ -69,6 +115,26 @@ fn overlay_cursor_surfaces(frame: &mut [u8], output: rt::DisplayOutputInfo, surf
     sort_surfaces_by_z(&mut order[..count], surfaces);
     for index in order[..count].iter().copied() {
         draw_surface(frame, output, &surfaces[index]);
+    }
+}
+
+fn overlay_cursor_surfaces_damage(
+    frame: &mut [u8],
+    output: rt::DisplayOutputInfo,
+    surfaces: &Surfaces,
+    damage: DamageRect,
+) {
+    let mut order = [0usize; crate::types::MAX_SURFACES];
+    let mut count = 0usize;
+    for (index, surface) in surfaces.iter().enumerate() {
+        if surface.occupied && surface.visible && is_cursor_surface(surface) {
+            order[count] = index;
+            count += 1;
+        }
+    }
+    sort_surfaces_by_z(&mut order[..count], surfaces);
+    for index in order[..count].iter().copied() {
+        draw_surface_clipped(frame, output, &surfaces[index], Some(damage));
     }
 }
 
@@ -116,7 +182,16 @@ fn fill_frame(frame: &mut [u8], output: rt::DisplayOutputInfo, rgb: u32) {
 }
 
 fn draw_surface(frame: &mut [u8], output: rt::DisplayOutputInfo, surface: &SurfaceSlot) {
-    draw_rect(
+    draw_surface_clipped(frame, output, surface, None);
+}
+
+fn draw_surface_clipped(
+    frame: &mut [u8],
+    output: rt::DisplayOutputInfo,
+    surface: &SurfaceSlot,
+    clip: Option<DamageRect>,
+) {
+    draw_rect_impl(
         frame,
         output,
         surface.x,
@@ -124,12 +199,13 @@ fn draw_surface(frame: &mut [u8], output: rt::DisplayOutputInfo, surface: &Surfa
         surface.width,
         surface.height,
         surface.fill_rgb,
+        clip,
     );
-    if surface.buffer.attached() {
-        draw_surface_buffer(frame, output, surface);
+    if active_buffer(surface).is_some() {
+        draw_surface_buffer(frame, output, surface, clip);
     }
     for rect in surface.rects.iter().filter(|rect| rect.occupied && rect.visible) {
-        draw_rect(
+        draw_rect_impl(
             frame,
             output,
             surface.x.saturating_add(rect.x),
@@ -137,6 +213,7 @@ fn draw_surface(frame: &mut [u8], output: rt::DisplayOutputInfo, surface: &Surfa
             rect.width,
             rect.height,
             rect.color_rgb,
+            clip,
         );
     }
     for label in surface.labels.iter().filter(|label| label.occupied) {
@@ -147,28 +224,36 @@ fn draw_surface(frame: &mut [u8], output: rt::DisplayOutputInfo, surface: &Surfa
             surface.y.saturating_add(label.y),
             label.color_rgb,
             &label.bytes[..label.len],
+            clip,
         );
     }
 }
 
-fn draw_surface_buffer(frame: &mut [u8], output: rt::DisplayOutputInfo, surface: &SurfaceSlot) {
-    let buffer = surface.buffer;
+fn draw_surface_buffer(
+    frame: &mut [u8],
+    output: rt::DisplayOutputInfo,
+    surface: &SurfaceSlot,
+    clip: Option<DamageRect>,
+) {
+    let Some(buffer) = active_buffer(surface) else {
+        return;
+    };
     let width = surface.width.min(buffer.width);
     let height = surface.height.min(buffer.height);
     if width == 0 || height == 0 {
         return;
     }
 
-    let start_x = surface.x.max(0) as usize;
-    let start_y = surface.y.max(0) as usize;
-    let end_x = ((surface.x + width as i32).max(0) as usize).min(output.width as usize);
-    let end_y = ((surface.y + height as i32).max(0) as usize).min(output.height as usize);
+    let (start_x, start_y, end_x, end_y) =
+        clip_rect(output, surface.x, surface.y, width, height, clip);
     if start_x >= end_x || start_y >= end_y {
         return;
     }
 
-    let clip_left = if surface.x < 0 { (-surface.x) as usize } else { 0 };
-    let clip_top = if surface.y < 0 { (-surface.y) as usize } else { 0 };
+    let source_x = start_x.saturating_sub(surface.x.max(0) as usize)
+        + if surface.x < 0 { (-surface.x) as usize } else { 0 };
+    let source_y_base = start_y.saturating_sub(surface.y.max(0) as usize)
+        + if surface.y < 0 { (-surface.y) as usize } else { 0 };
     let visible_width = end_x - start_x;
     let total_bytes = buffer.height as usize * buffer.stride_pixels as usize * 4;
     if buffer.mapped_ptr.is_null() || total_bytes == 0 {
@@ -177,8 +262,8 @@ fn draw_surface_buffer(frame: &mut [u8], output: rt::DisplayOutputInfo, surface:
     let bytes = unsafe { slice::from_raw_parts(buffer.mapped_ptr as *const u8, total_bytes) };
 
     for row_index in 0..(end_y - start_y) {
-        let source_y = clip_top + row_index;
-        let source_offset = ((source_y * buffer.stride_pixels as usize) + clip_left) * 4;
+        let source_y = source_y_base + row_index;
+        let source_offset = ((source_y * buffer.stride_pixels as usize) + source_x) * 4;
         for column in 0..visible_width {
             let base = source_offset + column * 4;
             if base + 3 >= bytes.len() {
@@ -204,10 +289,33 @@ fn draw_rect(
     height: u32,
     rgb: u32,
 ) {
-    let start_x = x.max(0) as usize;
-    let start_y = y.max(0) as usize;
-    let end_x = ((x + width as i32).max(0) as usize).min(output.width as usize);
-    let end_y = ((y + height as i32).max(0) as usize).min(output.height as usize);
+    draw_rect_impl(frame, output, x, y, width, height, rgb, None);
+}
+
+fn draw_rect_clipped(
+    frame: &mut [u8],
+    output: rt::DisplayOutputInfo,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    rgb: u32,
+    clip: DamageRect,
+) {
+    draw_rect_impl(frame, output, x, y, width, height, rgb, Some(clip));
+}
+
+fn draw_rect_impl(
+    frame: &mut [u8],
+    output: rt::DisplayOutputInfo,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    rgb: u32,
+    clip: Option<DamageRect>,
+) {
+    let (start_x, start_y, end_x, end_y) = clip_rect(output, x, y, width, height, clip);
     if start_x >= end_x || start_y >= end_y {
         return;
     }
@@ -226,11 +334,12 @@ fn draw_label(
     y: i32,
     color_rgb: u32,
     text: &[u8],
+    clip: Option<DamageRect>,
 ) {
     for (index, byte) in text.iter().copied().enumerate() {
         let ch = normalize_glyph(byte);
         let glyph_x = x.saturating_add((index * rt::BITMAP_GLYPH_ADVANCE) as i32);
-        draw_glyph(frame, output, glyph_x, y, color_rgb, ch);
+        draw_glyph(frame, output, glyph_x, y, color_rgb, ch, clip);
     }
 }
 
@@ -241,6 +350,7 @@ fn draw_glyph(
     y: i32,
     color_rgb: u32,
     ch: u8,
+    clip: Option<DamageRect>,
 ) {
     let rows = rt::bitmap_glyph_rows(ch);
     for (row_index, bits) in rows
@@ -257,6 +367,15 @@ fn draw_glyph(
             let py = y.saturating_add(row_index as i32);
             if px < 0 || py < 0 {
                 continue;
+            }
+            if let Some(clip) = clip {
+                if px < clip.x
+                    || py < clip.y
+                    || px >= clip.x.saturating_add(clip.width as i32)
+                    || py >= clip.y.saturating_add(clip.height as i32)
+                {
+                    continue;
+                }
             }
             write_pixel(frame, output, px as usize, py as usize, color_rgb);
         }
@@ -305,4 +424,25 @@ fn base_framebuffer_slice(len: usize) -> &'static mut [u8] {
             len,
         )
     }
+}
+
+fn clip_rect(
+    output: rt::DisplayOutputInfo,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    clip: Option<DamageRect>,
+) -> (usize, usize, usize, usize) {
+    let mut start_x = x.max(0) as usize;
+    let mut start_y = y.max(0) as usize;
+    let mut end_x = ((x + width as i32).max(0) as usize).min(output.width as usize);
+    let mut end_y = ((y + height as i32).max(0) as usize).min(output.height as usize);
+    if let Some(clip) = clip {
+        start_x = start_x.max(clip.x.max(0) as usize);
+        start_y = start_y.max(clip.y.max(0) as usize);
+        end_x = end_x.min(((clip.x + clip.width as i32).max(0) as usize).min(output.width as usize));
+        end_y = end_y.min(((clip.y + clip.height as i32).max(0) as usize).min(output.height as usize));
+    }
+    (start_x, start_y, end_x, end_y)
 }

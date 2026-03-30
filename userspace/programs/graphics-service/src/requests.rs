@@ -5,8 +5,9 @@ use crate::{
     logging::emit_log,
     types::{
         BufferBinding, DirtyState, MAX_BUFFER_ROW_BYTES, MAX_LABEL_BYTES, MAX_SURFACE_LABELS,
-        MAX_SURFACE_RECTS, SurfaceSlot, Surfaces, active_surface_count, find_surface,
-        is_cursor_surface, release_surface, surface_bounds,
+        MAX_SURFACE_RECTS, MAX_SURFACE_BUFFERS, SurfaceSlot, Surfaces, active_buffer,
+        active_surface_count, attached_buffer_count, find_surface, is_cursor_surface,
+        release_surface, surface_bounds,
     },
 };
 
@@ -144,8 +145,9 @@ fn handle_public_request(
             }
             let reply_handle = request.handles[0];
             let mut reply = RawMessage::empty(GraphicsTag::SurfaceStatusReply as u32);
-            reply.word_count = 11;
+            reply.word_count = 16;
             if let Some(surface) = find_surface(surfaces, request.words[0] as u32) {
+                let active = active_buffer(surface);
                 reply.words[0] = GraphicsStatus::Ok as u32 as u64;
                 reply.words[1] = surface.id as u64;
                 reply.words[2] = 0;
@@ -157,6 +159,16 @@ fn handle_public_request(
                 reply.words[8] = surface.z_order as u64;
                 reply.words[9] = surface.fill_rgb as u64;
                 reply.words[10] = u64::from(surface.visible);
+                reply.words[11] = attached_buffer_count(surface) as u64;
+                reply.words[12] = surface
+                    .active_buffer_slot
+                    .map(|slot| slot as u64)
+                    .unwrap_or(u32::MAX as u64);
+                reply.words[13] = active.map(|buffer| buffer.width as u64).unwrap_or(0);
+                reply.words[14] = active.map(|buffer| buffer.height as u64).unwrap_or(0);
+                reply.words[15] = active
+                    .map(|buffer| buffer.stride_pixels as u64)
+                    .unwrap_or(0);
             } else {
                 reply.words[0] = GraphicsStatus::NotFound as u32 as u64;
             }
@@ -241,7 +253,12 @@ fn handle_surface_request(
                 let damage = old_rect.merge(new_rect);
                 *dirty = match *dirty {
                     DirtyState::CursorOnly(existing) => DirtyState::CursorOnly(existing.merge(damage)),
-                    _ => DirtyState::CursorOnly(damage),
+                    DirtyState::Region { damage: existing, immediate } => DirtyState::Region {
+                        damage: existing.merge(damage),
+                        immediate,
+                    },
+                    DirtyState::Clean => DirtyState::CursorOnly(damage),
+                    DirtyState::Full { immediate } => DirtyState::Full { immediate },
                 };
             } else {
                 *dirty = DirtyState::Full { immediate: true };
@@ -389,13 +406,15 @@ fn handle_surface_request(
             );
         }
         x if x == SurfaceTag::AttachBufferRequest as u32 => {
-            if message.word_count < 3 || message.handle_count < 2 {
+            if message.word_count < 4 || message.handle_count < 2 {
                 return Ok(());
             }
-            let width = message.words[0] as u32;
-            let height = message.words[1] as u32;
-            let stride_pixels = message.words[2] as u32;
-            let status = if width == 0
+            let slot = message.words[0] as usize;
+            let width = message.words[1] as u32;
+            let height = message.words[2] as u32;
+            let stride_pixels = message.words[3] as u32;
+            let status = if slot >= MAX_SURFACE_BUFFERS
+                || width == 0
                 || height == 0
                 || stride_pixels < width
                 || width as usize * 4 > MAX_BUFFER_ROW_BYTES
@@ -419,16 +438,19 @@ fn handle_surface_request(
                     let _ = rt::handle_close(message.handles[1]);
                     return Ok(());
                 }
-                if surface.buffer.attached() {
-                    let _ = rt::handle_close(surface.buffer.handle);
+                if surface.buffers[slot].attached() {
+                    let _ = rt::handle_close(surface.buffers[slot].handle);
                 }
-                surface.buffer = BufferBinding {
+                surface.buffers[slot] = BufferBinding {
                     handle: message.handles[1],
                     width,
                     height,
                     stride_pixels,
                     mapped_ptr,
                 };
+                if surface.active_buffer_slot.is_none() {
+                    surface.active_buffer_slot = Some(slot);
+                }
                 *dirty = DirtyState::Full { immediate: true };
                 GraphicsStatus::Ok
             };
@@ -438,24 +460,85 @@ fn handle_surface_request(
             reply_surface_status(message.handles, 1, SurfaceTag::AttachBufferReply, status);
         }
         x if x == SurfaceTag::PresentBufferRequest as u32 => {
-            if message.word_count < 4 {
+            if message.word_count < 5 {
                 return Ok(());
             }
-            if surface.buffer.attached() {
-                *dirty = DirtyState::Full { immediate: true };
+            let slot = message.words[0] as usize;
+            let status = if slot >= MAX_SURFACE_BUFFERS {
+                GraphicsStatus::CapacityExceeded
+            } else if !surface.buffers[slot].attached() {
+                GraphicsStatus::NotFound
+            } else {
+                let previous_slot = surface.active_buffer_slot;
+                surface.active_buffer_slot = Some(slot);
+                let mut damage = crate::types::DamageRect {
+                    x: surface.x.saturating_add(message.words[1] as i64 as i32),
+                    y: surface.y.saturating_add(message.words[2] as i64 as i32),
+                    width: message.words[3] as u32,
+                    height: message.words[4] as u32,
+                };
+                if damage.width == 0 || damage.height == 0 || previous_slot != Some(slot) {
+                    damage = surface_bounds(surface);
+                    *dirty = DirtyState::Full { immediate: true };
+                } else if is_cursor_surface(surface) && !matches!(dirty, DirtyState::Full { .. }) {
+                    *dirty = match *dirty {
+                        DirtyState::CursorOnly(existing) => DirtyState::CursorOnly(existing.merge(damage)),
+                        DirtyState::Region { damage: existing, immediate } => {
+                            DirtyState::Region {
+                                damage: existing.merge(damage),
+                                immediate,
+                            }
+                        }
+                        DirtyState::Clean => DirtyState::CursorOnly(damage),
+                        DirtyState::Full { immediate } => DirtyState::Full { immediate },
+                    };
+                } else {
+                    merge_region_dirty(dirty, damage, true);
+                }
                 let _ = emit_log(
                     log_handle,
                     LogSeverity::Debug,
                     LogEvent::SurfaceUpdated,
                     surface.id as u64,
-                    0xff,
+                    0x100 + slot as u64,
                 );
-            }
+                GraphicsStatus::Ok
+            };
             reply_surface_status(
                 message.handles,
                 message.handle_count,
                 SurfaceTag::PresentBufferReply,
-                GraphicsStatus::Ok,
+                status,
+            );
+        }
+        x if x == SurfaceTag::ReleaseBufferRequest as u32 => {
+            if message.word_count < 1 {
+                return Ok(());
+            }
+            let slot = message.words[0] as usize;
+            let status = if slot >= MAX_SURFACE_BUFFERS {
+                GraphicsStatus::CapacityExceeded
+            } else if !surface.buffers[slot].attached() {
+                GraphicsStatus::NotFound
+            } else {
+                let _ = rt::handle_close(surface.buffers[slot].handle);
+                surface.buffers[slot] = BufferBinding::empty();
+                if surface.active_buffer_slot == Some(slot) {
+                    surface.active_buffer_slot = surface
+                        .buffers
+                        .iter()
+                        .enumerate()
+                        .find(|(_, buffer)| buffer.attached())
+                        .map(|(index, _)| index);
+                }
+                *dirty = DirtyState::Full { immediate: true };
+                GraphicsStatus::Ok
+            };
+            reply_surface_status(
+                message.handles,
+                message.handle_count,
+                SurfaceTag::ReleaseBufferReply,
+                status,
             );
         }
         x if x == SurfaceTag::CloseRequest as u32 => {
@@ -500,4 +583,24 @@ fn unpack_bytes(words: &[u64], len: usize, destination: &mut [u8]) -> rt::Result
         copied += chunk;
     }
     Ok(())
+}
+
+fn merge_region_dirty(dirty: &mut DirtyState, damage: crate::types::DamageRect, immediate: bool) {
+    *dirty = match *dirty {
+        DirtyState::Clean => DirtyState::Region { damage, immediate },
+        DirtyState::CursorOnly(existing) => DirtyState::Region {
+            damage: existing.merge(damage),
+            immediate,
+        },
+        DirtyState::Region {
+            damage: existing,
+            immediate: current,
+        } => DirtyState::Region {
+            damage: existing.merge(damage),
+            immediate: current || immediate,
+        },
+        DirtyState::Full { immediate: current } => DirtyState::Full {
+            immediate: current || immediate,
+        },
+    };
 }

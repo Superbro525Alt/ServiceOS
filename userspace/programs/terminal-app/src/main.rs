@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use core::{cell::UnsafeCell, fmt::Write};
+use core::{array, cell::UnsafeCell, fmt::Write};
 
 use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
@@ -10,6 +10,7 @@ use rt::{AppControlTag, ConsoleTag, ControlTag, LifecycleEvent, RawMessage, Term
 const BUFFER_WIDTH: u32 = 1024;
 const BUFFER_HEIGHT: u32 = 768;
 const BUFFER_BYTES: usize = BUFFER_WIDTH as usize * BUFFER_HEIGHT as usize * 4;
+const SURFACE_BUFFER_SLOTS: usize = 2;
 const MAX_TABS: usize = 4;
 const MAX_COLS: usize = 120;
 const MAX_SCROLLBACK_LINES: usize = 256;
@@ -294,21 +295,38 @@ fn main() -> u64 {
     let mut height = startup.words[2] as u32;
     let mut focused = startup.words[3] != 0;
 
-    let buffer_handle = match rt::memory_create(BUFFER_BYTES, true) {
-        Ok(handle) => handle,
-        Err(_) => return 0xfa03,
-    };
-    if rt::surface_attach_buffer(surface_handle, buffer_handle, BUFFER_WIDTH, BUFFER_HEIGHT, BUFFER_WIDTH).is_err() {
-        let _ = rt::handle_close(buffer_handle);
-        return 0xfa04;
-    }
-    let mut mapped_buffer = match rt::MappedMemory::map(buffer_handle, BUFFER_BYTES, true) {
-        Ok(buffer) => buffer,
-        Err(_) => {
+    let mut buffer_handles = [rt::INVALID_HANDLE; SURFACE_BUFFER_SLOTS];
+    let mut mapped_buffers: [Option<rt::MappedMemory>; SURFACE_BUFFER_SLOTS] =
+        array::from_fn(|_| None);
+    for slot in 0..SURFACE_BUFFER_SLOTS {
+        let buffer_handle = match rt::memory_create(BUFFER_BYTES, true) {
+            Ok(handle) => handle,
+            Err(_) => return 0xfa03,
+        };
+        if rt::surface_attach_buffer_slot(
+            surface_handle,
+            slot as u32,
+            buffer_handle,
+            BUFFER_WIDTH,
+            BUFFER_HEIGHT,
+            BUFFER_WIDTH,
+        )
+        .is_err()
+        {
             let _ = rt::handle_close(buffer_handle);
-            return 0xfa0a;
+            return 0xfa04;
         }
-    };
+        let mapped_buffer = match rt::MappedMemory::map(buffer_handle, BUFFER_BYTES, true) {
+            Ok(buffer) => buffer,
+            Err(_) => {
+                let _ = rt::handle_close(buffer_handle);
+                return 0xfa0a;
+            }
+        };
+        buffer_handles[slot] = buffer_handle;
+        mapped_buffers[slot] = Some(mapped_buffer);
+    }
+    let mut front_buffer_slot = 0usize;
 
     clear_all_tabs();
     let mut state = TerminalState {
@@ -330,7 +348,12 @@ fn main() -> u64 {
     if open_new_tab(&mut state).is_err() {
         return 0xfa05;
     }
-    let _ = render(surface_handle, &mut mapped_buffer, &state);
+    let _ = render(
+        surface_handle,
+        front_buffer_slot as u32,
+        mapped_buffers[front_buffer_slot].as_mut().unwrap(),
+        &state,
+    );
 
     loop {
         let mut did_work = false;
@@ -414,7 +437,13 @@ fn main() -> u64 {
         }
 
         if changed {
-            let _ = render(surface_handle, &mut mapped_buffer, &state);
+            front_buffer_slot = (front_buffer_slot + 1) % SURFACE_BUFFER_SLOTS;
+            let _ = render(
+                surface_handle,
+                front_buffer_slot as u32,
+                mapped_buffers[front_buffer_slot].as_mut().unwrap(),
+                &state,
+            );
         }
         if did_work {
             continue;
@@ -429,7 +458,11 @@ fn main() -> u64 {
         let _ = rt::terminal_session_close(tab.session_handle);
         let _ = rt::handle_close(tab.session_handle);
     }
-    let _ = rt::handle_close(buffer_handle);
+    for handle in buffer_handles {
+        if handle != rt::INVALID_HANDLE {
+            let _ = rt::handle_close(handle);
+        }
+    }
     0
 }
 
@@ -1326,6 +1359,7 @@ fn row_visual_len(row: &[Cell; MAX_COLS], columns: usize) -> usize {
 
 fn render(
     surface_handle: rt::Handle,
+    buffer_slot: u32,
     buffer: &mut rt::MappedMemory,
     state: &TerminalState,
 ) -> rt::Result<()> {
@@ -1355,8 +1389,9 @@ fn render(
     draw_titlebar(bytes, width, theme);
     draw_tab_strip(bytes, width, state, theme);
     draw_terminal_contents(bytes, width, height, state, theme);
-    rt::surface_present_buffer(
+    rt::surface_present_buffer_slot(
         surface_handle,
+        buffer_slot,
         0,
         0,
         state.width.min(BUFFER_WIDTH),

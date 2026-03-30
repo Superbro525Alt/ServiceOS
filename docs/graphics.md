@@ -66,8 +66,8 @@ The current compositor is still deliberately simple:
 
 - one output
 - shell-owned retained-scene primitives
-- client-owned mapped presentation buffers
-- broader present requests on top of the surface contract
+- client-owned mapped multi-buffer presentation buffers
+- broader slot-aware present requests on top of the surface contract
 - userspace-owned z-order
 
 This is enough to prove the client-facing surface and presentation model
@@ -101,8 +101,19 @@ compositor copies it later.” Clients can now:
 
 - map their own memory-object-backed pixel buffers
 - render directly into those buffers
-- issue explicit present-buffer requests through the graphics contract
+- attach multiple presentation buffers to one surface
+- switch and present an explicit buffer slot through the graphics contract
+- report surface buffer state through surface-status queries
 - keep buffer ownership and lifetime explicit
+
+The current mapped-buffer path now includes:
+
+- explicit per-surface buffer slots
+- active-buffer tracking inside `graphics-service`
+- damage-tracked presentation requests for mapped-buffer clients
+- partial compositor recomposition for non-cursor client updates
+- compatibility helpers that still let simpler clients treat slot `0` as a
+  single-buffer path when they do not need swap-style presentation
 
 That gives the system a real client-render substrate without collapsing the
 compositor boundary into ad hoc shared-memory shortcuts.

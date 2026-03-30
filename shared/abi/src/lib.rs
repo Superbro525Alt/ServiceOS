@@ -1115,6 +1115,8 @@ pub enum SurfaceTag {
     AttachBufferReply = 0x92e,
     PresentBufferRequest = 0x92f,
     PresentBufferReply = 0x930,
+    ReleaseBufferRequest = 0x931,
+    ReleaseBufferReply = 0x932,
 }
 
 #[repr(u32)]

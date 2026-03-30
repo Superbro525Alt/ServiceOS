@@ -185,6 +185,11 @@ pub struct GraphicsSurfaceStatusInfo {
     pub z_order: u32,
     pub fill_rgb: u32,
     pub visible: bool,
+    pub attached_buffer_count: u32,
+    pub active_buffer_slot: Option<u32>,
+    pub active_buffer_width: u32,
+    pub active_buffer_height: u32,
+    pub active_buffer_stride_pixels: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

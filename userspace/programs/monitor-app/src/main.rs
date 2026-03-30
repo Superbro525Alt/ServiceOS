@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use core::{fmt::Write, str};
+use core::{array, fmt::Write, str};
 
 use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
@@ -11,6 +11,7 @@ const REFRESH_TICKS: u64 = 100;
 const BUFFER_WIDTH: u32 = 640;
 const BUFFER_HEIGHT: u32 = 480;
 const BUFFER_BYTES: usize = BUFFER_WIDTH as usize * BUFFER_HEIGHT as usize * 4;
+const SURFACE_BUFFER_SLOTS: usize = 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct MonitorSnapshot {
@@ -42,35 +43,44 @@ fn main() -> u64 {
     let mut width = width;
     let mut height = height;
 
-    let buffer_handle = match rt::memory_create(BUFFER_BYTES, true) {
-        Ok(handle) => handle,
-        Err(_) => return 0xf206,
-    };
-    if rt::surface_attach_buffer(
-        surface_handle,
-        buffer_handle,
-        BUFFER_WIDTH,
-        BUFFER_HEIGHT,
-        BUFFER_WIDTH,
-    )
-    .is_err()
-    {
-        let _ = rt::handle_close(buffer_handle);
-        return 0xf207;
-    }
-    let mut mapped_buffer = match rt::MappedMemory::map(buffer_handle, BUFFER_BYTES, true) {
-        Ok(buffer) => buffer,
-        Err(_) => {
+    let mut buffer_handles = [rt::INVALID_HANDLE; SURFACE_BUFFER_SLOTS];
+    let mut mapped_buffers: [Option<rt::MappedMemory>; SURFACE_BUFFER_SLOTS] =
+        array::from_fn(|_| None);
+    for slot in 0..SURFACE_BUFFER_SLOTS {
+        let buffer_handle = match rt::memory_create(BUFFER_BYTES, true) {
+            Ok(handle) => handle,
+            Err(_) => return 0xf206,
+        };
+        if rt::surface_attach_buffer_slot(
+            surface_handle,
+            slot as u32,
+            buffer_handle,
+            BUFFER_WIDTH,
+            BUFFER_HEIGHT,
+            BUFFER_WIDTH,
+        )
+        .is_err()
+        {
             let _ = rt::handle_close(buffer_handle);
-            return 0xf208;
+            return 0xf207;
         }
-    };
+        let mapped_buffer = match rt::MappedMemory::map(buffer_handle, BUFFER_BYTES, true) {
+            Ok(buffer) => buffer,
+            Err(_) => {
+                let _ = rt::handle_close(buffer_handle);
+                return 0xf208;
+            }
+        };
+        buffer_handles[slot] = buffer_handle;
+        mapped_buffers[slot] = Some(mapped_buffer);
+    }
+    let mut front_buffer_slot = 0usize;
 
     let mut next_refresh = 0u64;
     let mut last_snapshot: Option<MonitorSnapshot> = None;
     loop {
         match poll_lifecycle(bootstrap) {
-            Ok(true) => return 0,
+            Ok(true) => break,
             Ok(false) => {}
             Err(_) => return 0xf203,
         }
@@ -79,11 +89,20 @@ fn main() -> u64 {
             Ok(ControlFlow::Idle) => {}
             Ok(ControlFlow::Worked) => {
                 if let Some(snapshot) = last_snapshot {
-                    let _ = render(surface_handle, &mut mapped_buffer, width, height, focused, snapshot);
+                    front_buffer_slot = (front_buffer_slot + 1) % SURFACE_BUFFER_SLOTS;
+                    let _ = render(
+                        surface_handle,
+                        front_buffer_slot as u32,
+                        mapped_buffers[front_buffer_slot].as_mut().unwrap(),
+                        width,
+                        height,
+                        focused,
+                        snapshot,
+                    );
                 }
                 continue;
             }
-            Ok(ControlFlow::Exit) => return 0,
+            Ok(ControlFlow::Exit) => break,
             Err(_) => return 0xf205,
         }
 
@@ -91,7 +110,16 @@ fn main() -> u64 {
         if now >= next_refresh {
             let snapshot = sample_snapshot(status_handle, network_handle);
             if last_snapshot != Some(snapshot) {
-                let _ = render(surface_handle, &mut mapped_buffer, width, height, focused, snapshot);
+                front_buffer_slot = (front_buffer_slot + 1) % SURFACE_BUFFER_SLOTS;
+                let _ = render(
+                    surface_handle,
+                    front_buffer_slot as u32,
+                    mapped_buffers[front_buffer_slot].as_mut().unwrap(),
+                    width,
+                    height,
+                    focused,
+                    snapshot,
+                );
                 last_snapshot = Some(snapshot);
             }
             next_refresh = now.saturating_add(REFRESH_TICKS);
@@ -101,10 +129,18 @@ fn main() -> u64 {
             return 0xf204;
         }
     }
+
+    for handle in buffer_handles {
+        if handle != rt::INVALID_HANDLE {
+            let _ = rt::handle_close(handle);
+        }
+    }
+    0
 }
 
 fn render(
     surface_handle: rt::Handle,
+    buffer_slot: u32,
     buffer: &mut rt::MappedMemory,
     width: u32,
     height: u32,
@@ -152,8 +188,9 @@ fn render(
         ],
         focused,
     )?;
-    rt::surface_present_buffer(
+    rt::surface_present_buffer_slot(
         surface_handle,
+        buffer_slot,
         0,
         0,
         width.min(BUFFER_WIDTH),

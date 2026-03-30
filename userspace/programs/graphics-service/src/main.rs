@@ -10,7 +10,7 @@ use serviceos_userspace_runtime as rt;
 use rt::{ControlTag, LogEvent, LogSeverity, RawMessage, ServiceId};
 
 use crate::{
-    compose::{compose_and_present, cursor_present},
+    compose::{compose_and_present, compose_damage_and_present, cursor_present},
     logging::{emit_log, poll_lifecycle},
     requests::{drain_public_requests, drain_surface_requests},
     types::{
@@ -98,6 +98,9 @@ fn main() -> u64 {
             let should_present = match dirty {
                 DirtyState::Clean => false,
                 DirtyState::CursorOnly(_) => true,
+                DirtyState::Region { immediate, .. } => {
+                    immediate || (!had_work && now >= present_deadline)
+                }
                 DirtyState::Full { immediate } => {
                     immediate || (!had_work && now >= present_deadline)
                 }
@@ -106,6 +109,9 @@ fn main() -> u64 {
                 let result = match dirty {
                     DirtyState::CursorOnly(damage) => {
                         cursor_present(output_handle, output, &surfaces, damage)
+                    }
+                    DirtyState::Region { damage, .. } => {
+                        compose_damage_and_present(output_handle, output, &surfaces, damage)
                     }
                     DirtyState::Full { .. } => compose_and_present(output_handle, output, &surfaces),
                     DirtyState::Clean => Ok(()),

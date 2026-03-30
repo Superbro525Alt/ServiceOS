@@ -4,6 +4,7 @@ pub(crate) const MAX_SURFACES: usize = 16;
 pub(crate) const MAX_FRAMEBUFFER_BYTES: usize = 8 * 1024 * 1024;
 pub(crate) const MAX_SURFACE_RECTS: usize = 16;
 pub(crate) const MAX_SURFACE_LABELS: usize = 16;
+pub(crate) const MAX_SURFACE_BUFFERS: usize = 2;
 pub(crate) const MAX_LABEL_BYTES: usize = 56;
 pub(crate) const MAX_BUFFER_ROW_BYTES: usize = 8192;
 pub(crate) const DEFAULT_BACKGROUND_RGB: u32 = 0x10151d;
@@ -99,7 +100,8 @@ pub(crate) struct SurfaceSlot {
     pub(crate) fill_rgb: u32,
     pub(crate) visible: bool,
     pub(crate) occupied: bool,
-    pub(crate) buffer: BufferBinding,
+    pub(crate) buffers: [BufferBinding; MAX_SURFACE_BUFFERS],
+    pub(crate) active_buffer_slot: Option<usize>,
     pub(crate) rects: [RectSlot; MAX_SURFACE_RECTS],
     pub(crate) labels: [LabelSlot; MAX_SURFACE_LABELS],
 }
@@ -118,7 +120,8 @@ impl SurfaceSlot {
             fill_rgb: 0,
             visible: false,
             occupied: false,
-            buffer: BufferBinding::empty(),
+            buffers: [BufferBinding::empty(); MAX_SURFACE_BUFFERS],
+            active_buffer_slot: None,
             rects: [RectSlot::empty(); MAX_SURFACE_RECTS],
             labels: [LabelSlot::empty(); MAX_SURFACE_LABELS],
         }
@@ -173,6 +176,7 @@ impl DamageRect {
 pub(crate) enum DirtyState {
     Clean,
     CursorOnly(DamageRect),
+    Region { damage: DamageRect, immediate: bool },
     Full { immediate: bool },
 }
 
@@ -190,8 +194,10 @@ pub(crate) fn release_surface(surface: &mut SurfaceSlot) {
     if surface.endpoint != rt::INVALID_HANDLE {
         let _ = rt::handle_close(surface.endpoint);
     }
-    if surface.buffer.attached() {
-        let _ = rt::handle_close(surface.buffer.handle);
+    for buffer in &mut surface.buffers {
+        if buffer.attached() {
+            let _ = rt::handle_close(buffer.handle);
+        }
     }
     *surface = SurfaceSlot::empty();
 }
@@ -209,4 +215,15 @@ pub(crate) fn is_cursor_surface(surface: &SurfaceSlot) -> bool {
     surface.z_order >= CURSOR_SURFACE_Z_ORDER_MIN
         && surface.width <= CURSOR_SURFACE_MAX_SIZE
         && surface.height <= CURSOR_SURFACE_MAX_SIZE
+}
+
+pub(crate) fn active_buffer(surface: &SurfaceSlot) -> Option<BufferBinding> {
+    surface
+        .active_buffer_slot
+        .and_then(|slot| surface.buffers.get(slot).copied())
+        .filter(|buffer| buffer.attached())
+}
+
+pub(crate) fn attached_buffer_count(surface: &SurfaceSlot) -> usize {
+    surface.buffers.iter().filter(|buffer| buffer.attached()).count()
 }

@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use core::{cmp::Ordering, fmt::Write, str};
+use core::{array, cmp::Ordering, fmt::Write, str};
 
 use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
@@ -13,6 +13,7 @@ use rt::{
 const BUFFER_WIDTH: u32 = 1024;
 const BUFFER_HEIGHT: u32 = 768;
 const BUFFER_BYTES: usize = BUFFER_WIDTH as usize * BUFFER_HEIGHT as usize * 4;
+const SURFACE_BUFFER_SLOTS: usize = 2;
 const PIXEL_STRIDE: usize = BUFFER_WIDTH as usize;
 const MAX_STORAGE_PATH: usize = 96;
 const MAX_ENTRIES: usize = 64;
@@ -100,33 +101,47 @@ fn main() -> u64 {
         load_failed: false,
     };
 
-    let buffer_handle = match rt::memory_create(BUFFER_BYTES, true) {
-        Ok(handle) => handle,
-        Err(_) => return 0xf103,
-    };
-    if rt::surface_attach_buffer(
-        surface_handle,
-        buffer_handle,
-        BUFFER_WIDTH,
-        BUFFER_HEIGHT,
-        BUFFER_WIDTH,
-    )
-    .is_err()
-    {
-        let _ = rt::handle_close(buffer_handle);
-        return 0xf104;
-    }
-    let mut mapped_buffer = match rt::MappedMemory::map(buffer_handle, BUFFER_BYTES, true) {
-        Ok(buffer) => buffer,
-        Err(_) => {
+    let mut buffer_handles = [rt::INVALID_HANDLE; SURFACE_BUFFER_SLOTS];
+    let mut mapped_buffers: [Option<rt::MappedMemory>; SURFACE_BUFFER_SLOTS] =
+        array::from_fn(|_| None);
+    for slot in 0..SURFACE_BUFFER_SLOTS {
+        let buffer_handle = match rt::memory_create(BUFFER_BYTES, true) {
+            Ok(handle) => handle,
+            Err(_) => return 0xf103,
+        };
+        if rt::surface_attach_buffer_slot(
+            surface_handle,
+            slot as u32,
+            buffer_handle,
+            BUFFER_WIDTH,
+            BUFFER_HEIGHT,
+            BUFFER_WIDTH,
+        )
+        .is_err()
+        {
             let _ = rt::handle_close(buffer_handle);
-            return 0xf108;
+            return 0xf104;
         }
-    };
+        let mapped_buffer = match rt::MappedMemory::map(buffer_handle, BUFFER_BYTES, true) {
+            Ok(buffer) => buffer,
+            Err(_) => {
+                let _ = rt::handle_close(buffer_handle);
+                return 0xf108;
+            }
+        };
+        buffer_handles[slot] = buffer_handle;
+        mapped_buffers[slot] = Some(mapped_buffer);
+    }
+    let mut front_buffer_slot = 0usize;
 
     let _ = reopen_directory(&mut state, storage_handle);
     let _ = reload_directory(&mut state);
-    let _ = render(surface_handle, &mut mapped_buffer, &state);
+    let _ = render(
+        surface_handle,
+        front_buffer_slot as u32,
+        mapped_buffers[front_buffer_slot].as_mut().unwrap(),
+        &state,
+    );
 
     loop {
         match poll_lifecycle(bootstrap) {
@@ -138,7 +153,8 @@ fn main() -> u64 {
         match poll_control(
             control_handle,
             surface_handle,
-            &mut mapped_buffer,
+            &mut mapped_buffers,
+            &mut front_buffer_slot,
             storage_handle,
             &mut state,
         ) {
@@ -156,7 +172,11 @@ fn main() -> u64 {
     if state.current_directory_handle != rt::INVALID_HANDLE {
         let _ = rt::handle_close(state.current_directory_handle);
     }
-    let _ = rt::handle_close(buffer_handle);
+    for handle in buffer_handles {
+        if handle != rt::INVALID_HANDLE {
+            let _ = rt::handle_close(handle);
+        }
+    }
     0
 }
 
@@ -169,7 +189,8 @@ enum ControlFlow {
 fn poll_control(
     control_handle: rt::Handle,
     surface_handle: rt::Handle,
-    buffer: &mut rt::MappedMemory,
+    buffers: &mut [Option<rt::MappedMemory>; SURFACE_BUFFER_SLOTS],
+    front_buffer_slot: &mut usize,
     storage_handle: rt::Handle,
     state: &mut ExplorerState,
 ) -> rt::Result<ControlFlow> {
@@ -233,7 +254,13 @@ fn poll_control(
     }
 
     if changed {
-        render(surface_handle, buffer, state)?;
+        *front_buffer_slot = (*front_buffer_slot + 1) % SURFACE_BUFFER_SLOTS;
+        render(
+            surface_handle,
+            *front_buffer_slot as u32,
+            buffers[*front_buffer_slot].as_mut().unwrap(),
+            state,
+        )?;
         return Ok(ControlFlow::Worked);
     }
 
@@ -334,6 +361,7 @@ fn handle_key_down(
 
 fn render(
     surface_handle: rt::Handle,
+    buffer_slot: u32,
     buffer: &mut rt::MappedMemory,
     state: &ExplorerState,
 ) -> rt::Result<()> {
@@ -367,8 +395,9 @@ fn render(
     draw_list(bytes, state);
     draw_footer(bytes, state);
 
-    rt::surface_present_buffer(
+    rt::surface_present_buffer_slot(
         surface_handle,
+        buffer_slot,
         0,
         0,
         state.width.min(BUFFER_WIDTH),

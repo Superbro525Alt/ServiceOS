@@ -8,8 +8,8 @@ use core::{
 pub use serviceos_abi::{
     AppControlTag, AppKeyAction, AppPointerAction, AudioEndpointBackend, AudioEndpointDirection,
     AudioEndpointInfo, AudioEndpointState, AudioStatus, AudioStreamDirection, AudioStreamState,
-    AudioTag, AudioToneRequest, BootstrapPlatform, ClipboardStatus, ClipboardTag, ConfigKey,
-    ConfigTag, ConfigValueKind,
+    AudioTag, AudioToneRequest, BlockDeviceBackend, BlockDeviceInfo, BootstrapPlatform,
+    ClipboardStatus, ClipboardTag, ConfigKey, ConfigStatus, ConfigTag, ConfigValueKind,
     ConsoleTag, ControlTag, DesktopAppId, DesktopDragMode, DesktopInputAction, DesktopStatus,
     DesktopTag, DesktopWindowAction, DisplayOutputBackend, DisplayOutputInfo, DisplayOutputState,
     DisplayPixelFormat, GraphicsStatus, GraphicsTag, Handle, HandlePair, IPC_FLAG_NONBLOCK,

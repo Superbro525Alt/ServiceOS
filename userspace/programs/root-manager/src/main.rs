@@ -60,6 +60,11 @@ fn main() -> u64 {
             *next_handle += 1;
             Some(resource)
         };
+    let block_resource = take_bootstrap_resource(
+        &mut next_handle,
+        bootstrap_flags & bootstrap_resource::BLOCK != 0,
+        rights::READ | rights::WRITE,
+    );
     let network_resource = take_bootstrap_resource(
         &mut next_handle,
         bootstrap_flags & bootstrap_resource::NETWORK != 0,
@@ -86,6 +91,7 @@ fn main() -> u64 {
             len: bootstore_len,
             rights: rights::READ,
         },
+        block: block_resource,
         network: network_resource,
         display: display_resource,
         input: input_resource,
@@ -104,11 +110,7 @@ fn main() -> u64 {
         service_count,
         0,
         bootstrap_authority,
-        Some((
-            bootstrap_resources.bootstore.handle,
-            bootstrap_resources.bootstore.len,
-            bootstrap_resources.bootstore.rights,
-        )),
+        bootstrap_resources,
     )
     .is_err()
     {
@@ -118,6 +120,7 @@ fn main() -> u64 {
         &mut slots,
         &mut service_count,
         bootstrap_authority,
+        bootstrap_resources,
         ServiceId::Storage,
     )
     .is_err()

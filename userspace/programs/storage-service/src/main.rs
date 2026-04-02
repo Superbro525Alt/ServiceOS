@@ -7,8 +7,8 @@ use serviceos_bundle::{
 };
 use serviceos_userspace_runtime as rt;
 use rt::{
-    rights, ControlTag, Handle, LifecycleEvent, RawMessage, ServiceId, StorageEntryKind,
-    StorageStatus, StorageTag, IPC_MAX_WORDS,
+    rights, BlockDeviceBackend, ControlTag, Handle, LifecycleEvent, RawMessage, ServiceId,
+    StorageEntryKind, StorageStatus, StorageTag, IPC_MAX_WORDS,
 };
 
 const MAX_BOOTSTORE_ENTRIES: usize = 128;
@@ -18,6 +18,10 @@ const MAX_MUTABLE_ENTRIES: usize = 128;
 const BOOT_ENTRY_BYTES: usize = BootStoreEntryRecord::encoded_len();
 const MAX_STORAGE_PATH: usize = serviceos_bundle::BOOT_STORE_PATH_MAX;
 const INITIAL_FILE_CAPACITY: usize = 256;
+const PERSISTENT_MAGIC: [u8; 8] = *b"SOSPSTR1";
+const PERSISTENT_VERSION: u32 = 1;
+const PERSISTENT_RECORD_BYTES: usize = 128;
+const BLOCK_BUFFER_BYTES: usize = 512;
 
 const MUTABLE_ROOT_HOME: &[u8] = b"home/";
 const MUTABLE_ROOT_TMP: &[u8] = b"tmp/";
@@ -29,6 +33,7 @@ const MUTABLE_ROOTS: [&[u8]; 4] = [
     MUTABLE_ROOT_STATE,
     MUTABLE_ROOT_PROJECTS,
 ];
+const PERSISTENT_ROOTS: [&[u8]; 3] = [MUTABLE_ROOT_HOME, MUTABLE_ROOT_STATE, MUTABLE_ROOT_PROJECTS];
 
 #[derive(Clone, Copy)]
 struct EntrySlot {
@@ -124,6 +129,15 @@ struct MutableEntry {
     occupied: bool,
 }
 
+#[derive(Clone, Copy)]
+struct PersistentStore {
+    handle: Handle,
+    block_size: usize,
+    slot_blocks: usize,
+    active_slot: usize,
+    generation: u64,
+}
+
 impl MutableEntry {
     const fn empty() -> Self {
         Self {
@@ -154,6 +168,11 @@ fn main() -> u64 {
     }
 
     let bootstore_handle = startup.handles[0];
+    let block_handle = if startup.handle_count >= 2 {
+        startup.handles[1]
+    } else {
+        rt::INVALID_HANDLE
+    };
     let bootstore_len = startup.words[4] as usize;
     let mut header_bytes = [0u8; BootStoreHeader::encoded_len()];
     if rt::memory_read(bootstore_handle, 0, &mut header_bytes).ok() != Some(header_bytes.len()) {
@@ -221,15 +240,32 @@ fn main() -> u64 {
         return 0xf50b;
     }
     let _ = rt::handle_close(public.second);
-    let _ = rt::write_logf(
-        "storage",
-        format_args!("mounted boot-store entries={} bytes={}", entry_count, bootstore_len),
-    );
-
     let mut blob_sessions = [BlobSession::empty(); MAX_BLOB_SESSIONS];
     let mut directory_sessions = [DirectorySession::empty(); MAX_DIRECTORY_SESSIONS];
     let mut mutable_entries = [MutableEntry::empty(); MAX_MUTABLE_ENTRIES];
-
+    let mut persistent_store = if block_handle != rt::INVALID_HANDLE {
+        match initialize_persistent_store(block_handle, &mut mutable_entries) {
+            Ok(store) => store,
+            Err(error) => {
+                let _ = rt::write_logf(
+                    "storage",
+                    format_args!("persistent backing unavailable error={:?}", error),
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let _ = rt::write_logf(
+        "storage",
+        format_args!(
+            "mounted boot-store entries={} bytes={} persistent={}",
+            entry_count,
+            bootstore_len,
+            persistent_store.is_some(),
+        ),
+    );
     loop {
         match poll_lifecycle(bootstrap) {
             Ok(true) => return 0,
@@ -245,6 +281,7 @@ fn main() -> u64 {
                     &mut mutable_entries,
                     &mut blob_sessions,
                     &mut directory_sessions,
+                    persistent_store.as_mut(),
                     &root_request,
                 )
                 .is_err()
@@ -263,9 +300,14 @@ fn main() -> u64 {
             let mut request = RawMessage::empty(0);
             match rt::channel_receive_nonblocking(session.endpoint, &mut request) {
                 Ok(()) => {
-                    if handle_blob_request(bootstore_handle, &mut mutable_entries, session, &request)
-                        .is_err()
-                    {
+                    if handle_blob_request(
+                        bootstore_handle,
+                        &mut mutable_entries,
+                        persistent_store.as_mut(),
+                        session,
+                        &request,
+                    )
+                    .is_err() {
                         return 0xf50f;
                     }
                 }
@@ -285,6 +327,7 @@ fn main() -> u64 {
                         &entries[..entry_count],
                         &mut mutable_entries,
                         &mut blob_sessions,
+                        persistent_store.as_mut(),
                         session,
                         &request,
                     )
@@ -309,6 +352,7 @@ fn handle_root_request(
     mutable_entries: &mut [MutableEntry; MAX_MUTABLE_ENTRIES],
     blob_sessions: &mut [BlobSession; MAX_BLOB_SESSIONS],
     directory_sessions: &mut [DirectorySession; MAX_DIRECTORY_SESSIONS],
+    _persistent_store: Option<&mut PersistentStore>,
     message: &RawMessage,
 ) -> rt::Result<()> {
     match message.tag {
@@ -600,6 +644,7 @@ fn handle_directory_request(
     entries: &[EntrySlot],
     mutable_entries: &mut [MutableEntry; MAX_MUTABLE_ENTRIES],
     blob_sessions: &mut [BlobSession; MAX_BLOB_SESSIONS],
+    persistent_store: Option<&mut PersistentStore>,
     session: &mut DirectorySession,
     message: &RawMessage,
 ) -> rt::Result<()> {
@@ -613,13 +658,26 @@ fn handle_directory_request(
             handle_directory_read_request(entries, mutable_entries, session, message)
         }
         x if x == StorageTag::DirectoryCreateRequest as u32 => {
-            handle_directory_create_request(mutable_entries, session, message)
+            handle_directory_create_request(mutable_entries, persistent_store, session, message)
         }
         x if x == StorageTag::DirectoryRemoveRequest as u32 => {
-            handle_directory_remove_request(entries, mutable_entries, session, message)
+            handle_directory_remove_request(
+                entries,
+                mutable_entries,
+                persistent_store,
+                session,
+                message,
+            )
         }
         x if x == StorageTag::DirectoryOpenFileRequest as u32 => {
-            handle_directory_open_file_request(entries, mutable_entries, blob_sessions, session, message)
+            handle_directory_open_file_request(
+                entries,
+                mutable_entries,
+                blob_sessions,
+                persistent_store,
+                session,
+                message,
+            )
         }
         _ => Ok(()),
     }
@@ -709,6 +767,7 @@ fn handle_directory_read_request(
 
 fn handle_directory_create_request(
     mutable_entries: &mut [MutableEntry; MAX_MUTABLE_ENTRIES],
+    persistent_store: Option<&mut PersistentStore>,
     session: &DirectorySession,
     message: &RawMessage,
 ) -> rt::Result<()> {
@@ -766,6 +825,7 @@ fn handle_directory_create_request(
         slot.data_capacity = INITIAL_FILE_CAPACITY;
         slot.data_len = 0;
     }
+    persist_mutable_entries(persistent_store, mutable_entries)?;
     send_status_only(reply_handle, StorageTag::DirectoryCreateReply, StorageStatus::Ok);
     Ok(())
 }
@@ -773,6 +833,7 @@ fn handle_directory_create_request(
 fn handle_directory_remove_request(
     entries: &[EntrySlot],
     mutable_entries: &mut [MutableEntry; MAX_MUTABLE_ENTRIES],
+    persistent_store: Option<&mut PersistentStore>,
     session: &DirectorySession,
     message: &RawMessage,
 ) -> rt::Result<()> {
@@ -807,6 +868,7 @@ fn handle_directory_remove_request(
     if let Some((path, path_len)) = file_path {
         if let Some(index) = find_mutable_entry(mutable_entries, &path[..path_len]) {
             release_mutable_entry(&mut mutable_entries[index]);
+            persist_mutable_entries(persistent_store, mutable_entries)?;
             send_status_only(reply_handle, StorageTag::DirectoryRemoveReply, StorageStatus::Ok);
             return Ok(());
         }
@@ -822,6 +884,7 @@ fn handle_directory_remove_request(
                 return Ok(());
             }
             release_mutable_entry(&mut mutable_entries[index]);
+            persist_mutable_entries(persistent_store, mutable_entries)?;
             send_status_only(reply_handle, StorageTag::DirectoryRemoveReply, StorageStatus::Ok);
             return Ok(());
         }
@@ -839,6 +902,7 @@ fn handle_directory_open_file_request(
     entries: &[EntrySlot],
     mutable_entries: &mut [MutableEntry; MAX_MUTABLE_ENTRIES],
     blob_sessions: &mut [BlobSession; MAX_BLOB_SESSIONS],
+    persistent_store: Option<&mut PersistentStore>,
     session: &DirectorySession,
     message: &RawMessage,
 ) -> rt::Result<()> {
@@ -958,6 +1022,7 @@ fn handle_directory_open_file_request(
         mutable_entries[slot_index].data_capacity = INITIAL_FILE_CAPACITY;
         mutable_entries[slot_index].data_len = 0;
         mutable_entries[slot_index].occupied = true;
+        persist_mutable_entries(persistent_store, mutable_entries)?;
 
         let pair = rt::channel_create()?;
         blob_session.endpoint = pair.first;
@@ -1023,6 +1088,7 @@ fn handle_directory_open_file_request(
 fn handle_blob_request(
     bootstore_handle: Handle,
     mutable_entries: &mut [MutableEntry; MAX_MUTABLE_ENTRIES],
+    persistent_store: Option<&mut PersistentStore>,
     session: &mut BlobSession,
     message: &RawMessage,
 ) -> rt::Result<()> {
@@ -1036,7 +1102,7 @@ fn handle_blob_request(
             handle_read_request(bootstore_handle, mutable_entries, session, message)
         }
         x if x == StorageTag::WriteRequest as u32 => {
-            handle_write_request(mutable_entries, session, message)
+            handle_write_request(mutable_entries, persistent_store, session, message)
         }
         _ => Ok(()),
     }
@@ -1095,6 +1161,7 @@ fn handle_read_request(
 
 fn handle_write_request(
     mutable_entries: &mut [MutableEntry; MAX_MUTABLE_ENTRIES],
+    persistent_store: Option<&mut PersistentStore>,
     session: &mut BlobSession,
     message: &RawMessage,
 ) -> rt::Result<()> {
@@ -1143,6 +1210,7 @@ fn handle_write_request(
     let _ = rt::memory_write(entry.data_handle, offset, &bytes[..write_len])?;
     entry.data_len = total_len;
     session.data_len = total_len;
+    persist_mutable_entries(persistent_store, mutable_entries)?;
     reply.words[0] = StorageStatus::Ok as u32 as u64;
     reply.words[1] = total_len as u64;
     let _ = rt::channel_send(reply_handle, &reply);
@@ -1327,6 +1395,319 @@ fn compose_child_path(
         path[total_len - 1] = b'/';
     }
     Some((path, total_len))
+}
+
+fn initialize_persistent_store(
+    block_handle: Handle,
+    mutable_entries: &mut [MutableEntry; MAX_MUTABLE_ENTRIES],
+) -> rt::Result<Option<PersistentStore>> {
+    let info = rt::block_device_info(block_handle)?;
+    if info.backend != BlockDeviceBackend::VirtioPci as u32
+        || info.writable == 0
+        || info.block_size == 0
+        || info.block_count < 16
+    {
+        return Ok(None);
+    }
+    let block_size = info.block_size as usize;
+    let block_count = info.block_count as usize;
+    let slot_blocks = (block_count / 2).max(8);
+    let mut best_store = PersistentStore {
+        handle: block_handle,
+        block_size,
+        slot_blocks,
+        active_slot: 0,
+        generation: 0,
+    };
+    let mut best_generation = 0u64;
+    let mut loaded_any = false;
+
+    for slot in 0..2usize {
+        if let Some(generation) = load_persistent_slot(&best_store, slot, mutable_entries)? {
+            if !loaded_any || generation >= best_generation {
+                best_generation = generation;
+                best_store.active_slot = slot;
+                best_store.generation = generation;
+                loaded_any = true;
+            }
+        }
+    }
+
+    if loaded_any {
+        load_persistent_slot(&best_store, best_store.active_slot, mutable_entries)?;
+        let _ = rt::write_logf(
+            "storage",
+            format_args!(
+                "mounted persistent snapshot blocks={} generation={}",
+                slot_blocks, best_generation
+            ),
+        );
+    } else {
+        let _ = rt::write_logf(
+            "storage",
+            format_args!("initialized empty persistent snapshot blocks={}", slot_blocks),
+        );
+    }
+
+    Ok(Some(best_store))
+}
+
+fn persist_mutable_entries(
+    persistent_store: Option<&mut PersistentStore>,
+    mutable_entries: &[MutableEntry; MAX_MUTABLE_ENTRIES],
+) -> rt::Result<()> {
+    let Some(store) = persistent_store else {
+        return Ok(());
+    };
+    flush_persistent_store(store, mutable_entries)
+}
+
+fn load_persistent_slot(
+    store: &PersistentStore,
+    slot: usize,
+    mutable_entries: &mut [MutableEntry; MAX_MUTABLE_ENTRIES],
+) -> rt::Result<Option<u64>> {
+    let block_size = store.block_size;
+    let mut block = [0u8; BLOCK_BUFFER_BYTES];
+    if block_size > block.len() {
+        return Ok(None);
+    }
+    rt::block_device_read(
+        store.handle,
+        (slot * store.slot_blocks) as u64,
+        &mut block[..block_size],
+    )?;
+    if block[..PERSISTENT_MAGIC.len()] != PERSISTENT_MAGIC {
+        return Ok(None);
+    }
+    let version = u32::from_le_bytes(block[8..12].try_into().unwrap());
+    if version != PERSISTENT_VERSION {
+        return Ok(None);
+    }
+    let generation = u64::from_le_bytes(block[16..24].try_into().unwrap());
+    let entry_count = u32::from_le_bytes(block[12..16].try_into().unwrap()) as usize;
+    let records_offset = u64::from_le_bytes(block[24..32].try_into().unwrap()) as usize;
+    let data_offset = u64::from_le_bytes(block[32..40].try_into().unwrap()) as usize;
+    let total_bytes = u64::from_le_bytes(block[40..48].try_into().unwrap()) as usize;
+    let minimum_data_offset =
+        align_up(records_offset + entry_count * PERSISTENT_RECORD_BYTES, block_size);
+    if entry_count > MAX_MUTABLE_ENTRIES
+        || records_offset < block_size
+        || data_offset < minimum_data_offset
+        || total_bytes == 0
+        || total_bytes > store.slot_blocks * block_size
+    {
+        return Ok(None);
+    }
+
+    for entry in mutable_entries.iter_mut() {
+        release_mutable_entry(entry);
+    }
+
+    for record_index in 0..entry_count {
+        let record_offset = records_offset + record_index * PERSISTENT_RECORD_BYTES;
+        let block_index = record_offset / block_size;
+        let block_offset = record_offset % block_size;
+        if block_offset + PERSISTENT_RECORD_BYTES > block_size {
+            return Ok(None);
+        }
+        rt::block_device_read(
+            store.handle,
+            (slot * store.slot_blocks + block_index) as u64,
+            &mut block[..block_size],
+        )?;
+        let record = &block[block_offset..block_offset + PERSISTENT_RECORD_BYTES];
+        let occupied = record[0] != 0;
+        if !occupied {
+            continue;
+        }
+        let kind = match record[1] {
+            0 => StorageEntryKind::File,
+            1 => StorageEntryKind::Directory,
+            _ => return Ok(None),
+        };
+        let path_len = u16::from_le_bytes(record[2..4].try_into().unwrap()) as usize;
+        let data_len = u64::from_le_bytes(record[8..16].try_into().unwrap()) as usize;
+        let file_offset = u64::from_le_bytes(record[16..24].try_into().unwrap()) as usize;
+        if path_len == 0 || path_len > MAX_STORAGE_PATH {
+            return Ok(None);
+        }
+        let Some(slot_entry) = mutable_entries.iter_mut().find(|entry| !entry.occupied) else {
+            return Ok(None);
+        };
+        *slot_entry = MutableEntry::empty();
+        slot_entry.kind = kind;
+        slot_entry.path_len = path_len;
+        slot_entry.path[..path_len].copy_from_slice(&record[24..24 + path_len]);
+        slot_entry.occupied = true;
+        if kind == StorageEntryKind::File {
+            let capacity = data_len.max(INITIAL_FILE_CAPACITY);
+            slot_entry.data_handle = rt::memory_create(capacity, true)?;
+            slot_entry.data_capacity = capacity;
+            slot_entry.data_len = data_len;
+            load_file_data(store, slot, file_offset, data_len, slot_entry.data_handle)?;
+        }
+    }
+
+    Ok(Some(generation))
+}
+
+fn load_file_data(
+    store: &PersistentStore,
+    slot: usize,
+    offset: usize,
+    len: usize,
+    destination: Handle,
+) -> rt::Result<()> {
+    if len == 0 {
+        return Ok(());
+    }
+    let block_size = store.block_size;
+    let mut block = [0u8; BLOCK_BUFFER_BYTES];
+    let mut copied = 0usize;
+    while copied < len {
+        let absolute = offset + copied;
+        let block_index = absolute / block_size;
+        let block_offset = absolute % block_size;
+        let copy_len = (len - copied).min(block_size - block_offset);
+        rt::block_device_read(
+            store.handle,
+            (slot * store.slot_blocks + block_index) as u64,
+            &mut block[..block_size],
+        )?;
+        let _ = rt::memory_write(destination, copied, &block[block_offset..block_offset + copy_len])?;
+        copied += copy_len;
+    }
+    Ok(())
+}
+
+fn flush_persistent_store(
+    store: &mut PersistentStore,
+    mutable_entries: &[MutableEntry; MAX_MUTABLE_ENTRIES],
+) -> rt::Result<()> {
+    let block_size = store.block_size;
+    let mut header_block = [0u8; BLOCK_BUFFER_BYTES];
+    let mut scratch_block = [0u8; BLOCK_BUFFER_BYTES];
+    if block_size > header_block.len() {
+        return Err(rt::Error::BufferTooSmall);
+    }
+
+    let next_slot = (store.active_slot + 1) % 2;
+    let mut records = 0usize;
+    let records_offset = block_size;
+    let mut data_cursor;
+    for _entry in mutable_entries.iter().filter(|entry| entry.occupied && is_persistent_path(&entry.path[..entry.path_len])) {
+        records += 1;
+    }
+    data_cursor = align_up(records_offset + records * PERSISTENT_RECORD_BYTES, block_size);
+    let data_offset = data_cursor;
+    for entry in mutable_entries
+        .iter()
+        .filter(|entry| entry.occupied && is_persistent_path(&entry.path[..entry.path_len]))
+    {
+        if entry.kind == StorageEntryKind::File {
+            data_cursor = align_up(data_cursor, block_size);
+            data_cursor = data_cursor.saturating_add(entry.data_len);
+        }
+    }
+    let total_bytes = align_up(data_cursor, block_size);
+    if total_bytes > store.slot_blocks * block_size {
+        return Err(rt::Error::Busy);
+    }
+
+    let generation = store.generation.saturating_add(1);
+    header_block[..8].copy_from_slice(&PERSISTENT_MAGIC);
+    header_block[8..12].copy_from_slice(&PERSISTENT_VERSION.to_le_bytes());
+    header_block[12..16].copy_from_slice(&(records as u32).to_le_bytes());
+    header_block[16..24].copy_from_slice(&generation.to_le_bytes());
+    header_block[24..32].copy_from_slice(&(records_offset as u64).to_le_bytes());
+    header_block[32..40].copy_from_slice(&(data_offset as u64).to_le_bytes());
+    header_block[40..48].copy_from_slice(&(total_bytes as u64).to_le_bytes());
+
+    rt::block_device_write(
+        store.handle,
+        (next_slot * store.slot_blocks) as u64,
+        &header_block[..block_size],
+    )?;
+
+    let mut record_cursor = 0usize;
+    let mut file_cursor = data_offset;
+    for entry in mutable_entries.iter().filter(|entry| entry.occupied && is_persistent_path(&entry.path[..entry.path_len])) {
+        let record_offset = records_offset + record_cursor * PERSISTENT_RECORD_BYTES;
+        let block_index = record_offset / block_size;
+        let block_offset = record_offset % block_size;
+        if block_offset == 0 {
+            scratch_block[..block_size].fill(0);
+        }
+        let record = &mut scratch_block[block_offset..block_offset + PERSISTENT_RECORD_BYTES];
+        record.fill(0);
+        record[0] = 1;
+        record[1] = entry.kind as u32 as u8;
+        record[2..4].copy_from_slice(&(entry.path_len as u16).to_le_bytes());
+        record[8..16].copy_from_slice(&(entry.data_len as u64).to_le_bytes());
+        if entry.kind == StorageEntryKind::File {
+            file_cursor = align_up(file_cursor, block_size);
+            record[16..24].copy_from_slice(&(file_cursor as u64).to_le_bytes());
+        }
+        record[24..24 + entry.path_len].copy_from_slice(&entry.path[..entry.path_len]);
+        let end_of_block = block_offset + PERSISTENT_RECORD_BYTES == block_size || record_cursor + 1 == records;
+        if end_of_block {
+            rt::block_device_write(
+                store.handle,
+                (next_slot * store.slot_blocks + block_index) as u64,
+                &scratch_block[..block_size],
+            )?;
+        }
+        if entry.kind == StorageEntryKind::File {
+            flush_file_data(store, next_slot, file_cursor, entry)?;
+            file_cursor += entry.data_len;
+        }
+        record_cursor += 1;
+    }
+
+    store.active_slot = next_slot;
+    store.generation = generation;
+    Ok(())
+}
+
+fn flush_file_data(
+    store: &PersistentStore,
+    slot: usize,
+    offset: usize,
+    entry: &MutableEntry,
+) -> rt::Result<()> {
+    if entry.data_len == 0 {
+        return Ok(());
+    }
+    let block_size = store.block_size;
+    let mut block = [0u8; BLOCK_BUFFER_BYTES];
+    let mut copied = 0usize;
+    while copied < entry.data_len {
+        block[..block_size].fill(0);
+        let copy_len = (entry.data_len - copied).min(block_size);
+        let read = rt::memory_read(entry.data_handle, copied, &mut block[..copy_len])?;
+        rt::block_device_write(
+            store.handle,
+            (slot * store.slot_blocks + (offset + copied) / block_size) as u64,
+            &block[..block_size],
+        )?;
+        copied += read;
+    }
+    Ok(())
+}
+
+fn align_up(value: usize, align: usize) -> usize {
+    if value % align == 0 {
+        value
+    } else {
+        value + (align - (value % align))
+    }
+}
+
+fn is_persistent_path(path: &[u8]) -> bool {
+    PERSISTENT_ROOTS
+        .iter()
+        .any(|root| path.len() >= root.len() && path[..root.len()] == **root)
 }
 
 fn release_mutable_entry(entry: &mut MutableEntry) {

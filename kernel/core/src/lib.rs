@@ -3,6 +3,7 @@
 extern crate alloc;
 
 pub mod audio;
+pub mod block;
 pub mod bootstrap;
 pub mod capability;
 pub mod display;

@@ -1,10 +1,10 @@
 use serviceos_abi::{
     AudioEndpointInfo as AbiAudioEndpointInfo, AudioToneRequest as AbiAudioToneRequest,
-    DisplayOutputInfo as AbiDisplayOutputInfo, Handle, HandlePair, INPUT_SOURCE_FLAG_NONBLOCK,
-    IPC_FLAG_NONBLOCK, IPC_MAX_HANDLES, IPC_MAX_WORDS, InputEventInfo as AbiInputEventInfo,
-    InputSourceInfo as AbiInputSourceInfo, PACKET_INTERFACE_FLAG_NONBLOCK,
-    PacketInterfaceInfo as AbiPacketInterfaceInfo, RawMessage, TaskStateCode,
-    TaskStatus as AbiTaskStatus,
+    BlockDeviceInfo as AbiBlockDeviceInfo, DisplayOutputInfo as AbiDisplayOutputInfo, Handle,
+    HandlePair, INPUT_SOURCE_FLAG_NONBLOCK, IPC_FLAG_NONBLOCK, IPC_MAX_HANDLES, IPC_MAX_WORDS,
+    InputEventInfo as AbiInputEventInfo, InputSourceInfo as AbiInputSourceInfo,
+    PACKET_INTERFACE_FLAG_NONBLOCK, PacketInterfaceInfo as AbiPacketInterfaceInfo, RawMessage,
+    TaskStateCode, TaskStatus as AbiTaskStatus,
 };
 
 use crate::{
@@ -26,6 +26,40 @@ use super::{
 pub(super) static DEBUG_LOG_WRITER: spin::Once<fn(&[u8])> = spin::Once::new();
 pub(super) static DEBUG_CONSOLE_READER: spin::Once<fn() -> Option<u8>> = spin::Once::new();
 pub(super) static DEBUG_CONSOLE_WRITER: spin::Once<fn(&[u8])> = spin::Once::new();
+
+fn map_spawn_error(error: SpawnError) -> SyscallError {
+    match error {
+        SpawnError::ImageNotFound => SyscallError::NotFound,
+        SpawnError::Capability(error) => map_capability_error(error),
+        SpawnError::Scheduler(_) => SyscallError::Busy,
+        SpawnError::AddressSpace(AddressSpacePreparationError::Load(LoadError::FrameExhausted))
+        | SpawnError::AddressSpace(AddressSpacePreparationError::Mapping(
+            crate::memory::MappingError::FrameAllocationFailed,
+        )) => SyscallError::CapacityExceeded,
+        SpawnError::AddressSpace(AddressSpacePreparationError::Load(
+            LoadError::UnsupportedFormat
+            | LoadError::UnsupportedAbi
+            | LoadError::UnsupportedHeader
+            | LoadError::UnsupportedMachine,
+        )) => SyscallError::Unsupported,
+        SpawnError::AddressSpace(AddressSpacePreparationError::Load(
+            LoadError::Truncated | LoadError::InvalidMagic | LoadError::AddressAlignment,
+        ))
+        | SpawnError::AddressSpace(AddressSpacePreparationError::Load(LoadError::Mapping(
+            crate::memory::MappingError::Unsupported,
+        ))) => SyscallError::InvalidArgument,
+        SpawnError::AddressSpace(AddressSpacePreparationError::Load(LoadError::Mapping(_)))
+        | SpawnError::AddressSpace(AddressSpacePreparationError::Mapping(_)) => SyscallError::Busy,
+        SpawnError::ObjectsUnavailable
+        | SpawnError::TasksUnavailable
+        | SpawnError::MemoryUnavailable
+        | SpawnError::ImageResolverUnavailable
+        | SpawnError::ArchHooksUnavailable
+        | SpawnError::AddressSpace(AddressSpacePreparationError::NotInitialized) => {
+            SyscallError::NotInitialized
+        }
+    }
+}
 
 pub(super) fn handle_abi_version(_context: &SyscallContext) -> SyscallReturn {
     SyscallReturn::success(SYSCALL_ABI_VERSION)
@@ -304,20 +338,7 @@ pub(super) fn handle_service_spawn(context: &SyscallContext) -> SyscallReturn {
         bootstrap_transfer,
     ) {
         Ok(spawned) => spawned,
-        Err(SpawnError::ImageNotFound) => return SyscallReturn::error(SyscallError::NotFound),
-        Err(SpawnError::Capability(error)) => {
-            return SyscallReturn::error(map_capability_error(error));
-        }
-        Err(SpawnError::Scheduler(_)) => return SyscallReturn::error(SyscallError::Busy),
-        Err(SpawnError::AddressSpace(AddressSpacePreparationError::Load(
-            LoadError::FrameExhausted,
-        )))
-        | Err(SpawnError::AddressSpace(AddressSpacePreparationError::Mapping(
-            crate::memory::MappingError::FrameAllocationFailed,
-        ))) => {
-            return SyscallReturn::error(SyscallError::CapacityExceeded);
-        }
-        Err(_) => return SyscallReturn::error(SyscallError::NotInitialized),
+        Err(error) => return SyscallReturn::error(map_spawn_error(error)),
     };
 
     match task
@@ -570,20 +591,7 @@ pub(super) fn handle_task_spawn_image(context: &SyscallContext) -> SyscallReturn
     let spawned =
         match user::spawn_image_bytes(&image_bytes, TaskRole::UserService, bootstrap_transfer) {
             Ok(spawned) => spawned,
-            Err(SpawnError::ImageNotFound) => return SyscallReturn::error(SyscallError::NotFound),
-            Err(SpawnError::Capability(error)) => {
-                return SyscallReturn::error(map_capability_error(error));
-            }
-            Err(SpawnError::Scheduler(_)) => return SyscallReturn::error(SyscallError::Busy),
-            Err(SpawnError::AddressSpace(AddressSpacePreparationError::Load(
-                LoadError::FrameExhausted,
-            )))
-            | Err(SpawnError::AddressSpace(AddressSpacePreparationError::Mapping(
-                crate::memory::MappingError::FrameAllocationFailed,
-            ))) => {
-                return SyscallReturn::error(SyscallError::CapacityExceeded);
-            }
-            Err(_) => return SyscallReturn::error(SyscallError::NotInitialized),
+            Err(error) => return SyscallReturn::error(map_spawn_error(error)),
         };
     match task
         .capability_space()
@@ -591,6 +599,108 @@ pub(super) fn handle_task_spawn_image(context: &SyscallContext) -> SyscallReturn
     {
         Ok(handle) => SyscallReturn::success(handle.0 as u64),
         Err(error) => SyscallReturn::error(map_capability_error(error)),
+    }
+}
+
+pub(super) fn handle_block_device_info(context: &SyscallContext) -> SyscallReturn {
+    let Ok(current_task) = current_task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let object = match resolve_object(
+        &current_task,
+        context.arguments[0] as Handle,
+        CapabilityRights::READ,
+    ) {
+        Ok(view) => view.object,
+        Err(error) => return SyscallReturn::error(error),
+    };
+    let Some(device) = object.block_device() else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Ok(info_out) = (unsafe { user_mut::<AbiBlockDeviceInfo>(context.arguments[1]) }) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    *info_out = device.info();
+    SyscallReturn::success(0)
+}
+
+pub(super) fn handle_block_device_read(context: &SyscallContext) -> SyscallReturn {
+    let Ok(current_task) = current_task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let object = match resolve_object(
+        &current_task,
+        context.arguments[0] as Handle,
+        CapabilityRights::READ,
+    ) {
+        Ok(view) => view.object,
+        Err(error) => return SyscallReturn::error(error),
+    };
+    let Some(device) = object.block_device() else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Ok(length) = usize::try_from(context.arguments[3]) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Ok(buffer) = (unsafe { user_slice_mut(context.arguments[2], length) }) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+
+    match device.read_blocks(context.arguments[1], buffer) {
+        Ok(bytes) => SyscallReturn::success(bytes as u64),
+        Err(crate::block::BlockDeviceError::InvalidOffset) => {
+            SyscallReturn::error(SyscallError::InvalidArgument)
+        }
+        Err(crate::block::BlockDeviceError::BufferSize) => {
+            SyscallReturn::error(SyscallError::BufferTooSmall)
+        }
+        Err(crate::block::BlockDeviceError::Busy) => SyscallReturn::error(SyscallError::Busy),
+        Err(crate::block::BlockDeviceError::Unsupported) => {
+            SyscallReturn::error(SyscallError::Unsupported)
+        }
+        Err(crate::block::BlockDeviceError::Denied) => {
+            SyscallReturn::error(SyscallError::PermissionDenied)
+        }
+    }
+}
+
+pub(super) fn handle_block_device_write(context: &SyscallContext) -> SyscallReturn {
+    let Ok(current_task) = current_task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let object = match resolve_object(
+        &current_task,
+        context.arguments[0] as Handle,
+        CapabilityRights::WRITE,
+    ) {
+        Ok(view) => view.object,
+        Err(error) => return SyscallReturn::error(error),
+    };
+    let Some(device) = object.block_device() else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Ok(length) = usize::try_from(context.arguments[3]) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Ok(buffer) = (unsafe { user_slice(context.arguments[2], length) }) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+
+    match device.write_blocks(context.arguments[1], buffer) {
+        Ok(bytes) => SyscallReturn::success(bytes as u64),
+        Err(crate::block::BlockDeviceError::InvalidOffset) => {
+            SyscallReturn::error(SyscallError::InvalidArgument)
+        }
+        Err(crate::block::BlockDeviceError::BufferSize) => {
+            SyscallReturn::error(SyscallError::BufferTooSmall)
+        }
+        Err(crate::block::BlockDeviceError::Busy) => SyscallReturn::error(SyscallError::Busy),
+        Err(crate::block::BlockDeviceError::Unsupported) => {
+            SyscallReturn::error(SyscallError::Unsupported)
+        }
+        Err(crate::block::BlockDeviceError::Denied) => {
+            SyscallReturn::error(SyscallError::PermissionDenied)
+        }
     }
 }
 

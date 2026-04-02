@@ -18,6 +18,7 @@ pub(crate) struct BootstrapResource {
 #[derive(Clone, Copy)]
 pub(crate) struct BootstrapResources {
     pub(crate) bootstore: BootstrapResource,
+    pub(crate) block: Option<BootstrapResource>,
     pub(crate) network: Option<BootstrapResource>,
     pub(crate) display: Option<BootstrapResource>,
     pub(crate) input: Option<BootstrapResource>,

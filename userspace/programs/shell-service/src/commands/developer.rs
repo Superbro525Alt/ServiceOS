@@ -11,6 +11,7 @@ const MAX_JOBS: usize = 8;
 const MAX_NAME: usize = 64;
 const MAX_PATH: usize = 96;
 const MAX_OUTPUT_CHUNK: usize = (rt::IPC_MAX_WORDS - 1) * 8;
+const MAX_STORAGE_PATH: usize = 96;
 
 pub(crate) fn cmd_dev<'a, I>(
     bootstrap: rt::Handle,
@@ -46,10 +47,14 @@ where
             Some(job_id) => cmd_artifact(bootstrap, output, job_id),
             None => write_output_linef(output, format_args!("usage: dev artifact <job-id>")),
         },
+        Some("save") => match (parts.next().and_then(parse_u32), parts.next()) {
+            (Some(job_id), Some(path)) => cmd_save_artifact(bootstrap, output, job_id, path),
+            _ => write_output_linef(output, format_args!("usage: dev save <job-id> <path>")),
+        },
         _ => write_output_linef(
             output,
             format_args!(
-                "usage: dev <toolchains|toolchain|workspaces|workspace|build|jobs|artifact> ..."
+                "usage: dev <toolchains|toolchain|workspaces|workspace|build|jobs|artifact|save> ..."
             ),
         ),
     }
@@ -305,6 +310,53 @@ fn cmd_artifact(bootstrap: rt::Handle, output: ShellOutput, job_id: u32) -> rt::
     )
 }
 
+fn cmd_save_artifact(
+    bootstrap: rt::Handle,
+    output: ShellOutput,
+    job_id: u32,
+    path: &str,
+) -> rt::Result<()> {
+    let developer = match lookup_developer_service(bootstrap, output)? {
+        Some(handle) => handle,
+        None => return Ok(()),
+    };
+    let mut name = [0u8; MAX_NAME];
+    let (artifact, size, format, _) = rt::developer_artifact_open(developer, job_id, &mut name)?;
+    let _ = rt::handle_close(developer);
+
+    let storage = rt::lookup_service(bootstrap, ServiceId::Storage)?;
+    let mut parent_buffer = rt::FixedLogBuffer::<MAX_STORAGE_PATH>::new();
+    let file_name = split_parent_path(path, &mut parent_buffer)?;
+    let directory = rt::storage_open_directory(storage, parent_buffer.as_str(), true)?;
+    let _ = rt::handle_close(storage);
+    let (file, _) = rt::storage_directory_open_file(directory, file_name, true, true)?;
+    let _ = rt::handle_close(directory);
+
+    let mut offset = 0usize;
+    let mut chunk = [0u8; 96];
+    while offset < size {
+        let chunk_len = (size - offset).min(chunk.len());
+        let read = rt::memory_read(artifact, offset, &mut chunk[..chunk_len])?;
+        if read == 0 {
+            break;
+        }
+        let _ = rt::storage_write(file, offset, size, &chunk[..read])?;
+        offset += read;
+    }
+    let _ = rt::storage_blob_close(file);
+    let _ = rt::handle_close(artifact);
+    write_output_linef(
+        output,
+        format_args!(
+            "saved job{} artifact to {} format={} size={}",
+            job_id,
+            path,
+            format_name(format),
+            size,
+        ),
+    )
+}
+
 fn lookup_developer_service(
     bootstrap: rt::Handle,
     output: ShellOutput,
@@ -333,6 +385,25 @@ fn parse_target(value: &str) -> Option<DeveloperTarget> {
         "windows" => Some(DeveloperTarget::WindowsX64),
         "macos" => Some(DeveloperTarget::MacosX64),
         _ => None,
+    }
+}
+
+fn split_parent_path<'a>(
+    path: &'a str,
+    parent_buffer: &mut rt::FixedLogBuffer<MAX_STORAGE_PATH>,
+) -> rt::Result<&'a str> {
+    let trimmed = path.trim_matches('/');
+    if trimmed.is_empty() {
+        return Err(rt::Error::InvalidArgument);
+    }
+    match trimmed.rsplit_once('/') {
+        Some((parent, name)) if !name.is_empty() => {
+            let _ = parent_buffer.write_str(parent);
+            let _ = parent_buffer.write_str("/");
+            Ok(name)
+        }
+        Some(_) => Err(rt::Error::InvalidArgument),
+        None => Ok(trimmed),
     }
 }
 

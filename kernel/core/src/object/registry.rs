@@ -6,6 +6,7 @@ use spin::Mutex;
 
 use crate::{
     audio::{AudioBackend, AudioEndpointObject},
+    block::{BlockBackend, BlockDeviceObject},
     display::{DisplayBackend, DisplayOutputObject},
     input::{self, InputBackend, InputSourceObject},
     ipc::ChannelEndpointObject,
@@ -224,6 +225,16 @@ impl ObjectRegistry {
                 kind: ObjectKind::AudioEndpoint,
             },
             body: KernelObject::AudioEndpoint(AudioEndpointObject::new(backend)),
+        })
+    }
+
+    pub fn create_block_device(&self, backend: Arc<dyn BlockBackend>) -> KernelObjectRef {
+        self.register(KernelObjectRecord {
+            header: ObjectHeader {
+                id: self.allocate_id(ObjectKind::BlockDevice),
+                kind: ObjectKind::BlockDevice,
+            },
+            body: KernelObject::BlockDevice(BlockDeviceObject::new(backend)),
         })
     }
 

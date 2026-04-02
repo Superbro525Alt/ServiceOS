@@ -28,6 +28,10 @@ pub fn run_platform(artifacts: &BuildArtifacts, image: &Path) -> Result<(), Box<
 }
 
 fn run_qemu(disk_image: &Path) -> Result<(), Box<dyn Error>> {
+    let data_image = disk_image
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("serviceos-data.img");
     let qemu_binary = find_qemu_binary().ok_or_else(|| {
         "qemu-system-x86_64 not found; install QEMU or set QEMU_SYSTEM_X86_64 to an absolute path"
     })?;
@@ -44,12 +48,16 @@ fn run_qemu(disk_image: &Path) -> Result<(), Box<dyn Error>> {
     if !disk_image.exists() {
         return Err(format!("QEMU disk image is missing: {}", disk_image.display()).into());
     }
+    if !data_image.exists() {
+        return Err(format!("QEMU data image is missing: {}", data_image.display()).into());
+    }
 
     println!("Launching QEMU with:");
     println!("  binary: {}", qemu_binary.display());
     println!("  firmware code: {}", ovmf_code.display());
     println!("  firmware vars: {}", ovmf_vars.display());
     println!("  disk image: {}", disk_image.display());
+    println!("  data image: {}", data_image.display());
     println!(
         "  display mode: {}",
         if headless { "headless" } else { "graphical" }
@@ -105,6 +113,11 @@ fn run_qemu(disk_image: &Path) -> Result<(), Box<dyn Error>> {
         "-drive",
         &format!("format=raw,file={}", disk_image.display()),
     ]);
+    command.args([
+        "-drive",
+        &format!("if=none,id=data0,format=raw,file={}", data_image.display()),
+    ]);
+    command.args(["-device", "virtio-blk-pci,drive=data0"]);
     if let Some(extra_args) = env::var_os("QEMU_EXTRA_ARGS") {
         for arg in extra_args.to_string_lossy().split_whitespace() {
             command.arg(arg);

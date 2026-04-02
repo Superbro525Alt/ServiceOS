@@ -7,7 +7,7 @@ use rt::{
 };
 
 use crate::graph::{start_service, wait_until_ready};
-use crate::state::{ServicePhase, ServiceSlot, MAX_MANIFEST_BYTES, MAX_SERVICE_SLOTS};
+use crate::state::{BootstrapResources, ServicePhase, ServiceSlot, MAX_MANIFEST_BYTES, MAX_SERVICE_SLOTS};
 use crate::util::{
     allocate_slot, compact_service_slots, emit_manager_event, encode_phase, find_slot_index,
     find_slot_index_checked, lookup_rights, manager_action_from_word, manager_phase,
@@ -18,6 +18,7 @@ pub(crate) fn pump_control_channels(
     slots: &mut [ServiceSlot; MAX_SERVICE_SLOTS],
     service_count: &mut usize,
     bootstrap_authority: rt::Handle,
+    bootstrap_resources: BootstrapResources,
 ) -> rt::Result<()> {
     let mut index = 0usize;
     while index < *service_count {
@@ -29,7 +30,14 @@ pub(crate) fn pump_control_channels(
         let mut message = RawMessage::empty(0);
         match rt::channel_receive_nonblocking(slots[index].control_handle, &mut message) {
             Ok(()) => {
-                handle_control_message(slots, service_count, index, bootstrap_authority, &message)?
+                handle_control_message(
+                    slots,
+                    service_count,
+                    index,
+                    bootstrap_authority,
+                    bootstrap_resources,
+                    &message,
+                )?
             }
             Err(rt::Error::QueueEmpty) => {}
             Err(error) => return Err(error),
@@ -44,6 +52,7 @@ fn handle_control_message(
     service_count: &mut usize,
     service_index: usize,
     bootstrap_authority: rt::Handle,
+    bootstrap_resources: BootstrapResources,
     message: &RawMessage,
 ) -> rt::Result<()> {
     match message.tag {
@@ -126,6 +135,7 @@ fn handle_control_message(
                 service_count,
                 service_index,
                 bootstrap_authority,
+                bootstrap_resources,
                 message,
             )?;
         }
@@ -590,6 +600,7 @@ fn handle_activate_request(
     service_count: &mut usize,
     service_index: usize,
     bootstrap_authority: rt::Handle,
+    bootstrap_resources: BootstrapResources,
     message: &RawMessage,
 ) -> rt::Result<()> {
     let control_handle = slots[service_index].control_handle;
@@ -646,8 +657,22 @@ fn handle_activate_request(
         ..ServiceSlot::empty()
     };
 
-    let result = start_service(slots, *service_count, target_index, bootstrap_authority, None)
-        .and_then(|_| wait_until_ready(slots, service_count, bootstrap_authority, manifest.service_id));
+    let result = start_service(
+        slots,
+        *service_count,
+        target_index,
+        bootstrap_authority,
+        bootstrap_resources,
+    )
+    .and_then(|_| {
+        wait_until_ready(
+            slots,
+            service_count,
+            bootstrap_authority,
+            bootstrap_resources,
+            manifest.service_id,
+        )
+    });
 
     reply.words[0] = if result.is_ok() {
         ManagerStatus::Ok as u32 as u64

@@ -127,6 +127,13 @@ impl CapabilityRights {
             .union(Self::DUPLICATE)
             .union(Self::TRANSFER)
     }
+
+    pub const fn block_device() -> Self {
+        Self::READ
+            .union(Self::WRITE)
+            .union(Self::DUPLICATE)
+            .union(Self::TRANSFER)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

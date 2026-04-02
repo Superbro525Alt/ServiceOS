@@ -82,12 +82,13 @@ pub(crate) fn activate_base_service_graph(
                     *service_count,
                     index,
                     bootstrap_authority,
-                    bootstrap_resource_for(slots[index].manifest.service_id, bootstrap_resources),
+                    bootstrap_resources,
                 )?;
                 wait_until_ready(
                     slots,
                     service_count,
                     bootstrap_authority,
+                    bootstrap_resources,
                     slots[index].manifest.service_id,
                 )?;
                 progress = true;
@@ -105,9 +106,10 @@ pub(crate) fn start_service(
     service_count: usize,
     index: usize,
     bootstrap_authority: rt::Handle,
-    bootstrap_resource: Option<(rt::Handle, usize, u64)>,
+    bootstrap_resources: BootstrapResources,
 ) -> rt::Result<()> {
     let manifest = slots[index].manifest;
+    let bootstrap_resource = bootstrap_resource_for(manifest.service_id, bootstrap_resources);
     if bootstrap_resource.is_none() && !dependencies_ready(slots, service_count, index) {
         return Err(rt::Error::Busy);
     }
@@ -140,6 +142,22 @@ pub(crate) fn start_service(
         )?;
         startup.handle_rights[0] = bootstrap_rights;
         handle_index = 1;
+    }
+    if manifest.service_id == ServiceId::Storage {
+        if let Some((handle, len, block_rights)) = bootstrap_resources
+            .block
+            .map(|resource| (resource.handle, resource.len, resource.rights))
+        {
+            startup.handles[handle_index] = rt::handle_duplicate(
+                handle,
+                block_rights | rights::DUPLICATE | rights::TRANSFER,
+            )?;
+            startup.handle_rights[handle_index] = block_rights;
+            startup.handle_count += 1;
+            handle_index += 1;
+            startup.word_count = 6;
+            startup.words[5] = len as u64;
+        }
     }
 
     if handle_index + manifest.grant_count + manifest.resource_count > IPC_MAX_HANDLES {
@@ -204,10 +222,11 @@ pub(crate) fn wait_until_ready(
     slots: &mut [ServiceSlot; MAX_SERVICE_SLOTS],
     service_count: &mut usize,
     bootstrap_authority: rt::Handle,
+    bootstrap_resources: BootstrapResources,
     service_id: ServiceId,
 ) -> rt::Result<()> {
     loop {
-        pump_control_channels(slots, service_count, bootstrap_authority)?;
+        pump_control_channels(slots, service_count, bootstrap_authority, bootstrap_resources)?;
         let slot_index = find_slot_index(slots, *service_count, service_id)?;
         let slot = &slots[slot_index];
         if slot.phase == ServicePhase::Ready {
@@ -234,7 +253,9 @@ pub(crate) fn supervision_loop(
     bootstrap_resources: BootstrapResources,
 ) -> u64 {
     loop {
-        if pump_control_channels(slots, service_count, bootstrap_authority).is_err() {
+        if pump_control_channels(slots, service_count, bootstrap_authority, bootstrap_resources)
+            .is_err()
+        {
             return 0xf610;
         }
 
@@ -263,13 +284,21 @@ pub(crate) fn supervision_loop(
                     *service_count,
                     index,
                     bootstrap_authority,
-                    bootstrap_resource_for(service_id, bootstrap_resources),
+                    bootstrap_resources,
                 )
                 .is_err()
                 {
                     return 0xf620 + index as u64;
                 }
-                if wait_until_ready(slots, service_count, bootstrap_authority, service_id).is_err() {
+                if wait_until_ready(
+                    slots,
+                    service_count,
+                    bootstrap_authority,
+                    bootstrap_resources,
+                    service_id,
+                )
+                .is_err()
+                {
                     return 0xf630 + index as u64;
                 }
                 continue;
@@ -309,13 +338,21 @@ pub(crate) fn supervision_loop(
                 *service_count,
                 index,
                 bootstrap_authority,
-                bootstrap_resource_for(service_id, bootstrap_resources),
+                bootstrap_resources,
             )
             .is_err()
             {
                 return 0xf650 + index as u64;
             }
-            if wait_until_ready(slots, service_count, bootstrap_authority, service_id).is_err() {
+            if wait_until_ready(
+                slots,
+                service_count,
+                bootstrap_authority,
+                bootstrap_resources,
+                service_id,
+            )
+            .is_err()
+            {
                 return 0xf660 + index as u64;
             }
         }

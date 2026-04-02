@@ -130,7 +130,7 @@ fn send_report(
 }
 
 fn build_serviceos_flat(message: &[u8], output: &mut [u8]) -> usize {
-    let code_len = 31usize + message.len();
+    let code_len = 28usize + message.len();
     let file_size = code_len as u64;
     let mut cursor = 0usize;
     output[cursor..cursor + 8].copy_from_slice(b"SOSUIMG\0");
@@ -155,7 +155,7 @@ fn build_serviceos_flat(message: &[u8], output: &mut [u8]) -> usize {
     cursor += 8;
 
     let code_start = cursor;
-    let message_offset = 31i32 - 7;
+    let message_offset = 21i32;
     output[cursor..cursor + 3].copy_from_slice(&[0x48, 0x8d, 0x3d]);
     cursor += 3;
     output[cursor..cursor + 4].copy_from_slice(&message_offset.to_le_bytes());

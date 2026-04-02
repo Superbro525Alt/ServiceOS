@@ -2,6 +2,7 @@ use alloc::sync::{Arc, Weak};
 
 use crate::{
     audio::AudioEndpointObject,
+    block::BlockDeviceObject,
     display::DisplayOutputObject,
     input::InputSourceObject,
     ipc::ChannelEndpointObject,
@@ -25,6 +26,7 @@ pub enum ObjectKind {
     DisplayOutput,
     InputSource,
     AudioEndpoint,
+    BlockDevice,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -53,6 +55,7 @@ pub enum KernelObject {
     DisplayOutput(DisplayOutputObject),
     InputSource(InputSourceObject),
     AudioEndpoint(AudioEndpointObject),
+    BlockDevice(BlockDeviceObject),
 }
 
 impl KernelObjectRecord {
@@ -141,6 +144,13 @@ impl KernelObjectRecord {
     pub fn audio_endpoint(&self) -> Option<&AudioEndpointObject> {
         match &self.body {
             KernelObject::AudioEndpoint(endpoint) => Some(endpoint),
+            _ => None,
+        }
+    }
+
+    pub fn block_device(&self) -> Option<&BlockDeviceObject> {
+        match &self.body {
+            KernelObject::BlockDevice(device) => Some(device),
             _ => None,
         }
     }

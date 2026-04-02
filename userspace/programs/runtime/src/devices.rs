@@ -1,10 +1,50 @@
 use crate::{
-    syscall1, syscall2, syscall3, syscall4, AudioEndpointInfo, AudioToneRequest, DisplayOutputBackend,
-    DisplayOutputInfo, DisplayOutputState, DisplayPixelFormat, Handle, InputEventInfo,
-    InputSourceBackend, InputSourceInfo, PacketInterfaceBackend, PacketInterfaceInfo,
-    PacketInterfaceLinkState, Result, SyscallNumber, INPUT_SOURCE_FLAG_NONBLOCK,
+    syscall1, syscall2, syscall3, syscall4, AudioEndpointInfo, AudioToneRequest, BlockDeviceBackend,
+    BlockDeviceInfo, DisplayOutputBackend, DisplayOutputInfo, DisplayOutputState,
+    DisplayPixelFormat, Handle, InputEventInfo, InputSourceBackend, InputSourceInfo,
+    PacketInterfaceBackend, PacketInterfaceInfo, PacketInterfaceLinkState, Result, SyscallNumber, INPUT_SOURCE_FLAG_NONBLOCK,
     PACKET_INTERFACE_FLAG_NONBLOCK,
 };
+
+pub fn block_device_info(handle: Handle) -> Result<BlockDeviceInfo> {
+    let mut info = BlockDeviceInfo {
+        backend: BlockDeviceBackend::Unknown as u32,
+        writable: 0,
+        block_size: 0,
+        reserved: 0,
+        block_count: 0,
+        read_ops: 0,
+        write_ops: 0,
+    };
+    syscall2(
+        SyscallNumber::BlockDeviceInfo,
+        handle as u64,
+        &mut info as *mut BlockDeviceInfo as u64,
+    )?;
+    Ok(info)
+}
+
+pub fn block_device_read(handle: Handle, start_block: u64, buffer: &mut [u8]) -> Result<usize> {
+    syscall4(
+        SyscallNumber::BlockDeviceRead,
+        handle as u64,
+        start_block,
+        buffer.as_mut_ptr() as u64,
+        buffer.len() as u64,
+    )
+    .map(|value| value as usize)
+}
+
+pub fn block_device_write(handle: Handle, start_block: u64, buffer: &[u8]) -> Result<usize> {
+    syscall4(
+        SyscallNumber::BlockDeviceWrite,
+        handle as u64,
+        start_block,
+        buffer.as_ptr() as u64,
+        buffer.len() as u64,
+    )
+    .map(|value| value as usize)
+}
 
 pub fn packet_interface_info(handle: Handle) -> Result<PacketInterfaceInfo> {
     let mut info = PacketInterfaceInfo {

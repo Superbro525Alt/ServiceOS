@@ -20,7 +20,7 @@ use serviceos_kernel_core::{
     task::{ExecutionState, SchedulerError, TaskRole, ThreadId, ThreadMode},
     user::{self as kernel_user, SpawnError, TaskExitStatus},
 };
-use serviceos_platform_qemu_virtio::{audio, boot, display, input, network, serial};
+use serviceos_platform_qemu_virtio::{audio, block, boot, display, input, network, serial};
 use spin::Once;
 use uefi::{Status, entry};
 
@@ -109,6 +109,8 @@ fn kernel_main() -> Status {
 
     let bootstrap_network = network::initialize()
         .map(|backend| kernel.objects().registry().create_packet_interface(backend));
+    let bootstrap_block =
+        block::initialize().map(|backend| kernel.objects().registry().create_block_device(backend));
     let bootstrap_display = kernel.boot_context().framebuffer.map(|framebuffer| {
         kernel
             .objects()
@@ -188,6 +190,23 @@ fn kernel_main() -> Status {
     } else {
         log_line("network", "no packet interface detected");
     }
+    if let Some(summary) = block::bringup_summary() {
+        log(
+            "storage",
+            format_args!(
+                "block-backend={:?} pci={:02x}:{:02x}.{} blocks={} block-size={} writable={}",
+                summary.backend,
+                summary.pci_bus,
+                summary.pci_device,
+                summary.pci_function,
+                summary.block_count,
+                summary.block_size,
+                summary.writable,
+            ),
+        );
+    } else {
+        log_line("storage", "no writable block device detected");
+    }
     if let Some(framebuffer) = kernel.boot_context().framebuffer {
         log(
             "display",
@@ -229,6 +248,7 @@ fn kernel_main() -> Status {
 
     let summary = match launch_root_manager(
         &kernel,
+        bootstrap_block,
         bootstrap_network,
         bootstrap_display,
         bootstrap_input,
@@ -298,6 +318,7 @@ fn panic(info: &PanicInfo<'_>) -> ! {
 
 fn launch_root_manager(
     kernel: &Kernel<'_>,
+    bootstrap_block: Option<serviceos_kernel_core::object::KernelObjectRef>,
     bootstrap_network: Option<serviceos_kernel_core::object::KernelObjectRef>,
     bootstrap_display: Option<serviceos_kernel_core::object::KernelObjectRef>,
     bootstrap_input: Option<serviceos_kernel_core::object::KernelObjectRef>,
@@ -377,6 +398,20 @@ fn launch_root_manager(
     } else {
         None
     };
+    let block_transfer = if let Some(block_object) = bootstrap_block {
+        let block_handle = bootstrap_task.capability_space().install(
+            block_object,
+            CapabilityRights::block_device(),
+            None,
+        )?;
+        Some(bootstrap_task.capability_space().prepare_transfer(
+            block_handle,
+            CapabilityRights::block_device(),
+            TransferMode::Move,
+        )?)
+    } else {
+        None
+    };
     let display_transfer = if let Some(display_object) = bootstrap_display {
         let display_handle = bootstrap_task.capability_space().install(
             display_object,
@@ -428,6 +463,9 @@ fn launch_root_manager(
     )?;
     log_line("bootstrap", "sending root-manager startup message");
     let mut bootstrap_resource_flags = 0u64;
+    if block_transfer.is_some() {
+        bootstrap_resource_flags |= bootstrap_resource::BLOCK;
+    }
     if network_transfer.is_some() {
         bootstrap_resource_flags |= bootstrap_resource::NETWORK;
     }
@@ -450,6 +488,9 @@ fn launch_root_manager(
     )?
     .add_transfer(boot_store_transfer)?
     .add_transfer(bootstrap_authority_transfer)?;
+    if let Some(block_transfer) = block_transfer {
+        startup = startup.add_transfer(block_transfer)?;
+    }
     if let Some(network_transfer) = network_transfer {
         startup = startup.add_transfer(network_transfer)?;
     }

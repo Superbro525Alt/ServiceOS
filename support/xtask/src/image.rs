@@ -22,7 +22,9 @@ pub fn create_platform_image(artifacts: &BuildArtifacts) -> Result<PathBuf, Box<
 
 fn create_qemu_disk_image(esp_dir: &Path) -> Result<PathBuf, Box<dyn Error>> {
     let img_path = esp_dir.parent().unwrap().join("serviceos.img");
+    let data_img_path = esp_dir.parent().unwrap().join("serviceos-data.img");
     let size_mb = 64;
+    let data_size_mb = 128;
 
     println!("Creating bootable image at: {}", img_path.display());
 
@@ -48,7 +50,19 @@ fn create_qemu_disk_image(esp_dir: &Path) -> Result<PathBuf, Box<dyn Error>> {
         }
     }
 
+    ensure_raw_data_image(&data_img_path, data_size_mb)?;
+
     Ok(img_path)
+}
+
+fn ensure_raw_data_image(path: &Path, size_mb: u64) -> Result<(), Box<dyn Error>> {
+    if path.exists() {
+        return Ok(());
+    }
+    println!("Creating writable data image at: {}", path.display());
+    let file = fs::File::create(path)?;
+    file.set_len(size_mb * 1024 * 1024)?;
+    Ok(())
 }
 
 fn create_raspi_bundle(

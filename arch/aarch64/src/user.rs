@@ -12,8 +12,8 @@ mod imp {
         },
         task::{AddressSpaceId, ThreadId},
         user::{
-            self, AddressSpacePreparationError, LoadError, PreparedUserAddressSpace, UserArchHooks,
-            UserThreadLaunch,
+            self, AddressSpacePreparationError, ElfMachine, LoadError, PreparedUserAddressSpace,
+            UserArchHooks, UserThreadLaunch,
         },
     };
 
@@ -385,10 +385,12 @@ serviceos_aarch64_lower_el_sync:
                 &mut frame_allocator,
             )
         }?;
-        let loaded = serviceos_kernel_core::user::load_flat_image(
+        let loaded = serviceos_kernel_core::user::load_image(
             image,
             &mut user_page_table,
             &mut frame_allocator,
+            ElfMachine::Aarch64,
+            VirtualAddress::new(0x0000_7fff_ffff_0000),
         )?;
 
         Ok(PreparedUserAddressSpace {

@@ -36,6 +36,8 @@ service <name>: show one service state\r\n\
 restart <name>: request a service restart\r\n\
 logs [count]: show recent structured logs\r\n\
 config: show core configuration values\r\n\
+config get <key>: read one persisted configuration key\r\n\
+config set <key> <value>: update one persisted configuration key\r\n\
 store ls [prefix]: list storage paths\r\n\
 store mkdir <path>: create a writable directory under a mutable namespace\r\n\
 store write <path> <text>: create or replace a writable text file\r\n\
@@ -66,6 +68,7 @@ dev workspace <id>: show one workspace and its target mappings\r\n\
 dev build <workspace-id> <native|linux|windows|macos>: run a build job\r\n\
 dev jobs: list developer build jobs\r\n\
 dev artifact <job-id>: inspect one built artifact\r\n\
+dev save <job-id> <path>: save one built artifact into writable storage\r\n\
 gfx outputs: show graphics outputs\r\n\
 gfx surfaces: show compositor surfaces\r\n\
 gfx sessions: show graphical sessions\r\n\

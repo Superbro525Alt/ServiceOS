@@ -52,6 +52,9 @@ pub enum SyscallNumber {
     AudioEndpointStop = 26,
     MemoryMap = 27,
     TaskSpawnImage = 28,
+    BlockDeviceInfo = 29,
+    BlockDeviceRead = 30,
+    BlockDeviceWrite = 31,
 }
 
 #[repr(u32)]
@@ -118,6 +121,26 @@ pub mod bootstrap_resource {
     pub const DISPLAY: u64 = 1 << 1;
     pub const INPUT: u64 = 1 << 2;
     pub const AUDIO: u64 = 1 << 3;
+    pub const BLOCK: u64 = 1 << 4;
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BlockDeviceBackend {
+    Unknown = 0,
+    VirtioPci = 1,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BlockDeviceInfo {
+    pub backend: u32,
+    pub writable: u32,
+    pub block_size: u32,
+    pub reserved: u32,
+    pub block_count: u64,
+    pub read_ops: u64,
+    pub write_ops: u64,
 }
 
 #[repr(u32)]
@@ -341,6 +364,17 @@ pub enum ConsoleTag {
 pub enum ConfigTag {
     ReadRequest = 0x300,
     ReadReply = 0x301,
+    WriteRequest = 0x302,
+    WriteReply = 0x303,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConfigStatus {
+    Ok = 0,
+    NotFound = 1,
+    Denied = 2,
+    Invalid = 3,
 }
 
 #[repr(u32)]

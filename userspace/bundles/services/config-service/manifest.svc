@@ -2,4 +2,5 @@ service=config-service
 image=config-service
 startup=eager
 restart=on-failure:1
+lookup=storage-service:send
 resource=config/system.cfg

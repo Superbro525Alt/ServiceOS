@@ -10,8 +10,8 @@ use serviceos_kernel_core::{
     },
     task::{AddressSpaceId, ThreadId},
     user::{
-        self, AddressSpacePreparationError, LoadError, PreparedUserAddressSpace, UserArchHooks,
-        UserThreadLaunch,
+        self, AddressSpacePreparationError, ElfMachine, LoadError, PreparedUserAddressSpace,
+        UserArchHooks, UserThreadLaunch,
     },
 };
 
@@ -287,10 +287,12 @@ pub fn prepare_address_space(
             &mut frame_allocator,
         )
     }?;
-    let loaded = serviceos_kernel_core::user::load_flat_image(
+    let loaded = serviceos_kernel_core::user::load_image(
         image,
         &mut user_page_table,
         &mut frame_allocator,
+        ElfMachine::X86_64,
+        VirtualAddress::new(0x0000_7fff_ffff_0000),
     )?;
 
     Ok(PreparedUserAddressSpace {

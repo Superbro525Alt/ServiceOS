@@ -3,7 +3,7 @@ mod runtime;
 mod spawn;
 mod types;
 
-pub use loader::{load_flat_image, parse_flat_image};
+pub use loader::{ElfMachine, load_flat_image, load_image, parse_flat_image};
 pub use runtime::{
     UserRuntime, arch_hooks, initialize_runtime, register_arch_hooks, register_image_resolver,
     runtime,
@@ -135,5 +135,32 @@ mod tests {
             &[1, 2, 3, 4],
         );
         assert_eq!(parse_flat_image(&truncated), Err(LoadError::Truncated));
+    }
+
+    #[test]
+    fn parse_flat_image_accepts_cross_builder_native_artifact_shape() {
+        const IMAGE_BASE: u64 = 0x0000_4000_0000_0000;
+        const USER_STACK_TOP: u64 = 0x0000_7fff_ffff_0000;
+        let message = b"hello from builder";
+        let code_len = 31usize + message.len();
+        let file_size = code_len as u64;
+
+        let image = build_image(
+            1,
+            IMAGE_BASE,
+            0,
+            file_size,
+            file_size,
+            file_size,
+            file_size,
+            USER_STACK_TOP,
+            &alloc::vec![0u8; code_len],
+        );
+
+        let header = parse_flat_image(&image).expect("builder-style image should parse");
+        assert_eq!(header.entry_offset, 0);
+        assert_eq!(header.file_size, code_len);
+        assert_eq!(header.image_base, VirtualAddress::new(IMAGE_BASE));
+        assert_eq!(header.user_stack_top, VirtualAddress::new(USER_STACK_TOP));
     }
 }

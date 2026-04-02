@@ -134,8 +134,10 @@ impl LoadedUserImage {
 pub enum LoadError {
     Truncated,
     InvalidMagic,
+    UnsupportedFormat,
     UnsupportedAbi,
     UnsupportedHeader,
+    UnsupportedMachine,
     AddressAlignment,
     FrameExhausted,
     Mapping(MappingError),

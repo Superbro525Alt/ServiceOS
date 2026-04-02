@@ -107,6 +107,41 @@ pub(crate) fn cmd_config(bootstrap: rt::Handle, output: ShellOutput) -> rt::Resu
     Ok(())
 }
 
+pub(crate) fn cmd_config_get(
+    bootstrap: rt::Handle,
+    output: ShellOutput,
+    key_name: &str,
+) -> rt::Result<()> {
+    let Some(key) = parse_config_key(key_name) else {
+        return write_output_linef(output, format_args!("unknown config key: {}", key_name));
+    };
+    let config_handle = rt::lookup_service(bootstrap, ServiceId::Config)?;
+    let (_, value) = rt::config_read(config_handle, key)?;
+    let _ = rt::handle_close(config_handle);
+    write_output_linef(
+        output,
+        format_args!("{} = {}", config_key_name(key), config_value_text(key, value)),
+    )
+}
+
+pub(crate) fn cmd_config_set(
+    bootstrap: rt::Handle,
+    output: ShellOutput,
+    key_name: &str,
+    value: u64,
+) -> rt::Result<()> {
+    let Some(key) = parse_config_key(key_name) else {
+        return write_output_linef(output, format_args!("unknown config key: {}", key_name));
+    };
+    let config_handle = rt::lookup_service(bootstrap, ServiceId::Config)?;
+    rt::config_write(config_handle, key, value)?;
+    let _ = rt::handle_close(config_handle);
+    write_output_linef(
+        output,
+        format_args!("updated {} = {}", config_key_name(key), config_value_text(key, value)),
+    )
+}
+
 pub(crate) fn cmd_store_ls(
     bootstrap: rt::Handle,
     output: ShellOutput,
@@ -237,6 +272,26 @@ fn split_parent_path<'a>(
         }
         Some(_) => Err(rt::Error::InvalidArgument),
         None => Ok(trimmed),
+    }
+}
+
+fn parse_config_key(value: &str) -> Option<ConfigKey> {
+    match value {
+        "log.minimum_severity" => Some(ConfigKey::LogMinimumSeverity),
+        "status.heartbeat_ticks" => Some(ConfigKey::StatusHeartbeatTicks),
+        "status.console_mirror" => Some(ConfigKey::StatusConsoleMirror),
+        "status.heartbeat_log_period" => Some(ConfigKey::StatusHeartbeatLogPeriod),
+        "network.ipv4_address" => Some(ConfigKey::NetworkIpv4Address),
+        "network.ipv4_prefix_length" => Some(ConfigKey::NetworkIpv4PrefixLength),
+        "network.ipv4_gateway" => Some(ConfigKey::NetworkIpv4Gateway),
+        "network.probe_timeout_ticks" => Some(ConfigKey::NetworkProbeTimeoutTicks),
+        "network.dynamic_ipv4" => Some(ConfigKey::NetworkDynamicIpv4),
+        "network.dns_server" => Some(ConfigKey::NetworkDnsServer),
+        "network.dns_query_timeout_ticks" => Some(ConfigKey::NetworkDnsQueryTimeoutTicks),
+        "network.dhcp_acquire_timeout_ticks" => Some(ConfigKey::NetworkDhcpAcquireTimeoutTicks),
+        "network.tcp_connect_timeout_ticks" => Some(ConfigKey::NetworkTcpConnectTimeoutTicks),
+        "network.tcp_idle_timeout_ticks" => Some(ConfigKey::NetworkTcpIdleTimeoutTicks),
+        _ => None,
     }
 }
 

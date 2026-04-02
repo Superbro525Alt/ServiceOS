@@ -91,26 +91,37 @@ Current built-in commands:
 - `desktop status`
 - `desktop apps`
 - `desktop windows`
-- `desktop launch <settings|files|monitor>`
-- `desktop launch <settings|files|monitor|terminal>`
-- `desktop focus <settings|files|monitor|terminal>`
+- `desktop launch <settings|files|monitor|terminal|software>`
+- `desktop focus <settings|files|monitor|terminal|software>`
 - `desktop next`
-- `desktop close <settings|files|monitor|terminal>`
-- `desktop minimize <settings|files|monitor|terminal>`
-- `desktop restore <settings|files|monitor|terminal>`
-- `desktop maximize <settings|files|monitor|terminal>`
-- `desktop move <settings|files|monitor|terminal> <x> <y>`
-- `desktop resize <settings|files|monitor|terminal> <width> <height>`
+- `desktop close <settings|files|monitor|terminal|software>`
+- `desktop minimize <settings|files|monitor|terminal|software>`
+- `desktop restore <settings|files|monitor|terminal|software>`
+- `desktop maximize <settings|files|monitor|terminal|software>`
+- `desktop move <settings|files|monitor|terminal|software> <x> <y>`
+- `desktop resize <settings|files|monitor|terminal|software> <width> <height>`
 - `desktop click <x> <y>`
 - `desktop notify <text>`
 - `run image <path>`
 - `pkg list`
+- `pkg catalog`
+- `pkg repos`
+- `pkg repo add <name> <url> [unsigned|pinned:<hex>] [stable|beta|canary] [production|preview|testing]`
+- `pkg repo sync [all|index]`
 - `pkg info <name>`
 - `pkg install <name> [version]`
 - `pkg update <name> [version]`
 - `pkg remove <name>`
 - `pkg rollback <name>`
 - `pkg history <name>`
+- `pkg provenance <name>`
+- `pkg policy <name>`
+- `pkg pin <name> <version|none>`
+- `pkg channel <name> <stable|beta|canary>`
+- `pkg ring <name> <production|preview|testing>`
+- `pkg verify`
+- `pkg repair`
+- `pkg gc`
 - `runtime envs`
 - `runtime create posix`
 - `runtime inspect <env-id>`
@@ -133,7 +144,8 @@ special shell-only backdoors.
 
 Package commands call the real `package-service`, which then coordinates with
 the root manager. The shell does not edit manifests or activate services by
-itself.
+itself. Repository sync, provenance, policy, and repair/GC flows all use that
+same contract.
 
 Network commands call the real `network-service`.
 The shell can inspect interfaces, resolve names, run probes, inspect active

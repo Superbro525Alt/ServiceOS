@@ -1,148 +1,215 @@
-# Package and Update Foundation
+# Package Repositories, Trust, and Update Foundation
 
 ## Role
 
-`package-service` is the first software lifecycle manager in userspace.
+`package-service` is the software distribution authority in userspace.
 
 It owns:
 
-- repository package discovery
-- package metadata inspection
-- install, update, remove, and rollback requests
-- package activation policy for package-provided services
-- coordination with the root manager for service lifecycle transitions
-- package lifecycle logging
+- repository registration and synchronization
+- package catalog and metadata inspection
+- trust/provenance reporting for packages and repositories
+- install, update, remove, rollback, and package-policy decisions
+- writable install roots, install journals, and package-state persistence
+- package consistency validation, repair, and garbage collection
+- coordination with the root manager for activation and deactivation
 
-It does not own storage policy, process spawning, or service supervision.
+It does not own storage hardware, network transport, service supervision, or
+desktop UX.
 
-- `storage-service` still owns persisted object access
-- the root manager still owns service startup, readiness, restart, and dynamic
-  activation/deactivation execution
-- the shell is only an operator client of `package-service`
+- `storage-service` still owns persistent file and directory access
+- `network-service` still owns transport
+- `root-manager` still owns service activation/deactivation execution
+- `software-center-app` and `shell-service` are clients of `package-service`,
+  not alternate package backends
 
-## Package model
+## Repository model
 
-The current package repository is staged into the boot store under
-`packages/...`.
+The package model now has two repository classes:
 
-Each package version currently wraps:
+- the built-in boot repository staged into `packages/...`
+- writable registered remote repositories synced over HTTP into
+  `state/packages/repos/...`
 
-- one package manifest (`package.pkg`)
-- one service manifest to activate
-- any versioned static resources referenced by that service manifest, including
-  runtime profiles and mounted runtime-root content
+Repository state is persisted in `state/packages/repos.cfg` and includes:
 
-Current package-backed components include:
+- repository name
+- repository URL
+- trust mode
+- channel
+- ring
+- enable/disable state
+- pinned digest
+- last synced digest
+- last sync state
 
-- `announce-service`, with repository versions `1.0.0` and `1.1.0`
-- `runtime-service`, which delivers the first compatibility/runtime service,
-  runtime profile metadata, and a small mounted runtime root tree
-- `developer-service`, which delivers the first developer-toolchain catalog,
-  workspace descriptors, sample project content, and SDK metadata placeholders
+The built-in repository remains immutable and boot-trusted. Additional
+repositories are operator-registered and live entirely behind the package
+service contract.
 
-## Authority model
+## Feed format and trust model
 
-Package authority is explicit.
+Remote repositories currently expose a compact text feed:
 
-- the root manager starts `package-service` as a normal service
-- `package-service` gets only the capabilities it needs:
-  - a send-only startup grant to `log-service`
-  - lookup access to `storage-service`
-  - its normal bootstrap/control channel back to the root manager
-- `shell-service` gets lookup access to `package-service`
-- ordinary services do not get package authority by default
+```text
+version=1
+entry=<package>|<service>|<version>|<compat>|<manifest>|<category>|<summary>
+```
 
-Installing or updating software is therefore a consequence of holding the
-`package-service` capability, not ambient global power.
+This phase intentionally keeps the feed format small and replaceable. The trust
+model is materially stronger than the old boot-only package index, but it is
+not yet a full public-key package ecosystem.
 
-## Activation and update flow
+Current trust modes:
 
-Current install flow:
+- `boot`
+  - only for the built-in repository
+  - trusted because it ships in the boot image
+- `unsigned`
+  - remote metadata is accepted but reported as unverified
+- `pinned-digest`
+  - the feed must match the configured FNV64 digest
+  - a mismatch blocks sync and is surfaced as verification failure
 
-1. the shell sends a package request to `package-service`
-2. `package-service` resolves the package version from repository metadata
-3. `package-service` opens the referenced bundle content through
-   `storage-service`
-4. `package-service` asks the root manager to activate the referenced service
+Current trust states surfaced to clients:
+
+- `boot-trusted`
+- `unverified`
+- `digest-pinned`
+- `verification-failed`
+
+This is intentionally honest:
+
+- there is real provenance and policy state
+- there is real verification for pinned-digest repositories
+- there is not yet cryptographic signature verification or trust-root rotation
+
+## Install roots and persistent state
+
+Package-managed writable state now lives under `state/packages/`.
+
+Current package persistence layout:
+
+- `state/packages/repos.cfg`
+  - registered repositories and their trust/policy state
+- `state/packages/repos/<repo>/feed.idx`
+  - last synced repository feed cache
+- `state/packages/installed.cfg`
+  - installed/active/rollback version state plus channel/ring/pin policy
+- `state/packages/journal.cfg`
+  - interrupted operation journal
+- `state/packages/install/<package>/<version>/`
+  - writable materialized install root for remote package content
+
+Remote packages are materialized into writable install roots before activation.
+Their manifests are rewritten so activation happens from persisted storage
+rather than the original repository URL.
+
+## Package policy
+
+Per-package policy is explicit and persisted.
+
+Current policy controls:
+
+- pinned version
+- channel selection: `stable`, `beta`, `canary`
+- ring selection: `production`, `preview`, `testing`
+
+Version selection uses those policy settings when choosing install/update
+targets from the available repository versions.
+
+This gives the system a real policy surface without pretending it already has a
+full staged-rollout or enterprise policy engine.
+
+## Install, update, rollback, and recovery
+
+Current install/update flow:
+
+1. a client opens `package-service`
+2. `package-service` resolves the target version from repository metadata and
+   package policy
+3. if the package version is remote, `package-service` fetches and materializes
+   it into `state/packages/install/...`
+4. the manifest and content integrity are validated
+5. `package-service` asks the root manager to activate the package's service
    manifest
-5. the root manager loads the service manifest, starts the service, waits for
-   registration, and then reports success or failure
+6. installed/active/rollback state is updated only after successful activation
 
-Current update flow:
+Current rollback and recovery behavior:
 
-1. `package-service` selects a newer repository version
-2. `package-service` asks the root manager to replace the currently active
-   dynamic service slot for the target `ServiceId`
-3. `package-service` updates its active/rollback state only after successful
-   activation
+- package operations are journaled in `state/packages/journal.cfg`
+- failed activation attempts preserve the previous active version when possible
+- `pkg rollback <name>` reactivates the stored rollback version
+- `pkg verify` validates local package state against persisted manifests
+- `pkg repair` clears interrupted journal state and repairs broken local state
+- `pkg gc` removes obsolete materialized versions that are no longer active or
+  rollback targets
 
-Current rollback flow:
+This is real package-level recovery and cleanup. It is not yet a full
+whole-system transactional image updater.
 
-1. `package-service` remembers the prior active version
-2. a remove or failed update can be followed by `pkg rollback <name>`
-3. the prior service manifest is reactivated through the root manager
+## Provenance and operator surfaces
 
-## Recovery model
+The package contract now exposes:
 
-The current recovery model is intentionally small but real.
+- package catalog browsing
+- repository listing and sync state
+- package provenance, trust state, source path, and rollback provenance
+- package policy inspection and mutation
+- maintenance state for validate/repair/garbage-collect flows
 
-- activation is a state transition with success/failure reporting
-- remove does not erase rollback state
-- rollback is explicit and observable
-- package lifecycle events are logged through the normal structured log path
+Current shell/operator workflows include:
 
-Current recovery is service-scoped, not whole-system transactional image
-recovery.
+- `pkg catalog`
+- `pkg repos`
+- `pkg repo add <name> <url> [unsigned|pinned:<hex>] [stable|beta|canary] [production|preview|testing]`
+- `pkg repo sync [all|index]`
+- `pkg provenance <name>`
+- `pkg policy <name>`
+- `pkg pin <name> <version|none>`
+- `pkg channel <name> <stable|beta|canary>`
+- `pkg ring <name> <production|preview|testing>`
+- `pkg verify`
+- `pkg repair`
+- `pkg gc`
 
-## Integrity metadata
+## Software center relationship
 
-Packages now carry `integrity=fnv64:0x...` metadata.
+`software-center-app` is a graphical client of the same package contract.
 
-At this stage the repository is still the trusted boot-store image staged by
-the build system, so the digest is treated as repository metadata and content
-shape validation rather than a final trust root. Full hard enforcement and
-signature policy are deferred until the system has writable repositories and
-signed feeds. That staged-source assumption is intentional and temporary; it is
-not the final package trust model.
+It currently:
 
-## Example workflow
+- browses the package catalog
+- shows package category and summary
+- shows source/trust/channel/ring/rollback metadata for the selected package
+- syncs repositories
+- installs, updates, and removes the selected package
 
-The current shell can exercise the full package foundation:
+It does not bypass package policy or trust checks. It uses the same
+`package-service` operations that the shell uses.
 
-1. `pkg list`
-2. `pkg install announce 1.0.0`
-3. `pkg update announce`
-4. `pkg history announce`
-5. `pkg remove announce`
-6. `pkg rollback announce`
+## Example workflows
 
-That workflow proves:
+Current terminal flow:
 
-- repository package discovery
-- explicit package authority
-- version selection
-- root-manager activation of package-provided services
-- remove and rollback behavior
-- visible package lifecycle logs
+1. `pkg repos`
+2. `pkg repo add demo http://host/packages/feed.idx unsigned`
+3. `pkg repo sync all`
+4. `pkg catalog`
+5. `pkg provenance runtime`
+6. `pkg install runtime`
+7. `pkg policy runtime`
+8. `pkg verify`
 
-The runtime workflow builds on the same package path:
+Current graphical flow:
 
-1. `pkg install runtime`
-2. `runtime-service` is activated through the root manager
-3. the runtime package's profile and root content become available as explicit
-   resources to that service
-
-The developer workflow uses the same lifecycle:
-
-1. `pkg install developer`
-2. `developer-service` is activated through the root manager
-3. the package's toolchain catalog, workspace descriptors, source payloads, and
-   SDK metadata become explicit resources for that service
-4. build workers are launched later by `developer-service`, not by
-   `package-service`
+1. `desktop launch software`
+2. review the package catalog and provenance details
+3. sync repositories
+4. install, update, or remove the selected package through the same backend
 
 ## Roadmap note
 
-Open package and update follow-on work is tracked centrally in
+Open package/distribution follow-on work is tracked centrally in
 [docs/roadmap.md](roadmap.md). This page intentionally stays focused on the
-current package/update architecture and implemented behavior.
+current repository/trust/package architecture and implemented behavior.

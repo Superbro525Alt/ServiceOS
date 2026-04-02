@@ -336,15 +336,28 @@ Current lookup permissions:
 
 ### `package-service`
 
-- owns package repository inspection and operator-facing install/update/remove
-  policy
+- owns repository registration, sync, catalog, provenance, policy, and
+  install/update/remove/rollback decisions
+- persists repository definitions, install state, journals, and materialized
+  install roots under the writable storage namespaces
 - decides which package manifest version should become active and when rollback
   should be attempted
-- reads repository metadata and package manifests from `storage-service`
+- reads package manifests and persisted package state from `storage-service`
+- fetches remote feeds and package content through `network-service`
 - calls back into the root manager for package-provided service activation and
   deactivation
 - keeps package authority explicit by requiring an explicit service handle; the
   shell has it, ordinary services do not
+
+### `software-center-app`
+
+- is a desktop client of `package-service`, not a package backend
+- browses the package catalog and selected-package metadata
+- shows source/trust/channel/ring/rollback information
+- requests repository sync and package install/update/remove through the real
+  package contract
+- keeps trust and package policy visible in the GUI without moving authority
+  out of `package-service`
 
 ### `announce-service`
 

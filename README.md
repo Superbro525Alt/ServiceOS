@@ -17,7 +17,8 @@ The design direction is explicit:
 
 The project is past pure kernel bring-up. It now boots a real service graph,
 starts a graphical session, exposes operator tooling, supports package-driven
-service activation, and has the first desktop shell and core apps.
+service activation plus repository-backed package distribution, and has the
+first desktop shell and core apps.
 
 ## What Exists Today
 
@@ -41,6 +42,8 @@ Current userspace platform:
 - storage, log, config, console, and status services
 - text shell and operator tooling
 - package install, update, remove, and rollback foundation
+- network-backed package repositories with explicit trust/provenance and
+  install policy surfaces
 - package-delivered developer tooling foundation with toolchain, workspace, and
   cross-target build workflows
 - networking service with dynamic IPv4, DNS-backed resolution, ICMP, and
@@ -60,6 +63,7 @@ Current graphical/product layer:
 - `files-app`
 - `monitor-app`
 - `terminal-app`
+- `software-center-app`
 
 ## Architecture Snapshot
 
@@ -214,6 +218,9 @@ From the operator shell:
   service
 - persist writable files and config across reboot on the current QEMU target
 - perform package operations
+- register and sync package repositories
+- inspect package provenance, trust state, and policy
+- validate, repair, and garbage-collect package state
 - install optional runtime support packages
 - install optional developer tooling support packages
 - create compatibility/runtime environments and inspect their mounts, variables,
@@ -234,6 +241,7 @@ From the operator shell:
   real audio service
 - inspect graphics/session state
 - launch desktop-aware tools and apps through the real manager/runtime path
+- browse and manage packages from the graphical software center
 
 From the graphical session:
 

@@ -66,11 +66,11 @@
 |---|---|---|
 | &#x2705; | Tooling | `shell-service` operator environment |
 | &#x2705; | Tooling | `package-service` install, update, rollback, and activation coordination |
-| &#x2B1C; | Packages | Add network-backed repositories, signed feeds, trust metadata, writable install roots, install journals, and rollback policy for packages |
+| &#x2B1C; | Packages | Extend the current network-backed repositories, trust metadata, writable install roots, install journals, and rollback policy with cryptographically signed feeds, key rotation, and stronger trust-root enforcement |
 | &#x2B1C; | Packages / updates | Add whole-system image update workflows on top of the package/update foundation |
-| &#x2B1C; | Packages / trust | Add package trust state, source provenance, signing status, and rollback provenance inspection through the package-service contract |
-| &#x2B1C; | Packages / policy | Add package pinning, channels/rings, staged rollouts, and policy-controlled upgrade rules |
-| &#x2B1C; | Packages / recovery | Add better interrupted-install recovery, consistency checking, garbage collection, and repair flows for partially applied updates |
+| &#x2705; | Packages / trust | Add package trust state, source provenance, signing/trust status, and rollback provenance inspection through the package-service contract |
+| &#x2B1C; | Packages / policy | Extend the current package pinning and channel/ring policy with real staged rollout cohorts and richer per-source upgrade rules |
+| &#x2705; | Packages / recovery | Add better interrupted-install recovery, consistency checking, garbage collection, and repair flows for partially applied updates |
 
 ## 6. Architecture and Platform Abstraction
 
@@ -198,7 +198,7 @@
 | &#x2B1C; | Permissions | Add clearer app permissions and capability review surfaces for native apps, runtime-hosted apps, and developer tools |
 | &#x2B1C; | Runtime permissions | Add runtime permission prompts/policy for hosted environments and compatibility workloads without replacing real capability enforcement with fake prompts |
 | &#x2B1C; | Trust / signing UX | Add trust/signing UX for packages, runtimes, repositories, and developer artifacts with honest visibility into what is actually enforced |
-| &#x2B1C; | Package trust UI | Add package trust UI showing provenance, signing state, update trust, and rollback provenance in both terminal and desktop flows |
+| &#x2705; | Package trust UI | Add package trust UI showing provenance, trust/signing state, update source, and rollback provenance in both terminal and desktop flows |
 | &#x2B1C; | Desktop security surfaces | Add desktop security surfaces for privileged actions, permission review, trust warnings, and authority escalation flows |
 | &#x2B1C; | Security UX | Add consistent denial/error UX and operator diagnostics when capability checks, package trust checks, or runtime policy checks fail |
 | &#x2B1C; | Security policy | Add stronger permission editing/review flows, revocation UX, and capability grant history without moving policy into the shell or UI code |
@@ -208,11 +208,11 @@
 
 | Status | Area | Work Item |
 |---|---|---|
-| &#x2B1C; | Software center | Add a software center / app-store style GUI on top of the package/update foundation |
-| &#x2B1C; | Installer / updater UX | Add better installer/update UX, including source selection, trust display, progress, rollback visibility, and interrupted-update recovery |
-| &#x2B1C; | App lifecycle | Add clean third-party app lifecycle flows for install, launch, update, remove, permissions review, and file/open-with association |
-| &#x2B1C; | App ecosystem | Add app metadata/index/search, screenshots/descriptions, categories, recommendations, and package/runtime compatibility surfacing |
-| &#x2B1C; | App distribution | Add third-party repository onboarding, trust review, side-loading policy, and package/runtime compatibility handling |
+| &#x2705; | Software center | Add a software center / app-store style GUI on top of the package/update foundation |
+| &#x2B1C; | Installer / updater UX | Grow the current shell and software-center package flows into richer source selection, trust explanations, progress reporting, rollback visibility, and interrupted-update recovery UX |
+| &#x2B1C; | App lifecycle | Complete third-party app lifecycle UX by wiring installed packages into launch surfaces, update/remove visibility, permissions review handoff, uninstall cleanup visibility, and file/open-with association policy |
+| &#x2B1C; | App ecosystem | Grow the current package catalog into richer search, screenshots/descriptions, categories, recommendations, and package/runtime compatibility surfacing |
+| &#x2B1C; | App distribution | Add desktop-facing third-party repository onboarding, trust review, side-loading policy, and package/runtime compatibility warnings on top of the current shell-driven repository registration path |
 | &#x2B1C; | App policy | Add per-app default associations, intent/open-with policy, recent apps/documents, and uninstall cleanup behavior |
 
 ## 16. Desktop Polish and Advanced Interaction

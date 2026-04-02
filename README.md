@@ -30,7 +30,7 @@ Current foundation:
 - kernel object registry with handle rights and capability spaces
 - channel-based IPC with explicit transfer rules
 - kernel-backed blocking/wakeup behavior
-- userspace process launch and flat-image loading
+- userspace process launch plus native flat-image and ELF64 loading
 - per-service fault isolation by terminating the faulting task instead of
   halting the whole machine
 
@@ -48,8 +48,10 @@ Current userspace platform:
 - audio service with explicit endpoint and playback-stream contracts
 - graphics service, compositor foundation, and session service
 - desktop shell with initial graphical core apps
-- writable storage namespaces with scoped directory and file capabilities
-- manager-owned stored-image launching through the storage path
+- persistent writable storage namespaces with scoped directory and file
+  capabilities
+- manager-owned stored-image launching through the storage path, including
+  saved user-supplied native images
 
 Current graphical/product layer:
 
@@ -101,8 +103,8 @@ The repository currently supports a real end-to-end platform flow:
    contracts.
 
 This is still an early OS. It is not yet a polished consumer desktop, and it
-does not yet include a full filesystem stack, richer audio/media,
-compatibility runtimes, or a mature app ecosystem.
+does not yet include a full mounted filesystem stack, richer audio/media,
+broader compatibility runtimes, or a mature app ecosystem.
 
 ## Repository Layout
 
@@ -210,6 +212,7 @@ From the operator shell:
 - inspect stored bundle/config data
 - create and update files in writable namespaces through the real storage
   service
+- persist writable files and config across reboot on the current QEMU target
 - perform package operations
 - install optional runtime support packages
 - install optional developer tooling support packages
@@ -220,12 +223,13 @@ From the operator shell:
 - run native, Linux, and Windows cross-target builds through the real
   developer-service path
 - inspect build jobs and exported artifact handles
+- save native build outputs into persistent storage and launch them through the
+  real manager-owned process loader
 - inspect network interfaces/routes/resolution state
 - perform practical outbound network checks and fetches through the real
   network-service path
 - launch desktop apps and post notifications through the desktop contract
-- launch stored flat images through the manager-owned loader path
-  networking service
+- launch stored native images through the manager-owned loader path
 - inspect audio endpoints and streams and run diagnostic playback through the
   real audio service
 - inspect graphics/session state
@@ -245,7 +249,7 @@ Not built yet:
 
 - polished final desktop UX
 - richer window management and input stack
-- full filesystem/user storage semantics
+- full mounted filesystem/user storage semantics
 - UDP, IPv6, inbound/listening sockets, and richer networking policy
 - richer PCM/capture audio pipelines, mixing, and broader media policy
 - network-backed package repositories and signing/trust infrastructure
@@ -267,6 +271,8 @@ High-value entry points:
 - [Userspace Model](docs/userspace.md)
 - [Service Model](docs/services.md)
 - [Storage Foundation](docs/storage.md)
+- [Configuration Service](docs/service-config.md)
+- [Execution Model](docs/execution.md)
 - [Package Model](docs/packages.md)
 - [Networking Platform](docs/networking.md)
 - [Audio Platform](docs/audio.md)

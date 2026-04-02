@@ -3,16 +3,70 @@
 ## Scope
 
 The storage layer is still intentionally simple, but it is no longer
-read-only-only.
+read-only-only or reboot-transient.
 
 - one immutable boot store staged on the EFI system partition
 - one userspace `storage-service` that owns access to that boot store
+- one optional writable block device handed in as a bootstrap resource
+- one persistent snapshot-backed writable store layered under the same storage
+  contract
 - read-only exact-path opens for persisted boot-store content
 - writable directory and file capabilities for mutable namespaces
 - blob capabilities for per-file reads and writes
 
 This is enough to support real shell, app, and developer workflows without
 pretending the system already has a full general-purpose filesystem.
+
+## Persistent writable backing
+
+On the active QEMU target, `storage-service` now mounts an optional writable
+VirtIO block device and uses it as a durable backing store for mutable content.
+
+The current persistence model is intentionally narrow and service-owned:
+
+- `home/`
+- `state/`
+- `projects/`
+
+Those namespaces are serialized into a versioned snapshot format owned by
+`storage-service`. `tmp/` remains writable but intentionally ephemeral.
+
+This is not yet a general-purpose mounted filesystem stack. It is a durable
+block-backed writable layer under the existing storage contract so real file,
+config, and developer-output workflows survive reboot without introducing
+ambient write access.
+
+The current snapshot format keeps:
+
+- a small header with magic, version, generation, and layout offsets
+- a record table for persisted mutable entries
+- block-aligned file payload regions for mutable file contents
+
+On boot, `storage-service` selects the newest valid snapshot generation and
+reconstructs mutable entries into the same scoped directory/file capability
+model used at runtime.
+
+## Block-device foundation
+
+The kernel now exposes block devices as explicit objects rather than burying
+them in `storage-service` internals.
+
+Current block-device support includes:
+
+- block-device info
+- block reads
+- block writes
+- platform registration of the QEMU VirtIO block backend
+- bootstrap transfer of an optional block-device handle to `storage-service`
+
+This keeps:
+
+- platform device wiring in `platform/<platform>`
+- kernel object and syscall semantics in `kernel/core`
+- storage policy and snapshot format in `storage-service`
+
+The current system does not yet expose general mount orchestration or a full
+filesystem namespace service. Those remain follow-on work.
 
 ## Boot-store path
 
@@ -59,6 +113,15 @@ Its public contract is:
   - input: writable blob capability, offset, total length, byte payload
   - output: written length and updated file length
 
+That protocol is now broad enough for practical app and tool workflows:
+
+- create/open/read/write/truncate/delete files
+- create/open/list/remove directories
+- enumerate children through scoped directory handles
+- save native build outputs into persistent storage
+- reopen and execute stored user-supplied images through the manager-owned
+  loader path
+
 Exact-path opens are still service-mediated. Enumeration and mutation now go
 through explicit directory or writable-file capabilities instead of an ambient
 writable root.
@@ -77,14 +140,22 @@ The current mutable policy is intentionally narrow:
 
 - mutable paths are limited to service-owned namespaces such as:
   - `home/`
-  - `tmp/`
-  - `state/`
-  - `projects/`
+- `tmp/`
+- `state/`
+- `projects/`
 - boot-store paths remain immutable
 - deletion is limited to mutable files and empty mutable directories
 
 This keeps write authority useful without making the whole storage graph
 ambiently mutable.
+
+The current policy split is:
+
+- boot-store content: immutable system and package-staged content
+- `home/`: user-home style writable content
+- `projects/`: developer and project outputs
+- `state/`: service-owned persistent state such as config overrides
+- `tmp/`: mutable but intentionally non-persistent scratch space
 
 ## What is persisted now
 
@@ -95,9 +166,9 @@ The current persisted boot store contains:
 - system config data
 - one service resource blob used by `status-service`
 
-Executable images are now also openable through the normal storage path, which
-lets the root manager launch stored images through a richer manager-owned loader
-flow instead of requiring only built-in image ids.
+Executable images are now also openable through the normal storage path. That
+lets the root manager launch stored images through a richer manager-owned
+loader flow instead of requiring only built-in image ids.
 
 ## Current workflows
 
@@ -107,9 +178,20 @@ The live shell now uses the real writable-storage path for:
 - `store write <path> <text>`
 - `store rm <path>`
 - `cat <path>`
+- `run image <path>`
 
 That makes simple project output, notes, state files, and config writing
 practical inside the current system.
+
+Developer workflows now also use the same storage path for persistent build
+outputs:
+
+- `dev build 0 native`
+- `dev save 0 projects/hello-cross.img`
+- `run image projects/hello-cross.img`
+
+That proves stored user-supplied images are no longer trapped in a transient
+bootstrap-only path.
 
 `files-app` now also enumerates directories through an opened directory
 capability rather than through root-handle path walking. That keeps browsing,

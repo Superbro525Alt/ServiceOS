@@ -68,6 +68,10 @@ The runtime model is also less bootstrap-bound than before:
 - the root manager can now launch stored executable images through the storage
   service and a manager-owned image-loading path
 - dynamic image launch no longer has to be hardwired to built-in image ids only
+- the kernel loader now accepts native flat images and ELF64 executable images
+  instead of only the original flat-image format
+- saved user-supplied native images can now be launched through `run image
+  <path>` after being written into scoped writable storage
 - user tasks now report `Faulted` as a distinct terminal state instead of
   collapsing every failure into a generic exit
 

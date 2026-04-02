@@ -8,7 +8,8 @@ It exists now to provide:
 
 - capability-gated access to system settings
 - a typed request/reply protocol
-- a stable contract backed by a persisted config blob
+- a stable contract backed by default boot-store config plus persistent
+  namespaced overrides
 
 ## Public contract
 
@@ -28,6 +29,22 @@ Reply:
   - `1`: `ConfigValueKind`
   - `2`: typed value payload
 
+Write request:
+
+- tag: `ConfigTag::WriteRequest`
+- words:
+  - `0`: `ConfigKey`
+  - `1`: typed value payload
+- handles:
+  - `0`: reply endpoint with send rights for the response path
+
+Write reply:
+
+- tag: `ConfigTag::WriteReply`
+- words:
+  - `0`: requested `ConfigKey`
+  - `1`: `ConfigStatus`
+
 ## Current keys
 
 - `LogMinimumSeverity`
@@ -38,7 +55,25 @@ Reply:
 ## Current storage model
 
 The current implementation reads `config/system.cfg` through a startup-granted
-blob capability opened by `storage-service`.
+blob capability opened by `storage-service`, then overlays persistent
+namespaced writes from `state/config/<namespace>/settings.cfg`.
+
+Current namespaces are:
+
+- `log`
+- `status`
+- `network`
+
+Each override file is versioned and service-owned. `config-service` persists
+updates through the real writable-storage path rather than writing directly to
+ambient paths.
+
+Validation and update policy stay inside `config-service`:
+
+- known keys only
+- type-specific range checks
+- namespace-specific persistence paths
+- versioned serialized override files for future migrations
 
 The current default config keeps the operator shell quiet:
 
@@ -47,6 +82,19 @@ The current default config keeps the operator shell quiet:
 
 Set `status.heartbeat_log_period=1` when you want every heartbeat recorded for
 debugging.
+
+## Current operator path
+
+The shell now uses the real config-service write path for:
+
+- `config get <key>`
+- `config set <key> <value>`
+
+That means configuration updates are:
+
+- validated by `config-service`
+- persisted through `storage-service`
+- reloaded across boot through namespaced override trees
 
 ## Roadmap note
 

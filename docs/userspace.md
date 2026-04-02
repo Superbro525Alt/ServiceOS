@@ -24,7 +24,10 @@ platform substrate rather than a single bootstrap demo.
 ## Executable format and runtime loading
 
 Userspace binaries are built as freestanding `x86_64-unknown-none` programs and
-packed into a deliberately small flat image format owned by `kernel/core::user`.
+can now be loaded as either:
+
+- the original ServiceOS flat image format
+- native ELF64 executable images
 
 The current runtime path is:
 
@@ -32,11 +35,14 @@ The current runtime path is:
 2. `xtask` stages `bootstore.bin` on the EFI system partition.
 3. the UEFI kernel image reads that boot-store file before
    `ExitBootServices`.
-4. the kernel resolves executable images from the boot store by `image_id`.
+4. the kernel resolves built-in executable images from the boot store by
+   `image_id`.
 5. the kernel passes a read-only boot-store capability to the root manager.
 6. the root manager starts `storage-service`.
 7. `storage-service` exposes persisted manifests and resources back to the root
    manager as explicit blob capabilities.
+8. the root manager can also read user-supplied stored images through
+   `storage-service` and launch them through the same manager-owned spawn path.
 
 The flat-image header carries:
 
@@ -50,9 +56,12 @@ The flat-image header carries:
 - a total mapped image size
 - a user stack top
 
-This remains flat rather than ELF because the current priority is clean launch
-mechanics, service composition, and storage contracts, not dynamic linking or
-relocation policy.
+The current loader is still intentionally simple even though it is broader than
+before:
+
+- ServiceOS flat images remain the default native service/tool format
+- ELF64 `ET_EXEC` is now supported for native loading
+- dynamic linking, relocations, and dependency loading remain deferred
 
 ## Address-space model
 
@@ -60,12 +69,17 @@ The current user address space is built by:
 
 - allocating a new top-level page table
 - copying the kernel-visible mappings needed for kernel entry and return
-- mapping one flat user image region
+- mapping one flat-image region or one ELF load-segment set
 - mapping one bootstrap user stack region
 
-The loader maps one contiguous user image region, but it now distinguishes the
-initial executable span from the writable data span carried by the flat-image
-header. It is still intentionally simpler than a full ELF loader.
+The loader now supports two native image shapes:
+
+- one contiguous ServiceOS flat-image region, with an executable span and a
+  writable data span carried in the flat-image header
+- one or more ELF64 `PT_LOAD` segments mapped with executable/writable flags
+  derived from the segment headers
+
+It is still intentionally simpler than a full dynamic loader.
 
 ## Syscall ABI
 

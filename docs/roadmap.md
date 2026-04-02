@@ -52,11 +52,11 @@
 
 | Status | Area | Work Item |
 |---|---|---|
-| &#x2B1C; | Storage / filesystem | Replace the current in-memory writable overlay with persistent writable backing |
+| &#x2705; | Storage / filesystem | Replace the current in-memory writable overlay with persistent writable backing |
 | &#x2705; | Storage / filesystem | Add writable storage and directory capabilities as first-class scoped authorities instead of broad ambient write access |
-| &#x2B1C; | Storage / filesystem | Add block-device service contracts, mount management, namespace composition, and broader application-facing file and directory protocols |
-| &#x2B1C; | Storage / policy | Add broader user-home and storage policy, plus writable project/workspace directories and persistent build outputs |
-| &#x2B1C; | Configuration | Add namespaced service configuration trees, write and update policy, and schema validation and migration |
+| &#x2B1C; | Storage / filesystem | Extend the new block-device-backed storage foundation into general mount management, namespace composition, and fuller application-facing filesystem protocols beyond the current scoped file/blob/directory service surface |
+| &#x2705; | Storage / policy | Add broader user-home and storage policy, plus writable project/workspace directories and persistent build outputs |
+| &#x2705; | Configuration | Add namespaced service configuration trees, write and update policy, and schema validation and migration |
 | &#x2B1C; | Storage / indexing | Add file indexing, metadata queries, search primitives, and content discovery support for desktop and developer workflows |
 | &#x2B1C; | Storage / sharing | Add explicit file-sharing, open-with, recent-files, and app-association policy on top of the core file and directory protocols |
 
@@ -157,8 +157,8 @@
 | &#x2705; | Runtime foundation | Explicit mount and variable mapping for the first `posix` runtime profile |
 | &#x2705; | Runtime foundation | Manager-mediated launch of runtime-hosted workloads instead of shell-owned compatibility shortcuts |
 | &#x2705; | Runtime foundation | Shared shell/terminal operator integration for runtime inspection and launch |
-| &#x2B1C; | Loading / execution | Grow the current stored flat-image loader into ELF and other richer executable formats, dependency loading, and broader runtime policy |
-| &#x2B1C; | Loading / execution | Add a general process loader for user-supplied images instead of only manager-owned stored images |
+| &#x2B1C; | Loading / execution | Grow the current flat-image-plus-ELF native loader into dependency loading, richer executable/runtime policy, and broader native image format support |
+| &#x2705; | Loading / execution | Add a general process loader for user-supplied images instead of only manager-owned stored images |
 | &#x2B1C; | Compatibility | Grow the current compatibility/runtime foundation beyond hosted `posix` environments into Linux-oriented ABI expansion, arbitrary ELF execution, richer runtime packaging, and desktop launch UX for runtime-hosted apps |
 | &#x2B1C; | Compatibility / security | Add explicit capability grants for network, graphics, input, and audio to compatibility workloads |
 | &#x2B1C; | Compatibility | Add Windows runtime support and broader cross-platform application execution |

@@ -2,10 +2,11 @@ use crate::{
     AudioEndpointBackend, AudioEndpointDirection, AudioEndpointState, AudioStreamDirection,
     AudioStreamState, DesktopAppId, DesktopDragMode, DisplayOutputBackend, DisplayOutputState,
     DeveloperArtifactFormat, DeveloperJobState, DeveloperTarget, DeveloperToolchainState,
-    DisplayPixelFormat, LogDomain, LogEvent, LogSeverity, ManagerServicePhase,
-    NetworkConfigMode, NetworkConfigState, NetworkSocketKind, NetworkSocketState,
-    PacketInterfaceBackend, PacketInterfaceLinkState, RuntimeEnvState, RuntimeKind,
-    RuntimeRunState, RuntimeWorkloadKind, ServiceId, SessionInputSource,
+    DisplayPixelFormat, LogDomain, LogEvent, LogSeverity, ManagerServicePhase, NetworkConfigMode,
+    NetworkConfigState, NetworkSocketKind, NetworkSocketState, PackageChannel,
+    PackageMaintenanceAction, PackageRepositorySyncState, PackageRepositoryTrustMode, PackageRing,
+    PackageTrustState, PacketInterfaceBackend, PacketInterfaceLinkState, RuntimeEnvState,
+    RuntimeKind, RuntimeRunState, RuntimeWorkloadKind, ServiceId, SessionInputSource,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -47,6 +48,69 @@ pub struct PackageInfo {
     pub active_version_len: usize,
     pub rollback_version_len: usize,
     pub latest_version_len: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PackageCatalogEntry {
+    pub service_id: ServiceId,
+    pub repo_index: u32,
+    pub installed: bool,
+    pub active: bool,
+    pub rollback_available: bool,
+    pub category_len: usize,
+    pub summary_len: usize,
+    pub latest_version_len: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PackageRepositoryInfo {
+    pub repo_index: u32,
+    pub package_count: u32,
+    pub trust_mode: PackageRepositoryTrustMode,
+    pub sync_state: PackageRepositorySyncState,
+    pub channel: PackageChannel,
+    pub ring: PackageRing,
+    pub enabled: bool,
+    pub pinned_digest: u64,
+    pub last_digest: u64,
+    pub name_len: usize,
+    pub url_len: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PackageRepositorySyncInfo {
+    pub synced: u32,
+    pub failed: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PackageProvenanceInfo {
+    pub repo_index: u32,
+    pub trust_state: PackageTrustState,
+    pub channel: PackageChannel,
+    pub ring: PackageRing,
+    pub installed: bool,
+    pub active: bool,
+    pub rollback_available: bool,
+    pub installed_version_len: usize,
+    pub active_version_len: usize,
+    pub rollback_version_len: usize,
+    pub latest_version_len: usize,
+    pub source_len: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PackagePolicyInfo {
+    pub channel: PackageChannel,
+    pub ring: PackageRing,
+    pub pinned_version_len: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PackageMaintenanceInfo {
+    pub action: PackageMaintenanceAction,
+    pub repaired_entries: u32,
+    pub garbage_collected_entries: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -19,12 +19,13 @@ pub use serviceos_abi::{
     ManagerServicePhase, ManagerStatus, ManagerTag, NetworkConfigMode, NetworkConfigState,
     NetworkSocketKind, NetworkSocketState, NetworkSocketTag, NetworkStatus, NetworkTag,
     PACKET_INTERFACE_FLAG_NONBLOCK, PacketInterfaceBackend, PacketInterfaceInfo,
-    PacketInterfaceLinkState, PackageStatus, PackageTag, RawMessage, ServiceId, ServiceImageId,
-    DeveloperArtifactFormat, DeveloperJobState, DeveloperStatus, DeveloperTag, DeveloperTarget,
-    DeveloperToolchainState, RuntimeEnvState, RuntimeKind, RuntimeRunState, RuntimeStatus,
-    RuntimeTag, RuntimeWorkloadKind, SessionInputSource, SessionStatus, SessionTag, StatusTag,
-    StorageEntryKind, StorageStatus, StorageTag, SurfaceTag, SyscallErrorCode, SyscallNumber,
-    TaskStateCode, TaskStatus, TerminalStatus, TerminalTag,
+    PacketInterfaceLinkState, PackageChannel, PackageMaintenanceAction, PackageRepositorySyncState,
+    PackageRepositoryTrustMode, PackageRing, PackageStatus, PackageTag, PackageTrustState,
+    RawMessage, ServiceId, ServiceImageId, DeveloperArtifactFormat, DeveloperJobState, DeveloperStatus,
+    DeveloperTag, DeveloperTarget, DeveloperToolchainState, RuntimeEnvState, RuntimeKind,
+    RuntimeRunState, RuntimeStatus, RuntimeTag, RuntimeWorkloadKind, SessionInputSource,
+    SessionStatus, SessionTag, StatusTag, StorageEntryKind, StorageStatus, StorageTag, SurfaceTag,
+    SyscallErrorCode, SyscallNumber, TaskStateCode, TaskStatus, TerminalStatus, TerminalTag,
 };
 pub use serviceos_abi::{audio_capability, input_capability, rights, runtime_capability};
 
@@ -391,6 +392,10 @@ fn package_status_from_word(value: u64) -> PackageStatus {
         x if x == PackageStatus::End as u32 => PackageStatus::End,
         x if x == PackageStatus::NoChange as u32 => PackageStatus::NoChange,
         x if x == PackageStatus::NoRollback as u32 => PackageStatus::NoRollback,
+        x if x == PackageStatus::Unsupported as u32 => PackageStatus::Unsupported,
+        x if x == PackageStatus::Offline as u32 => PackageStatus::Offline,
+        x if x == PackageStatus::Interrupted as u32 => PackageStatus::Interrupted,
+        x if x == PackageStatus::VerificationFailed as u32 => PackageStatus::VerificationFailed,
         _ => PackageStatus::Busy,
     }
 }
@@ -398,14 +403,21 @@ fn package_status_from_word(value: u64) -> PackageStatus {
 fn package_status_error(status: PackageStatus) -> Error {
     match status {
         PackageStatus::NotFound => Error::NotFound,
-        PackageStatus::AlreadyInstalled | PackageStatus::Busy | PackageStatus::NoChange => {
+        PackageStatus::AlreadyInstalled
+        | PackageStatus::Busy
+        | PackageStatus::NoChange
+        | PackageStatus::Offline
+        | PackageStatus::Interrupted => {
             Error::Busy
         }
-        PackageStatus::NotInstalled | PackageStatus::NoRollback | PackageStatus::End => {
+        PackageStatus::NotInstalled
+        | PackageStatus::NoRollback
+        | PackageStatus::End
+        | PackageStatus::Unsupported => {
             Error::InvalidArgument
         }
         PackageStatus::Denied => Error::PermissionDenied,
-        PackageStatus::IntegrityFailed => Error::InvalidCall,
+        PackageStatus::IntegrityFailed | PackageStatus::VerificationFailed => Error::InvalidCall,
         PackageStatus::Ok => Error::InvalidArgument,
     }
 }
@@ -712,6 +724,7 @@ fn desktop_app_id_from_word(value: u64) -> core::result::Result<DesktopAppId, ()
         x if x == DesktopAppId::Files as u32 => Ok(DesktopAppId::Files),
         x if x == DesktopAppId::Monitor as u32 => Ok(DesktopAppId::Monitor),
         x if x == DesktopAppId::Terminal as u32 => Ok(DesktopAppId::Terminal),
+        x if x == DesktopAppId::SoftwareCenter as u32 => Ok(DesktopAppId::SoftwareCenter),
         _ => Err(()),
     }
 }

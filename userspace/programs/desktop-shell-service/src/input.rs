@@ -10,7 +10,7 @@ use crate::{
         focused_surface_id, maximize_app, minimize_app, move_app,
     },
     ContentCapture, DesktopState, DragState, HitTarget, ResizeEdges, WindowState, APP_COUNT,
-    KEY_1, KEY_2, KEY_3, KEY_4, KEY_F4, KEY_TAB, MOD_ALT, MOD_SHIFT, PANEL_MARGIN,
+    KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_F4, KEY_TAB, MOD_ALT, MOD_SHIFT, PANEL_MARGIN,
     RESIZE_GRIP_SIZE, TOPBAR_HEIGHT, WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH,
 };
 
@@ -237,6 +237,7 @@ fn handle_key_input(
             KEY_2 => Some(DesktopAppId::Files),
             KEY_3 => Some(DesktopAppId::Monitor),
             KEY_4 => Some(DesktopAppId::Terminal),
+            KEY_5 => Some(DesktopAppId::SoftwareCenter),
             _ => None,
         };
         if let Some(app_id) = direct {

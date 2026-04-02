@@ -49,6 +49,7 @@ pub(crate) fn render_desktop(state: &mut DesktopState) -> rt::Result<()> {
         launcher_line(state.apps[1]),
         launcher_line(state.apps[2]),
         launcher_line(state.apps[3]),
+        launcher_line(state.apps[4]),
     ];
     ui::render_panel_uniform(
         state.chrome.launcher_handle,

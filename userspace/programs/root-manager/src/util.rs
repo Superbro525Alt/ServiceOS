@@ -250,6 +250,7 @@ pub(crate) fn image_id_from_word(value: u64) -> ServiceImageId {
         x if x == ServiceImageId::DeveloperService as u32 => ServiceImageId::DeveloperService,
         x if x == ServiceImageId::CrossBuilderTool as u32 => ServiceImageId::CrossBuilderTool,
         x if x == ServiceImageId::ClipboardService as u32 => ServiceImageId::ClipboardService,
+        x if x == ServiceImageId::SoftwareCenterApp as u32 => ServiceImageId::SoftwareCenterApp,
         _ => ServiceImageId::RootManager,
     }
 }
@@ -331,6 +332,11 @@ pub(crate) fn event_name(event: LogEvent) -> &'static str {
         LogEvent::PackageRemoved => "package-removed",
         LogEvent::PackageRolledBack => "package-rolled-back",
         LogEvent::PackageActivationFailed => "package-activation-failed",
+        LogEvent::PackageRepositoryAdded => "package-repository-added",
+        LogEvent::PackageRepositorySynced => "package-repository-synced",
+        LogEvent::PackageRepositorySyncFailed => "package-repository-sync-failed",
+        LogEvent::PackageRepairCompleted => "package-repair-completed",
+        LogEvent::PackageGarbageCollected => "package-garbage-collected",
         LogEvent::NetworkInterfaceReady => "network-interface-ready",
         LogEvent::NetworkAddressConfigured => "network-address-configured",
         LogEvent::NetworkResolveCompleted => "network-resolve-completed",

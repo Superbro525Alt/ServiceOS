@@ -1,8 +1,10 @@
 use crate::{
     channel_create, channel_receive_blocking, channel_send, handle_close, pack_bytes,
     package_status_error, package_status_from_word, rights, unpack_bytes, Error, Handle,
-    PackageInfo, PackageListEntry, PackageStatus, PackageTag, RawMessage, Result, ServiceId,
-    IPC_MAX_WORDS,
+    PackageCatalogEntry, PackageChannel, PackageInfo, PackageListEntry, PackageMaintenanceAction,
+    PackageMaintenanceInfo, PackagePolicyInfo, PackageProvenanceInfo, PackageRepositoryInfo,
+    PackageRepositorySyncInfo, PackageRepositorySyncState, PackageRepositoryTrustMode, PackageRing,
+    PackageStatus, PackageTag, PackageTrustState, RawMessage, Result, ServiceId, IPC_MAX_WORDS,
 };
 
 pub fn package_list(
@@ -229,6 +231,415 @@ pub fn package_history(
     Ok((current_len, previous_len))
 }
 
+pub fn package_catalog(
+    package_handle: Handle,
+    index: usize,
+    latest_version: &mut [u8],
+    category: &mut [u8],
+    summary: &mut [u8],
+) -> Result<Option<PackageCatalogEntry>> {
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(PackageTag::CatalogRequest as u32);
+    request.word_count = 1;
+    request.words[0] = index as u64;
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(package_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != PackageTag::CatalogReply as u32 || response.word_count < 7 {
+        return Err(Error::InvalidArgument);
+    }
+
+    let status = package_status_from_word(response.words[0]);
+    if status == PackageStatus::End {
+        return Ok(None);
+    }
+    if status != PackageStatus::Ok {
+        return Err(package_status_error(status));
+    }
+
+    let latest_len = response.words[4] as usize;
+    let category_len = response.words[5] as usize;
+    let summary_len = response.words[6] as usize;
+    let total_bytes = latest_len + category_len + summary_len;
+    let total_words = total_bytes.div_ceil(8);
+    if response.word_count as usize != 7 + total_words {
+        return Err(Error::InvalidArgument);
+    }
+
+    let mut combined = [0u8; IPC_MAX_WORDS * 8];
+    unpack_bytes(
+        &response.words[7..response.word_count as usize],
+        total_bytes,
+        &mut combined,
+    )?;
+    latest_version[..latest_len].copy_from_slice(&combined[..latest_len]);
+    category[..category_len].copy_from_slice(&combined[latest_len..latest_len + category_len]);
+    summary[..summary_len].copy_from_slice(
+        &combined[latest_len + category_len..latest_len + category_len + summary_len],
+    );
+
+    Ok(Some(PackageCatalogEntry {
+        service_id: crate::service_id_from_word(response.words[1]),
+        repo_index: response.words[3] as u32,
+        installed: response.words[2] & 1 != 0,
+        active: response.words[2] & 2 != 0,
+        rollback_available: response.words[2] & 4 != 0,
+        category_len,
+        summary_len,
+        latest_version_len: latest_len,
+    }))
+}
+
+pub fn package_repository_list(
+    package_handle: Handle,
+    index: usize,
+    name: &mut [u8],
+    url: &mut [u8],
+) -> Result<Option<PackageRepositoryInfo>> {
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(PackageTag::RepositoryListRequest as u32);
+    request.word_count = 1;
+    request.words[0] = index as u64;
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(package_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != PackageTag::RepositoryListReply as u32 || response.word_count < 8 {
+        return Err(Error::InvalidArgument);
+    }
+
+    let status = package_status_from_word(response.words[0]);
+    if status == PackageStatus::End {
+        return Ok(None);
+    }
+    if status != PackageStatus::Ok {
+        return Err(package_status_error(status));
+    }
+
+    let name_len = response.words[4] as usize;
+    let url_len = response.words[5] as usize;
+    let total_bytes = name_len + url_len;
+    let total_words = total_bytes.div_ceil(8);
+    if response.word_count as usize != 8 + total_words {
+        return Err(Error::InvalidArgument);
+    }
+
+    let mut combined = [0u8; IPC_MAX_WORDS * 8];
+    unpack_bytes(
+        &response.words[8..response.word_count as usize],
+        total_bytes,
+        &mut combined,
+    )?;
+    name[..name_len].copy_from_slice(&combined[..name_len]);
+    url[..url_len].copy_from_slice(&combined[name_len..name_len + url_len]);
+
+    let flags = response.words[3] as u32;
+    Ok(Some(PackageRepositoryInfo {
+        repo_index: response.words[1] as u32,
+        package_count: response.words[2] as u32,
+        trust_mode: package_trust_mode_from_word((flags & 0xff) as u64),
+        sync_state: package_repo_sync_state_from_word(((flags >> 8) & 0xff) as u64),
+        channel: package_channel_from_word(((flags >> 16) & 0xff) as u64),
+        ring: package_ring_from_word(((flags >> 24) & 0x3f) as u64),
+        enabled: flags & (1 << 30) != 0,
+        pinned_digest: response.words[6],
+        last_digest: response.words[7],
+        name_len,
+        url_len,
+    }))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn package_repository_add(
+    package_handle: Handle,
+    name: &str,
+    url: &str,
+    trust_mode: PackageRepositoryTrustMode,
+    channel: PackageChannel,
+    ring: PackageRing,
+    enabled: bool,
+    pinned_digest: u64,
+) -> Result<()> {
+    let reply = channel_create()?;
+    let name_bytes = name.as_bytes();
+    let url_bytes = url.as_bytes();
+    let total_bytes = name_bytes.len() + url_bytes.len();
+    if total_bytes > (IPC_MAX_WORDS.saturating_sub(4)) * 8 {
+        return Err(Error::BufferTooSmall);
+    }
+
+    let mut request = RawMessage::empty(PackageTag::RepositoryAddRequest as u32);
+    request.words[0] = (trust_mode as u64)
+        | ((channel as u64) << 16)
+        | ((ring as u64) << 32)
+        | ((u64::from(enabled)) << 48);
+    request.words[1] = pinned_digest;
+    request.words[2] = name_bytes.len() as u64;
+    request.words[3] = url_bytes.len() as u64;
+    let mut combined = [0u8; (IPC_MAX_WORDS - 4) * 8];
+    combined[..name_bytes.len()].copy_from_slice(name_bytes);
+    combined[name_bytes.len()..name_bytes.len() + url_bytes.len()].copy_from_slice(url_bytes);
+    request.word_count = 4 + pack_bytes(&combined[..total_bytes], &mut request.words[4..])?;
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(package_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != PackageTag::RepositoryAddReply as u32 || response.word_count < 1 {
+        return Err(Error::InvalidArgument);
+    }
+
+    match package_status_from_word(response.words[0]) {
+        PackageStatus::Ok => Ok(()),
+        status => Err(package_status_error(status)),
+    }
+}
+
+pub fn package_repository_sync(
+    package_handle: Handle,
+    repo_index: Option<usize>,
+) -> Result<PackageRepositorySyncInfo> {
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(PackageTag::RepositorySyncRequest as u32);
+    request.word_count = 1;
+    request.words[0] = repo_index.unwrap_or(usize::MAX) as u64;
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(package_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != PackageTag::RepositorySyncReply as u32 || response.word_count < 3 {
+        return Err(Error::InvalidArgument);
+    }
+
+    let status = package_status_from_word(response.words[0]);
+    if !matches!(status, PackageStatus::Ok | PackageStatus::Busy | PackageStatus::Offline) {
+        return Err(package_status_error(status));
+    }
+
+    Ok(PackageRepositorySyncInfo {
+        synced: response.words[1] as u32,
+        failed: response.words[2] as u32,
+    })
+}
+
+pub fn package_provenance(
+    package_handle: Handle,
+    service_id: ServiceId,
+    installed_version: &mut [u8],
+    active_version: &mut [u8],
+    rollback_version: &mut [u8],
+    latest_version: &mut [u8],
+    source: &mut [u8],
+) -> Result<PackageProvenanceInfo> {
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(PackageTag::ProvenanceRequest as u32);
+    request.word_count = 1;
+    request.words[0] = service_id as u32 as u64;
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(package_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != PackageTag::ProvenanceReply as u32 || response.word_count < 8 {
+        return Err(Error::InvalidArgument);
+    }
+
+    let status = package_status_from_word(response.words[0]);
+    if status != PackageStatus::Ok {
+        return Err(package_status_error(status));
+    }
+
+    let installed_len = response.words[3] as usize;
+    let active_len = response.words[4] as usize;
+    let rollback_len = response.words[5] as usize;
+    let latest_len = response.words[6] as usize;
+    let source_len = response.words[7] as usize;
+    let total_bytes = installed_len + active_len + rollback_len + latest_len + source_len;
+    let total_words = total_bytes.div_ceil(8);
+    if response.word_count as usize != 8 + total_words {
+        return Err(Error::InvalidArgument);
+    }
+
+    let mut combined = [0u8; IPC_MAX_WORDS * 8];
+    unpack_bytes(
+        &response.words[8..response.word_count as usize],
+        total_bytes,
+        &mut combined,
+    )?;
+
+    let mut offset = 0usize;
+    installed_version[..installed_len].copy_from_slice(&combined[offset..offset + installed_len]);
+    offset += installed_len;
+    active_version[..active_len].copy_from_slice(&combined[offset..offset + active_len]);
+    offset += active_len;
+    rollback_version[..rollback_len].copy_from_slice(&combined[offset..offset + rollback_len]);
+    offset += rollback_len;
+    latest_version[..latest_len].copy_from_slice(&combined[offset..offset + latest_len]);
+    offset += latest_len;
+    source[..source_len].copy_from_slice(&combined[offset..offset + source_len]);
+
+    let flags = response.words[2] as u32;
+    let package_flags = (flags >> 24) & 0xff;
+    Ok(PackageProvenanceInfo {
+        repo_index: response.words[1] as u32,
+        trust_state: package_trust_state_from_word((flags & 0xff) as u64),
+        channel: package_channel_from_word(((flags >> 8) & 0xff) as u64),
+        ring: package_ring_from_word(((flags >> 16) & 0xff) as u64),
+        installed: package_flags & 1 != 0,
+        active: package_flags & 2 != 0,
+        rollback_available: package_flags & 4 != 0,
+        installed_version_len: installed_len,
+        active_version_len: active_len,
+        rollback_version_len: rollback_len,
+        latest_version_len: latest_len,
+        source_len,
+    })
+}
+
+pub fn package_policy(
+    package_handle: Handle,
+    service_id: ServiceId,
+    pinned_version: &mut [u8],
+) -> Result<PackagePolicyInfo> {
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(PackageTag::PolicyRequest as u32);
+    request.word_count = 1;
+    request.words[0] = service_id as u32 as u64;
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(package_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != PackageTag::PolicyReply as u32 || response.word_count < 4 {
+        return Err(Error::InvalidArgument);
+    }
+
+    let status = package_status_from_word(response.words[0]);
+    if status != PackageStatus::Ok {
+        return Err(package_status_error(status));
+    }
+
+    let pin_len = response.words[3] as usize;
+    let total_words = pin_len.div_ceil(8);
+    if response.word_count as usize != 4 + total_words {
+        return Err(Error::InvalidArgument);
+    }
+    if pin_len > 0 {
+        let mut combined = [0u8; IPC_MAX_WORDS * 8];
+        unpack_bytes(
+            &response.words[4..response.word_count as usize],
+            pin_len,
+            &mut combined,
+        )?;
+        pinned_version[..pin_len].copy_from_slice(&combined[..pin_len]);
+    }
+
+    Ok(PackagePolicyInfo {
+        channel: package_channel_from_word(response.words[1]),
+        ring: package_ring_from_word(response.words[2]),
+        pinned_version_len: pin_len,
+    })
+}
+
+pub fn package_policy_set(
+    package_handle: Handle,
+    service_id: ServiceId,
+    channel: PackageChannel,
+    ring: PackageRing,
+    pinned_version: Option<&str>,
+) -> Result<()> {
+    let reply = channel_create()?;
+    let pin_bytes = pinned_version.unwrap_or("").as_bytes();
+    if pin_bytes.len() > (IPC_MAX_WORDS.saturating_sub(4)) * 8 {
+        return Err(Error::BufferTooSmall);
+    }
+
+    let mut request = RawMessage::empty(PackageTag::PolicySetRequest as u32);
+    request.word_count = 4 + pack_bytes(pin_bytes, &mut request.words[4..])?;
+    request.words[0] = service_id as u32 as u64;
+    request.words[1] = channel as u32 as u64;
+    request.words[2] = ring as u32 as u64;
+    request.words[3] = pin_bytes.len() as u64;
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(package_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != PackageTag::PolicySetReply as u32 || response.word_count < 1 {
+        return Err(Error::InvalidArgument);
+    }
+
+    match package_status_from_word(response.words[0]) {
+        PackageStatus::Ok => Ok(()),
+        status => Err(package_status_error(status)),
+    }
+}
+
+pub fn package_maintenance(
+    package_handle: Handle,
+    action: PackageMaintenanceAction,
+) -> Result<PackageMaintenanceInfo> {
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(PackageTag::MaintenanceRequest as u32);
+    request.word_count = 1;
+    request.words[0] = action as u32 as u64;
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(package_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != PackageTag::MaintenanceReply as u32 || response.word_count < 3 {
+        return Err(Error::InvalidArgument);
+    }
+
+    let status = package_status_from_word(response.words[0]);
+    if status != PackageStatus::Ok {
+        return Err(package_status_error(status));
+    }
+
+    Ok(PackageMaintenanceInfo {
+        action,
+        repaired_entries: response.words[1] as u32,
+        garbage_collected_entries: response.words[2] as u32,
+    })
+}
+
 fn package_mutation(
     package_handle: Handle,
     request_tag: PackageTag,
@@ -263,5 +674,55 @@ fn package_mutation(
     match package_status_from_word(response.words[0]) {
         PackageStatus::Ok => Ok(()),
         status => Err(package_status_error(status)),
+    }
+}
+
+fn package_trust_mode_from_word(value: u64) -> PackageRepositoryTrustMode {
+    match value as u32 {
+        x if x == PackageRepositoryTrustMode::Boot as u32 => PackageRepositoryTrustMode::Boot,
+        x if x == PackageRepositoryTrustMode::PinnedDigest as u32 => {
+            PackageRepositoryTrustMode::PinnedDigest
+        }
+        _ => PackageRepositoryTrustMode::Unsigned,
+    }
+}
+
+fn package_repo_sync_state_from_word(value: u64) -> PackageRepositorySyncState {
+    match value as u32 {
+        x if x == PackageRepositorySyncState::Ready as u32 => PackageRepositorySyncState::Ready,
+        x if x == PackageRepositorySyncState::Offline as u32 => {
+            PackageRepositorySyncState::Offline
+        }
+        x if x == PackageRepositorySyncState::Failed as u32 => {
+            PackageRepositorySyncState::Failed
+        }
+        _ => PackageRepositorySyncState::Idle,
+    }
+}
+
+fn package_trust_state_from_word(value: u64) -> PackageTrustState {
+    match value as u32 {
+        x if x == PackageTrustState::BootTrusted as u32 => PackageTrustState::BootTrusted,
+        x if x == PackageTrustState::DigestPinned as u32 => PackageTrustState::DigestPinned,
+        x if x == PackageTrustState::VerificationFailed as u32 => {
+            PackageTrustState::VerificationFailed
+        }
+        _ => PackageTrustState::Unverified,
+    }
+}
+
+fn package_channel_from_word(value: u64) -> PackageChannel {
+    match value as u32 {
+        x if x == PackageChannel::Beta as u32 => PackageChannel::Beta,
+        x if x == PackageChannel::Canary as u32 => PackageChannel::Canary,
+        _ => PackageChannel::Stable,
+    }
+}
+
+fn package_ring_from_word(value: u64) -> PackageRing {
+    match value as u32 {
+        x if x == PackageRing::Preview as u32 => PackageRing::Preview,
+        x if x == PackageRing::Testing as u32 => PackageRing::Testing,
+        _ => PackageRing::Production,
     }
 }

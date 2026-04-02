@@ -76,25 +76,37 @@ gfx focus <surface-id>: change focused session surface\r\n\
 desktop status: show desktop shell status\r\n\
 desktop apps: list desktop app state\r\n\
 desktop windows: list desktop window state\r\n\
-desktop launch <settings|files|monitor>: launch a desktop app\r\n\
-desktop focus <settings|files|monitor>: focus a desktop app\r\n\
+desktop launch <settings|files|monitor|terminal|software>: launch a desktop app\r\n\
+desktop focus <settings|files|monitor|terminal|software>: focus a desktop app\r\n\
 desktop next: focus the next visible window\r\n\
-desktop close <settings|files|monitor>: close a desktop app window\r\n\
-desktop minimize <settings|files|monitor>: minimize a desktop app window\r\n\
-desktop restore <settings|files|monitor>: restore a minimized app window\r\n\
-desktop maximize <settings|files|monitor>: maximize or restore a window\r\n\
-desktop move <settings|files|monitor> <x> <y>: move a window\r\n\
-desktop resize <settings|files|monitor> <width> <height>: resize a window\r\n\
+desktop close <settings|files|monitor|terminal|software>: close a desktop app window\r\n\
+desktop minimize <settings|files|monitor|terminal|software>: minimize a desktop app window\r\n\
+desktop restore <settings|files|monitor|terminal|software>: restore a minimized app window\r\n\
+desktop maximize <settings|files|monitor|terminal|software>: maximize or restore a window\r\n\
+desktop move <settings|files|monitor|terminal|software> <x> <y>: move a window\r\n\
+desktop resize <settings|files|monitor|terminal|software> <width> <height>: resize a window\r\n\
 desktop click <x> <y>: inject a pointer click into the desktop session\r\n\
 desktop notify <text>: post a desktop shell notification\r\n\
 desktop launch terminal: open the graphical terminal app\r\n\
 pkg list: list repository packages\r\n\
+pkg catalog: browse the current package catalog\r\n\
+pkg repos: list configured package repositories\r\n\
+pkg repo add <name> <url> [trust] [channel] [ring]: register a network package repository\r\n\
+pkg repo sync [all|index]: fetch repository metadata through package-service\r\n\
 pkg info <name>: inspect one package\r\n\
 pkg install <name> [version]: activate a package\r\n\
 pkg update <name> [version]: switch to a newer package version\r\n\
 pkg remove <name>: deactivate a package\r\n\
 pkg rollback <name>: restore the prior active version\r\n\
 pkg history <name>: show current and rollback versions\r\n\
+pkg provenance <name>: inspect package source and trust state\r\n\
+pkg policy <name>: inspect package channel/ring/pin policy\r\n\
+pkg pin <name> <version|none>: pin or unpin a package version\r\n\
+pkg channel <name> <stable|beta|canary>: set package update channel\r\n\
+pkg ring <name> <production|preview|testing>: set staged rollout ring\r\n\
+pkg verify: validate installed package state\r\n\
+pkg repair: repair interrupted or broken package state\r\n\
+pkg gc: garbage-collect old package artifacts\r\n\
 run sysinfo: launch a transient tool\r\n\
 run image <path>: launch a flat image resource through the manager loader path\r\n";
 
@@ -172,6 +184,7 @@ pub(crate) fn parse_desktop_app_name(name: &str) -> Option<DesktopAppId> {
         "files" => Some(DesktopAppId::Files),
         "monitor" => Some(DesktopAppId::Monitor),
         "terminal" => Some(DesktopAppId::Terminal),
+        "software" | "software-center" | "store" => Some(DesktopAppId::SoftwareCenter),
         _ => None,
     }
 }
@@ -205,6 +218,7 @@ pub(crate) fn desktop_app_name(app_id: DesktopAppId) -> &'static str {
         DesktopAppId::Files => "files",
         DesktopAppId::Monitor => "monitor",
         DesktopAppId::Terminal => "terminal",
+        DesktopAppId::SoftwareCenter => "software",
     }
 }
 
@@ -312,6 +326,11 @@ pub(crate) fn event_name(event: LogEvent) -> &'static str {
         LogEvent::PackageRemoved => "package-removed",
         LogEvent::PackageRolledBack => "package-rolled-back",
         LogEvent::PackageActivationFailed => "package-activation-failed",
+        LogEvent::PackageRepositoryAdded => "package-repository-added",
+        LogEvent::PackageRepositorySynced => "package-repository-synced",
+        LogEvent::PackageRepositorySyncFailed => "package-repository-sync-failed",
+        LogEvent::PackageRepairCompleted => "package-repair-completed",
+        LogEvent::PackageGarbageCollected => "package-garbage-collected",
         LogEvent::NetworkInterfaceReady => "network-interface-ready",
         LogEvent::NetworkAddressConfigured => "network-address-configured",
         LogEvent::NetworkResolveCompleted => "network-resolve-completed",

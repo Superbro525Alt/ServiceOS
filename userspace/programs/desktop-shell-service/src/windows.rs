@@ -473,6 +473,7 @@ pub(crate) fn initial_window_layout(
             ui::BG_WINDOW,
         ),
         DesktopAppId::Terminal => (220, 96, 720, 420, 0x11161f),
+        DesktopAppId::SoftwareCenter => (248, 84, 680, 408, ui::BG_WINDOW_ALT),
     }
 }
 
@@ -503,6 +504,9 @@ pub(crate) fn launcher_line(slot: AppSlot) -> &'static str {
         (DesktopAppId::Terminal, true, false) => "TERMINAL  OPEN",
         (DesktopAppId::Terminal, true, true) => "TERMINAL  MIN",
         (DesktopAppId::Terminal, false, _) => "TERMINAL",
+        (DesktopAppId::SoftwareCenter, true, false) => "SOFTWARE  OPEN",
+        (DesktopAppId::SoftwareCenter, true, true) => "SOFTWARE  MIN",
+        (DesktopAppId::SoftwareCenter, false, _) => "SOFTWARE",
     }
 }
 
@@ -520,6 +524,7 @@ pub(crate) fn app_title(app_id: DesktopAppId) -> &'static str {
         DesktopAppId::Files => "FILES",
         DesktopAppId::Monitor => "MONITOR",
         DesktopAppId::Terminal => "TERMINAL",
+        DesktopAppId::SoftwareCenter => "SOFTWARE",
     }
 }
 

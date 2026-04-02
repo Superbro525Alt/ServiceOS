@@ -171,6 +171,7 @@ pub enum ServiceImageId {
     DeveloperService = 23,
     CrossBuilderTool = 24,
     ClipboardService = 25,
+    SoftwareCenterApp = 26,
 }
 
 #[repr(u32)]
@@ -336,6 +337,11 @@ pub enum LogEvent {
     DeveloperBuildFinished = 58,
     DeveloperBuildFailed = 59,
     DeveloperArtifactOpened = 60,
+    PackageRepositoryAdded = 61,
+    PackageRepositorySynced = 62,
+    PackageRepositorySyncFailed = 63,
+    PackageRepairCompleted = 64,
+    PackageGarbageCollected = 65,
 }
 
 #[repr(u32)]
@@ -526,6 +532,24 @@ pub enum PackageTag {
     RollbackReply = 0x70b,
     HistoryRequest = 0x70c,
     HistoryReply = 0x70d,
+    CatalogRequest = 0x70e,
+    CatalogReply = 0x70f,
+    MetadataRequest = 0x710,
+    MetadataReply = 0x711,
+    RepositoryListRequest = 0x712,
+    RepositoryListReply = 0x713,
+    RepositoryAddRequest = 0x714,
+    RepositoryAddReply = 0x715,
+    RepositorySyncRequest = 0x716,
+    RepositorySyncReply = 0x717,
+    ProvenanceRequest = 0x718,
+    ProvenanceReply = 0x719,
+    PolicyRequest = 0x71a,
+    PolicyReply = 0x71b,
+    PolicySetRequest = 0x71c,
+    PolicySetReply = 0x71d,
+    MaintenanceRequest = 0x71e,
+    MaintenanceReply = 0x71f,
 }
 
 #[repr(u32)]
@@ -691,6 +715,60 @@ pub enum PackageStatus {
     End = 7,
     NoChange = 8,
     NoRollback = 9,
+    Unsupported = 10,
+    Offline = 11,
+    Interrupted = 12,
+    VerificationFailed = 13,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PackageTrustState {
+    BootTrusted = 1,
+    DigestPinned = 2,
+    Unverified = 3,
+    VerificationFailed = 4,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PackageRepositorySyncState {
+    Idle = 1,
+    Ready = 2,
+    Offline = 3,
+    Failed = 4,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PackageRepositoryTrustMode {
+    Boot = 1,
+    Unsigned = 2,
+    PinnedDigest = 3,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PackageChannel {
+    Stable = 1,
+    Beta = 2,
+    Canary = 3,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PackageRing {
+    Production = 1,
+    Preview = 2,
+    Testing = 3,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PackageMaintenanceAction {
+    Validate = 1,
+    Repair = 2,
+    GarbageCollect = 3,
 }
 
 pub const PACKET_INTERFACE_FLAG_NONBLOCK: u32 = 1 << 0;
@@ -1040,6 +1118,7 @@ pub enum DesktopAppId {
     Files = 2,
     Monitor = 3,
     Terminal = 4,
+    SoftwareCenter = 5,
 }
 
 #[repr(u32)]

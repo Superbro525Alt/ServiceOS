@@ -180,6 +180,13 @@ const PROGRAMS: &[Program] = &[
         service_id: 0,
     },
     Program {
+        package: "serviceos-software-center-app",
+        bin_name: "serviceos-software-center-app",
+        image_id: 26,
+        service_path: "apps/software-center-app/program.img",
+        service_id: 0,
+    },
+    Program {
         package: "serviceos-posix-host-tool",
         bin_name: "serviceos-posix-host-tool",
         image_id: 22,

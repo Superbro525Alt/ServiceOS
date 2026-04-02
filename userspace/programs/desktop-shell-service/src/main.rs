@@ -14,13 +14,13 @@ use rt::{
 };
 
 const SESSION_ID: u32 = 1;
-const APP_COUNT: usize = 4;
-const APP_PAGE_SIZE: usize = 3;
+const APP_COUNT: usize = 5;
+const APP_PAGE_SIZE: usize = 4;
 const WINDOW_PAGE_SIZE: usize = 2;
 const STATUS_REFRESH_TICKS: u64 = 100;
 const TOPBAR_HEIGHT: u32 = 42;
 const LAUNCHER_WIDTH: u32 = 250;
-const LAUNCHER_HEIGHT: u32 = 120;
+const LAUNCHER_HEIGHT: u32 = 144;
 const PANEL_MARGIN: u32 = 20;
 const STATUS_PANEL_WIDTH: u32 = 280;
 const STATUS_PANEL_HEIGHT: u32 = 160;
@@ -39,6 +39,7 @@ const KEY_1: u32 = 2;
 const KEY_2: u32 = 3;
 const KEY_3: u32 = 4;
 const KEY_4: u32 = 5;
+const KEY_5: u32 = 6;
 
 #[derive(Clone, Copy)]
 struct Chrome {
@@ -284,6 +285,7 @@ fn main() -> u64 {
             AppSlot::new(DesktopAppId::Files, ServiceImageId::FilesApp),
             AppSlot::new(DesktopAppId::Monitor, ServiceImageId::MonitorApp),
             AppSlot::new(DesktopAppId::Terminal, ServiceImageId::TerminalApp),
+            AppSlot::new(DesktopAppId::SoftwareCenter, ServiceImageId::SoftwareCenterApp),
         ],
         focused_app: None,
         next_status_refresh: 0,

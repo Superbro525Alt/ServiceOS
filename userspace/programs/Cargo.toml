@@ -24,6 +24,7 @@ members = [
     "monitor-app",
     "terminal-service",
     "terminal-app",
+    "software-center-app",
     "announce-service",
     "posix-host-tool",
     "cross-builder-tool",

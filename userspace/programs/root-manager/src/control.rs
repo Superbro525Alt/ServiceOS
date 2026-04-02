@@ -844,6 +844,7 @@ fn launch_is_authorized(caller: ServiceId, image_id: ServiceImageId) -> bool {
                 | ServiceImageId::FilesApp
                 | ServiceImageId::MonitorApp
                 | ServiceImageId::TerminalApp
+                | ServiceImageId::SoftwareCenterApp
         ),
         _ => false,
     }
@@ -933,6 +934,16 @@ fn append_launch_grants(
                 slots,
                 service_count,
                 ServiceId::Clipboard,
+                rights::SEND | rights::TRANSFER,
+                startup,
+                handle_index,
+            )?;
+        }
+        ServiceImageId::SoftwareCenterApp => {
+            append_service_launch_handle(
+                slots,
+                service_count,
+                ServiceId::Package,
                 rights::SEND | rights::TRANSFER,
                 startup,
                 handle_index,

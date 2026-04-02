@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use core::{fmt::Write, str};
+use core::{array, fmt::Write, str};
 
 use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
@@ -15,6 +15,11 @@ const MAX_CATEGORY_BYTES: usize = 24;
 const MAX_SUMMARY_BYTES: usize = 72;
 const MAX_STATUS_BYTES: usize = 80;
 const MAX_SOURCE_BYTES: usize = 96;
+const BUFFER_WIDTH: u32 = 1024;
+const BUFFER_HEIGHT: u32 = 768;
+const BUFFER_BYTES: usize = BUFFER_WIDTH as usize * BUFFER_HEIGHT as usize * 4;
+const SURFACE_BUFFER_SLOTS: usize = 2;
+const PIXEL_STRIDE: usize = BUFFER_WIDTH as usize;
 const LIST_TOP: i32 = 166;
 const ROW_HEIGHT: i32 = 16;
 const KEY_ENTER: u32 = 28;
@@ -105,23 +110,70 @@ fn main() -> u64 {
         status: [0; MAX_STATUS_BYTES],
         status_len: 0,
     };
+    let mut buffer_handles = [rt::INVALID_HANDLE; SURFACE_BUFFER_SLOTS];
+    let mut mapped_buffers: [Option<rt::MappedMemory>; SURFACE_BUFFER_SLOTS] =
+        array::from_fn(|_| None);
+    for slot in 0..SURFACE_BUFFER_SLOTS {
+        let buffer_handle = match rt::memory_create(BUFFER_BYTES, true) {
+            Ok(handle) => handle,
+            Err(_) => return 0xf507,
+        };
+        if rt::surface_attach_buffer_slot(
+            surface_handle,
+            slot as u32,
+            buffer_handle,
+            BUFFER_WIDTH,
+            BUFFER_HEIGHT,
+            BUFFER_WIDTH,
+        )
+        .is_err()
+        {
+            let _ = rt::handle_close(buffer_handle);
+            return 0xf508;
+        }
+        let mapped_buffer = match rt::MappedMemory::map(buffer_handle, BUFFER_BYTES, true) {
+            Ok(buffer) => buffer,
+            Err(_) => {
+                let _ = rt::handle_close(buffer_handle);
+                return 0xf509;
+            }
+        };
+        buffer_handles[slot] = buffer_handle;
+        mapped_buffers[slot] = Some(mapped_buffer);
+    }
+    let mut front_buffer_slot = 0usize;
 
     let _ = reload_catalog(package_handle, &mut state);
-    if render(surface_handle, package_handle, &state).is_err() {
+    if render(
+        surface_handle,
+        front_buffer_slot as u32,
+        mapped_buffers[front_buffer_slot].as_mut().unwrap(),
+        package_handle,
+        &state,
+    )
+    .is_err()
+    {
         return 0xf503;
     }
 
     loop {
         match poll_lifecycle(bootstrap) {
-            Ok(true) => return 0,
+            Ok(true) => break,
             Ok(false) => {}
             Err(_) => return 0xf504,
         }
 
-        match poll_control(control_handle, surface_handle, package_handle, &mut state) {
+        match poll_control(
+            control_handle,
+            surface_handle,
+            package_handle,
+            &mut mapped_buffers,
+            &mut front_buffer_slot,
+            &mut state,
+        ) {
             Ok(ControlFlow::Idle) => {}
             Ok(ControlFlow::Worked) => continue,
-            Ok(ControlFlow::Exit) => return 0,
+            Ok(ControlFlow::Exit) => break,
             Err(_) => return 0xf505,
         }
 
@@ -129,6 +181,13 @@ fn main() -> u64 {
             return 0xf506;
         }
     }
+
+    for handle in buffer_handles {
+        if handle != rt::INVALID_HANDLE {
+            let _ = rt::handle_close(handle);
+        }
+    }
+    0
 }
 
 enum ControlFlow {
@@ -141,6 +200,8 @@ fn poll_control(
     control_handle: rt::Handle,
     surface_handle: rt::Handle,
     package_handle: rt::Handle,
+    buffers: &mut [Option<rt::MappedMemory>; SURFACE_BUFFER_SLOTS],
+    front_buffer_slot: &mut usize,
     state: &mut AppState,
 ) -> rt::Result<ControlFlow> {
     let mut changed = false;
@@ -198,7 +259,14 @@ fn poll_control(
     }
 
     if changed {
-        render(surface_handle, package_handle, state)?;
+        *front_buffer_slot = (*front_buffer_slot + 1) % SURFACE_BUFFER_SLOTS;
+        render(
+            surface_handle,
+            *front_buffer_slot as u32,
+            buffers[*front_buffer_slot].as_mut().unwrap(),
+            package_handle,
+            state,
+        )?;
         return Ok(ControlFlow::Worked);
     }
     if did_work {
@@ -207,7 +275,16 @@ fn poll_control(
     Ok(ControlFlow::Idle)
 }
 
-fn render(surface_handle: rt::Handle, package_handle: rt::Handle, state: &AppState) -> rt::Result<()> {
+fn render(
+    surface_handle: rt::Handle,
+    buffer_slot: u32,
+    buffer: &mut rt::MappedMemory,
+    package_handle: rt::Handle,
+    state: &AppState,
+) -> rt::Result<()> {
+    let width = state.width.min(BUFFER_WIDTH) as usize;
+    let height = state.height.min(BUFFER_HEIGHT) as usize;
+    let bytes = &mut buffer.as_slice_mut()[..BUFFER_BYTES];
     let mut detail0 = FixedLogBuffer::<64>::new();
     let mut detail1 = FixedLogBuffer::<80>::new();
     let mut detail2 = FixedLogBuffer::<80>::new();
@@ -264,78 +341,64 @@ fn render(surface_handle: rt::Handle, package_handle: rt::Handle, state: &AppSta
         let _ = write!(&mut detail1, "Use the catalog list below");
     }
 
-    ui::render_window_state(
+    fill_rect(bytes, 0, 0, width, height, ui::BG_WINDOW_ALT);
+    fill_rect(
+        bytes,
+        0,
+        0,
+        width,
+        ui::TITLEBAR_HEIGHT as usize,
+        if state.focused {
+            ui::ACCENT
+        } else {
+            ui::ACCENT_DIM
+        },
+    );
+    draw_titlebar(bytes, width);
+    draw_details(
+        bytes,
+        str::from_utf8(detail0.as_bytes()).unwrap_or("PACKAGE"),
+        str::from_utf8(detail1.as_bytes()).unwrap_or("DETAILS"),
+        str::from_utf8(detail2.as_bytes()).unwrap_or("DETAILS"),
+        str::from_utf8(detail3.as_bytes()).unwrap_or("DETAILS"),
+        str::from_utf8(&state.status[..state.status_len]).unwrap_or(""),
+    );
+    draw_button(
+        bytes,
+        BUTTON_SYNC_X0,
+        BUTTON_Y0,
+        BUTTON_SYNC_X1,
+        BUTTON_Y1,
+        ui::ACCENT_DIM,
+        "SYNC",
+    );
+    draw_button(
+        bytes,
+        BUTTON_INSTALL_X0,
+        BUTTON_Y0,
+        BUTTON_INSTALL_X1,
+        BUTTON_Y1,
+        ui::STATUS_OK,
+        action_label(selected_entry(state)),
+    );
+    draw_button(
+        bytes,
+        BUTTON_REMOVE_X0,
+        BUTTON_Y0,
+        BUTTON_REMOVE_X1,
+        BUTTON_Y1,
+        ui::STATUS_WARN,
+        "REMOVE",
+    );
+    draw_list(bytes, width, height, state);
+    rt::surface_present_buffer_slot(
         surface_handle,
-        state.width,
-        state.height,
-        ui::BG_WINDOW_ALT,
-        ui::ACCENT,
-        "SOFTWARE",
-        &[
-            str::from_utf8(detail0.as_bytes()).unwrap_or("PACKAGE"),
-            str::from_utf8(detail1.as_bytes()).unwrap_or("DETAILS"),
-            str::from_utf8(detail2.as_bytes()).unwrap_or("DETAILS"),
-            str::from_utf8(detail3.as_bytes()).unwrap_or("DETAILS"),
-            str::from_utf8(&state.status[..state.status_len]).unwrap_or(""),
-        ],
-        state.focused,
-    )?;
-
-    draw_button(surface_handle, 20, BUTTON_SYNC_X0, BUTTON_Y0, BUTTON_SYNC_X1, BUTTON_Y1, ui::ACCENT_DIM, "SYNC")?;
-    draw_button(surface_handle, 24, BUTTON_INSTALL_X0, BUTTON_Y0, BUTTON_INSTALL_X1, BUTTON_Y1, ui::STATUS_OK, action_label(selected_entry(state)))?;
-    draw_button(surface_handle, 28, BUTTON_REMOVE_X0, BUTTON_Y0, BUTTON_REMOVE_X1, BUTTON_Y1, ui::STATUS_WARN, "REMOVE")?;
-
-    let visible_rows = visible_row_count(state.height);
-    for row in 0..visible_rows {
-        let entry_index = state.scroll_offset + row;
-        let element = 40 + row as u32 * 3;
-        if entry_index >= state.entry_count {
-            let _ = rt::surface_set_rect(surface_handle, element, 8, LIST_TOP + row as i32 * ROW_HEIGHT, state.width.saturating_sub(16), (ROW_HEIGHT - 2) as u32, ui::BG_WINDOW_ALT, true);
-            continue;
-        }
-        let entry = state.entries[entry_index];
-        let row_y = LIST_TOP + row as i32 * ROW_HEIGHT;
-        let selected = entry_index == state.selected_index;
-        let mut line = FixedLogBuffer::<112>::new();
-        let _ = write!(
-            &mut line,
-            "{:<16} r{} {:<7} {:<8} {}{}{}",
-            service_label(entry.service_id),
-            entry.repo_index,
-            text_or_dash(&entry.latest_version[..entry.latest_version_len]),
-            text_or_dash(&entry.category[..entry.category_len]),
-            if entry.installed { "I" } else { "-" },
-            if entry.active { "A" } else { "-" },
-            if entry.rollback { "R" } else { "-" },
-        );
-        rt::surface_set_rect(
-            surface_handle,
-            element,
-            8,
-            row_y,
-            state.width.saturating_sub(16),
-            (ROW_HEIGHT - 2) as u32,
-            if selected { ui::ACCENT_DIM } else { ui::BG_WINDOW_ALT },
-            true,
-        )?;
-        rt::surface_set_label(
-            surface_handle,
-            element + 1,
-            12,
-            row_y + 3,
-            if selected { ui::TEXT_PRIMARY } else { ui::TEXT_SECONDARY },
-            str::from_utf8(line.as_bytes()).unwrap_or("PACKAGE"),
-        )?;
-        rt::surface_set_label(
-            surface_handle,
-            element + 2,
-            280,
-            row_y + 3,
-            ui::TEXT_MUTED,
-            str::from_utf8(&entry.summary[..entry.summary_len]).unwrap_or(""),
-        )?;
-    }
-    Ok(())
+        buffer_slot,
+        0,
+        0,
+        state.width.min(BUFFER_WIDTH),
+        state.height.min(BUFFER_HEIGHT),
+    )
 }
 
 fn reload_catalog(package_handle: rt::Handle, state: &mut AppState) -> rt::Result<()> {
@@ -485,18 +548,169 @@ fn handle_key_down(package_handle: rt::Handle, state: &mut AppState, key: u32) -
     Ok(false)
 }
 
+fn draw_titlebar(bytes: &mut [u8], width: usize) {
+    let close_x = width as i32 - ui::WINDOW_BUTTON_RIGHT_MARGIN - ui::WINDOW_BUTTON_SIZE as i32;
+    let minimize_x = close_x - ui::WINDOW_BUTTON_GAP - ui::WINDOW_BUTTON_SIZE as i32;
+    let maximize_x = minimize_x - ui::WINDOW_BUTTON_GAP - ui::WINDOW_BUTTON_SIZE as i32;
+    fill_rect(
+        bytes,
+        maximize_x.max(0) as usize,
+        ui::WINDOW_BUTTON_TOP.max(0) as usize,
+        ui::WINDOW_BUTTON_SIZE as usize,
+        ui::WINDOW_BUTTON_SIZE as usize,
+        ui::ACCENT,
+    );
+    fill_rect(
+        bytes,
+        minimize_x.max(0) as usize,
+        ui::WINDOW_BUTTON_TOP.max(0) as usize,
+        ui::WINDOW_BUTTON_SIZE as usize,
+        ui::WINDOW_BUTTON_SIZE as usize,
+        ui::TEXT_MUTED,
+    );
+    fill_rect(
+        bytes,
+        close_x.max(0) as usize,
+        ui::WINDOW_BUTTON_TOP.max(0) as usize,
+        ui::WINDOW_BUTTON_SIZE as usize,
+        ui::WINDOW_BUTTON_SIZE as usize,
+        ui::STATUS_WARN,
+    );
+    fill_rect(
+        bytes,
+        (maximize_x + 3).max(0) as usize,
+        (ui::WINDOW_BUTTON_TOP + 3).max(0) as usize,
+        6,
+        6,
+        ui::BG_PANEL,
+    );
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        minimize_x + 3,
+        ui::WINDOW_BUTTON_TOP + 2,
+        ui::BG_PANEL,
+        "_",
+    );
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        close_x + 3,
+        ui::WINDOW_BUTTON_TOP + 2,
+        ui::BG_PANEL,
+        "X",
+    );
+    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, 10, 9, ui::TEXT_PRIMARY, "SOFTWARE");
+}
+
+fn draw_details(
+    bytes: &mut [u8],
+    detail0: &str,
+    detail1: &str,
+    detail2: &str,
+    detail3: &str,
+    status: &str,
+) {
+    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, 12, 42, ui::TEXT_PRIMARY, detail0);
+    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, 12, 56, ui::TEXT_SECONDARY, detail1);
+    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, 12, 70, ui::TEXT_SECONDARY, detail2);
+    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, 12, 84, ui::TEXT_SECONDARY, detail3);
+    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, 12, 98, ui::TEXT_MUTED, status);
+}
+
+fn draw_list(bytes: &mut [u8], width: usize, height: usize, state: &AppState) {
+    let list_height = height.saturating_sub(LIST_TOP as usize + 12);
+    fill_rect(
+        bytes,
+        8,
+        LIST_TOP as usize,
+        width.saturating_sub(16),
+        list_height,
+        ui::BG_WINDOW,
+    );
+
+    let visible_rows = visible_row_count(state.height);
+    for row in 0..visible_rows {
+        let entry_index = state.scroll_offset + row;
+        if entry_index >= state.entry_count {
+            break;
+        }
+        let entry = state.entries[entry_index];
+        let row_y = LIST_TOP as usize + row * ROW_HEIGHT as usize;
+        let selected = entry_index == state.selected_index;
+        if selected {
+            fill_rect(
+                bytes,
+                12,
+                row_y + 1,
+                width.saturating_sub(24),
+                ROW_HEIGHT as usize - 2,
+                ui::ACCENT_DIM,
+            );
+        }
+        let mut line = FixedLogBuffer::<112>::new();
+        let _ = write!(
+            &mut line,
+            "{:<16} r{} {:<7} {:<8} {}{}{}",
+            service_label(entry.service_id),
+            entry.repo_index,
+            text_or_dash(&entry.latest_version[..entry.latest_version_len]),
+            text_or_dash(&entry.category[..entry.category_len]),
+            if entry.installed { "I" } else { "-" },
+            if entry.active { "A" } else { "-" },
+            if entry.rollback { "R" } else { "-" },
+        );
+        rt::draw_text_rgba8888(
+            bytes,
+            PIXEL_STRIDE,
+            12,
+            row_y as i32 + 3,
+            if selected {
+                ui::TEXT_PRIMARY
+            } else {
+                ui::TEXT_SECONDARY
+            },
+            str::from_utf8(line.as_bytes()).unwrap_or("PACKAGE"),
+        );
+        rt::draw_text_rgba8888(
+            bytes,
+            PIXEL_STRIDE,
+            280,
+            row_y as i32 + 3,
+            ui::TEXT_MUTED,
+            str::from_utf8(&entry.summary[..entry.summary_len]).unwrap_or(""),
+        );
+    }
+}
+
 fn draw_button(
-    surface_handle: rt::Handle,
-    element: u32,
+    bytes: &mut [u8],
     x0: i32,
     y0: i32,
     x1: i32,
     y1: i32,
     color: u32,
     label: &str,
-) -> rt::Result<()> {
-    rt::surface_set_rect(surface_handle, element, x0, y0, (x1 - x0) as u32, (y1 - y0) as u32, color, true)?;
-    rt::surface_set_label(surface_handle, element + 1, x0 + 8, y0 + 6, ui::BG_PANEL, label)
+) {
+    fill_rect(
+        bytes,
+        x0.max(0) as usize,
+        y0.max(0) as usize,
+        (x1 - x0).max(0) as usize,
+        (y1 - y0).max(0) as usize,
+        color,
+    );
+    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, x0 + 8, y0 + 6, ui::BG_PANEL, label);
+}
+
+fn fill_rect(bytes: &mut [u8], x: usize, y: usize, width: usize, height: usize, rgb: u32) {
+    let end_x = (x + width).min(BUFFER_WIDTH as usize);
+    let end_y = (y + height).min(BUFFER_HEIGHT as usize);
+    for py in y..end_y {
+        for px in x..end_x {
+            rt::set_pixel_rgba8888(bytes, PIXEL_STRIDE, px, py, rgb);
+        }
+    }
 }
 
 fn selected_entry(state: &AppState) -> Option<CatalogEntry> {

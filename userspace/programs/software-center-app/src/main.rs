@@ -26,8 +26,8 @@ const HEADER_HEIGHT: i32 = 56;
 const PANEL_TITLE_HEIGHT: i32 = 26;
 const ROW_HEIGHT: i32 = 30;
 const BUTTON_HEIGHT: i32 = 22;
-const INSTALL_BUTTON_WIDTH: i32 = 104;
-const REMOVE_BUTTON_WIDTH: i32 = 96;
+const ACTION_BUTTON_WIDTH: i32 = 104;
+const ACTION_BUTTON_GAP: i32 = 10;
 const STATUS_BAR_HEIGHT: i32 = 24;
 const KEY_ENTER: u32 = 28;
 const KEY_BACKSPACE: u32 = 14;
@@ -68,6 +68,7 @@ struct Layout {
     detail_title_y: i32,
     detail_body_y: i32,
     detail_chip_y: i32,
+    detail_text_w: i32,
     status_y: i32,
 }
 
@@ -753,8 +754,15 @@ fn draw_details(
 ) {
     let meta_x = layout.right_x + 12;
     let title_y = layout.detail_title_y;
-    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, meta_x, title_y, ui::TEXT_PRIMARY, detail0);
-    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, meta_x, title_y + 16, ui::TEXT_SECONDARY, detail1);
+    draw_text_fit(bytes, meta_x, title_y, ui::TEXT_PRIMARY, detail0, layout.detail_text_w);
+    draw_text_fit(
+        bytes,
+        meta_x,
+        title_y + 16,
+        ui::TEXT_SECONDARY,
+        detail1,
+        layout.detail_text_w,
+    );
     if let Some(entry) = entry {
         draw_chip(
             bytes,
@@ -771,8 +779,22 @@ fn draw_details(
             draw_chip(bytes, meta_x + 188, layout.detail_chip_y, "ACTIVE", ui::ACCENT, ui::BG_PANEL);
         }
     }
-    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, meta_x, layout.detail_body_y, ui::TEXT_SECONDARY, detail2);
-    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, meta_x, layout.detail_body_y + 14, ui::TEXT_SECONDARY, detail3);
+    draw_text_fit(
+        bytes,
+        meta_x,
+        layout.detail_body_y,
+        ui::TEXT_SECONDARY,
+        detail2,
+        layout.detail_text_w,
+    );
+    draw_text_fit(
+        bytes,
+        meta_x,
+        layout.detail_body_y + 14,
+        ui::TEXT_SECONDARY,
+        detail3,
+        layout.detail_text_w,
+    );
     draw_status_bar(bytes, layout.right_x + 12, layout.status_y, layout.right_w - 24, status);
 }
 
@@ -864,6 +886,33 @@ fn draw_chip(bytes: &mut [u8], x: i32, y: i32, label: &str, color: u32, text: u3
     let width = (label.len() as i32 * 8 + 12).min(128);
     fill_rect(bytes, x.max(0) as usize, y.max(0) as usize, width.max(0) as usize, 16, color);
     rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, x + 6, y + 4, text, label);
+}
+
+fn draw_text_fit(bytes: &mut [u8], x: i32, y: i32, color: u32, text: &str, width: i32) {
+    let max_chars = (width.max(8) as usize / 8).max(1);
+    let mut buffer = FixedLogBuffer::<128>::new();
+    let text_bytes = text.as_bytes();
+    if text_bytes.len() <= max_chars {
+        let _ = buffer.write_str(text);
+    } else if max_chars <= 1 {
+        let _ = buffer.write_str(".");
+    } else if max_chars == 2 {
+        let _ = buffer.write_str("..");
+    } else {
+        let visible = max_chars.saturating_sub(3);
+        let slice = &text_bytes[..visible.min(text_bytes.len())];
+        let clipped = str::from_utf8(slice).unwrap_or("?");
+        let _ = buffer.write_str(clipped);
+        let _ = buffer.write_str("...");
+    }
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        x,
+        y,
+        color,
+        str::from_utf8(buffer.as_bytes()).unwrap_or(""),
+    );
 }
 
 fn draw_status_bar(bytes: &mut [u8], x: i32, y: i32, width: i32, status: &str) {
@@ -1081,22 +1130,16 @@ fn compute_layout_for_dims(width: i32, height: i32, selected_title: &str) -> Lay
     let right_x = left_x + left_w + CONTENT_GAP;
     let right_y = body_y;
     let detail_title_y = right_y + 40;
-    let title_x = right_x + 12;
-    let title_width = (selected_title.len() as i32 * 8).min((right_w - 24).max(0));
-    let inline_install_x0 = title_x + title_width + 18;
-    let inline_remove_x0 = inline_install_x0 + INSTALL_BUTTON_WIDTH + 10;
-    let action_fits_inline = inline_remove_x0 + REMOVE_BUTTON_WIDTH <= right_x + right_w - 12;
-    let install_y0 = if action_fits_inline { detail_title_y - 2 } else { right_y + 86 };
+    let install_x0 = right_x + right_w - ACTION_BUTTON_WIDTH - 12;
+    let install_x1 = install_x0 + ACTION_BUTTON_WIDTH;
+    let remove_x0 = install_x0;
+    let remove_x1 = install_x1;
+    let install_y0 = detail_title_y - 2;
     let install_y1 = install_y0 + BUTTON_HEIGHT;
-    let install_x0 = if action_fits_inline { inline_install_x0 } else { right_x + 12 };
-    let install_x1 = install_x0 + INSTALL_BUTTON_WIDTH;
-    let remove_x0 = install_x1 + 10;
-    let remove_x1 = remove_x0 + REMOVE_BUTTON_WIDTH;
-    let detail_chip_y = if action_fits_inline {
-        detail_title_y + 34
-    } else {
-        install_y1 + 14
-    };
+    let remove_y0 = install_y1 + ACTION_BUTTON_GAP;
+    let remove_y1 = remove_y0 + BUTTON_HEIGHT;
+    let detail_text_w = (install_x0 - (right_x + 12) - 12).max(64);
+    let detail_chip_y = detail_title_y + 34;
     let detail_body_y = detail_chip_y + 26;
     let sync_y0 = header_y + 18;
     let sync_y1 = sync_y0 + BUTTON_HEIGHT;
@@ -1104,6 +1147,7 @@ fn compute_layout_for_dims(width: i32, height: i32, selected_title: &str) -> Lay
     let sync_x0 = sync_x1 - 88;
     let list_rows_y = left_y + PANEL_TITLE_HEIGHT + 8;
     let status_y = right_y + body_h - STATUS_BAR_HEIGHT - 12;
+    let _ = selected_title;
     Layout {
         header_x,
         header_y,
@@ -1128,11 +1172,12 @@ fn compute_layout_for_dims(width: i32, height: i32, selected_title: &str) -> Lay
         install_y1,
         remove_x0,
         remove_x1,
-        remove_y0: install_y0,
-        remove_y1: install_y1,
+        remove_y0,
+        remove_y1,
         detail_title_y,
         detail_body_y,
         detail_chip_y,
+        detail_text_w,
         status_y,
     }
 }

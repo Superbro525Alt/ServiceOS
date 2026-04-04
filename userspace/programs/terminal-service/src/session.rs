@@ -5,7 +5,7 @@ use serviceos_shell_service::{
     write_output_linef,
 };
 use serviceos_userspace_runtime as rt;
-use rt::{ConsoleTag, LogEvent, LogSeverity, RawMessage, ServiceId, TerminalTag};
+use rt::{LogEvent, LogSeverity, RawMessage, ServiceId, TerminalTag};
 
 use crate::{
     logging::emit_terminal_log,
@@ -324,7 +324,7 @@ pub(crate) fn terminal_output_write(endpoint: rt::Handle, text: &str) -> rt::Res
     while offset < bytes.len() {
         let end = (offset + MAX_INLINE_BYTES).min(bytes.len());
         let chunk = &bytes[offset..end];
-        let mut message = RawMessage::empty(ConsoleTag::SessionWriteText as u32);
+        let mut message = RawMessage::empty(TerminalTag::SessionOutput as u32);
         message.word_count = 1 + pack_bytes(chunk, &mut message.words[1..])?;
         message.words[0] = chunk.len() as u64;
         rt::channel_send(endpoint, &message)?;

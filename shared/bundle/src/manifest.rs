@@ -1,12 +1,12 @@
 use core::str;
 
-use serviceos_abi::{rights, ServiceId, ServiceImageId};
+use serviceos_abi::{ServiceId, ServiceImageId, rights};
 
 use crate::{
-    parse_image_id, parse_integrity, parse_service_grant, parse_service_id,
-    split_key_value, BootStoreError, BOOT_STORE_MAX_DEPENDENCIES, BOOT_STORE_MAX_GRANTS,
-    BOOT_STORE_MAX_LOOKUPS, BOOT_STORE_MAX_PACKAGE_CONTENTS, BOOT_STORE_MAX_PACKAGE_DEPENDENCIES,
-    BOOT_STORE_MAX_RESOURCES, BOOT_STORE_PATH_MAX,
+    BOOT_STORE_MAX_DEPENDENCIES, BOOT_STORE_MAX_GRANTS, BOOT_STORE_MAX_LOOKUPS,
+    BOOT_STORE_MAX_PACKAGE_CONTENTS, BOOT_STORE_MAX_PACKAGE_DEPENDENCIES, BOOT_STORE_MAX_RESOURCES,
+    BOOT_STORE_PATH_MAX, BootStoreError, parse_image_id, parse_integrity, parse_service_grant,
+    parse_service_id, split_key_value,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

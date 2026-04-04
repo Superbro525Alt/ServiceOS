@@ -1,10 +1,11 @@
 use serviceos_abi::{Handle, TaskStateCode, TaskStatus as AbiTaskStatus};
 
 use super::{
-    common::{map_capability_error, map_spawn_error},
     super::{
-        SyscallContext, SyscallError, SyscallReturn, resolve::{current_task, resolve_object},
+        SyscallContext, SyscallError, SyscallReturn,
+        resolve::{current_task, resolve_object},
     },
+    common::{map_capability_error, map_spawn_error},
 };
 use crate::{
     capability::{CapabilityHandle, CapabilityResolver, CapabilityRights, TransferMode},

@@ -9,11 +9,7 @@ use serviceos_kernel_core::{
     user::{self as kernel_user, SpawnError, TaskExitStatus},
 };
 
-use crate::{
-    BOOT_STORE_IMAGE_SOURCE,
-    executor::run_userspace_executor,
-    logging::log_line,
-};
+use crate::{BOOT_STORE_IMAGE_SOURCE, executor::run_userspace_executor, logging::log_line};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum BootstrapError {
@@ -262,9 +258,9 @@ fn transfer_bootstrap_object(
     let handle = bootstrap_task
         .capability_space()
         .install(object, rights, None)?;
-    Ok(Some(
-        bootstrap_task
-            .capability_space()
-            .prepare_transfer(handle, rights, TransferMode::Move)?,
-    ))
+    Ok(Some(bootstrap_task.capability_space().prepare_transfer(
+        handle,
+        rights,
+        TransferMode::Move,
+    )?))
 }

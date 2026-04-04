@@ -3,16 +3,14 @@ use serviceos_abi::{
 };
 
 use super::{
-    common::{map_capability_error, map_ipc_error},
     super::{
         SyscallAction, SyscallContext, SyscallError, SyscallReturn, resolve::current_task,
         user_mut, user_ref,
     },
+    common::{map_capability_error, map_ipc_error},
 };
 use crate::{
-    capability::{
-        CapabilityHandle, CapabilityResolver, CapabilityRights, TransferMode,
-    },
+    capability::{CapabilityHandle, CapabilityResolver, CapabilityRights, TransferMode},
     ipc::{self, IpcError, MessageTag, OutgoingMessage},
 };
 

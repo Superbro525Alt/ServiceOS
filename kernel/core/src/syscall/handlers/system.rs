@@ -1,8 +1,8 @@
 use super::super::SYSCALL_ABI_VERSION;
 
 use super::{
-    common::{DEBUG_CONSOLE_READER, DEBUG_CONSOLE_WRITER, DEBUG_LOG_WRITER},
     super::{SyscallAction, SyscallContext, SyscallError, SyscallReturn, user_slice},
+    common::{DEBUG_CONSOLE_READER, DEBUG_CONSOLE_WRITER, DEBUG_LOG_WRITER},
 };
 use crate::time;
 

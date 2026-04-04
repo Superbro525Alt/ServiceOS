@@ -196,7 +196,8 @@ fn install_interrupt_table() {
     let idt = IDT.call_once(|| {
         let mut idt = InterruptDescriptorTable::new();
 
-        idt.divide_error.set_handler_fn(faults::divide_error_handler);
+        idt.divide_error
+            .set_handler_fn(faults::divide_error_handler);
         idt.debug.set_handler_fn(faults::debug_exception_handler);
         idt.non_maskable_interrupt
             .set_handler_fn(faults::non_maskable_interrupt_handler);
@@ -204,7 +205,8 @@ fn install_interrupt_table() {
         idt.overflow.set_handler_fn(faults::overflow_handler);
         idt.bound_range_exceeded
             .set_handler_fn(faults::bound_range_exceeded_handler);
-        idt.invalid_opcode.set_handler_fn(faults::invalid_opcode_handler);
+        idt.invalid_opcode
+            .set_handler_fn(faults::invalid_opcode_handler);
         idt.device_not_available
             .set_handler_fn(faults::device_not_available_handler);
         unsafe {
@@ -222,11 +224,14 @@ fn install_interrupt_table() {
         idt.page_fault.set_handler_fn(faults::page_fault_handler);
         idt.x87_floating_point
             .set_handler_fn(faults::x87_floating_point_handler);
-        idt.alignment_check.set_handler_fn(faults::alignment_check_handler);
-        idt.machine_check.set_handler_fn(faults::machine_check_handler);
+        idt.alignment_check
+            .set_handler_fn(faults::alignment_check_handler);
+        idt.machine_check
+            .set_handler_fn(faults::machine_check_handler);
         idt.simd_floating_point
             .set_handler_fn(faults::simd_floating_point_handler);
-        idt.virtualization.set_handler_fn(faults::virtualization_handler);
+        idt.virtualization
+            .set_handler_fn(faults::virtualization_handler);
         idt.cp_protection_exception
             .set_handler_fn(faults::control_protection_handler);
         idt.hv_injection_exception

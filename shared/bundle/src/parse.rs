@@ -1,4 +1,4 @@
-use serviceos_abi::{rights, ServiceId, ServiceImageId};
+use serviceos_abi::{ServiceId, ServiceImageId, rights};
 
 use crate::{BootStoreError, ServiceGrant};
 

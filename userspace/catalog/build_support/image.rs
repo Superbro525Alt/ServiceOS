@@ -1,9 +1,4 @@
-use std::{
-    error::Error,
-    fs,
-    path::Path,
-    process::Command,
-};
+use std::{error::Error, fs, path::Path, process::Command};
 
 use super::{
     programs::Program,

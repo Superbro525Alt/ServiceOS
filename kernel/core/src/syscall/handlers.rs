@@ -12,8 +12,8 @@ pub(crate) use devices::{
     handle_audio_endpoint_info, handle_audio_endpoint_play_tone, handle_audio_endpoint_stop,
     handle_block_device_info, handle_block_device_read, handle_block_device_write,
     handle_display_output_info, handle_display_output_present, handle_input_source_info,
-    handle_input_source_receive, handle_packet_interface_info,
-    handle_packet_interface_receive, handle_packet_interface_transmit,
+    handle_input_source_receive, handle_packet_interface_info, handle_packet_interface_receive,
+    handle_packet_interface_transmit,
 };
 pub(crate) use ipc::{
     handle_channel_create, handle_channel_receive, handle_channel_send, handle_handle_close,

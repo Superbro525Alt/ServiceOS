@@ -1,11 +1,12 @@
 use serviceos_abi::Handle;
 
 use super::{
-    common::map_capability_error,
     super::{
-        SyscallContext, SyscallError, SyscallReturn, resolve::{current_task, resolve_object},
+        SyscallContext, SyscallError, SyscallReturn,
+        resolve::{current_task, resolve_object},
         user_slice, user_slice_mut,
     },
+    common::map_capability_error,
 };
 use crate::{capability::CapabilityRights, user};
 

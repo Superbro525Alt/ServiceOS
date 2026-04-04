@@ -1,6 +1,6 @@
 use core::str;
 
-use crate::{read_u16, read_u32, BootStoreError};
+use crate::{BootStoreError, read_u16, read_u32};
 
 pub const BOOT_STORE_MAGIC: [u8; 8] = *b"SOSBOOT\0";
 pub const BOOT_STORE_VERSION: u32 = 1;

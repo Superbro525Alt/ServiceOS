@@ -1,13 +1,14 @@
 use serviceos_abi::{
     AudioEndpointInfo as AbiAudioEndpointInfo, AudioToneRequest as AbiAudioToneRequest,
     BlockDeviceInfo as AbiBlockDeviceInfo, DisplayOutputInfo as AbiDisplayOutputInfo, Handle,
-    INPUT_SOURCE_FLAG_NONBLOCK, PACKET_INTERFACE_FLAG_NONBLOCK,
-    InputEventInfo as AbiInputEventInfo, InputSourceInfo as AbiInputSourceInfo,
+    INPUT_SOURCE_FLAG_NONBLOCK, InputEventInfo as AbiInputEventInfo,
+    InputSourceInfo as AbiInputSourceInfo, PACKET_INTERFACE_FLAG_NONBLOCK,
     PacketInterfaceInfo as AbiPacketInterfaceInfo,
 };
 
 use super::super::{
-    SyscallAction, SyscallContext, SyscallError, SyscallReturn, resolve::{current_task, resolve_object},
+    SyscallAction, SyscallContext, SyscallError, SyscallReturn,
+    resolve::{current_task, resolve_object},
     user_mut, user_ref, user_slice, user_slice_mut,
 };
 use crate::capability::CapabilityRights;

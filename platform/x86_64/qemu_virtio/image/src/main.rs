@@ -210,7 +210,9 @@ fn kernel_main() -> Status {
     let root_thread_state = kernel
         .objects()
         .registry()
-        .lookup(serviceos_kernel_core::object::ObjectId(summary.root_thread.0))
+        .lookup(serviceos_kernel_core::object::ObjectId(
+            summary.root_thread.0,
+        ))
         .and_then(|object| object.thread().map(|thread| thread.snapshot()))
         .ok_or(BootstrapError::MissingRootThread)
         .unwrap_or_else(|error| {

@@ -1,7 +1,7 @@
 use serviceos_userspace_runtime as rt;
 use rt::{
     LifecycleEvent, LogEvent, LogSeverity, LookupStatus, ManagerAction, ManagerAvailability,
-    ManagerStartupMode, ManagerStatus, ManagerTag, RawMessage, ServiceId,
+    ManagerLookupPolicy, ManagerStartupMode, ManagerStatus, ManagerTag, RawMessage, ServiceId,
 };
 
 use crate::{
@@ -10,7 +10,7 @@ use crate::{
     util::{
         emit_manager_event, encode_phase, find_slot_index_checked, lookup_rights,
         manager_action_from_word, manager_phase, service_availability, service_id_from_word,
-        service_startup_mode,
+        service_startup_mode, set_lookup_policy,
     },
 };
 
@@ -29,7 +29,7 @@ pub(super) fn handle_lookup_request(
     }
 
     let requested = service_id_from_word(message.words[0]);
-    let permission = lookup_rights(slots[service_index].manifest, requested);
+    let permission = lookup_rights(&slots[service_index], requested);
     let target_index = find_slot_index_checked(slots, *service_count, requested);
 
     let mut reply = RawMessage::empty(rt::ControlTag::LookupReply as u32);
@@ -86,6 +86,107 @@ pub(super) fn handle_lookup_request(
         }
     }
 
+    Ok(())
+}
+
+pub(super) fn handle_service_lookup_list_request(
+    slots: &[ServiceSlot; MAX_SERVICE_SLOTS],
+    service_count: usize,
+    service_index: usize,
+    requested_word: u64,
+    page_start: usize,
+) -> rt::Result<()> {
+    let requested = service_id_from_word(requested_word);
+    let mut reply = RawMessage::empty(ManagerTag::ServiceLookupListReply as u32);
+    reply.word_count = 3;
+    reply.words[0] = ManagerStatus::Ok as u32 as u64;
+    reply.words[1] = 0;
+    reply.words[2] = u64::MAX;
+
+    let Some(target_index) = find_slot_index_checked(slots, service_count, requested) else {
+        reply.word_count = 1;
+        reply.words[0] = ManagerStatus::NotFound as u32 as u64;
+        return rt::channel_send(slots[service_index].control_handle, &reply);
+    };
+    let slot = &slots[target_index];
+
+    let mut visible_index = 0usize;
+    let mut emitted = 0usize;
+    for (index, entry) in slot.manifest.lookups[..slot.manifest.lookup_count]
+        .iter()
+        .copied()
+        .enumerate()
+    {
+        if visible_index < page_start {
+            visible_index += 1;
+            continue;
+        }
+        if reply.word_count as usize + 3 > rt::IPC_MAX_WORDS {
+            reply.words[2] = visible_index as u64;
+            break;
+        }
+        let base = reply.word_count as usize;
+        reply.words[base] = entry.target as u32 as u64;
+        reply.words[base + 1] = entry.rights;
+        reply.words[base + 2] = if (slot.revoked_lookup_mask & (1u64 << index)) != 0 {
+            ManagerLookupPolicy::Revoked as u32 as u64
+        } else {
+            ManagerLookupPolicy::Default as u32 as u64
+        };
+        reply.word_count += 3;
+        emitted += 1;
+        visible_index += 1;
+    }
+
+    reply.words[1] = emitted as u64;
+    rt::channel_send(slots[service_index].control_handle, &reply)
+}
+
+pub(super) fn handle_service_lookup_policy_set_request(
+    slots: &mut [ServiceSlot; MAX_SERVICE_SLOTS],
+    service_count: usize,
+    service_index: usize,
+    requested_word: u64,
+    target_word: u64,
+    policy_word: u64,
+) -> rt::Result<()> {
+    let mut reply = RawMessage::empty(ManagerTag::ServiceLookupPolicySetReply as u32);
+    reply.word_count = 1;
+    if slots[service_index].manifest.service_id != ServiceId::Shell {
+        reply.words[0] = ManagerStatus::Denied as u32 as u64;
+        return rt::channel_send(slots[service_index].control_handle, &reply);
+    }
+
+    let requested = service_id_from_word(requested_word);
+    let target = service_id_from_word(target_word);
+    let policy = match policy_word as u32 {
+        x if x == ManagerLookupPolicy::Default as u32 => ManagerLookupPolicy::Default,
+        x if x == ManagerLookupPolicy::Revoked as u32 => ManagerLookupPolicy::Revoked,
+        _ => {
+            reply.words[0] = ManagerStatus::Failed as u32 as u64;
+            return rt::channel_send(slots[service_index].control_handle, &reply);
+        }
+    };
+
+    let Some(target_index) = find_slot_index_checked(slots, service_count, requested) else {
+        reply.words[0] = ManagerStatus::NotFound as u32 as u64;
+        return rt::channel_send(slots[service_index].control_handle, &reply);
+    };
+    if !set_lookup_policy(&mut slots[target_index], target, policy) {
+        reply.words[0] = ManagerStatus::NotFound as u32 as u64;
+        return rt::channel_send(slots[service_index].control_handle, &reply);
+    }
+
+    reply.words[0] = ManagerStatus::Ok as u32 as u64;
+    rt::channel_send(slots[service_index].control_handle, &reply)?;
+    let _ = emit_manager_event(
+        slots,
+        service_count,
+        LogSeverity::Warn,
+        LogEvent::SecurityPolicyChanged,
+        requested,
+        target as u32 as u64,
+    );
     Ok(())
 }
 

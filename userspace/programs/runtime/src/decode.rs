@@ -3,8 +3,9 @@ use crate::{
     AudioStreamDirection, AudioStreamState, DesktopAppId, DesktopDragMode, DesktopStatus,
     DeveloperArtifactFormat, DeveloperJobState, DeveloperStatus, DeveloperTarget,
     DeveloperToolchainState, DisplayOutputBackend, DisplayOutputState, DisplayPixelFormat, Error,
-    GraphicsStatus, LogDomain, LogEvent, LogSeverity, ManagerAvailability, ManagerServicePhase,
-    ManagerStartupMode, ManagerStatus, NetworkConfigMode, NetworkConfigState, NetworkSocketKind,
+    GraphicsStatus, LogDomain, LogEvent, LogSeverity, ManagerAvailability, ManagerLookupPolicy,
+    ManagerServicePhase, ManagerStartupMode, ManagerStatus, NetworkConfigMode,
+    NetworkConfigState, NetworkSocketKind,
     NetworkSocketState, NetworkStatus, PacketInterfaceBackend, PacketInterfaceLinkState,
     PackageStatus, RuntimeEnvState, RuntimeKind, RuntimeRunState, RuntimeStatus,
     RuntimeWorkloadKind, SecurityAuditKind, ServiceId, SessionInputSource, SessionStatus,
@@ -174,6 +175,13 @@ pub(crate) fn manager_availability_from_word(value: u64) -> ManagerAvailability 
     match value as u32 {
         x if x == ManagerAvailability::Optional as u32 => ManagerAvailability::Optional,
         _ => ManagerAvailability::Required,
+    }
+}
+
+pub(crate) fn manager_lookup_policy_from_word(value: u64) -> ManagerLookupPolicy {
+    match value as u32 {
+        x if x == ManagerLookupPolicy::Revoked as u32 => ManagerLookupPolicy::Revoked,
+        _ => ManagerLookupPolicy::Default,
     }
 }
 

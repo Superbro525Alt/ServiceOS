@@ -27,6 +27,10 @@ pub enum ManagerTag {
     ServiceTemplateReply = 0x617,
     ServiceGraphStatusRequest = 0x618,
     ServiceGraphStatusReply = 0x619,
+    ServiceLookupListRequest = 0x61a,
+    ServiceLookupListReply = 0x61b,
+    ServiceLookupPolicySetRequest = 0x61c,
+    ServiceLookupPolicySetReply = 0x61d,
 }
 
 #[repr(u32)]
@@ -57,6 +61,13 @@ pub enum ManagerAvailability {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ManagerAction {
     Restart = 1,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ManagerLookupPolicy {
+    Default = 0,
+    Revoked = 1,
 }
 
 #[repr(u32)]

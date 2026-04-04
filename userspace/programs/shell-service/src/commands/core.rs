@@ -2,8 +2,8 @@ use core::fmt::Write;
 
 use serviceos_userspace_runtime as rt;
 use rt::{
-    ConfigKey, FixedLogBuffer, ManagerServiceInfo, ManagerServicePhase, ServiceId,
-    ServiceImageId, StorageEntryKind, StorageMountKind,
+    ConfigKey, FixedLogBuffer, ManagerLookupPolicy, ManagerServiceInfo, ManagerServicePhase,
+    ServiceId, ServiceImageId, StorageEntryKind, StorageMountKind,
 };
 
 use crate::util::{
@@ -11,6 +11,8 @@ use crate::util::{
     service_name, startup_name, write_log_record, write_output_linef, shell_output_write,
     ShellOutput, MAX_CAT_CHUNK, MAX_LISTED_SERVICES, MAX_STORAGE_PATH,
 };
+
+const MAX_SERVICE_LOOKUPS: usize = 8;
 
 pub(crate) fn cmd_services(bootstrap: rt::Handle, output: ShellOutput) -> rt::Result<()> {
     let graph = rt::manager_graph_status(bootstrap)?;
@@ -73,6 +75,72 @@ pub(crate) fn cmd_service(bootstrap: rt::Handle, output: ShellOutput, service_id
             template.restart_backoff_ticks,
             template.grant_count,
             template.lookup_count,
+        ),
+    )
+}
+
+pub(crate) fn cmd_service_caps(
+    bootstrap: rt::Handle,
+    output: ShellOutput,
+    service_id: ServiceId,
+) -> rt::Result<()> {
+    let template = rt::manager_service_template(bootstrap, service_id)?;
+    write_output_linef(
+        output,
+        format_args!(
+            "{} grants={} lookups={}",
+            service_name(service_id),
+            template.grant_count,
+            template.lookup_count,
+        ),
+    )?;
+    if template.lookup_count == 0 {
+        return write_output_linef(output, format_args!("no delegated lookups"));
+    }
+    let mut lookups = [rt::ManagerServiceLookupInfo {
+        target: ServiceId::RootManager,
+        rights: 0,
+        policy: ManagerLookupPolicy::Default,
+    }; MAX_SERVICE_LOOKUPS];
+    let count = rt::manager_service_lookups(bootstrap, service_id, &mut lookups)?;
+    for lookup in lookups[..count].iter().copied() {
+        write_output_linef(
+            output,
+            format_args!(
+                "lookup {:<16} rights={} policy={}",
+                service_name(lookup.target),
+                format_rights(lookup.rights).as_str(),
+                lookup_policy_name(lookup.policy),
+            ),
+        )?;
+    }
+    Ok(())
+}
+
+pub(crate) fn cmd_service_revoke_lookup(
+    bootstrap: rt::Handle,
+    output: ShellOutput,
+    service_id: ServiceId,
+    target: ServiceId,
+    revoked: bool,
+) -> rt::Result<()> {
+    rt::manager_set_service_lookup_policy(
+        bootstrap,
+        service_id,
+        target,
+        if revoked {
+            ManagerLookupPolicy::Revoked
+        } else {
+            ManagerLookupPolicy::Default
+        },
+    )?;
+    write_output_linef(
+        output,
+        format_args!(
+            "{} -> {} policy={}",
+            service_name(service_id),
+            service_name(target),
+            if revoked { "revoked" } else { "default" }
         ),
     )
 }
@@ -410,6 +478,43 @@ pub(crate) fn cmd_status(bootstrap: rt::Handle, output: ShellOutput) -> rt::Resu
         output,
         format_args!("ticks={} heartbeats={} last-heartbeat={}", now, heartbeats, last_tick),
     )
+}
+
+fn lookup_policy_name(policy: ManagerLookupPolicy) -> &'static str {
+    match policy {
+        ManagerLookupPolicy::Default => "default",
+        ManagerLookupPolicy::Revoked => "revoked",
+    }
+}
+
+fn format_rights(rights: u64) -> FixedLogBuffer<64> {
+    let mut buffer = FixedLogBuffer::<64>::new();
+    let mut wrote = false;
+    for (name, bit) in [
+        ("read", rt::rights::READ),
+        ("write", rt::rights::WRITE),
+        ("map", rt::rights::MAP),
+        ("signal", rt::rights::SIGNAL),
+        ("wait", rt::rights::WAIT),
+        ("send", rt::rights::SEND),
+        ("recv", rt::rights::RECEIVE),
+        ("dup", rt::rights::DUPLICATE),
+        ("xfer", rt::rights::TRANSFER),
+        ("manage", rt::rights::MANAGE),
+    ] {
+        if rights & bit == 0 {
+            continue;
+        }
+        if wrote {
+            let _ = write!(buffer, "|");
+        }
+        let _ = write!(buffer, "{name}");
+        wrote = true;
+    }
+    if !wrote {
+        let _ = write!(buffer, "none");
+    }
+    buffer
 }
 
 pub(crate) fn cmd_run_sysinfo(bootstrap: rt::Handle, output: ShellOutput) -> rt::Result<()> {

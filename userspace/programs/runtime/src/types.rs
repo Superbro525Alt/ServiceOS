@@ -63,6 +63,13 @@ pub struct ManagerGraphStatusInfo {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ManagerServiceLookupInfo {
+    pub target: ServiceId,
+    pub rights: u64,
+    pub policy: crate::ManagerLookupPolicy,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PackageListEntry {
     pub service_id: ServiceId,
     pub installed: bool,

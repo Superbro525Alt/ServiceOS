@@ -133,11 +133,37 @@ pub(crate) fn service_availability(manifest: ServiceManifest) -> ManagerAvailabi
     }
 }
 
-pub(crate) fn lookup_rights(manifest: ServiceManifest, requested: ServiceId) -> Option<u64> {
-    manifest.lookups[..manifest.lookup_count]
+pub(crate) fn lookup_rights(slot: &ServiceSlot, requested: ServiceId) -> Option<u64> {
+    slot.manifest.lookups[..slot.manifest.lookup_count]
         .iter()
-        .find(|entry| entry.target == requested)
-        .map(|entry| entry.rights)
+        .enumerate()
+        .find(|(index, entry)| {
+            entry.target == requested && (slot.revoked_lookup_mask & (1u64 << *index)) == 0
+        })
+        .map(|(_, entry)| entry.rights)
+}
+
+pub(crate) fn set_lookup_policy(
+    slot: &mut ServiceSlot,
+    target: ServiceId,
+    policy: rt::ManagerLookupPolicy,
+) -> bool {
+    let Some(index) = slot.manifest.lookups[..slot.manifest.lookup_count]
+        .iter()
+        .position(|entry| entry.target == target)
+    else {
+        return false;
+    };
+
+    match policy {
+        rt::ManagerLookupPolicy::Default => {
+            slot.revoked_lookup_mask &= !(1u64 << index);
+        }
+        rt::ManagerLookupPolicy::Revoked => {
+            slot.revoked_lookup_mask |= 1u64 << index;
+        }
+    }
+    true
 }
 
 pub(crate) fn allocate_slot(

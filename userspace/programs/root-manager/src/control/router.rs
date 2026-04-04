@@ -10,6 +10,7 @@ use super::{
     },
     lookup::{
         handle_graph_status_request, handle_list_services_request, handle_lookup_request,
+        handle_service_lookup_list_request, handle_service_lookup_policy_set_request,
         handle_service_action_request, handle_service_status_request,
         handle_service_template_request,
     },
@@ -110,6 +111,31 @@ fn handle_control_message(
         }
         x if x == ManagerTag::ServiceGraphStatusRequest as u32 => {
             handle_graph_status_request(slots, service_index, graph_status, *service_count)?;
+        }
+        x if x == ManagerTag::ServiceLookupListRequest as u32 => {
+            if message.word_count < 2 {
+                return Err(rt::Error::InvalidArgument);
+            }
+            handle_service_lookup_list_request(
+                slots,
+                *service_count,
+                service_index,
+                message.words[0],
+                message.words[1] as usize,
+            )?;
+        }
+        x if x == ManagerTag::ServiceLookupPolicySetRequest as u32 => {
+            if message.word_count < 3 {
+                return Err(rt::Error::InvalidArgument);
+            }
+            handle_service_lookup_policy_set_request(
+                slots,
+                *service_count,
+                service_index,
+                message.words[0],
+                message.words[1],
+                message.words[2],
+            )?;
         }
         x if x == ManagerTag::ServiceActionRequest as u32 => {
             if message.word_count < 2 {

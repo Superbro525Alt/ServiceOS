@@ -32,6 +32,26 @@ pub(crate) fn execute_command(
             Some(service_id) => core::cmd_service(bootstrap, output, service_id),
             None => write_output_linef(output, format_args!("usage: service <name>")),
         },
+        "service-caps" => match parts.next().and_then(parse_service_name) {
+            Some(service_id) => core::cmd_service_caps(bootstrap, output, service_id),
+            None => write_output_linef(output, format_args!("usage: service-caps <name>")),
+        },
+        "service-revoke-lookup" => match (
+            parts.next().and_then(parse_service_name),
+            parts.next().and_then(parse_service_name),
+            parts.next(),
+        ) {
+            (Some(service_id), Some(target), Some("revoke")) => {
+                core::cmd_service_revoke_lookup(bootstrap, output, service_id, target, true)
+            }
+            (Some(service_id), Some(target), Some("default")) => {
+                core::cmd_service_revoke_lookup(bootstrap, output, service_id, target, false)
+            }
+            _ => write_output_linef(
+                output,
+                format_args!("usage: service-revoke-lookup <service> <target> <revoke|default>"),
+            ),
+        },
         "restart" => match parts.next().and_then(parse_service_name) {
             Some(service_id) => core::cmd_restart(bootstrap, output, service_id),
             None => write_output_linef(output, format_args!("usage: restart <name>")),

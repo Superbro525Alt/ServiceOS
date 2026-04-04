@@ -1,10 +1,10 @@
 use crate::{
     channel_receive_blocking, channel_send, manager_availability_from_word,
-    manager_phase_from_word, manager_startup_from_word, manager_status_from_word, pack_bytes,
-    Error, Handle, IPC_MAX_HANDLES, IPC_MAX_WORDS, ManagerAction, ManagerGraphStatusInfo,
-    ManagerServiceInfo, ManagerServiceStatusInfo, ManagerServiceTemplateInfo,
-    ManagerStatus, ManagerTag, RawMessage, Result, ServiceId, ServiceImageId, rights,
-    service_id_from_word,
+    manager_lookup_policy_from_word, manager_phase_from_word, manager_startup_from_word,
+    manager_status_from_word, pack_bytes, Error, Handle, IPC_MAX_HANDLES, IPC_MAX_WORDS,
+    ManagerAction, ManagerGraphStatusInfo, ManagerLookupPolicy, ManagerServiceInfo,
+    ManagerServiceLookupInfo, ManagerServiceStatusInfo, ManagerServiceTemplateInfo, ManagerStatus,
+    ManagerTag, RawMessage, Result, ServiceId, ServiceImageId, rights, service_id_from_word,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -129,6 +129,81 @@ pub fn manager_graph_status(bootstrap: Handle) -> Result<ManagerGraphStatusInfo>
         degraded_services: response.words[2] as u32,
         service_count: response.words[3] as u32,
     })
+}
+
+pub fn manager_service_lookups(
+    bootstrap: Handle,
+    service_id: ServiceId,
+    entries: &mut [ManagerServiceLookupInfo],
+) -> Result<usize> {
+    let mut loaded = 0usize;
+    let mut page = 0usize;
+
+    loop {
+        let mut request = RawMessage::empty(ManagerTag::ServiceLookupListRequest as u32);
+        request.word_count = 2;
+        request.words[0] = service_id as u32 as u64;
+        request.words[1] = page as u64;
+        channel_send(bootstrap, &request)?;
+
+        let mut response = RawMessage::empty(0);
+        channel_receive_blocking(bootstrap, &mut response)?;
+        if response.tag != ManagerTag::ServiceLookupListReply as u32 || response.word_count < 3 {
+            return Err(Error::InvalidArgument);
+        }
+        match manager_status_from_word(response.words[0]) {
+            ManagerStatus::Ok => {}
+            ManagerStatus::NotFound => return Err(Error::NotFound),
+            ManagerStatus::Denied => return Err(Error::PermissionDenied),
+            ManagerStatus::Busy | ManagerStatus::Failed => return Err(Error::Busy),
+        }
+
+        let count = response.words[1] as usize;
+        let next_page = response.words[2] as usize;
+        if loaded + count > entries.len() || response.word_count < (3 + count * 3) as u32 {
+            return Err(Error::BufferTooSmall);
+        }
+        for index in 0..count {
+            entries[loaded + index] = ManagerServiceLookupInfo {
+                target: service_id_from_word(response.words[3 + index * 3]),
+                rights: response.words[4 + index * 3],
+                policy: manager_lookup_policy_from_word(response.words[5 + index * 3]),
+            };
+        }
+        loaded += count;
+        if next_page == usize::MAX {
+            break;
+        }
+        page = next_page;
+    }
+
+    Ok(loaded)
+}
+
+pub fn manager_set_service_lookup_policy(
+    bootstrap: Handle,
+    service_id: ServiceId,
+    target: ServiceId,
+    policy: ManagerLookupPolicy,
+) -> Result<()> {
+    let mut request = RawMessage::empty(ManagerTag::ServiceLookupPolicySetRequest as u32);
+    request.word_count = 3;
+    request.words[0] = service_id as u32 as u64;
+    request.words[1] = target as u32 as u64;
+    request.words[2] = policy as u32 as u64;
+    channel_send(bootstrap, &request)?;
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(bootstrap, &mut response)?;
+    if response.tag != ManagerTag::ServiceLookupPolicySetReply as u32 || response.word_count < 1 {
+        return Err(Error::InvalidArgument);
+    }
+    match manager_status_from_word(response.words[0]) {
+        ManagerStatus::Ok => Ok(()),
+        ManagerStatus::Denied => Err(Error::PermissionDenied),
+        ManagerStatus::NotFound => Err(Error::NotFound),
+        ManagerStatus::Busy | ManagerStatus::Failed => Err(Error::Busy),
+    }
 }
 
 pub fn manager_restart_service(bootstrap: Handle, service_id: ServiceId) -> Result<()> {

@@ -30,6 +30,8 @@ pub const HELP_TEXT: &str = "\
 help: show this command list\r\n\
 services: list managed services\r\n\
 service <name>: show one service state\r\n\
+service-caps <name>: inspect delegated lookup capabilities for one service\r\n\
+service-revoke-lookup <service> <target> <revoke|default>: change future delegated lookup policy\r\n\
 restart <name>: request a service restart\r\n\
 logs [count]: show recent structured logs\r\n\
 config: show core configuration values\r\n\

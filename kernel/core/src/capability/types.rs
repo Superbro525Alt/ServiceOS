@@ -48,6 +48,7 @@ impl CapabilityRights {
     pub const fn channel_endpoint() -> Self {
         Self::READ
             .union(Self::WRITE)
+            .union(Self::WAIT)
             .union(Self::SEND)
             .union(Self::RECEIVE)
             .union(Self::DUPLICATE)
@@ -57,6 +58,7 @@ impl CapabilityRights {
     pub const fn task() -> Self {
         Self::READ
             .union(Self::WRITE)
+            .union(Self::WAIT)
             .union(Self::MANAGE)
             .union(Self::DUPLICATE)
             .union(Self::TRANSFER)

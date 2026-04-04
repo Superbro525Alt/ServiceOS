@@ -6,7 +6,8 @@ mod types;
 pub use objects::{TaskObject, ThreadObject};
 pub use scheduler::Scheduler;
 pub use system::{
-    TaskSystem, initialize, notify_channel_ready, notify_input_ready, notify_packet_ready, system,
+    TaskSystem, initialize, notify_channel_ready, notify_input_ready, notify_object_ready,
+    notify_packet_ready, system,
 };
 pub use types::{
     AddressSpaceId, ExecutionState, ProcessId, ScheduleDecision, ScheduleTrigger, SchedulerError,
@@ -132,6 +133,48 @@ mod tests {
         assert_eq!(
             worker_state.last_wake_reason,
             Some(ThreadWakeReason::TimerExpired)
+        );
+    }
+
+    #[test]
+    fn scheduler_wakes_object_waiters() {
+        let (registry, task, bootstrap_thread) = test_registry();
+        let scheduler = Scheduler::new(bootstrap_thread);
+        let worker = registry.create_thread(
+            &task,
+            ThreadDescriptor {
+                mode: ThreadMode::Kernel,
+                scheduling_context: SchedulingContext::round_robin_default(),
+                entry_instruction_pointer: None,
+                stack_pointer: None,
+            },
+        );
+        let worker_id = scheduler
+            .register_thread(Arc::clone(&worker))
+            .expect("worker should register");
+        let object = ObjectId(55);
+
+        scheduler
+            .make_runnable(worker_id, ThreadWakeReason::Explicit)
+            .expect("worker should become runnable");
+        let _ = scheduler.yield_current().expect("yield should succeed");
+
+        let block = scheduler
+            .block_current_on_object(object)
+            .expect("object wait should succeed");
+        assert_eq!(block.previous, Some(worker_id));
+        assert_eq!(block.next, Some(ThreadId(2)));
+
+        let wake = scheduler
+            .notify_object_ready(object)
+            .expect("object wake should produce a decision");
+        assert_eq!(wake.trigger, ScheduleTrigger::ObjectWake);
+
+        let worker_state = worker.thread().expect("thread object").snapshot();
+        assert_eq!(worker_state.execution_state, ExecutionState::Runnable);
+        assert_eq!(
+            worker_state.last_wake_reason,
+            Some(ThreadWakeReason::ObjectReady)
         );
     }
 

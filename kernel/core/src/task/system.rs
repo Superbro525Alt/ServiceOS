@@ -109,6 +109,10 @@ impl TaskSystem {
     pub fn notify_input_ready(&self, source: ObjectId) -> Option<ScheduleDecision> {
         self.scheduler.notify_input_ready(source)
     }
+
+    pub fn notify_object_ready(&self, object: ObjectId) -> Option<ScheduleDecision> {
+        self.scheduler.notify_object_ready(object)
+    }
 }
 
 static TASK_SYSTEM: Once<TaskSystem> = Once::new();
@@ -131,4 +135,8 @@ pub fn notify_packet_ready(interface: ObjectId) -> Option<ScheduleDecision> {
 
 pub fn notify_input_ready(source: ObjectId) -> Option<ScheduleDecision> {
     system().and_then(|tasks| tasks.notify_input_ready(source))
+}
+
+pub fn notify_object_ready(object: ObjectId) -> Option<ScheduleDecision> {
+    system().and_then(|tasks| tasks.notify_object_ready(object))
 }

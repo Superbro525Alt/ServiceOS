@@ -1,6 +1,9 @@
 use core::{ptr::NonNull, slice};
 
-use crate::{syscall2, syscall4, Handle, Result, SyscallNumber};
+use crate::{
+    Handle, MemoryMapRequest, MemoryObjectInfo, Result, SyscallNumber, memory_map_flags, syscall2,
+    syscall4,
+};
 
 pub struct MappedMemory {
     ptr: NonNull<u8>,
@@ -65,4 +68,45 @@ pub fn memory_map(handle: Handle, writable: bool) -> Result<*mut u8> {
         u64::from(writable),
     )
     .map(|value| value as *mut u8)
+}
+
+pub fn memory_info(handle: Handle) -> Result<MemoryObjectInfo> {
+    let mut info = MemoryObjectInfo {
+        size_bytes: 0,
+        page_count: 0,
+        writable: false,
+    };
+    syscall2(
+        SyscallNumber::MemoryInfo,
+        handle as u64,
+        &mut info as *mut MemoryObjectInfo as u64,
+    )?;
+    Ok(info)
+}
+
+pub fn memory_map_range(handle: Handle, request: &MemoryMapRequest) -> Result<*mut u8> {
+    syscall2(
+        SyscallNumber::MemoryMapRange,
+        handle as u64,
+        request as *const MemoryMapRequest as u64,
+    )
+    .map(|value| value as *mut u8)
+}
+
+pub fn memory_map_request(
+    offset_bytes: usize,
+    length_bytes: usize,
+    writable: bool,
+) -> MemoryMapRequest {
+    MemoryMapRequest {
+        offset_bytes,
+        length_bytes,
+        address_hint: 0,
+        flags: if writable {
+            memory_map_flags::WRITABLE
+        } else {
+            0
+        },
+        reserved: 0,
+    }
 }

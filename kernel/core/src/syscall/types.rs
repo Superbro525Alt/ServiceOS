@@ -3,7 +3,7 @@ use serviceos_abi::{SyscallErrorCode as AbiErrorCode, SyscallNumber as AbiSyscal
 use crate::object::ObjectId;
 
 pub const SYSCALL_ABI_VERSION: u64 = 0x0003_0001;
-pub const MAX_SYSCALL_SLOTS: usize = 32;
+pub const MAX_SYSCALL_SLOTS: usize = 39;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SyscallNumber(pub u32);
@@ -79,6 +79,7 @@ pub enum SyscallAction {
     BlockCurrentThreadOnReceive { endpoint: ObjectId },
     BlockCurrentThreadOnPacketReceive { interface: ObjectId },
     BlockCurrentThreadOnInputReceive { source: ObjectId },
+    BlockCurrentThreadOnObject { object: ObjectId },
     ExitCurrentThread { status: u64 },
 }
 
@@ -144,6 +145,16 @@ pub enum SyscallKind {
     AudioEndpointStop = AbiSyscallNumber::AudioEndpointStop as isize,
     MemoryMap = AbiSyscallNumber::MemoryMap as isize,
     TaskSpawnImage = AbiSyscallNumber::TaskSpawnImage as isize,
+    BlockDeviceInfo = AbiSyscallNumber::BlockDeviceInfo as isize,
+    BlockDeviceRead = AbiSyscallNumber::BlockDeviceRead as isize,
+    BlockDeviceWrite = AbiSyscallNumber::BlockDeviceWrite as isize,
+    MemoryInfo = AbiSyscallNumber::MemoryInfo as isize,
+    MemoryMapRange = AbiSyscallNumber::MemoryMapRange as isize,
+    EventCreate = AbiSyscallNumber::EventCreate as isize,
+    EventSignal = AbiSyscallNumber::EventSignal as isize,
+    EventReset = AbiSyscallNumber::EventReset as isize,
+    ObjectInfo = AbiSyscallNumber::ObjectInfo as isize,
+    ObjectWait = AbiSyscallNumber::ObjectWait as isize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

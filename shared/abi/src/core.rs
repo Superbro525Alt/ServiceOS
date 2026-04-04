@@ -4,6 +4,22 @@ pub const INVALID_HANDLE: Handle = 0;
 pub const IPC_MAX_WORDS: usize = 16;
 pub const IPC_MAX_HANDLES: usize = 8;
 pub const IPC_FLAG_NONBLOCK: u32 = 1 << 0;
+pub const OBJECT_WAIT_FLAG_NONBLOCK: u32 = 1 << 0;
+
+pub mod memory_map_flags {
+    pub const WRITABLE: u32 = 1 << 0;
+    pub const FIXED: u32 = 1 << 1;
+}
+
+pub mod object_state_flags {
+    pub const READY: u32 = 1 << 0;
+    pub const SIGNALED: u32 = 1 << 1;
+    pub const ARMED: u32 = 1 << 2;
+    pub const WRITABLE: u32 = 1 << 3;
+    pub const RUNNING: u32 = 1 << 4;
+    pub const EXITED: u32 = 1 << 5;
+    pub const FAULTED: u32 = 1 << 6;
+}
 
 pub mod rights {
     pub const NONE: u64 = 0;
@@ -54,6 +70,13 @@ pub enum SyscallNumber {
     BlockDeviceInfo = 29,
     BlockDeviceRead = 30,
     BlockDeviceWrite = 31,
+    MemoryInfo = 32,
+    MemoryMapRange = 33,
+    EventCreate = 34,
+    EventSignal = 35,
+    EventReset = 36,
+    ObjectInfo = 37,
+    ObjectWait = 38,
 }
 
 #[repr(u32)]
@@ -146,4 +169,52 @@ pub enum TaskStateCode {
 pub struct TaskStatus {
     pub state: TaskStateCode,
     pub exit_code: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MemoryObjectInfo {
+    pub size_bytes: usize,
+    pub page_count: usize,
+    pub writable: bool,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MemoryMapRequest {
+    pub offset_bytes: usize,
+    pub length_bytes: usize,
+    pub address_hint: u64,
+    pub flags: u32,
+    pub reserved: u32,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ObjectKindCode {
+    Task = 1,
+    Thread = 2,
+    ChannelEndpoint = 3,
+    Event = 4,
+    Timer = 5,
+    MemoryObject = 6,
+    BootstrapCapability = 7,
+    PacketInterface = 8,
+    DisplayOutput = 9,
+    InputSource = 10,
+    AudioEndpoint = 11,
+    BlockDevice = 12,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ObjectInfo {
+    pub object_id: u64,
+    pub kind: ObjectKindCode,
+    pub state_flags: u32,
+    pub reserved: u32,
+    pub detail0: u64,
+    pub detail1: u64,
+    pub detail2: u64,
+    pub detail3: u64,
 }

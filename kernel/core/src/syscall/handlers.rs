@@ -2,6 +2,7 @@ mod common;
 mod devices;
 mod ipc;
 mod memory;
+mod object;
 mod system;
 mod task;
 
@@ -20,7 +21,12 @@ pub(crate) use ipc::{
     handle_handle_duplicate,
 };
 pub(crate) use memory::{
-    handle_memory_create, handle_memory_map, handle_memory_read, handle_memory_write,
+    handle_memory_create, handle_memory_info, handle_memory_map, handle_memory_map_range,
+    handle_memory_read, handle_memory_write,
+};
+pub(crate) use object::{
+    handle_event_create, handle_event_reset, handle_event_signal, handle_object_info,
+    handle_object_wait,
 };
 pub(crate) use system::{
     handle_abi_version, handle_debug_console_read, handle_debug_console_write,

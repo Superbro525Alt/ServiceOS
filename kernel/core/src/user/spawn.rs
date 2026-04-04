@@ -94,6 +94,7 @@ pub fn mark_current_thread_exited(code: u64) {
     if let Some(task_object) = tasks.current_task_object() {
         if let Some(task) = task_object.task() {
             task.set_exit_status(TaskExitStatus::Exited { code });
+            let _ = task::notify_object_ready(task_object.id());
             if let Some(address_space_id) = task.address_space() {
                 if let Some(runtime) = runtime() {
                     runtime.release_address_space(address_space_id);
@@ -122,6 +123,7 @@ pub fn mark_current_thread_faulted(code: u64) {
     if let Some(task_object) = tasks.current_task_object() {
         if let Some(task) = task_object.task() {
             task.set_exit_status(TaskExitStatus::Faulted { code });
+            let _ = task::notify_object_ready(task_object.id());
             if let Some(address_space_id) = task.address_space() {
                 if let Some(runtime) = runtime() {
                     runtime.release_address_space(address_space_id);

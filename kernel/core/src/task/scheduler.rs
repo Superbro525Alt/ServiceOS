@@ -24,6 +24,7 @@ struct SchedulerState {
     waiting_receivers: BTreeMap<ObjectId, VecDeque<ThreadId>>,
     waiting_packets: BTreeMap<ObjectId, VecDeque<ThreadId>>,
     waiting_inputs: BTreeMap<ObjectId, VecDeque<ThreadId>>,
+    waiting_objects: BTreeMap<ObjectId, VecDeque<ThreadId>>,
     next_wake_token: u64,
     context_switches: u64,
 }
@@ -61,6 +62,7 @@ impl Scheduler {
                 waiting_receivers: BTreeMap::new(),
                 waiting_packets: BTreeMap::new(),
                 waiting_inputs: BTreeMap::new(),
+                waiting_objects: BTreeMap::new(),
                 next_wake_token: 1,
                 context_switches: 0,
             }),
@@ -79,6 +81,7 @@ impl Scheduler {
             channel_receive_waits: state.waiting_receivers.values().map(VecDeque::len).sum(),
             packet_receive_waits: state.waiting_packets.values().map(VecDeque::len).sum(),
             input_receive_waits: state.waiting_inputs.values().map(VecDeque::len).sum(),
+            object_waits: state.waiting_objects.values().map(VecDeque::len).sum(),
             context_switches: state.context_switches,
         }
     }
@@ -232,6 +235,30 @@ impl Scheduler {
         schedule_next_locked(&mut state, ScheduleTrigger::Blocked, Some(current))
     }
 
+    pub fn block_current_on_object(
+        &self,
+        object: ObjectId,
+    ) -> Result<ScheduleDecision, SchedulerError> {
+        let mut state = self.state.lock();
+        let Some(current) = state.current else {
+            return Ok(decision(&state, ScheduleTrigger::Blocked, None, None));
+        };
+        let thread = lookup_thread(&state, current)?;
+        thread.transition_to(
+            ExecutionState::Blocked,
+            Some(WaitTarget::Object { object }),
+            None,
+        );
+        state.current = None;
+        state
+            .waiting_objects
+            .entry(object)
+            .or_default()
+            .push_back(current);
+
+        schedule_next_locked(&mut state, ScheduleTrigger::Blocked, Some(current))
+    }
+
     pub fn block_current_until(
         &self,
         deadline: MonotonicInstant,
@@ -318,25 +345,35 @@ impl Scheduler {
     pub fn notify_channel_ready(&self, endpoint: ObjectId) -> Option<ScheduleDecision> {
         let mut state = self.state.lock();
         let previous = state.current;
-        let waiters = state.waiting_receivers.get_mut(&endpoint)?;
-        let thread_id = waiters.pop_front()?;
-        if waiters.is_empty() {
+        let mut woke_receiver = false;
+        let mut remove_waiters = false;
+        if let Some(waiters) = state.waiting_receivers.get_mut(&endpoint) {
+            if let Some(thread_id) = waiters.pop_front() {
+                remove_waiters = waiters.is_empty();
+
+                let thread = lookup_thread_record(&state, thread_id).ok()?;
+                if !state.runnable.contains(&thread_id) {
+                    state.runnable.push_back(thread_id);
+                }
+                thread
+                    .object
+                    .thread()
+                    .expect("registered thread object")
+                    .transition_to(
+                        ExecutionState::Runnable,
+                        None,
+                        Some(ThreadWakeReason::ChannelMessage),
+                    );
+                woke_receiver = true;
+            }
+        }
+        if remove_waiters {
             state.waiting_receivers.remove(&endpoint);
         }
-
-        let thread = lookup_thread_record(&state, thread_id).ok()?;
-        if !state.runnable.contains(&thread_id) {
-            state.runnable.push_back(thread_id);
+        let woke_object = wake_object_waiters_locked(&mut state, endpoint)?;
+        if !woke_receiver && !woke_object {
+            return None;
         }
-        thread
-            .object
-            .thread()
-            .expect("registered thread object")
-            .transition_to(
-                ExecutionState::Runnable,
-                None,
-                Some(ThreadWakeReason::ChannelMessage),
-            );
 
         if previous.is_none() {
             schedule_next_locked(&mut state, ScheduleTrigger::IpcWake, previous).ok()
@@ -353,25 +390,35 @@ impl Scheduler {
     pub fn notify_packet_ready(&self, interface: ObjectId) -> Option<ScheduleDecision> {
         let mut state = self.state.lock();
         let previous = state.current;
-        let waiters = state.waiting_packets.get_mut(&interface)?;
-        let thread_id = waiters.pop_front()?;
-        if waiters.is_empty() {
+        let mut woke_packet = false;
+        let mut remove_waiters = false;
+        if let Some(waiters) = state.waiting_packets.get_mut(&interface) {
+            if let Some(thread_id) = waiters.pop_front() {
+                remove_waiters = waiters.is_empty();
+
+                let thread = lookup_thread_record(&state, thread_id).ok()?;
+                if !state.runnable.contains(&thread_id) {
+                    state.runnable.push_back(thread_id);
+                }
+                thread
+                    .object
+                    .thread()
+                    .expect("registered thread object")
+                    .transition_to(
+                        ExecutionState::Runnable,
+                        None,
+                        Some(ThreadWakeReason::PacketReady),
+                    );
+                woke_packet = true;
+            }
+        }
+        if remove_waiters {
             state.waiting_packets.remove(&interface);
         }
-
-        let thread = lookup_thread_record(&state, thread_id).ok()?;
-        if !state.runnable.contains(&thread_id) {
-            state.runnable.push_back(thread_id);
+        let woke_object = wake_object_waiters_locked(&mut state, interface)?;
+        if !woke_packet && !woke_object {
+            return None;
         }
-        thread
-            .object
-            .thread()
-            .expect("registered thread object")
-            .transition_to(
-                ExecutionState::Runnable,
-                None,
-                Some(ThreadWakeReason::PacketReady),
-            );
 
         if previous.is_none() {
             schedule_next_locked(&mut state, ScheduleTrigger::NetworkWake, previous).ok()
@@ -388,25 +435,35 @@ impl Scheduler {
     pub fn notify_input_ready(&self, source: ObjectId) -> Option<ScheduleDecision> {
         let mut state = self.state.lock();
         let previous = state.current;
-        let waiters = state.waiting_inputs.get_mut(&source)?;
-        let thread_id = waiters.pop_front()?;
-        if waiters.is_empty() {
+        let mut woke_input = false;
+        let mut remove_waiters = false;
+        if let Some(waiters) = state.waiting_inputs.get_mut(&source) {
+            if let Some(thread_id) = waiters.pop_front() {
+                remove_waiters = waiters.is_empty();
+
+                let thread = lookup_thread_record(&state, thread_id).ok()?;
+                if !state.runnable.contains(&thread_id) {
+                    state.runnable.push_back(thread_id);
+                }
+                thread
+                    .object
+                    .thread()
+                    .expect("registered thread object")
+                    .transition_to(
+                        ExecutionState::Runnable,
+                        None,
+                        Some(ThreadWakeReason::InputReady),
+                    );
+                woke_input = true;
+            }
+        }
+        if remove_waiters {
             state.waiting_inputs.remove(&source);
         }
-
-        let thread = lookup_thread_record(&state, thread_id).ok()?;
-        if !state.runnable.contains(&thread_id) {
-            state.runnable.push_back(thread_id);
+        let woke_object = wake_object_waiters_locked(&mut state, source)?;
+        if !woke_input && !woke_object {
+            return None;
         }
-        thread
-            .object
-            .thread()
-            .expect("registered thread object")
-            .transition_to(
-                ExecutionState::Runnable,
-                None,
-                Some(ThreadWakeReason::InputReady),
-            );
 
         if previous.is_none() {
             schedule_next_locked(&mut state, ScheduleTrigger::InputWake, previous).ok()
@@ -414,6 +471,38 @@ impl Scheduler {
             Some(decision(
                 &state,
                 ScheduleTrigger::InputWake,
+                previous,
+                state.current,
+            ))
+        }
+    }
+
+    pub fn notify_object_ready(&self, object: ObjectId) -> Option<ScheduleDecision> {
+        let mut state = self.state.lock();
+        let previous = state.current;
+        let waiters = state.waiting_objects.remove(&object)?;
+        for thread_id in waiters {
+            let thread = lookup_thread_record(&state, thread_id).ok()?;
+            if !state.runnable.contains(&thread_id) {
+                state.runnable.push_back(thread_id);
+            }
+            thread
+                .object
+                .thread()
+                .expect("registered thread object")
+                .transition_to(
+                    ExecutionState::Runnable,
+                    None,
+                    Some(ThreadWakeReason::ObjectReady),
+                );
+        }
+
+        if previous.is_none() {
+            schedule_next_locked(&mut state, ScheduleTrigger::ObjectWake, previous).ok()
+        } else {
+            Some(decision(
+                &state,
+                ScheduleTrigger::ObjectWake,
                 previous,
                 state.current,
             ))
@@ -448,6 +537,11 @@ fn blocked_thread_count(state: &SchedulerState) -> usize {
             .sum::<usize>()
         + state
             .waiting_inputs
+            .values()
+            .map(VecDeque::len)
+            .sum::<usize>()
+        + state
+            .waiting_objects
             .values()
             .map(VecDeque::len)
             .sum::<usize>()
@@ -512,6 +606,28 @@ fn schedule_next_locked(
     Ok(decision(state, trigger, previous, next))
 }
 
+fn wake_object_waiters_locked(state: &mut SchedulerState, object: ObjectId) -> Option<bool> {
+    let Some(waiters) = state.waiting_objects.remove(&object) else {
+        return Some(false);
+    };
+    for thread_id in waiters {
+        let thread = lookup_thread_record(state, thread_id).ok()?;
+        if !state.runnable.contains(&thread_id) {
+            state.runnable.push_back(thread_id);
+        }
+        thread
+            .object
+            .thread()
+            .expect("registered thread object")
+            .transition_to(
+                ExecutionState::Runnable,
+                None,
+                Some(ThreadWakeReason::ObjectReady),
+            );
+    }
+    Some(true)
+}
+
 fn remove_from_wait_queues(state: &mut SchedulerState, thread_id: ThreadId) {
     state
         .waiting_timers
@@ -528,6 +644,10 @@ fn remove_from_wait_queues(state: &mut SchedulerState, thread_id: ThreadId) {
         waiters.retain(|waiting| *waiting != thread_id);
         !waiters.is_empty()
     });
+    state.waiting_objects.retain(|_, waiters| {
+        waiters.retain(|waiting| *waiting != thread_id);
+        !waiters.is_empty()
+    });
 }
 
 const fn trigger_to_wake_reason(trigger: ScheduleTrigger) -> ThreadWakeReason {
@@ -539,6 +659,7 @@ const fn trigger_to_wake_reason(trigger: ScheduleTrigger) -> ThreadWakeReason {
         ScheduleTrigger::IpcWake => ThreadWakeReason::ChannelMessage,
         ScheduleTrigger::NetworkWake => ThreadWakeReason::PacketReady,
         ScheduleTrigger::InputWake => ThreadWakeReason::InputReady,
+        ScheduleTrigger::ObjectWake => ThreadWakeReason::ObjectReady,
         ScheduleTrigger::Explicit => ThreadWakeReason::Explicit,
     }
 }

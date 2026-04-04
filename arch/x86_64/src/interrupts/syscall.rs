@@ -58,6 +58,15 @@ extern "C" fn serviceos_x86_64_handle_syscall(frame: &mut SavedUserContext) -> u
             }
             1
         }
+        SyscallAction::BlockCurrentThreadOnObject { object } => {
+            if let Some(tasks) = task::system() {
+                if let Some(thread_id) = tasks.scheduler().current_thread() {
+                    crate::user::save_thread_context(thread_id, frame);
+                }
+                let _ = tasks.scheduler().block_current_on_object(object);
+            }
+            1
+        }
         SyscallAction::ExitCurrentThread { status } => {
             serviceos_kernel_core::user::mark_current_thread_exited(status);
             if let Some(tasks) = task::system() {

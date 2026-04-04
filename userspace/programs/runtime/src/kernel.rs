@@ -1,6 +1,6 @@
 use crate::{
-    syscall0, syscall1, syscall2, syscall3, Handle, Result, ServiceImageId, SyscallNumber,
-    TaskStateCode, TaskStatus,
+    OBJECT_WAIT_FLAG_NONBLOCK, ObjectInfo, syscall0, syscall1, syscall2, syscall3, Handle,
+    Result, ServiceImageId, SyscallNumber, TaskStateCode, TaskStatus,
 };
 
 pub fn abi_version() -> Result<u64> {
@@ -93,12 +93,56 @@ pub fn task_status(task_handle: Handle) -> Result<TaskStatus> {
     Ok(status)
 }
 
+pub fn object_info(handle: Handle) -> Result<ObjectInfo> {
+    let mut info = ObjectInfo {
+        object_id: 0,
+        kind: crate::ObjectKindCode::Task,
+        state_flags: 0,
+        reserved: 0,
+        detail0: 0,
+        detail1: 0,
+        detail2: 0,
+        detail3: 0,
+    };
+    syscall2(
+        SyscallNumber::ObjectInfo,
+        handle as u64,
+        &mut info as *mut ObjectInfo as u64,
+    )?;
+    Ok(info)
+}
+
+pub fn object_wait(handle: Handle, nonblock: bool) -> Result<()> {
+    syscall2(
+        SyscallNumber::ObjectWait,
+        handle as u64,
+        if nonblock {
+            OBJECT_WAIT_FLAG_NONBLOCK as u64
+        } else {
+            0
+        },
+    )
+    .map(|_| ())
+}
+
+pub fn event_create(signaled: bool) -> Result<Handle> {
+    syscall1(SyscallNumber::EventCreate, u64::from(signaled)).map(|value| value as Handle)
+}
+
+pub fn event_signal(handle: Handle) -> Result<()> {
+    syscall1(SyscallNumber::EventSignal, handle as u64).map(|_| ())
+}
+
+pub fn event_reset(handle: Handle) -> Result<()> {
+    syscall1(SyscallNumber::EventReset, handle as u64).map(|_| ())
+}
+
 pub fn wait_for_exit(task_handle: Handle) -> Result<TaskStatus> {
     loop {
+        object_wait(task_handle, false)?;
         let status = task_status(task_handle)?;
-        if matches!(status.state, TaskStateCode::Exited | TaskStateCode::Faulted) {
+        if !matches!(status.state, TaskStateCode::Running) {
             return Ok(status);
         }
-        yield_current()?;
     }
 }

@@ -47,7 +47,7 @@ pub enum ThreadWakeReason {
     ChannelMessage,
     PacketReady,
     InputReady,
-    EventSignal,
+    ObjectReady,
     Explicit,
 }
 
@@ -72,7 +72,7 @@ pub enum WaitTarget {
         token: WakeToken,
         deadline: MonotonicInstant,
     },
-    Event {
+    Object {
         object: ObjectId,
     },
 }
@@ -139,6 +139,7 @@ pub enum ScheduleTrigger {
     IpcWake,
     NetworkWake,
     InputWake,
+    ObjectWake,
     Explicit,
 }
 
@@ -161,6 +162,7 @@ pub struct SchedulerSnapshot {
     pub channel_receive_waits: usize,
     pub packet_receive_waits: usize,
     pub input_receive_waits: usize,
+    pub object_waits: usize,
     pub context_switches: u64,
 }
 

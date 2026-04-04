@@ -84,7 +84,7 @@ fn main() -> u64 {
             Ok(had_work) => had_work,
             Err(_) => return 0xfc08,
         };
-        let had_surface_work = match drain_surface_requests(log_handle, &mut surfaces, &mut dirty) {
+        let had_surface_work = match drain_surface_requests(&mut surfaces, &mut dirty) {
             Ok(had_work) => had_work,
             Err(_) => return 0xfc0a,
         };

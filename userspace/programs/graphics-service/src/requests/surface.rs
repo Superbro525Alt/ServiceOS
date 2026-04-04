@@ -1,8 +1,7 @@
 use serviceos_userspace_runtime as rt;
-use rt::{GraphicsStatus, LogEvent, LogSeverity, RawMessage, SurfaceTag};
+use rt::{GraphicsStatus, RawMessage, SurfaceTag};
 
 use crate::{
-    logging::emit_log,
     types::{
         BufferBinding, DirtyState, MAX_BUFFER_ROW_BYTES, MAX_LABEL_BYTES, MAX_SURFACE_BUFFERS,
         MAX_SURFACE_LABELS, MAX_SURFACE_RECTS, SurfaceSlot, Surfaces, is_cursor_surface,
@@ -13,7 +12,6 @@ use crate::{
 use super::common::{merge_region_dirty, reply_surface_status, unpack_bytes};
 
 pub(crate) fn drain_surface_requests(
-    log_handle: rt::Handle,
     surfaces: &mut Surfaces,
     dirty: &mut DirtyState,
 ) -> rt::Result<bool> {
@@ -27,7 +25,7 @@ pub(crate) fn drain_surface_requests(
             match rt::channel_receive_nonblocking(surface.endpoint, &mut message) {
                 Ok(()) => {
                     had_work = true;
-                    handle_surface_request(log_handle, surface, &message, dirty)?;
+                    handle_surface_request(surface, &message, dirty)?;
                 }
                 Err(rt::Error::QueueEmpty) => break,
                 Err(_) => {
@@ -42,7 +40,6 @@ pub(crate) fn drain_surface_requests(
 }
 
 fn handle_surface_request(
-    log_handle: rt::Handle,
     surface: &mut SurfaceSlot,
     message: &RawMessage,
     dirty: &mut DirtyState,
@@ -73,13 +70,6 @@ fn handle_surface_request(
             } else {
                 *dirty = DirtyState::Full { immediate: true };
             }
-            let _ = emit_log(
-                log_handle,
-                LogSeverity::Debug,
-                LogEvent::SurfaceUpdated,
-                surface.id as u64,
-                0,
-            );
             reply_surface_status(
                 message.handles,
                 message.handle_count,
@@ -93,13 +83,6 @@ fn handle_surface_request(
             }
             surface.fill_rgb = message.words[0] as u32;
             *dirty = DirtyState::Full { immediate: false };
-            let _ = emit_log(
-                log_handle,
-                LogSeverity::Debug,
-                LogEvent::SurfaceUpdated,
-                surface.id as u64,
-                1,
-            );
             reply_surface_status(
                 message.handles,
                 message.handle_count,
@@ -127,13 +110,6 @@ fn handle_surface_request(
             surface.rects = [crate::types::RectSlot::empty(); MAX_SURFACE_RECTS];
             surface.labels = [crate::types::LabelSlot::empty(); MAX_SURFACE_LABELS];
             *dirty = DirtyState::Full { immediate: false };
-            let _ = emit_log(
-                log_handle,
-                LogSeverity::Debug,
-                LogEvent::SurfaceUpdated,
-                surface.id as u64,
-                2,
-            );
             reply_surface_status(
                 message.handles,
                 message.handle_count,
@@ -155,13 +131,6 @@ fn handle_surface_request(
                 slot.visible = message.words[6] != 0;
                 slot.occupied = slot.visible;
                 *dirty = DirtyState::Full { immediate: false };
-                let _ = emit_log(
-                    log_handle,
-                    LogSeverity::Debug,
-                    LogEvent::SurfaceUpdated,
-                    surface.id as u64,
-                    slot_index as u64,
-                );
                 GraphicsStatus::Ok
             } else {
                 GraphicsStatus::CapacityExceeded
@@ -196,13 +165,6 @@ fn handle_surface_request(
                     slot.len = text_len;
                     slot.occupied = text_len != 0;
                     *dirty = DirtyState::Full { immediate: false };
-                    let _ = emit_log(
-                        log_handle,
-                        LogSeverity::Debug,
-                        LogEvent::SurfaceUpdated,
-                        surface.id as u64,
-                        (MAX_SURFACE_RECTS + slot_index) as u64,
-                    );
                     GraphicsStatus::Ok
                 }
             } else {
@@ -304,13 +266,6 @@ fn handle_surface_request(
                 } else {
                     merge_region_dirty(dirty, damage, true);
                 }
-                let _ = emit_log(
-                    log_handle,
-                    LogSeverity::Debug,
-                    LogEvent::SurfaceUpdated,
-                    surface.id as u64,
-                    0x100 + slot as u64,
-                );
                 GraphicsStatus::Ok
             };
             reply_surface_status(

@@ -910,19 +910,19 @@ fn append_launch_grants(
             append_service_launch_handle(
                 slots,
                 service_count,
-                ServiceId::Runtime,
-                rights::SEND | rights::TRANSFER,
-                startup,
-                handle_index,
-            )?;
-            append_service_launch_handle(
-                slots,
-                service_count,
                 ServiceId::Security,
                 rights::SEND | rights::TRANSFER,
                 startup,
                 handle_index,
             )?;
+            let _ = append_service_launch_handle(
+                slots,
+                service_count,
+                ServiceId::Runtime,
+                rights::SEND | rights::TRANSFER,
+                startup,
+                handle_index,
+            );
         }
         ServiceImageId::FilesApp => {
             append_service_launch_handle(

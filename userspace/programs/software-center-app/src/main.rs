@@ -20,8 +20,13 @@ const BUFFER_HEIGHT: u32 = 768;
 const BUFFER_BYTES: usize = BUFFER_WIDTH as usize * BUFFER_HEIGHT as usize * 4;
 const SURFACE_BUFFER_SLOTS: usize = 2;
 const PIXEL_STRIDE: usize = BUFFER_WIDTH as usize;
-const LIST_TOP: i32 = 166;
-const ROW_HEIGHT: i32 = 16;
+const OUTER_PAD: i32 = 14;
+const CONTENT_GAP: i32 = 12;
+const HEADER_HEIGHT: i32 = 56;
+const PANEL_TITLE_HEIGHT: i32 = 26;
+const ROW_HEIGHT: i32 = 30;
+const BUTTON_HEIGHT: i32 = 22;
+const STATUS_BAR_HEIGHT: i32 = 24;
 const KEY_ENTER: u32 = 28;
 const KEY_BACKSPACE: u32 = 14;
 const KEY_DELETE: u32 = 111;
@@ -30,14 +35,42 @@ const KEY_UP: u32 = 103;
 const KEY_PAGE_UP: u32 = 104;
 const KEY_DOWN: u32 = 108;
 const KEY_PAGE_DOWN: u32 = 109;
-const BUTTON_Y0: i32 = 128;
-const BUTTON_Y1: i32 = 148;
-const BUTTON_SYNC_X0: i32 = 12;
-const BUTTON_SYNC_X1: i32 = 88;
-const BUTTON_INSTALL_X0: i32 = 96;
-const BUTTON_INSTALL_X1: i32 = 184;
-const BUTTON_REMOVE_X0: i32 = 192;
-const BUTTON_REMOVE_X1: i32 = 280;
+
+#[derive(Clone, Copy)]
+struct Layout {
+    header_x: i32,
+    header_y: i32,
+    header_w: i32,
+    left_x: i32,
+    left_y: i32,
+    left_w: i32,
+    left_h: i32,
+    right_x: i32,
+    right_y: i32,
+    right_w: i32,
+    right_h: i32,
+    list_rows_y: i32,
+    list_rows_h: i32,
+    sync_x0: i32,
+    sync_x1: i32,
+    sync_y0: i32,
+    sync_y1: i32,
+    install_x0: i32,
+    install_x1: i32,
+    install_y0: i32,
+    install_y1: i32,
+    remove_x0: i32,
+    remove_x1: i32,
+    remove_y0: i32,
+    remove_y1: i32,
+    status_y: i32,
+}
+
+impl Layout {
+    fn visible_rows(self) -> usize {
+        self.list_rows_h.max(0) as usize / ROW_HEIGHT as usize
+    }
+}
 
 #[derive(Clone, Copy)]
 struct CatalogEntry {
@@ -282,6 +315,7 @@ fn render(
     package_handle: rt::Handle,
     state: &AppState,
 ) -> rt::Result<()> {
+    let layout = compute_layout(state);
     let width = state.width.min(BUFFER_WIDTH) as usize;
     let height = state.height.min(BUFFER_HEIGHT) as usize;
     let bytes = &mut buffer.as_slice_mut()[..BUFFER_BYTES];
@@ -306,39 +340,44 @@ fn render(
         ) {
             let _ = write!(
                 &mut detail0,
-                "{}  repo={}  trust={}",
-                service_label(entry.service_id),
-                provenance.repo_index,
-                trust_label(provenance.trust_state),
+                "{}",
+                service_title(entry.service_id),
             );
             let _ = write!(
                 &mut detail1,
+                "{}  repo={}  {}",
+                text_or_dash(&entry.summary[..entry.summary_len]),
+                provenance.repo_index,
+                trust_badge(provenance.trust_state),
+            );
+            let _ = write!(
+                &mut detail1,
+                ""
+            );
+            let _ = write!(
+                &mut detail2,
                 "latest={}  installed={}  active={}",
                 text_or_dash(&latest[..provenance.latest_version_len]),
                 text_or_dash(&installed[..provenance.installed_version_len]),
                 text_or_dash(&active[..provenance.active_version_len]),
             );
             let _ = write!(
-                &mut detail2,
+                &mut detail3,
                 "channel={}  ring={}  rollback={}",
                 channel_label(provenance.channel),
                 ring_label(provenance.ring),
                 text_or_dash(&rollback[..provenance.rollback_version_len]),
             );
-            let _ = write!(
-                &mut detail3,
-                "source={}",
-                text_or_dash(&source[..provenance.source_len]),
-            );
+            let _ = source;
         } else {
-            let _ = write!(&mut detail0, "{}", service_label(entry.service_id));
-            let _ = write!(&mut detail1, "latest={}", text_or_dash(&entry.latest_version[..entry.latest_version_len]));
-            let _ = write!(&mut detail2, "category={}", text_or_dash(&entry.category[..entry.category_len]));
-            let _ = write!(&mut detail3, "summary={}", text_or_dash(&entry.summary[..entry.summary_len]));
+            let _ = write!(&mut detail0, "{}", service_title(entry.service_id));
+            let _ = write!(&mut detail1, "{}", text_or_dash(&entry.summary[..entry.summary_len]));
+            let _ = write!(&mut detail2, "latest={}", text_or_dash(&entry.latest_version[..entry.latest_version_len]));
+            let _ = write!(&mut detail3, "category={}", text_or_dash(&entry.category[..entry.category_len]));
         }
     } else {
-        let _ = write!(&mut detail0, "NO PACKAGE SELECTED");
-        let _ = write!(&mut detail1, "Use the catalog list below");
+        let _ = write!(&mut detail0, "Select a package");
+        let _ = write!(&mut detail1, "Browse the catalog and inspect trust before installing.");
     }
 
     fill_rect(bytes, 0, 0, width, height, ui::BG_WINDOW_ALT);
@@ -355,42 +394,56 @@ fn render(
         },
     );
     draw_titlebar(bytes, width);
+    draw_header(bytes, layout, state);
+    draw_panel(bytes, layout.left_x, layout.left_y, layout.left_w, layout.left_h, ui::BG_PANEL);
+    draw_panel(bytes, layout.right_x, layout.right_y, layout.right_w, layout.right_h, ui::BG_PANEL);
+    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, layout.left_x + 12, layout.left_y + 10, ui::TEXT_PRIMARY, "CATALOG");
+    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, layout.right_x + 12, layout.right_y + 10, ui::TEXT_PRIMARY, "DETAILS");
+    draw_button(
+        bytes,
+        layout.sync_x0,
+        layout.sync_y0,
+        layout.sync_x1,
+        layout.sync_y1,
+        ui::ACCENT_DIM,
+        "SYNC ALL",
+        ui::TEXT_PRIMARY,
+    );
     draw_details(
         bytes,
+        layout,
         str::from_utf8(detail0.as_bytes()).unwrap_or("PACKAGE"),
         str::from_utf8(detail1.as_bytes()).unwrap_or("DETAILS"),
         str::from_utf8(detail2.as_bytes()).unwrap_or("DETAILS"),
         str::from_utf8(detail3.as_bytes()).unwrap_or("DETAILS"),
         str::from_utf8(&state.status[..state.status_len]).unwrap_or(""),
+        selected_entry(state),
     );
     draw_button(
         bytes,
-        BUTTON_SYNC_X0,
-        BUTTON_Y0,
-        BUTTON_SYNC_X1,
-        BUTTON_Y1,
-        ui::ACCENT_DIM,
-        "SYNC",
-    );
-    draw_button(
-        bytes,
-        BUTTON_INSTALL_X0,
-        BUTTON_Y0,
-        BUTTON_INSTALL_X1,
-        BUTTON_Y1,
-        ui::STATUS_OK,
+        layout.install_x0,
+        layout.install_y0,
+        layout.install_x1,
+        layout.install_y1,
+        if selected_entry(state).is_some_and(|entry| entry.installed) {
+            ui::STATUS_OK
+        } else {
+            ui::ACCENT
+        },
         action_label(selected_entry(state)),
+        ui::BG_PANEL,
     );
     draw_button(
         bytes,
-        BUTTON_REMOVE_X0,
-        BUTTON_Y0,
-        BUTTON_REMOVE_X1,
-        BUTTON_Y1,
+        layout.remove_x0,
+        layout.remove_y0,
+        layout.remove_x1,
+        layout.remove_y1,
         ui::STATUS_WARN,
         "REMOVE",
+        ui::BG_PANEL,
     );
-    draw_list(bytes, width, height, state);
+    draw_list(bytes, layout, state);
     rt::surface_present_buffer_slot(
         surface_handle,
         buffer_slot,
@@ -440,28 +493,27 @@ fn handle_pointer_down(
     x: i32,
     y: i32,
 ) -> rt::Result<bool> {
-    if y >= BUTTON_Y0 && y < BUTTON_Y1 {
-        if x >= BUTTON_SYNC_X0 && x < BUTTON_SYNC_X1 {
-            sync_repositories(package_handle, state);
+    let layout = compute_layout(state);
+    if y >= layout.sync_y0 && y < layout.sync_y1 && x >= layout.sync_x0 && x < layout.sync_x1 {
+        sync_repositories(package_handle, state);
+        return Ok(true);
+    }
+    if y >= layout.install_y0 && y < layout.install_y1 && x >= layout.install_x0 && x < layout.install_x1 {
+        if let Some(entry) = selected_entry(state) {
+            apply_selected_package_action(package_handle, state, entry, PackageAction::InstallOrUpdate);
             return Ok(true);
         }
-        if x >= BUTTON_INSTALL_X0 && x < BUTTON_INSTALL_X1 {
-            if let Some(entry) = selected_entry(state) {
-                apply_selected_package_action(package_handle, state, entry, PackageAction::InstallOrUpdate);
-                return Ok(true);
-            }
-        }
-        if x >= BUTTON_REMOVE_X0 && x < BUTTON_REMOVE_X1 {
-            if let Some(entry) = selected_entry(state) {
-                apply_selected_package_action(package_handle, state, entry, PackageAction::Remove);
-                return Ok(true);
-            }
+    }
+    if y >= layout.remove_y0 && y < layout.remove_y1 && x >= layout.remove_x0 && x < layout.remove_x1 {
+        if let Some(entry) = selected_entry(state) {
+            apply_selected_package_action(package_handle, state, entry, PackageAction::Remove);
+            return Ok(true);
         }
     }
 
-    let visible_rows = visible_row_count(state.height);
-    if x >= 8 && x < state.width as i32 - 8 && y >= LIST_TOP {
-        let row = ((y - LIST_TOP) / ROW_HEIGHT) as usize;
+    let visible_rows = layout.visible_rows();
+    if x >= layout.left_x + 8 && x < layout.left_x + layout.left_w - 8 && y >= layout.list_rows_y {
+        let row = ((y - layout.list_rows_y) / ROW_HEIGHT) as usize;
         let entry_index = state.scroll_offset + row;
         if row < visible_rows && entry_index < state.entry_count {
             state.selected_index = entry_index;
@@ -654,62 +706,108 @@ fn draw_titlebar(bytes: &mut [u8], width: usize) {
         ui::BG_PANEL,
         "X",
     );
-    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, 10, 9, ui::TEXT_PRIMARY, "SOFTWARE");
+    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, 10, 9, ui::TEXT_PRIMARY, "SOFTWARE CENTER");
+}
+
+fn draw_header(bytes: &mut [u8], layout: Layout, state: &AppState) {
+    draw_panel(
+        bytes,
+        layout.header_x,
+        layout.header_y,
+        layout.header_w,
+        HEADER_HEIGHT,
+        ui::BG_PANEL,
+    );
+    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, layout.header_x + 14, layout.header_y + 12, ui::TEXT_PRIMARY, "DISCOVER AND MANAGE SOFTWARE");
+    let mut summary = FixedLogBuffer::<64>::new();
+    let _ = write!(
+        &mut summary,
+        "{} packages  {} installed",
+        state.entry_count,
+        installed_count(state),
+    );
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        layout.header_x + 14,
+        layout.header_y + 28,
+        ui::TEXT_SECONDARY,
+        str::from_utf8(summary.as_bytes()).unwrap_or(""),
+    );
 }
 
 fn draw_details(
     bytes: &mut [u8],
+    layout: Layout,
     detail0: &str,
     detail1: &str,
     detail2: &str,
     detail3: &str,
     status: &str,
+    entry: Option<CatalogEntry>,
 ) {
-    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, 12, 42, ui::TEXT_PRIMARY, detail0);
-    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, 12, 56, ui::TEXT_SECONDARY, detail1);
-    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, 12, 70, ui::TEXT_SECONDARY, detail2);
-    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, 12, 84, ui::TEXT_SECONDARY, detail3);
-    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, 12, 98, ui::TEXT_MUTED, status);
+    let meta_x = layout.right_x + 12;
+    let title_y = layout.right_y + 40;
+    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, meta_x, title_y, ui::TEXT_PRIMARY, detail0);
+    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, meta_x, title_y + 16, ui::TEXT_SECONDARY, detail1);
+    if let Some(entry) = entry {
+        draw_chip(
+            bytes,
+            meta_x,
+            title_y + 34,
+            category_chip_label(&entry),
+            ui::ACCENT_DIM,
+            ui::TEXT_PRIMARY,
+        );
+        if entry.installed {
+            draw_chip(bytes, meta_x + 102, title_y + 34, "INSTALLED", ui::STATUS_OK, ui::BG_PANEL);
+        }
+        if entry.active {
+            draw_chip(bytes, meta_x + 188, title_y + 34, "ACTIVE", ui::ACCENT, ui::BG_PANEL);
+        }
+    }
+    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, meta_x, title_y + 60, ui::TEXT_SECONDARY, detail2);
+    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, meta_x, title_y + 74, ui::TEXT_SECONDARY, detail3);
+    draw_status_bar(bytes, layout.right_x + 12, layout.status_y, layout.right_w - 24, status);
 }
 
-fn draw_list(bytes: &mut [u8], width: usize, height: usize, state: &AppState) {
-    let list_height = height.saturating_sub(LIST_TOP as usize + 12);
-    fill_rect(
-        bytes,
-        8,
-        LIST_TOP as usize,
-        width.saturating_sub(16),
-        list_height,
-        ui::BG_WINDOW,
-    );
-
-    let visible_rows = visible_row_count(state.height);
+fn draw_list(bytes: &mut [u8], layout: Layout, state: &AppState) {
+    let visible_rows = layout.visible_rows();
     for row in 0..visible_rows {
         let entry_index = state.scroll_offset + row;
         if entry_index >= state.entry_count {
             break;
         }
         let entry = state.entries[entry_index];
-        let row_y = LIST_TOP as usize + row * ROW_HEIGHT as usize;
+        let row_y = layout.list_rows_y as usize + row * ROW_HEIGHT as usize;
         let selected = entry_index == state.selected_index;
-        if selected {
-            fill_rect(
-                bytes,
-                12,
-                row_y + 1,
-                width.saturating_sub(24),
-                ROW_HEIGHT as usize - 2,
-                ui::ACCENT_DIM,
-            );
-        }
-        let mut line = FixedLogBuffer::<112>::new();
+        fill_rect(
+            bytes,
+            (layout.left_x + 8) as usize,
+            row_y,
+            (layout.left_w - 16).max(0) as usize,
+            (ROW_HEIGHT - 4).max(0) as usize,
+            if selected { ui::ACCENT_DIM } else { ui::BG_WINDOW },
+        );
+        rt::draw_text_rgba8888(
+            bytes,
+            PIXEL_STRIDE,
+            layout.left_x + 14,
+            row_y as i32 + 4,
+            if selected {
+                ui::TEXT_PRIMARY
+            } else {
+                ui::TEXT_SECONDARY
+            },
+            service_title(entry.service_id),
+        );
+        let mut meta = FixedLogBuffer::<96>::new();
         let _ = write!(
-            &mut line,
-            "{:<16} r{} {:<7} {:<8} {}{}{}",
-            service_label(entry.service_id),
-            entry.repo_index,
+            &mut meta,
+            "v{}  {}  r{}  {}{}{}",
             text_or_dash(&entry.latest_version[..entry.latest_version_len]),
             text_or_dash(&entry.category[..entry.category_len]),
+            entry.repo_index,
             if entry.installed { "I" } else { "-" },
             if entry.active { "A" } else { "-" },
             if entry.rollback { "R" } else { "-" },
@@ -717,22 +815,10 @@ fn draw_list(bytes: &mut [u8], width: usize, height: usize, state: &AppState) {
         rt::draw_text_rgba8888(
             bytes,
             PIXEL_STRIDE,
-            12,
-            row_y as i32 + 3,
-            if selected {
-                ui::TEXT_PRIMARY
-            } else {
-                ui::TEXT_SECONDARY
-            },
-            str::from_utf8(line.as_bytes()).unwrap_or("PACKAGE"),
-        );
-        rt::draw_text_rgba8888(
-            bytes,
-            PIXEL_STRIDE,
-            280,
-            row_y as i32 + 3,
+            layout.left_x + 14,
+            row_y as i32 + 16,
             ui::TEXT_MUTED,
-            str::from_utf8(&entry.summary[..entry.summary_len]).unwrap_or(""),
+            str::from_utf8(meta.as_bytes()).unwrap_or(""),
         );
     }
 }
@@ -745,6 +831,7 @@ fn draw_button(
     y1: i32,
     color: u32,
     label: &str,
+    text_color: u32,
 ) {
     fill_rect(
         bytes,
@@ -754,7 +841,36 @@ fn draw_button(
         (y1 - y0).max(0) as usize,
         color,
     );
-    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, x0 + 8, y0 + 6, ui::BG_PANEL, label);
+    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, x0 + 8, y0 + 7, text_color, label);
+}
+
+fn draw_panel(bytes: &mut [u8], x: i32, y: i32, width: i32, height: i32, color: u32) {
+    fill_rect(
+        bytes,
+        x.max(0) as usize,
+        y.max(0) as usize,
+        width.max(0) as usize,
+        height.max(0) as usize,
+        color,
+    );
+}
+
+fn draw_chip(bytes: &mut [u8], x: i32, y: i32, label: &str, color: u32, text: u32) {
+    let width = (label.len() as i32 * 8 + 12).min(128);
+    fill_rect(bytes, x.max(0) as usize, y.max(0) as usize, width.max(0) as usize, 16, color);
+    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, x + 6, y + 4, text, label);
+}
+
+fn draw_status_bar(bytes: &mut [u8], x: i32, y: i32, width: i32, status: &str) {
+    fill_rect(
+        bytes,
+        x.max(0) as usize,
+        y.max(0) as usize,
+        width.max(0) as usize,
+        STATUS_BAR_HEIGHT as usize,
+        ui::BG_WINDOW,
+    );
+    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, x + 8, y + 8, ui::TEXT_MUTED, status);
 }
 
 fn fill_rect(bytes: &mut [u8], x: usize, y: usize, width: usize, height: usize, rgb: u32) {
@@ -771,6 +887,13 @@ fn selected_entry(state: &AppState) -> Option<CatalogEntry> {
     state.entries[..state.entry_count].get(state.selected_index).copied()
 }
 
+fn installed_count(state: &AppState) -> usize {
+    state.entries[..state.entry_count]
+        .iter()
+        .filter(|entry| entry.installed)
+        .count()
+}
+
 fn select_service(state: &mut AppState, service_id: ServiceId) {
     if let Some(index) = state.entries[..state.entry_count]
         .iter()
@@ -782,10 +905,7 @@ fn select_service(state: &mut AppState, service_id: ServiceId) {
 }
 
 fn visible_row_count(height: u32) -> usize {
-    height
-        .saturating_sub((LIST_TOP + 12) as u32)
-        .checked_div(ROW_HEIGHT as u32)
-        .unwrap_or(0) as usize
+    compute_layout_for_height(height).visible_rows()
 }
 
 fn ensure_selected_visible(state: &mut AppState) {
@@ -847,12 +967,21 @@ fn error_label(error: rt::Error) -> &'static str {
     }
 }
 
-fn trust_label(value: rt::PackageTrustState) -> &'static str {
+fn category_chip_label(entry: &CatalogEntry) -> &str {
+    let category = text_or_dash(&entry.category[..entry.category_len]);
+    if category == "-" {
+        "SYSTEM"
+    } else {
+        category
+    }
+}
+
+fn trust_badge(value: rt::PackageTrustState) -> &'static str {
     match value {
-        rt::PackageTrustState::BootTrusted => "boot",
+        rt::PackageTrustState::BootTrusted => "boot-trusted",
         rt::PackageTrustState::Unverified => "unverified",
-        rt::PackageTrustState::DigestPinned => "pinned",
-        rt::PackageTrustState::VerificationFailed => "verify-failed",
+        rt::PackageTrustState::DigestPinned => "digest-pinned",
+        rt::PackageTrustState::VerificationFailed => "verification-failed",
     }
 }
 
@@ -888,6 +1017,15 @@ fn text_or_dash(bytes: &[u8]) -> &str {
     }
 }
 
+fn service_title(service_id: ServiceId) -> &'static str {
+    match service_id {
+        ServiceId::Announce => "Announce",
+        ServiceId::Runtime => "Runtime Tools",
+        ServiceId::Developer => "Developer SDK",
+        _ => service_label(service_id),
+    }
+}
+
 fn service_label(service_id: ServiceId) -> &'static str {
     match service_id {
         ServiceId::RootManager => "root-manager",
@@ -908,6 +1046,73 @@ fn service_label(service_id: ServiceId) -> &'static str {
         ServiceId::Runtime => "runtime-service",
         ServiceId::Developer => "developer-service",
         ServiceId::Clipboard => "clipboard-service",
+    }
+}
+
+fn compute_layout(state: &AppState) -> Layout {
+    compute_layout_for_dims(
+        state.width.min(BUFFER_WIDTH) as i32,
+        state.height.min(BUFFER_HEIGHT) as i32,
+    )
+}
+
+fn compute_layout_for_height(height: u32) -> Layout {
+    compute_layout_for_dims(BUFFER_WIDTH as i32, height.min(BUFFER_HEIGHT) as i32)
+}
+
+fn compute_layout_for_dims(width: i32, height: i32) -> Layout {
+    let content_top = ui::TITLEBAR_HEIGHT as i32 + OUTER_PAD;
+    let header_x = OUTER_PAD;
+    let header_y = content_top;
+    let header_w = width - OUTER_PAD * 2;
+    let body_y = header_y + HEADER_HEIGHT + CONTENT_GAP;
+    let body_h = height - body_y - OUTER_PAD;
+    let mut left_w = ((header_w - CONTENT_GAP) * 38) / 100;
+    left_w = left_w.clamp(300, 388.min(header_w - 220));
+    let right_w = header_w - CONTENT_GAP - left_w;
+    let left_x = OUTER_PAD;
+    let left_y = body_y;
+    let right_x = left_x + left_w + CONTENT_GAP;
+    let right_y = body_y;
+    let sync_y0 = header_y + 18;
+    let sync_y1 = sync_y0 + BUTTON_HEIGHT;
+    let sync_x1 = header_x + header_w - 14;
+    let sync_x0 = sync_x1 - 88;
+    let install_y0 = right_y + 124;
+    let install_y1 = install_y0 + BUTTON_HEIGHT;
+    let install_x0 = right_x + 12;
+    let install_x1 = install_x0 + 104;
+    let remove_x0 = install_x1 + 10;
+    let remove_x1 = remove_x0 + 96;
+    let list_rows_y = left_y + PANEL_TITLE_HEIGHT + 8;
+    let status_y = right_y + body_h - STATUS_BAR_HEIGHT - 12;
+    Layout {
+        header_x,
+        header_y,
+        header_w,
+        left_x,
+        left_y,
+        left_w,
+        left_h: body_h,
+        right_x,
+        right_y,
+        right_w,
+        right_h: body_h,
+        list_rows_y,
+        list_rows_h: body_h - PANEL_TITLE_HEIGHT - 16,
+        sync_x0,
+        sync_x1,
+        sync_y0,
+        sync_y1,
+        install_x0,
+        install_x1,
+        install_y0,
+        install_y1,
+        remove_x0,
+        remove_x1,
+        remove_y0: install_y0,
+        remove_y1: install_y1,
+        status_y,
     }
 }
 

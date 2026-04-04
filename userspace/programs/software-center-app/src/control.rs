@@ -3,7 +3,6 @@ use rt::{AppControlTag, RawMessage};
 use serviceos_desktop_ui as ui;
 
 use crate::actions::{apply_selected_package_action, sync_repositories, PackageAction};
-use crate::lifecycle::{key_action_from_word, pointer_action_from_word};
 use crate::render::render;
 use crate::state::{
     clamp_view, compute_layout, ensure_selected_visible, scroll_down, scroll_up, selected_entry,
@@ -42,7 +41,7 @@ pub(crate) fn poll_control(
                 did_work = true;
             }
             Ok(()) if message.tag == AppControlTag::Pointer as u32 && message.word_count >= 5 => {
-                let action = pointer_action_from_word(message.words[0]);
+                let action = ui::decode_app_pointer_action(message.words[0]);
                 let x = message.words[1] as i64 as i32;
                 let y = message.words[2] as i64 as i32;
                 let detail = message.words[4] as i64 as i32;
@@ -65,7 +64,7 @@ pub(crate) fn poll_control(
             }
             Ok(()) if message.tag == AppControlTag::Key as u32 && message.word_count >= 2 => {
                 did_work = true;
-                if matches!(key_action_from_word(message.words[0]), Some(rt::AppKeyAction::Down)) {
+                if matches!(ui::decode_app_key_action(message.words[0]), Some(rt::AppKeyAction::Down)) {
                     changed |= handle_key_down(package_handle, state, message.words[1] as u32)?;
                 }
             }

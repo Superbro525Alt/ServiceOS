@@ -5,7 +5,7 @@ use core::{fmt::Write, str};
 
 use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
-use rt::{AppControlTag, ControlTag, FixedLogBuffer, LifecycleEvent, RawMessage};
+use rt::{AppControlTag, ControlTag, FixedLogBuffer, RawMessage};
 
 const REFRESH_TICKS: u64 = 100;
 const BUFFER_WIDTH: u32 = 640;
@@ -57,7 +57,7 @@ fn main() -> u64 {
     let mut next_refresh = 0u64;
     let mut last_snapshot: Option<MonitorSnapshot> = None;
     loop {
-        match poll_lifecycle(bootstrap) {
+        match ui::poll_app_lifecycle(bootstrap) {
             Ok(true) => break,
             Ok(false) => {}
             Err(_) => return 0xf203,
@@ -277,30 +277,5 @@ fn sample_snapshot(status_handle: rt::Handle, network_handle: rt::Handle) -> Mon
         link_up: interface
             .map(|info| info.link_state == rt::PacketInterfaceLinkState::Up)
             .unwrap_or(false),
-    }
-}
-
-fn poll_lifecycle(bootstrap: rt::Handle) -> rt::Result<bool> {
-    let mut message = RawMessage::empty(0);
-    match rt::channel_receive_nonblocking(bootstrap, &mut message) {
-        Ok(()) if message.tag == ControlTag::Lifecycle as u32 && message.word_count > 0 => Ok(
-            matches!(
-                lifecycle_event_from_word(message.words[0]),
-                LifecycleEvent::Restarting | LifecycleEvent::Stopped
-            ),
-        ),
-        Ok(()) => Ok(false),
-        Err(rt::Error::QueueEmpty) => Ok(false),
-        Err(error) => Err(error),
-    }
-}
-
-fn lifecycle_event_from_word(value: u64) -> LifecycleEvent {
-    match value as u32 {
-        x if x == LifecycleEvent::Starting as u32 => LifecycleEvent::Starting,
-        x if x == LifecycleEvent::Ready as u32 => LifecycleEvent::Ready,
-        x if x == LifecycleEvent::Failed as u32 => LifecycleEvent::Failed,
-        x if x == LifecycleEvent::Stopped as u32 => LifecycleEvent::Stopped,
-        _ => LifecycleEvent::Restarting,
     }
 }

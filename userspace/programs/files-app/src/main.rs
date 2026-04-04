@@ -2,7 +2,6 @@
 #![no_main]
 
 mod control;
-mod lifecycle;
 mod navigation;
 mod render;
 mod state;
@@ -12,7 +11,6 @@ use serviceos_userspace_runtime as rt;
 use rt::{ControlTag, RawMessage};
 
 use crate::control::{poll_control, ControlFlow};
-use crate::lifecycle::poll_lifecycle;
 use crate::navigation::{reload_directory, reopen_directory};
 use crate::render::render;
 use crate::state::{ExplorerEntry, ExplorerState, BUFFER_BYTES, BUFFER_HEIGHT, BUFFER_WIDTH, SURFACE_BUFFER_SLOTS};
@@ -66,7 +64,7 @@ fn main() -> u64 {
     let _ = render(surface_handle, slot, buffer, &state);
 
     loop {
-        match poll_lifecycle(bootstrap) {
+        match ui::poll_app_lifecycle(bootstrap) {
             Ok(true) => break,
             Ok(false) => {}
             Err(_) => return 0xf105,

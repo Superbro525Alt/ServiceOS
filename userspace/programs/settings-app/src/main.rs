@@ -2,7 +2,6 @@
 #![no_main]
 
 mod control;
-mod lifecycle;
 mod render;
 mod security;
 mod state;
@@ -12,7 +11,6 @@ use serviceos_userspace_runtime as rt;
 use rt::ControlTag;
 
 use crate::control::{cleanup_audio, poll_control, ControlFlow};
-use crate::lifecycle::poll_lifecycle;
 use crate::render::render;
 use crate::state::{AppState, BUFFER_BYTES, BUFFER_HEIGHT, BUFFER_WIDTH, NOTE_MAX_BYTES, SURFACE_BUFFER_SLOTS};
 
@@ -82,7 +80,7 @@ fn main() -> u64 {
     }
 
     loop {
-        match poll_lifecycle(bootstrap) {
+        match ui::poll_app_lifecycle(bootstrap) {
             Ok(true) => {
                 cleanup_audio(audio_stream_handle, audio_handle);
                 break;

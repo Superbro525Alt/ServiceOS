@@ -4,7 +4,6 @@ use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
 use rt::PermissionPolicyState;
 
-use crate::lifecycle::{app_key_action_from_word, app_pointer_action_from_word};
 use crate::render::render;
 use crate::security::{first_actionable_runtime, security_policy_count, update_policy};
 use crate::state::*;
@@ -41,7 +40,7 @@ pub(crate) fn poll_control(
                 changed = true;
             }
             Ok(()) if message.tag == rt::AppControlTag::Pointer as u32 && message.word_count >= 4 => {
-                let action = app_pointer_action_from_word(message.words[0]);
+                let action = ui::decode_app_pointer_action(message.words[0]);
                 let x = message.words[1] as i64 as i32;
                 let y = message.words[2] as i64 as i32;
                 if matches!(action, Some(rt::AppPointerAction::Down)) {
@@ -56,7 +55,7 @@ pub(crate) fn poll_control(
                 }
             }
             Ok(()) if message.tag == rt::AppControlTag::Key as u32 && message.word_count >= 2 => {
-                if matches!(app_key_action_from_word(message.words[0]), Some(rt::AppKeyAction::Down)) {
+                if matches!(ui::decode_app_key_action(message.words[0]), Some(rt::AppKeyAction::Down)) {
                     changed |= handle_key_down(security_handle, state, message.words[1] as u32)?;
                 }
             }

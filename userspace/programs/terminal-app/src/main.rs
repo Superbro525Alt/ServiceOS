@@ -9,7 +9,7 @@ mod vt;
 
 use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
-use rt::{AppControlTag, ControlTag, LifecycleEvent, RawMessage};
+use rt::{AppControlTag, ControlTag, RawMessage};
 
 pub(crate) use state::*;
 
@@ -75,7 +75,7 @@ fn main() -> u64 {
         let mut did_work = false;
         let mut changed = false;
 
-        match control::poll_lifecycle(bootstrap) {
+        match ui::poll_app_lifecycle(bootstrap) {
             Ok(true) => break,
             Ok(false) => {}
             Err(_) => return 0xfa06,

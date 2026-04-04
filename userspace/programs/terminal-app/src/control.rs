@@ -38,7 +38,7 @@ pub(crate) fn poll_control(
             }
             Ok(()) if message.tag == AppControlTag::Pointer as u32 && message.word_count >= 5 => {
                 did_work = true;
-                let action = app_pointer_action_from_word(message.words[0]);
+                let action = ui::decode_app_pointer_action(message.words[0]);
                 let x = message.words[1] as i64 as i32;
                 let y = message.words[2] as i64 as i32;
                 let detail = message.words[4] as i64 as i32;
@@ -175,16 +175,6 @@ pub(crate) fn handle_key_down(
     Ok(true)
 }
 
-fn app_pointer_action_from_word(value: u64) -> Option<rt::AppPointerAction> {
-    match value as u32 {
-        x if x == rt::AppPointerAction::Down as u32 => Some(rt::AppPointerAction::Down),
-        x if x == rt::AppPointerAction::Move as u32 => Some(rt::AppPointerAction::Move),
-        x if x == rt::AppPointerAction::Up as u32 => Some(rt::AppPointerAction::Up),
-        x if x == rt::AppPointerAction::Scroll as u32 => Some(rt::AppPointerAction::Scroll),
-        _ => None,
-    }
-}
-
 fn handle_pointer_down(state: &mut TerminalState, x: i32, y: i32) -> bool {
     if let Some(tab_index) = crate::render::tab_strip_hit_index(x, y) {
         if tab_index != state.active_tab && state.tabs[tab_index].occupied {
@@ -254,30 +244,5 @@ pub(crate) fn receive_terminal_message(
         Ok(None) => Ok(None),
         Err(rt::Error::NotFound) => Ok(Some(TerminalMessage::Closed)),
         Err(error) => Err(error),
-    }
-}
-
-pub(crate) fn poll_lifecycle(bootstrap: rt::Handle) -> rt::Result<bool> {
-    let mut message = RawMessage::empty(0);
-    match rt::channel_receive_nonblocking(bootstrap, &mut message) {
-        Ok(()) if message.tag == ControlTag::Lifecycle as u32 && message.word_count > 0 => Ok(
-            matches!(
-                lifecycle_event_from_word(message.words[0]),
-                LifecycleEvent::Restarting | LifecycleEvent::Stopped
-            ),
-        ),
-        Ok(()) => Ok(false),
-        Err(rt::Error::QueueEmpty) => Ok(false),
-        Err(error) => Err(error),
-    }
-}
-
-fn lifecycle_event_from_word(value: u64) -> LifecycleEvent {
-    match value as u32 {
-        x if x == LifecycleEvent::Starting as u32 => LifecycleEvent::Starting,
-        x if x == LifecycleEvent::Ready as u32 => LifecycleEvent::Ready,
-        x if x == LifecycleEvent::Failed as u32 => LifecycleEvent::Failed,
-        x if x == LifecycleEvent::Stopped as u32 => LifecycleEvent::Stopped,
-        _ => LifecycleEvent::Restarting,
     }
 }

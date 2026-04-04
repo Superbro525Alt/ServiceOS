@@ -3,7 +3,6 @@
 
 mod actions;
 mod control;
-mod lifecycle;
 mod render;
 mod state;
 
@@ -13,7 +12,6 @@ use rt::{ControlTag, RawMessage};
 
 use crate::actions::reload_catalog;
 use crate::control::{poll_control, ControlFlow};
-use crate::lifecycle::poll_lifecycle;
 use crate::render::render;
 use crate::state::{AppState, CatalogEntry, BUFFER_BYTES, BUFFER_HEIGHT, BUFFER_WIDTH, MAX_ENTRIES, MAX_STATUS_BYTES, SURFACE_BUFFER_SLOTS};
 
@@ -62,7 +60,7 @@ fn main() -> u64 {
     }
 
     loop {
-        match poll_lifecycle(bootstrap) {
+        match ui::poll_app_lifecycle(bootstrap) {
             Ok(true) => break,
             Ok(false) => {}
             Err(_) => return 0xf504,

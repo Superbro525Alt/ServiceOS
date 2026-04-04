@@ -44,7 +44,7 @@ pub(crate) fn poll_control(
             }
             Ok(()) if message.tag == AppControlTag::Pointer as u32 && message.word_count >= 5 => {
                 did_work = true;
-                let action = pointer_action_from_word(message.words[0]);
+                let action = ui::decode_app_pointer_action(message.words[0]);
                 let x = message.words[1] as i64 as i32;
                 let y = message.words[2] as i64 as i32;
                 let detail = message.words[4] as i64 as i32;
@@ -66,7 +66,7 @@ pub(crate) fn poll_control(
             }
             Ok(()) if message.tag == AppControlTag::Key as u32 && message.word_count >= 2 => {
                 did_work = true;
-                if matches!(key_action_from_word(message.words[0]), Some(AppKeyAction::Down)) {
+                if matches!(ui::decode_app_key_action(message.words[0]), Some(AppKeyAction::Down)) {
                     changed |= handle_key_down(
                         state,
                         storage_handle,
@@ -195,22 +195,4 @@ fn handle_key_down(
         _ => {}
     }
     Ok(false)
-}
-
-fn pointer_action_from_word(value: u64) -> Option<AppPointerAction> {
-    match value as u32 {
-        x if x == AppPointerAction::Down as u32 => Some(AppPointerAction::Down),
-        x if x == AppPointerAction::Move as u32 => Some(AppPointerAction::Move),
-        x if x == AppPointerAction::Up as u32 => Some(AppPointerAction::Up),
-        x if x == AppPointerAction::Scroll as u32 => Some(AppPointerAction::Scroll),
-        _ => None,
-    }
-}
-
-fn key_action_from_word(value: u64) -> Option<AppKeyAction> {
-    match value as u32 {
-        x if x == AppKeyAction::Down as u32 => Some(AppKeyAction::Down),
-        x if x == AppKeyAction::Up as u32 => Some(AppKeyAction::Up),
-        _ => None,
-    }
 }

@@ -117,6 +117,10 @@ pub(crate) fn instantiate_env(profile: Profile) -> EnvSlot {
     env
 }
 
+pub(crate) fn sensitive_capabilities(bits: u32) -> u32 {
+    bits & (rt::runtime_capability::NETWORK | rt::runtime_capability::GRAPHICS | rt::runtime_capability::AUDIO)
+}
+
 pub(crate) fn release_run_slot(run: &mut RunSlot) {
     if run.task_handle != rt::INVALID_HANDLE {
         let _ = rt::handle_close(run.task_handle);

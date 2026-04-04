@@ -2,9 +2,9 @@ use serviceos_userspace_runtime as rt;
 use rt::{ControlTag, LifecycleEvent, RawMessage, ServiceId};
 
 use crate::{
-    consts::{MAX_ENVS, MAX_RUNS},
+    consts::{MAX_AUDIT, MAX_ENVS, MAX_RUNS},
     protocol::{handle_public_request, handle_run_session_request, poll_run_exits},
-    types::{EnvSlot, RunSlot},
+    types::{AuditSlot, EnvSlot, RunSlot},
     util::read_profile,
 };
 
@@ -41,6 +41,8 @@ pub(crate) fn run() -> u64 {
 
     let mut envs = [EnvSlot::empty(); MAX_ENVS];
     let mut runs = [RunSlot::empty(); MAX_RUNS];
+    let mut audits = [AuditSlot::empty(); MAX_AUDIT];
+    let mut next_audit_sequence = 1u32;
 
     loop {
         if poll_lifecycle(bootstrap).unwrap_or(false) {
@@ -65,6 +67,8 @@ pub(crate) fn run() -> u64 {
                     profile,
                     &mut envs,
                     &mut runs,
+                    &mut audits,
+                    &mut next_audit_sequence,
                     &request,
                 )
                 .is_err()

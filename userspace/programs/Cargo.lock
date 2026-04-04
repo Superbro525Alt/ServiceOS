@@ -197,6 +197,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "serviceos-security-service"
+version = "0.1.0"
+dependencies = [
+ "serviceos-userspace-runtime",
+]
+
+[[package]]
 name = "serviceos-session-service"
 version = "0.1.0"
 dependencies = [

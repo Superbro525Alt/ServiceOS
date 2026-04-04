@@ -50,8 +50,8 @@ It has:
 
 - lookup rights for `console-service`, `log-service`, `config-service`,
   `storage-service`, `status-service`, `package-service`, `network-service`,
-  `audio-service`, `runtime-service`, `developer-service`, `graphics-service`,
-  `session-service`, and `desktop-shell-service`
+  `audio-service`, `runtime-service`, `developer-service`, `security-service`,
+  `graphics-service`, `session-service`, and `desktop-shell-service`
 - its own bootstrap/control channel back to the root manager
 - manager authorization for service restart and transient tool launch
 
@@ -130,6 +130,14 @@ Current built-in commands:
 - `runtime runs`
 - `runtime launch <env-id> <inspect|env|mounts|cat> [guest-path]`
 - `runtime destroy <env-id>`
+- `security apps`
+- `security app <name> [allow|block|default]`
+- `security runtimes`
+- `security runtime <env-id> [approve|deny|reset]`
+- `security repos`
+- `security package <name>`
+- `security workspace <id>`
+- `security audit [count]`
 - `dev toolchains`
 - `dev toolchain <id>`
 - `dev workspaces`
@@ -156,6 +164,12 @@ Runtime commands call the real `runtime-service`.
 The shell can create environments, inspect mapped resources, and launch
 runtime-hosted workloads, but it does not gain ambient foreign-runtime power
 or direct storage-root access.
+
+Security commands call the real `security-service`, `runtime-service`, and
+`package-service`.
+The shell can review native app launch policy, inspect runtime approval state,
+inspect repository/package trust state, and review security audit history, but
+it does not bypass manager launch checks or package trust enforcement.
 
 Developer commands call the real `developer-service`.
 The shell can inspect packaged toolchains and workspaces, submit build jobs,

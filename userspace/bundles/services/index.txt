@@ -4,6 +4,7 @@ services/log-service/manifest.svc
 services/network-service/manifest.svc
 services/audio-service/manifest.svc
 services/clipboard-service/manifest.svc
+services/security-service/manifest.svc
 services/graphics-service/manifest.svc
 services/session-service/manifest.svc
 services/terminal-service/manifest.svc

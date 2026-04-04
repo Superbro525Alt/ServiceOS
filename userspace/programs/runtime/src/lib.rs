@@ -21,13 +21,14 @@ pub use serviceos_abi::{
     PACKET_INTERFACE_FLAG_NONBLOCK, PacketInterfaceBackend, PacketInterfaceInfo,
     PacketInterfaceLinkState, PackageChannel, PackageMaintenanceAction, PackageRepositorySyncState,
     PackageRepositoryTrustMode, PackageRing, PackageStatus, PackageTag, PackageTrustState,
+    PermissionPolicyState, SecurityAuditKind, SecurityStatus, SecurityTag,
     RawMessage, ServiceId, ServiceImageId, DeveloperArtifactFormat, DeveloperJobState, DeveloperStatus,
     DeveloperTag, DeveloperTarget, DeveloperToolchainState, RuntimeEnvState, RuntimeKind,
     RuntimeRunState, RuntimeStatus, RuntimeTag, RuntimeWorkloadKind, SessionInputSource,
     SessionStatus, SessionTag, StatusTag, StorageEntryKind, StorageStatus, StorageTag, SurfaceTag,
     SyscallErrorCode, SyscallNumber, TaskStateCode, TaskStatus, TerminalStatus, TerminalTag,
 };
-pub use serviceos_abi::{audio_capability, input_capability, rights, runtime_capability};
+pub use serviceos_abi::{app_permission, audio_capability, input_capability, rights, runtime_capability};
 
 mod app_control;
 mod audio;
@@ -50,6 +51,7 @@ mod network;
 mod package;
 mod relay;
 mod session;
+mod security;
 mod status;
 mod storage;
 mod terminal;
@@ -76,6 +78,7 @@ pub use network::*;
 pub use package::*;
 pub use relay::*;
 pub use session::*;
+pub use security::*;
 pub use status::*;
 pub use storage::*;
 pub use terminal::*;
@@ -255,6 +258,7 @@ fn service_id_from_word(value: u64) -> ServiceId {
         x if x == ServiceId::Runtime as u32 => ServiceId::Runtime,
         x if x == ServiceId::Developer as u32 => ServiceId::Developer,
         x if x == ServiceId::Clipboard as u32 => ServiceId::Clipboard,
+        x if x == ServiceId::Security as u32 => ServiceId::Security,
         _ => ServiceId::RootManager,
     }
 }
@@ -289,6 +293,7 @@ fn domain_from_word(value: u64) -> LogDomain {
         x if x == LogDomain::Audio as u32 => LogDomain::Audio,
         x if x == LogDomain::Runtime as u32 => LogDomain::Runtime,
         x if x == LogDomain::Developer as u32 => LogDomain::Developer,
+        x if x == LogDomain::Security as u32 => LogDomain::Security,
         _ => LogDomain::Service,
     }
 }
@@ -356,6 +361,10 @@ fn event_from_word(value: u64) -> LogEvent {
         x if x == LogEvent::DeveloperBuildFinished as u32 => LogEvent::DeveloperBuildFinished,
         x if x == LogEvent::DeveloperBuildFailed as u32 => LogEvent::DeveloperBuildFailed,
         x if x == LogEvent::DeveloperArtifactOpened as u32 => LogEvent::DeveloperArtifactOpened,
+        x if x == LogEvent::SecurityPolicyChanged as u32 => LogEvent::SecurityPolicyChanged,
+        x if x == LogEvent::SecurityLaunchDenied as u32 => LogEvent::SecurityLaunchDenied,
+        x if x == LogEvent::RuntimeApprovalPending as u32 => LogEvent::RuntimeApprovalPending,
+        x if x == LogEvent::RuntimeApprovalChanged as u32 => LogEvent::RuntimeApprovalChanged,
         _ => LogEvent::LookupGranted,
     }
 }
@@ -377,6 +386,19 @@ fn manager_status_from_word(value: u64) -> ManagerStatus {
         x if x == ManagerStatus::Busy as u32 => ManagerStatus::Busy,
         x if x == ManagerStatus::Failed as u32 => ManagerStatus::Failed,
         _ => ManagerStatus::Busy,
+    }
+}
+
+fn security_audit_kind_from_word(value: u64) -> SecurityAuditKind {
+    match value as u32 {
+        x if x == SecurityAuditKind::LaunchDenied as u32 => SecurityAuditKind::LaunchDenied,
+        x if x == SecurityAuditKind::RuntimeApprovalRequested as u32 => {
+            SecurityAuditKind::RuntimeApprovalRequested
+        }
+        x if x == SecurityAuditKind::RuntimeApprovalChanged as u32 => {
+            SecurityAuditKind::RuntimeApprovalChanged
+        }
+        _ => SecurityAuditKind::PolicyChanged,
     }
 }
 
@@ -523,6 +545,7 @@ fn runtime_status_from_word(value: u64) -> RuntimeStatus {
         x if x == RuntimeStatus::InvalidPath as u32 => RuntimeStatus::InvalidPath,
         x if x == RuntimeStatus::Unsupported as u32 => RuntimeStatus::Unsupported,
         x if x == RuntimeStatus::Closed as u32 => RuntimeStatus::Closed,
+        x if x == RuntimeStatus::PendingApproval as u32 => RuntimeStatus::PendingApproval,
         _ => RuntimeStatus::Busy,
     }
 }
@@ -535,6 +558,7 @@ fn runtime_status_error(status: RuntimeStatus) -> Error {
         RuntimeStatus::Denied => Error::PermissionDenied,
         RuntimeStatus::InvalidPath => Error::InvalidArgument,
         RuntimeStatus::Unsupported => Error::Unsupported,
+        RuntimeStatus::PendingApproval => Error::Busy,
     }
 }
 
@@ -549,6 +573,8 @@ fn runtime_env_state_from_word(value: u64) -> RuntimeEnvState {
     match value as u32 {
         x if x == RuntimeEnvState::Busy as u32 => RuntimeEnvState::Busy,
         x if x == RuntimeEnvState::Destroyed as u32 => RuntimeEnvState::Destroyed,
+        x if x == RuntimeEnvState::PendingApproval as u32 => RuntimeEnvState::PendingApproval,
+        x if x == RuntimeEnvState::Denied as u32 => RuntimeEnvState::Denied,
         _ => RuntimeEnvState::Ready,
     }
 }

@@ -464,6 +464,8 @@ fn runtime_env_state_name(state: rt::RuntimeEnvState) -> &'static str {
         rt::RuntimeEnvState::Ready => "ready",
         rt::RuntimeEnvState::Busy => "busy",
         rt::RuntimeEnvState::Destroyed => "destroyed",
+        rt::RuntimeEnvState::PendingApproval => "pending-approval",
+        rt::RuntimeEnvState::Denied => "denied",
     }
 }
 
@@ -498,6 +500,7 @@ fn runtime_status_name(status: rt::RuntimeStatus) -> &'static str {
         rt::RuntimeStatus::InvalidPath => "invalid-path",
         rt::RuntimeStatus::Unsupported => "unsupported",
         rt::RuntimeStatus::Closed => "closed",
+        rt::RuntimeStatus::PendingApproval => "pending-approval",
     }
 }
 

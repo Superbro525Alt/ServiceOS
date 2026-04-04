@@ -6,6 +6,7 @@ mod graphics;
 mod network;
 mod package;
 mod runtime;
+mod security;
 
 use serviceos_userspace_runtime as rt;
 
@@ -82,6 +83,7 @@ pub(crate) fn execute_command(
         "dev" => developer::cmd_dev(bootstrap, output, parts),
         "pkg" => package::cmd_pkg(bootstrap, output, parts),
         "runtime" => runtime::cmd_runtime(bootstrap, output, parts),
+        "security" => security::cmd_security(bootstrap, output, parts),
         "run" => match parts.next() {
             Some("sysinfo") => core::cmd_run_sysinfo(bootstrap, output),
             Some("image") => match parts.next() {

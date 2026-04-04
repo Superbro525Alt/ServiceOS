@@ -16,3 +16,4 @@ lookup=desktop-shell-service:send
 lookup=audio-service:send
 lookup=runtime-service:send
 lookup=developer-service:send
+lookup=security-service:send

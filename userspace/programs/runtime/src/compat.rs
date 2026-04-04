@@ -2,8 +2,9 @@ use crate::{
     channel_create, channel_receive_blocking, channel_send, handle_close, handle_duplicate, pack_bytes,
     runtime_env_state_from_word, runtime_kind_from_word, runtime_run_state_from_word,
     runtime_status_error, runtime_status_from_word, runtime_workload_kind_from_word, rights,
-    unpack_bytes, Error, Handle, RawMessage, Result, RuntimeEnvInfo, RuntimeKind, RuntimeRunInfo,
-    RuntimeStatus, RuntimeTag, RuntimeWorkloadKind, IPC_MAX_WORDS,
+    security_audit_kind_from_word, unpack_bytes, Error, Handle, PermissionPolicyState, RawMessage,
+    Result, RuntimeAuditInfo, RuntimeEnvInfo, RuntimeKind, RuntimeRunInfo, RuntimeStatus,
+    RuntimeTag, RuntimeWorkloadKind, IPC_MAX_WORDS,
 };
 
 pub fn runtime_env_create(runtime_handle: Handle, kind: RuntimeKind) -> Result<u32> {
@@ -511,6 +512,64 @@ pub fn runtime_session_read_file(
             unpack_bytes(&response.words[2..response.word_count as usize], byte_len, buffer)?;
             Ok(byte_len)
         }
+        status => Err(runtime_status_error(status)),
+    }
+}
+
+pub fn runtime_env_decide(
+    runtime_handle: Handle,
+    env_id: u32,
+    policy: PermissionPolicyState,
+) -> Result<()> {
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(RuntimeTag::EnvDecisionRequest as u32);
+    request.word_count = 2;
+    request.words[0] = env_id as u64;
+    request.words[1] = policy as u32 as u64;
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(runtime_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != RuntimeTag::EnvDecisionReply as u32 || response.word_count < 1 {
+        return Err(Error::InvalidArgument);
+    }
+    match runtime_status_from_word(response.words[0]) {
+        RuntimeStatus::Ok => Ok(()),
+        status => Err(runtime_status_error(status)),
+    }
+}
+
+pub fn runtime_audit_list(runtime_handle: Handle, index: usize) -> Result<Option<RuntimeAuditInfo>> {
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(RuntimeTag::AuditListRequest as u32);
+    request.word_count = 1;
+    request.words[0] = index as u64;
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(runtime_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != RuntimeTag::AuditListReply as u32 || response.word_count < 6 {
+        return Err(Error::InvalidArgument);
+    }
+    match runtime_status_from_word(response.words[0]) {
+        RuntimeStatus::Ok => Ok(Some(RuntimeAuditInfo {
+            sequence: response.words[1] as u32,
+            kind: security_audit_kind_from_word(response.words[2]),
+            env_id: response.words[3] as u32,
+            capabilities: response.words[4] as u32,
+            detail: response.words[5] >> 32,
+        })),
+        RuntimeStatus::NotFound => Ok(None),
         status => Err(runtime_status_error(status)),
     }
 }

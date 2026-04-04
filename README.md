@@ -46,6 +46,8 @@ Current userspace platform:
   install policy surfaces
 - package-delivered developer tooling foundation with toolchain, workspace, and
   cross-target build workflows
+- security review foundations for native app launch policy, runtime approval
+  state, package/repository trust inspection, and security audit history
 - networking service with dynamic IPv4, DNS-backed resolution, ICMP, and
   outbound TCP stream contracts
 - audio service with explicit endpoint and playback-stream contracts
@@ -102,7 +104,7 @@ The repository currently supports a real end-to-end platform flow:
    manifests.
 5. Foundational and platform services come up:
    storage, config, log, console, status, package, network, audio, graphics,
-   session, shell, and desktop shell.
+   session, security, shell, and desktop shell.
 6. The desktop shell launches initial graphical apps through real service
    contracts.
 

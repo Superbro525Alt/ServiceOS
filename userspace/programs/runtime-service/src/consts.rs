@@ -7,3 +7,4 @@ pub(crate) const MAX_STORAGE_PATH: usize = serviceos_bundle::BOOT_STORE_PATH_MAX
 pub(crate) const MAX_VAR_KEY: usize = 24;
 pub(crate) const MAX_VAR_VALUE: usize = 64;
 pub(crate) const MAX_PROFILE_BYTES: usize = 512;
+pub(crate) const MAX_AUDIT: usize = 16;

@@ -172,6 +172,7 @@ pub enum ServiceImageId {
     CrossBuilderTool = 24,
     ClipboardService = 25,
     SoftwareCenterApp = 26,
+    SecurityService = 27,
 }
 
 #[repr(u32)]
@@ -195,6 +196,7 @@ pub enum ServiceId {
     Runtime = 16,
     Developer = 17,
     Clipboard = 18,
+    Security = 19,
 }
 
 #[repr(u32)]
@@ -272,6 +274,7 @@ pub enum LogDomain {
     Audio = 17,
     Runtime = 18,
     Developer = 19,
+    Security = 20,
 }
 
 #[repr(u32)]
@@ -342,6 +345,10 @@ pub enum LogEvent {
     PackageRepositorySyncFailed = 63,
     PackageRepairCompleted = 64,
     PackageGarbageCollected = 65,
+    SecurityPolicyChanged = 66,
+    SecurityLaunchDenied = 67,
+    RuntimeApprovalPending = 68,
+    RuntimeApprovalChanged = 69,
 }
 
 #[repr(u32)]
@@ -463,6 +470,12 @@ pub enum ManagerTag {
     LaunchImageReply = 0x60d,
     LaunchStoredImageRequest = 0x60e,
     LaunchStoredImageReply = 0x60f,
+    LaunchPolicyListRequest = 0x610,
+    LaunchPolicyListReply = 0x611,
+    LaunchPolicySetRequest = 0x612,
+    LaunchPolicySetReply = 0x613,
+    LaunchAuditListRequest = 0x614,
+    LaunchAuditListReply = 0x615,
 }
 
 #[repr(u32)]
@@ -554,6 +567,56 @@ pub enum PackageTag {
 
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SecurityTag {
+    PolicyListRequest = 0xe00,
+    PolicyListReply = 0xe01,
+    PolicyInfoRequest = 0xe02,
+    PolicyInfoReply = 0xe03,
+    PolicySetRequest = 0xe04,
+    PolicySetReply = 0xe05,
+    AuditListRequest = 0xe06,
+    AuditListReply = 0xe07,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SecurityStatus {
+    Ok = 0,
+    NotFound = 1,
+    Busy = 2,
+    Denied = 3,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PermissionPolicyState {
+    DefaultAllow = 1,
+    Allowed = 2,
+    Blocked = 3,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SecurityAuditKind {
+    PolicyChanged = 1,
+    LaunchDenied = 2,
+    RuntimeApprovalRequested = 3,
+    RuntimeApprovalChanged = 4,
+}
+
+pub mod app_permission {
+    pub const CONFIG: u32 = 1 << 0;
+    pub const STORAGE: u32 = 1 << 1;
+    pub const STATUS: u32 = 1 << 2;
+    pub const PACKAGE: u32 = 1 << 3;
+    pub const NETWORK: u32 = 1 << 4;
+    pub const AUDIO: u32 = 1 << 5;
+    pub const TERMINAL: u32 = 1 << 6;
+    pub const CLIPBOARD: u32 = 1 << 7;
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RuntimeTag {
     EnvListRequest = 0xc00,
     EnvListReply = 0xc01,
@@ -581,6 +644,10 @@ pub enum RuntimeTag {
     SessionVarListReply = 0xc17,
     SessionReadFileRequest = 0xc18,
     SessionReadFileReply = 0xc19,
+    EnvDecisionRequest = 0xc1a,
+    EnvDecisionReply = 0xc1b,
+    AuditListRequest = 0xc1c,
+    AuditListReply = 0xc1d,
 }
 
 #[repr(u32)]
@@ -659,6 +726,7 @@ pub enum RuntimeStatus {
     InvalidPath = 4,
     Unsupported = 5,
     Closed = 6,
+    PendingApproval = 7,
 }
 
 #[repr(u32)]
@@ -674,6 +742,8 @@ pub enum RuntimeEnvState {
     Ready = 1,
     Busy = 2,
     Destroyed = 3,
+    PendingApproval = 4,
+    Denied = 5,
 }
 
 #[repr(u32)]

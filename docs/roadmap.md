@@ -195,14 +195,14 @@
 
 | Status | Area | Work Item |
 |---|---|---|
-| &#x2B1C; | Permissions | Add clearer app permissions and capability review surfaces for native apps, runtime-hosted apps, and developer tools |
-| &#x2B1C; | Runtime permissions | Add runtime permission prompts/policy for hosted environments and compatibility workloads without replacing real capability enforcement with fake prompts |
-| &#x2B1C; | Trust / signing UX | Add trust/signing UX for packages, runtimes, repositories, and developer artifacts with honest visibility into what is actually enforced |
+| &#x2705; | Permissions | Add clearer app permissions and capability review surfaces for native apps, runtime-hosted apps, and developer tools |
+| &#x2B1C; | Runtime permissions | Extend the current runtime pending-approval state, review/editing, and audit path into actual desktop prompt UX and packaged runtime profiles that request sensitive capabilities by default |
+| &#x2B1C; | Trust / signing UX | Extend the current package/repository trust UI and operator inspection into runtime/developer-artifact trust surfacing plus stronger cryptographic signing and trust-root enforcement |
 | &#x2705; | Package trust UI | Add package trust UI showing provenance, trust/signing state, update source, and rollback provenance in both terminal and desktop flows |
-| &#x2B1C; | Desktop security surfaces | Add desktop security surfaces for privileged actions, permission review, trust warnings, and authority escalation flows |
-| &#x2B1C; | Security UX | Add consistent denial/error UX and operator diagnostics when capability checks, package trust checks, or runtime policy checks fail |
-| &#x2B1C; | Security policy | Add stronger permission editing/review flows, revocation UX, and capability grant history without moving policy into the shell or UI code |
-| &#x2B1C; | Security foundations | Add stronger signing/key management, trust roots, sandbox policy expansion, and audit support under the current permission and trust UX surfaces |
+| &#x2B1C; | Desktop security surfaces | Extend the current settings-based security review page into broader privileged-action, trust-warning, and authority-escalation flows across software installation, runtime launch, and document/open flows |
+| &#x2B1C; | Security UX | Extend the current shell denial messages, manager launch-denied status, and audit inspection into broader desktop-facing denial/error explanations across apps and runtime-hosted workloads |
+| &#x2705; | Security policy | Add stronger permission editing/review flows, revocation UX, and capability grant history without moving policy into the shell or UI code |
+| &#x2B1C; | Security foundations | Build on the current security audit and runtime approval foundation with stronger signing/key management, trust roots, and broader sandbox policy expansion |
 
 ## 15. Software Distribution and App Ecosystem
 

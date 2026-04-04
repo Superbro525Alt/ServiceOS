@@ -20,6 +20,8 @@ root-manager
        depends on log-service
        consumes one startup-granted audio-endpoint capability
   -> clipboard-service
+  -> security-service
+       depends on storage-service, log-service
   -> graphics-service
        depends on log-service
        consumes one startup-granted display-output capability
@@ -145,6 +147,7 @@ Current lookup permissions:
   - `session-service` with send-only rights
   - `desktop-shell-service` with send-only rights
   - `audio-service` with send-only rights
+  - `security-service` with send-only rights
 - `package-service`
   - `storage-service` with send-only rights
 - `developer-service`
@@ -231,6 +234,16 @@ Current lookup permissions:
 - gives desktop apps a shared clipboard path without pushing clipboard policy
   into `desktop-shell-service` or per-app local state
 
+### `security-service`
+
+- owns native app launch-policy review, override, and audit state in userspace
+- persists native app policy overrides under the writable `state/` namespace
+- exposes real policy and audit inspection through a stable service contract
+- does not replace manager enforcement; `root-manager` still owns the actual
+  launch decision for native images
+- gives shell and desktop clients a shared review/edit surface without moving
+  permission policy into UI code
+
 ### `graphics-service`
 
 - owns display-output state in userspace
@@ -312,6 +325,7 @@ Current lookup permissions:
 - inspects networking and audio state through `network-service` and
   `audio-service`
 - inspects and drives compatibility/runtime state through `runtime-service`
+- inspects and edits native app launch policy through `security-service`
 - inspects outputs, surfaces, and sessions through `graphics-service` and
   `session-service`
 - launches transient tools through the manager rather than direct shell power
@@ -323,6 +337,9 @@ Current lookup permissions:
 - owns runtime environment creation, inspection, launch, and teardown
 - maps guest-visible runtime paths onto explicit `storage-service` resources
 - injects runtime variables from packaged runtime metadata
+- marks environments that request sensitive runtime capabilities as
+  `pending-approval` or `denied` instead of pretending hosted workloads are
+  ambiently trusted
 - launches runtime-hosted workloads through the existing root-manager tool path
 - keeps compatibility/runtime policy in userspace instead of leaking it into
   native app semantics

@@ -900,6 +900,7 @@ fn service_id_from_word(value: u64) -> ServiceId {
         x if x == ServiceId::Runtime as u32 => ServiceId::Runtime,
         x if x == ServiceId::Developer as u32 => ServiceId::Developer,
         x if x == ServiceId::Clipboard as u32 => ServiceId::Clipboard,
+        x if x == ServiceId::Security as u32 => ServiceId::Security,
         _ => ServiceId::RootManager,
     }
 }
@@ -934,6 +935,7 @@ fn domain_from_word(value: u64) -> LogDomain {
         x if x == LogDomain::Audio as u32 => LogDomain::Audio,
         x if x == LogDomain::Runtime as u32 => LogDomain::Runtime,
         x if x == LogDomain::Developer as u32 => LogDomain::Developer,
+        x if x == LogDomain::Security as u32 => LogDomain::Security,
         _ => LogDomain::Service,
     }
 }
@@ -998,6 +1000,10 @@ fn event_from_word(value: u64) -> LogEvent {
         x if x == LogEvent::DeveloperBuildFinished as u32 => LogEvent::DeveloperBuildFinished,
         x if x == LogEvent::DeveloperBuildFailed as u32 => LogEvent::DeveloperBuildFailed,
         x if x == LogEvent::DeveloperArtifactOpened as u32 => LogEvent::DeveloperArtifactOpened,
+        x if x == LogEvent::SecurityPolicyChanged as u32 => LogEvent::SecurityPolicyChanged,
+        x if x == LogEvent::SecurityLaunchDenied as u32 => LogEvent::SecurityLaunchDenied,
+        x if x == LogEvent::RuntimeApprovalPending as u32 => LogEvent::RuntimeApprovalPending,
+        x if x == LogEvent::RuntimeApprovalChanged as u32 => LogEvent::RuntimeApprovalChanged,
         _ => LogEvent::LookupGranted,
     }
 }
@@ -1032,6 +1038,7 @@ fn service_name(service_id: ServiceId) -> &'static str {
         ServiceId::Runtime => "runtime-service",
         ServiceId::Developer => "developer-service",
         ServiceId::Clipboard => "clipboard-service",
+        ServiceId::Security => "security-service",
     }
 }
 
@@ -1066,6 +1073,7 @@ fn domain_name(domain: LogDomain) -> &'static str {
         LogDomain::Audio => "audio",
         LogDomain::Runtime => "runtime",
         LogDomain::Developer => "developer",
+        LogDomain::Security => "security",
     }
 }
 
@@ -1136,6 +1144,10 @@ fn event_name(event: LogEvent) -> &'static str {
         LogEvent::DeveloperBuildFinished => "developer-build-finished",
         LogEvent::DeveloperBuildFailed => "developer-build-failed",
         LogEvent::DeveloperArtifactOpened => "developer-artifact-opened",
+        LogEvent::SecurityPolicyChanged => "security-policy-changed",
+        LogEvent::SecurityLaunchDenied => "security-launch-denied",
+        LogEvent::RuntimeApprovalPending => "runtime-approval-pending",
+        LogEvent::RuntimeApprovalChanged => "runtime-approval-changed",
     }
 }
 

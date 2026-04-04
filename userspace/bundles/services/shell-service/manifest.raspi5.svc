@@ -9,3 +9,4 @@ lookup=config-service:send
 lookup=storage-service:send
 lookup=status-service:send
 lookup=package-service:send
+lookup=security-service:send

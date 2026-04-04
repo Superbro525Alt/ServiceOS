@@ -1,5 +1,5 @@
 use serviceos_userspace_runtime as rt;
-use rt::{RuntimeEnvState, RuntimeKind, RuntimeRunState, RuntimeWorkloadKind};
+use rt::{PermissionPolicyState, RuntimeEnvState, RuntimeKind, RuntimeRunState, RuntimeWorkloadKind, SecurityAuditKind};
 
 use crate::consts::{
     MAX_GUEST_PATH, MAX_MOUNTS, MAX_STORAGE_PATH, MAX_VARS, MAX_VAR_KEY, MAX_VAR_VALUE,
@@ -136,6 +136,31 @@ impl RunSlot {
             task_handle: rt::INVALID_HANDLE,
             session_handle: rt::INVALID_HANDLE,
             exit_code: 0,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct AuditSlot {
+    pub(crate) occupied: bool,
+    pub(crate) sequence: u32,
+    pub(crate) kind: SecurityAuditKind,
+    pub(crate) env_id: u32,
+    pub(crate) capabilities: u32,
+    pub(crate) detail: u64,
+    pub(crate) policy: PermissionPolicyState,
+}
+
+impl AuditSlot {
+    pub(crate) const fn empty() -> Self {
+        Self {
+            occupied: false,
+            sequence: 0,
+            kind: SecurityAuditKind::RuntimeApprovalRequested,
+            env_id: 0,
+            capabilities: 0,
+            detail: 0,
+            policy: PermissionPolicyState::DefaultAllow,
         }
     }
 }

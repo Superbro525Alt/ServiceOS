@@ -218,6 +218,7 @@ pub(crate) fn service_id_from_word(value: u64) -> ServiceId {
         x if x == ServiceId::Runtime as u32 => ServiceId::Runtime,
         x if x == ServiceId::Developer as u32 => ServiceId::Developer,
         x if x == ServiceId::Clipboard as u32 => ServiceId::Clipboard,
+        x if x == ServiceId::Security as u32 => ServiceId::Security,
         _ => ServiceId::RootManager,
     }
 }
@@ -251,6 +252,7 @@ pub(crate) fn image_id_from_word(value: u64) -> ServiceImageId {
         x if x == ServiceImageId::CrossBuilderTool as u32 => ServiceImageId::CrossBuilderTool,
         x if x == ServiceImageId::ClipboardService as u32 => ServiceImageId::ClipboardService,
         x if x == ServiceImageId::SoftwareCenterApp as u32 => ServiceImageId::SoftwareCenterApp,
+        x if x == ServiceImageId::SecurityService as u32 => ServiceImageId::SecurityService,
         _ => ServiceImageId::RootManager,
     }
 }
@@ -295,6 +297,7 @@ pub(crate) fn service_name(service_id: ServiceId) -> &'static str {
         ServiceId::Runtime => "runtime-service",
         ServiceId::Developer => "developer-service",
         ServiceId::Clipboard => "clipboard-service",
+        ServiceId::Security => "security-service",
     }
 }
 
@@ -375,6 +378,10 @@ pub(crate) fn event_name(event: LogEvent) -> &'static str {
         LogEvent::DeveloperBuildFinished => "developer-build-finished",
         LogEvent::DeveloperBuildFailed => "developer-build-failed",
         LogEvent::DeveloperArtifactOpened => "developer-artifact-opened",
+        LogEvent::SecurityPolicyChanged => "security-policy-changed",
+        LogEvent::SecurityLaunchDenied => "security-launch-denied",
+        LogEvent::RuntimeApprovalPending => "runtime-approval-pending",
+        LogEvent::RuntimeApprovalChanged => "runtime-approval-changed",
     }
 }
 

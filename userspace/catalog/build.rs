@@ -124,6 +124,13 @@ const PROGRAMS: &[Program] = &[
         service_id: 18,
     },
     Program {
+        package: "serviceos-security-service",
+        bin_name: "serviceos-security-service",
+        image_id: 27,
+        service_path: "services/security-service/program.img",
+        service_id: 19,
+    },
+    Program {
         package: "serviceos-graphics-service",
         bin_name: "serviceos-graphics-service",
         image_id: 12,

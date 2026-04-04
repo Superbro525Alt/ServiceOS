@@ -1118,6 +1118,7 @@ fn service_label(service_id: ServiceId) -> &'static str {
         ServiceId::Runtime => "runtime-service",
         ServiceId::Developer => "developer-service",
         ServiceId::Clipboard => "clipboard-service",
+        ServiceId::Security => "security-service",
     }
 }
 

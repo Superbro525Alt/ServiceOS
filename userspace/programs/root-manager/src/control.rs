@@ -2,7 +2,8 @@ use serviceos_bundle::{BOOT_STORE_PATH_MAX, parse_manifest};
 use serviceos_userspace_runtime as rt;
 use rt::{
     ControlTag, LifecycleEvent, LogEvent, LogSeverity, LookupStatus, ManagerAction,
-    ManagerStatus, ManagerTag, RawMessage, ServiceId, ServiceImageId, TaskStateCode,
+    ManagerStatus, ManagerTag, PermissionPolicyState, RawMessage, SecurityStatus, SecurityTag,
+    ServiceId, ServiceImageId, TaskStateCode,
     IPC_MAX_HANDLES, IPC_MAX_WORDS, rights,
 };
 
@@ -352,6 +353,20 @@ fn handle_launch_request(
     let image_id = image_id_from_word(message.words[0]);
     if !launch_is_authorized(caller, image_id) {
         reply.words[0] = ManagerStatus::NotFound as u32 as u64;
+        let result = rt::channel_send(slots[service_index].control_handle, &reply);
+        close_message_handles(message);
+        return result;
+    }
+    if !launch_policy_allows(slots, service_count, image_id) {
+        reply.words[0] = ManagerStatus::Denied as u32 as u64;
+        let _ = emit_manager_event(
+            slots,
+            service_count,
+            LogSeverity::Warn,
+            LogEvent::SecurityLaunchDenied,
+            caller,
+            image_id as u32 as u64,
+        );
         let result = rt::channel_send(slots[service_index].control_handle, &reply);
         close_message_handles(message);
         return result;
@@ -892,6 +907,22 @@ fn append_launch_grants(
                 startup,
                 handle_index,
             )?;
+            append_service_launch_handle(
+                slots,
+                service_count,
+                ServiceId::Runtime,
+                rights::SEND | rights::TRANSFER,
+                startup,
+                handle_index,
+            )?;
+            append_service_launch_handle(
+                slots,
+                service_count,
+                ServiceId::Security,
+                rights::SEND | rights::TRANSFER,
+                startup,
+                handle_index,
+            )?;
         }
         ServiceImageId::FilesApp => {
             append_service_launch_handle(
@@ -953,6 +984,50 @@ fn append_launch_grants(
     }
 
     Ok(())
+}
+
+fn launch_policy_allows(
+    slots: &[ServiceSlot; MAX_SERVICE_SLOTS],
+    service_count: usize,
+    image_id: ServiceImageId,
+) -> bool {
+    let Some(index) = find_slot_index_checked(slots, service_count, ServiceId::Security) else {
+        return true;
+    };
+    let security = &slots[index];
+    if security.phase != ServicePhase::Ready || security.public_handle == rt::INVALID_HANDLE {
+        return true;
+    }
+
+    let Ok(reply) = rt::channel_create() else {
+        return true;
+    };
+    let mut request = RawMessage::empty(SecurityTag::PolicyInfoRequest as u32);
+    request.word_count = 1;
+    request.words[0] = image_id as u32 as u64;
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    if rt::channel_send(security.public_handle, &request).is_err() {
+        let _ = rt::handle_close(reply.first);
+        let _ = rt::handle_close(reply.second);
+        return true;
+    }
+    let _ = rt::handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    let result = match rt::channel_receive_blocking(reply.first, &mut response) {
+        Ok(())
+            if response.tag == SecurityTag::PolicyInfoReply as u32
+                && response.word_count >= 4
+                && response.words[0] == SecurityStatus::Ok as u32 as u64 =>
+        {
+            response.words[3] != PermissionPolicyState::Blocked as u32 as u64
+        }
+        _ => true,
+    };
+    let _ = rt::handle_close(reply.first);
+    result
 }
 
 fn append_dynamic_launch_grants(

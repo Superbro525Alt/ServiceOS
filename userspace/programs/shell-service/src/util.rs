@@ -61,6 +61,14 @@ runtime vars <env-id>: list runtime environment variables\r\n\
 runtime runs: list runtime-backed workloads\r\n\
 runtime launch <env-id> <inspect|env|mounts|cat> [path]: launch a runtime-backed workload\r\n\
 runtime destroy <env-id>: destroy an idle runtime environment\r\n\
+security apps: list native app launch policies and sensitive capability groups\r\n\
+security app <name> [allow|block|default]: review or override one native app policy\r\n\
+security runtimes: list runtime environments and their effective authority state\r\n\
+security runtime <env-id> [approve|deny|reset]: review or change one runtime approval state\r\n\
+security repos: list repository trust and sync state\r\n\
+security package <name>: inspect package trust/provenance state\r\n\
+security workspace <id>: inspect developer workspace authority metadata\r\n\
+security audit [count]: show recent native/runtime security audit records\r\n\
 dev toolchains: list developer toolchains and target support\r\n\
 dev toolchain <id>: show one toolchain and its SDK root\r\n\
 dev workspaces: list packaged developer workspaces\r\n\
@@ -174,6 +182,7 @@ pub(crate) fn parse_service_name(name: &str) -> Option<ServiceId> {
         "audio" | "audio-service" => Some(ServiceId::Audio),
         "runtime" | "runtime-service" => Some(ServiceId::Runtime),
         "developer" | "developer-service" => Some(ServiceId::Developer),
+        "security" | "security-service" => Some(ServiceId::Security),
         _ => None,
     }
 }
@@ -209,6 +218,7 @@ pub(crate) fn service_name(service_id: ServiceId) -> &'static str {
         ServiceId::Runtime => "runtime-service",
         ServiceId::Developer => "developer-service",
         ServiceId::Clipboard => "clipboard-service",
+        ServiceId::Security => "security-service",
     }
 }
 
@@ -299,6 +309,7 @@ pub(crate) fn domain_name(domain: LogDomain) -> &'static str {
         LogDomain::Audio => "audio",
         LogDomain::Runtime => "runtime",
         LogDomain::Developer => "developer",
+        LogDomain::Security => "security",
     }
 }
 
@@ -369,6 +380,10 @@ pub(crate) fn event_name(event: LogEvent) -> &'static str {
         LogEvent::DeveloperBuildFinished => "developer-build-finished",
         LogEvent::DeveloperBuildFailed => "developer-build-failed",
         LogEvent::DeveloperArtifactOpened => "developer-artifact-opened",
+        LogEvent::SecurityPolicyChanged => "security-policy-changed",
+        LogEvent::SecurityLaunchDenied => "security-launch-denied",
+        LogEvent::RuntimeApprovalPending => "runtime-approval-pending",
+        LogEvent::RuntimeApprovalChanged => "runtime-approval-changed",
     }
 }
 

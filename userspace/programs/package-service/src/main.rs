@@ -2878,6 +2878,7 @@ fn service_name(service_id: ServiceId) -> &'static str {
         ServiceId::Runtime => "runtime-service",
         ServiceId::Developer => "developer-service",
         ServiceId::Clipboard => "clipboard-service",
+        ServiceId::Security => "security-service",
         ServiceId::RootManager => "root-manager",
     }
 }

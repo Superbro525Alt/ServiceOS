@@ -3,9 +3,10 @@ use crate::{
     AudioStreamState, DesktopAppId, DesktopDragMode, DisplayOutputBackend, DisplayOutputState,
     DeveloperArtifactFormat, DeveloperJobState, DeveloperTarget, DeveloperToolchainState,
     DisplayPixelFormat, LogDomain, LogEvent, LogSeverity, ManagerServicePhase, NetworkConfigMode,
-    NetworkConfigState, NetworkSocketKind, NetworkSocketState, PackageChannel,
+    NetworkConfigState, NetworkSocketKind, NetworkSocketState, PackageChannel, PermissionPolicyState,
     PackageMaintenanceAction, PackageRepositorySyncState, PackageRepositoryTrustMode, PackageRing,
     PackageTrustState, PacketInterfaceBackend, PacketInterfaceLinkState, RuntimeEnvState,
+    SecurityAuditKind,
     RuntimeKind, RuntimeRunState, RuntimeWorkloadKind, ServiceId, SessionInputSource,
 };
 
@@ -220,6 +221,34 @@ pub struct DeveloperJobInfo {
     pub artifact_size: usize,
     pub artifact_name_len: u32,
     pub artifact_name: [u8; 64],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SecurityAppPolicyInfo {
+    pub image_id: crate::ServiceImageId,
+    pub permissions: u32,
+    pub policy: PermissionPolicyState,
+    pub sensitive_permissions: u32,
+    pub name_len: u32,
+    pub name: [u8; 64],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SecurityAuditInfo {
+    pub sequence: u32,
+    pub kind: SecurityAuditKind,
+    pub subject_image_id: crate::ServiceImageId,
+    pub policy: PermissionPolicyState,
+    pub detail: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RuntimeAuditInfo {
+    pub sequence: u32,
+    pub kind: SecurityAuditKind,
+    pub env_id: u32,
+    pub capabilities: u32,
+    pub detail: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

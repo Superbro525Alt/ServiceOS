@@ -1,0 +1,7 @@
+service=security-service
+image=security-service
+startup=eager
+restart=on-failure:2
+depends=storage-service,log-service
+grant=log-service:send
+lookup=storage-service:send

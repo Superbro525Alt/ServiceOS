@@ -1,4 +1,6 @@
 service=storage-service
 image=storage-service
 startup=eager
-restart=on-failure:1
+availability=required
+ready_timeout=500
+restart=on-failure:1:10

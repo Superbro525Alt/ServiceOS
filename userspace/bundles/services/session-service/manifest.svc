@@ -1,7 +1,9 @@
 service=session-service
 image=session-service
 startup=eager
-restart=on-failure:1
+availability=required
+ready_timeout=300
+restart=on-failure:1:5
 depends=graphics-service, log-service
 grant=log-service:send
 lookup=graphics-service:send

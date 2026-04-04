@@ -1,7 +1,9 @@
 service=runtime-service
 image=runtime-service
-startup=eager
-restart=on-failure:1
+startup=on-demand
+availability=optional
+ready_timeout=300
+restart=on-failure:1:10
 depends=log-service, storage-service
 grant=log-service:send
 lookup=storage-service:send

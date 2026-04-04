@@ -1,7 +1,9 @@
 service=log-service
 image=log-service
 startup=eager
-restart=on-failure:1
+availability=required
+ready_timeout=250
+restart=on-failure:1:5
 depends=console-service,config-service
 grant=console-service:send
 grant=config-service:send

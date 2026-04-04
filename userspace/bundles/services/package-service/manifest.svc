@@ -1,7 +1,9 @@
 service=package-service
 image=package-service
 startup=eager
-restart=on-failure:1
+availability=required
+ready_timeout=400
+restart=on-failure:1:8
 depends=storage-service,log-service
 grant=log-service:send
 lookup=storage-service:send

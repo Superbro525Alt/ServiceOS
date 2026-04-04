@@ -1,6 +1,8 @@
 service=graphics-service
 image=graphics-service
 startup=eager
-restart=on-failure:1
+availability=required
+ready_timeout=300
+restart=on-failure:1:5
 depends=log-service
 grant=log-service:send

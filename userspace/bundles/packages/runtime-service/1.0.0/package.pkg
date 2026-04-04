@@ -9,4 +9,4 @@ content=packages/runtime-service/1.0.0/service/manifest.svc
 content=packages/runtime-service/1.0.0/runtime/profile.cfg
 content=packages/runtime-service/1.0.0/runtime/root/etc/runtime-release
 content=packages/runtime-service/1.0.0/runtime/root/usr/share/motd
-integrity=fnv64:0x91b52047a825299a
+integrity=fnv64:0x6036ab0706f803b9

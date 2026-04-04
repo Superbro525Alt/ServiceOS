@@ -1,7 +1,9 @@
 service=desktop-shell-service
 image=desktop-shell-service
 startup=eager
-restart=on-failure:1
+availability=required
+ready_timeout=400
+restart=on-failure:1:8
 depends=graphics-service, session-service, log-service, network-service, status-service
 grant=log-service:send
 lookup=graphics-service:send

@@ -1,6 +1,8 @@
 service=audio-service
 image=audio-service
 startup=eager
-restart=on-failure:2
+availability=optional
+ready_timeout=250
+restart=on-failure:2:10
 depends=log-service
 grant=log-service:send

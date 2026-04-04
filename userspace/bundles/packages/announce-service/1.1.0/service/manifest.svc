@@ -1,7 +1,9 @@
 service=announce-service
 image=announce-service
-startup=eager
-restart=on-failure:1
+startup=on-demand
+availability=optional
+ready_timeout=200
+restart=on-failure:1:5
 depends=log-service
 grant=log-service:send
 resource=packages/announce-service/1.1.0/resources/message.txt

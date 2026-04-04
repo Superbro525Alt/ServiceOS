@@ -1,7 +1,9 @@
 service=security-service
 image=security-service
 startup=eager
-restart=on-failure:2
+availability=optional
+ready_timeout=300
+restart=on-failure:2:10
 depends=storage-service,log-service
 grant=log-service:send
 lookup=storage-service:send

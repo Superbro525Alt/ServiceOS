@@ -1,4 +1,6 @@
 service=clipboard-service
 image=clipboard-service
 startup=eager
-restart=on-failure:1
+availability=optional
+ready_timeout=200
+restart=on-failure:1:5

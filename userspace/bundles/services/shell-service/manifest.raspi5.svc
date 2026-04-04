@@ -1,7 +1,9 @@
 service=shell-service
 image=shell-service
 startup=eager
-restart=on-failure:1
+availability=required
+ready_timeout=400
+restart=on-failure:1:8
 depends=console-service, log-service, config-service, storage-service, status-service, package-service
 lookup=console-service:send
 lookup=log-service:send

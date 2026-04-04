@@ -10,6 +10,7 @@
 - a reusable free-list kernel heap allocator
 - dedicated owned page-table roots for user address spaces
 - flat-image mapping for bootstrap user code regions and user stacks
+- memory-object info and range-based mapping syscalls for userspace
 
 ## Physical memory policy
 
@@ -82,7 +83,26 @@ Allocator properties:
 
 ## Next steps this enables
 
+The kernel now exposes a broader memory-object syscall surface than the
+original create/read/write/full-map baseline:
+
+- memory-object info queries
+- range-based memory-object mapping with offset/length selection
+- rights-aware writable mapping checks
+
+Those syscalls are still deliberately narrower than a final VM API:
+
+- mappings are still reserved from the runtime-managed shared range instead of
+  a fully general per-process VM allocator
+- fixed-address mappings, unmap, protect, and full virtual-memory queries
+  remain deferred
+- the kernel still reuses the boot-established top-level page tables instead of
+  owning the entire kernel page-table lifecycle
+
 - install fully kernel-owned top-level page tables
 - add a direct physical-memory window
-- expose richer VM construction and mapping APIs to later process code
+- extend the current memory-object mapping API into fuller VM construction,
+  unmap, and protection controls
+- layer shared-memory IPC transports on top of the now-generic memory-object
+  mapping substrate
 - layer dedicated slab/object allocators on top of the general kernel heap

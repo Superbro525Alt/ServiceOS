@@ -16,6 +16,11 @@ The generic object registry currently supports:
 - timer objects
 - event objects
 - memory objects
+- packet-interface objects
+- display-output objects
+- input-source objects
+- audio-endpoint objects
+- block-device objects
 
 Each live object receives an `ObjectId` and an `ObjectKind`. The registry keeps
 weak references so it can observe the live set without becoming the owner of
@@ -77,6 +82,38 @@ The IPC layer intentionally stays minimal:
 - no in-kernel RPC layer
 - no broker or namespace policy
 - no shared-memory protocol beyond a small future-facing hint field
+
+## Inspection and wait semantics
+
+The kernel now exposes generic object inspection and wait operations through the
+syscall ABI instead of forcing every wait path into ad hoc polling.
+
+Current implemented waitable object classes:
+
+- task objects, which become ready when the task exits or faults
+- channel endpoint objects, which become ready when a message is queued
+- event objects, which become ready when signaled
+- packet-interface objects, which become ready when receive data is pending
+- input-source objects, which become ready when input events are pending
+
+Current implemented inspectable object state includes:
+
+- task terminal state and exit code
+- thread owner and execution state
+- channel peer and queued-message count
+- event signaled state and signal count
+- timer armed/deadline state
+- memory-object size, page count, and writable state
+- packet/input ready counters
+- display/audio/block-device summary state
+
+This is intentionally a generic object substrate rather than a userspace policy
+layer. Waiting still composes with the object and capability model:
+
+- callers need `WAIT` rights on the handle they are blocking on
+- callers need `READ` rights to inspect object state
+- task exit and event signal wakeups now flow back through the same scheduler
+  substrate as packet/input/channel readiness
 
 ## Lifetime and cleanup
 

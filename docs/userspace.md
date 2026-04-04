@@ -108,6 +108,13 @@ Current syscall numbers:
 - `17`: transmit one packet frame through a packet-interface object
 - `18`: query display-output status
 - `19`: present one frame to a display-output object
+- `20..21`: query and receive from input-source objects
+- `22..27`: create, write, inspect, and map kernel memory objects
+- `28`: spawn a user task from a supplied native image object
+- `29..31`: query, read, and write block-device objects
+- `32..33`: inspect memory objects and map selected ranges
+- `34..36`: create, signal, and reset event objects
+- `37..38`: inspect generic kernel object state and wait on waitable objects
 
 This is enough for a real service manager and storage bootstrap without
 pretending the kernel already exposes a full general-purpose process API.

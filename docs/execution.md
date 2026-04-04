@@ -27,7 +27,8 @@ The current scheduler is deliberately simple:
 - round-robin
 - one current thread
 - one runnable queue
-- explicit blocked queues for timer waits and channel-receive waits
+- explicit blocked queues for timer waits, channel receives, packet/input
+  readiness, and generic object waits
 
 This is enough to make state transitions real without baking in policy that
 would fight later SMP or richer userspace work.
@@ -49,9 +50,12 @@ Important transitions in the current implementation:
 - making a thread runnable places it on the run queue
 - yielding the current thread rotates execution to the next runnable thread
 - blocking on channel receive moves the current thread to the channel wait set
+- blocking on a waitable object moves the current thread to the generic object
+  wait set
 - blocking on a timer arms a wake token and moves the current thread to the
   timer wait set
 - IPC send makes one blocked receiver runnable again
+- generic object readiness makes object waiters runnable again
 - timer expiry makes one blocked timer waiter runnable again
 
 ## Userspace implications
@@ -74,6 +78,8 @@ The runtime model is also less bootstrap-bound than before:
   <path>` after being written into scoped writable storage
 - user tasks now report `Faulted` as a distinct terminal state instead of
   collapsing every failure into a generic exit
+- task handles can now be waited on directly through the generic object-wait
+  syscall instead of userspace repeatedly polling task status
 
 That keeps loading policy in the manager/runtime layer rather than scattering
 it into shell or app launch code.

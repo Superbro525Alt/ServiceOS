@@ -1,7 +1,7 @@
 use crate::{
-    channel_create, channel_receive_blocking, channel_send, handle_close, rights, Error, Handle,
-    PermissionPolicyState, RawMessage, Result, SecurityAuditInfo,
-    SecurityAuditKind, SecurityAppPolicyInfo, SecurityStatus, SecurityTag, ServiceId, ServiceImageId,
+    channel_call, Error, Handle, PermissionPolicyState, RawMessage, Result, SecurityAuditInfo,
+    SecurityAuditKind, SecurityAppPolicyInfo, SecurityStatus, SecurityTag, ServiceId,
+    ServiceImageId,
 };
 
 pub fn security_lookup(bootstrap: Handle) -> Result<Handle> {
@@ -12,19 +12,10 @@ pub fn security_policy_list(
     security_handle: Handle,
     index: usize,
 ) -> Result<Option<SecurityAppPolicyInfo>> {
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(SecurityTag::PolicyListRequest as u32);
     request.word_count = 1;
     request.words[0] = index as u64;
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(security_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(security_handle, &mut request)?;
     if response.tag != SecurityTag::PolicyListReply as u32 || response.word_count < 6 {
         return Err(Error::InvalidArgument);
     }
@@ -55,19 +46,10 @@ pub fn security_policy_info(
     security_handle: Handle,
     image_id: ServiceImageId,
 ) -> Result<SecurityAppPolicyInfo> {
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(SecurityTag::PolicyInfoRequest as u32);
     request.word_count = 1;
     request.words[0] = image_id as u32 as u64;
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(security_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(security_handle, &mut request)?;
     if response.tag != SecurityTag::PolicyInfoReply as u32 || response.word_count < 6 {
         return Err(Error::InvalidArgument);
     }
@@ -99,20 +81,11 @@ pub fn security_policy_set(
     image_id: ServiceImageId,
     policy: PermissionPolicyState,
 ) -> Result<()> {
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(SecurityTag::PolicySetRequest as u32);
     request.word_count = 2;
     request.words[0] = image_id as u32 as u64;
     request.words[1] = policy as u32 as u64;
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(security_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(security_handle, &mut request)?;
     if response.tag != SecurityTag::PolicySetReply as u32 || response.word_count < 1 {
         return Err(Error::InvalidArgument);
     }
@@ -128,19 +101,10 @@ pub fn security_audit_list(
     security_handle: Handle,
     index: usize,
 ) -> Result<Option<SecurityAuditInfo>> {
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(SecurityTag::AuditListRequest as u32);
     request.word_count = 1;
     request.words[0] = index as u64;
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(security_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(security_handle, &mut request)?;
     if response.tag != SecurityTag::AuditListReply as u32 || response.word_count < 5 {
         return Err(Error::InvalidArgument);
     }

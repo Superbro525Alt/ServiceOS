@@ -1,6 +1,5 @@
 use crate::{
-    channel_create, channel_receive_blocking, channel_send, handle_close, pack_bytes,
-    package_status_error, package_status_from_word, rights, Error, Handle, PackageChannel,
+    channel_call, pack_bytes, package_status_error, package_status_from_word, Error, Handle, PackageChannel,
     PackageRepositorySyncState, PackageRepositoryTrustMode, PackageRing, PackageStatus, PackageTag,
     PackageTrustState, RawMessage, Result, ServiceId, IPC_MAX_WORDS,
 };
@@ -9,17 +8,7 @@ pub(crate) fn send_request(
     package_handle: Handle,
     mut request: RawMessage,
 ) -> Result<RawMessage> {
-    let reply = channel_create()?;
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(package_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
-    Ok(response)
+    channel_call(package_handle, &mut request)
 }
 
 pub(crate) fn package_mutation(

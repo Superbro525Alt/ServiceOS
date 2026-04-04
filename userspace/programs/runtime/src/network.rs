@@ -1,24 +1,15 @@
 use crate::{
-    channel_create, channel_receive_blocking, channel_send, handle_close, network_config_mode_from_word,
-    network_config_state_from_word, network_socket_kind_from_word, network_socket_state_from_word,
-    network_status_error, network_status_from_word, pack_bytes, packet_backend_from_word,
-    packet_link_state_from_word, rights, unpack_bytes, unpack_mac, Error, Handle,
+    channel_call, network_config_mode_from_word, network_config_state_from_word,
+    network_socket_kind_from_word, network_socket_state_from_word, network_status_error,
+    network_status_from_word, pack_bytes, packet_backend_from_word, packet_link_state_from_word,
+    unpack_bytes, unpack_mac, Error, Handle,
     NetworkInterfaceStatusInfo, NetworkSocketInfo, NetworkSocketKind, NetworkSocketTag,
     NetworkStatus, NetworkTag, RawMessage, Result, IPC_MAX_WORDS,
 };
 
 pub fn network_interface_count(network_handle: Handle) -> Result<usize> {
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(NetworkTag::InterfaceListRequest as u32);
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(network_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(network_handle, &mut request)?;
     if response.tag != NetworkTag::InterfaceListReply as u32 || response.word_count < 2 {
         return Err(Error::InvalidArgument);
     }
@@ -34,19 +25,10 @@ pub fn network_interface_status(
     network_handle: Handle,
     index: usize,
 ) -> Result<Option<NetworkInterfaceStatusInfo>> {
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(NetworkTag::InterfaceStatusRequest as u32);
     request.word_count = 1;
     request.words[0] = index as u64;
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(network_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(network_handle, &mut request)?;
     if response.tag != NetworkTag::InterfaceStatusReply as u32 || response.word_count < 15 {
         return Err(Error::InvalidArgument);
     }
@@ -88,19 +70,10 @@ pub fn network_resolve(
         return Err(Error::BufferTooSmall);
     }
 
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(NetworkTag::ResolveRequest as u32);
     request.word_count = 1 + pack_bytes(name_bytes, &mut request.words[1..])?;
     request.words[0] = name_bytes.len() as u64;
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(network_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(network_handle, &mut request)?;
     if response.tag != NetworkTag::ResolveReply as u32 || response.word_count < 2 {
         return Err(Error::InvalidArgument);
     }
@@ -127,19 +100,10 @@ pub fn network_ping(network_handle: Handle, target: &str) -> Result<(u32, u64)> 
         return Err(Error::BufferTooSmall);
     }
 
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(NetworkTag::PingRequest as u32);
     request.word_count = 1 + pack_bytes(target_bytes, &mut request.words[1..])?;
     request.words[0] = target_bytes.len() as u64;
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(network_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(network_handle, &mut request)?;
     if response.tag != NetworkTag::PingReply as u32 || response.word_count < 3 {
         return Err(Error::InvalidArgument);
     }
@@ -164,20 +128,11 @@ pub fn network_socket_open(
         return Err(Error::BufferTooSmall);
     }
 
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(NetworkTag::SocketOpenRequest as u32);
     request.word_count = 2 + pack_bytes(target_bytes, &mut request.words[2..])?;
     request.words[0] = kind as u32 as u64;
     request.words[1] = ((target_bytes.len() as u64) << 16) | port as u64;
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(network_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(network_handle, &mut request)?;
     if response.tag != NetworkTag::SocketOpenReply as u32 || response.word_count < 1 {
         return Err(Error::InvalidArgument);
     }
@@ -196,17 +151,8 @@ pub fn network_socket_list(
     network_handle: Handle,
     sockets: &mut [NetworkSocketInfo],
 ) -> Result<usize> {
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(NetworkTag::SocketListRequest as u32);
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(network_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(network_handle, &mut request)?;
     if response.tag != NetworkTag::SocketListReply as u32 || response.word_count < 2 {
         return Err(Error::InvalidArgument);
     }
@@ -237,17 +183,8 @@ pub fn network_socket_list(
 }
 
 pub fn network_socket_status(socket_handle: Handle) -> Result<NetworkSocketInfo> {
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(NetworkSocketTag::StatusRequest as u32);
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(socket_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(socket_handle, &mut request)?;
     if response.tag != NetworkSocketTag::StatusReply as u32 || response.word_count < 8 {
         return Err(Error::InvalidArgument);
     }
@@ -273,19 +210,10 @@ pub fn network_socket_send(socket_handle: Handle, payload: &[u8]) -> Result<usiz
         return Err(Error::BufferTooSmall);
     }
 
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(NetworkSocketTag::SendRequest as u32);
     request.word_count = 1 + pack_bytes(payload, &mut request.words[1..])?;
     request.words[0] = payload.len() as u64;
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(socket_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(socket_handle, &mut request)?;
     if response.tag != NetworkSocketTag::SendReply as u32 || response.word_count < 2 {
         return Err(Error::InvalidArgument);
     }
@@ -299,19 +227,10 @@ pub fn network_socket_send(socket_handle: Handle, payload: &[u8]) -> Result<usiz
 pub fn network_socket_receive(socket_handle: Handle, buffer: &mut [u8]) -> Result<usize> {
     let max_inline_bytes = (IPC_MAX_WORDS.saturating_sub(2)) * 8;
     let requested = buffer.len().min(max_inline_bytes);
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(NetworkSocketTag::ReceiveRequest as u32);
     request.word_count = 1;
     request.words[0] = requested as u64;
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(socket_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(socket_handle, &mut request)?;
     if response.tag != NetworkSocketTag::ReceiveReply as u32 || response.word_count < 2 {
         return Err(Error::InvalidArgument);
     }
@@ -325,17 +244,8 @@ pub fn network_socket_receive(socket_handle: Handle, buffer: &mut [u8]) -> Resul
 }
 
 pub fn network_socket_close(socket_handle: Handle) -> Result<()> {
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(NetworkSocketTag::CloseRequest as u32);
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(socket_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(socket_handle, &mut request)?;
     if response.tag != NetworkSocketTag::CloseReply as u32 || response.word_count < 1 {
         return Err(Error::InvalidArgument);
     }

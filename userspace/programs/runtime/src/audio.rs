@@ -3,22 +3,13 @@ use crate::{
     AudioToneRequest, Error, Handle, RawMessage, Result, audio_endpoint_backend_from_word,
     audio_endpoint_direction_from_word, audio_endpoint_info, audio_endpoint_play_tone,
     audio_endpoint_state_from_word, audio_status_error, audio_status_from_word,
-    audio_stream_direction_from_word, audio_stream_state_from_word, audio_endpoint_stop, channel_create,
-    channel_receive_blocking, channel_send, handle_close, rights,
+    audio_stream_direction_from_word, audio_stream_state_from_word, audio_endpoint_stop,
+    channel_call,
 };
 
 pub fn audio_service_endpoint_count(audio_handle: Handle) -> Result<usize> {
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(AudioTag::EndpointListRequest as u32);
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(audio_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(audio_handle, &mut request)?;
     if response.tag != AudioTag::EndpointListReply as u32 || response.word_count < 2 {
         return Err(Error::InvalidArgument);
     }
@@ -32,19 +23,10 @@ pub fn audio_service_endpoint_status(
     audio_handle: Handle,
     index: usize,
 ) -> Result<Option<AudioEndpointStatusInfo>> {
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(AudioTag::EndpointStatusRequest as u32);
     request.word_count = 1;
     request.words[0] = index as u64;
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(audio_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(audio_handle, &mut request)?;
     if response.tag != AudioTag::EndpointStatusReply as u32 || response.word_count < 12 {
         return Err(Error::InvalidArgument);
     }
@@ -76,20 +58,11 @@ pub fn audio_stream_open(
     direction: AudioStreamDirection,
     session_id: u32,
 ) -> Result<Handle> {
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(AudioTag::StreamOpenRequest as u32);
     request.word_count = 2;
     request.words[0] = direction as u32 as u64;
     request.words[1] = session_id as u64;
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(audio_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(audio_handle, &mut request)?;
     if response.tag != AudioTag::StreamOpenReply as u32 || response.word_count < 1 {
         return Err(Error::InvalidArgument);
     }
@@ -108,19 +81,10 @@ pub fn audio_stream_list(audio_handle: Handle, streams: &mut [AudioStreamInfo]) 
     let mut start = 0usize;
 
     loop {
-        let reply = channel_create()?;
         let mut request = RawMessage::empty(AudioTag::StreamListRequest as u32);
         request.word_count = 1;
         request.words[0] = start as u64;
-        request.handle_count = 1;
-        request.handles[0] = reply.second;
-        request.handle_rights[0] = rights::SEND;
-        channel_send(audio_handle, &request)?;
-        let _ = handle_close(reply.second);
-
-        let mut response = RawMessage::empty(0);
-        channel_receive_blocking(reply.first, &mut response)?;
-        let _ = handle_close(reply.first);
+        let response = channel_call(audio_handle, &mut request)?;
         if response.tag != AudioTag::StreamListReply as u32 || response.word_count < 3 {
             return Err(Error::InvalidArgument);
         }
@@ -154,17 +118,8 @@ pub fn audio_stream_list(audio_handle: Handle, streams: &mut [AudioStreamInfo]) 
 }
 
 pub fn audio_stream_status(stream_handle: Handle) -> Result<AudioStreamInfo> {
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(AudioTag::StreamStatusRequest as u32);
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(stream_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(stream_handle, &mut request)?;
     if response.tag != AudioTag::StreamStatusReply as u32 || response.word_count < 7 {
         return Err(Error::InvalidArgument);
     }
@@ -188,20 +143,11 @@ pub fn audio_stream_play_tone(
     frequency_hz: u32,
     duration_ms: u32,
 ) -> Result<()> {
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(AudioTag::StreamPlayToneRequest as u32);
     request.word_count = 2;
     request.words[0] = frequency_hz as u64;
     request.words[1] = duration_ms as u64;
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(stream_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(stream_handle, &mut request)?;
     if response.tag != AudioTag::StreamPlayToneReply as u32 || response.word_count < 1 {
         return Err(Error::InvalidArgument);
     }
@@ -213,17 +159,8 @@ pub fn audio_stream_play_tone(
 }
 
 pub fn audio_stream_close(stream_handle: Handle) -> Result<()> {
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(AudioTag::StreamCloseRequest as u32);
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(stream_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(stream_handle, &mut request)?;
     if response.tag != AudioTag::StreamCloseReply as u32 || response.word_count < 1 {
         return Err(Error::InvalidArgument);
     }

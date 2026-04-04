@@ -1,6 +1,6 @@
 use crate::{
-    channel_create, channel_receive_blocking, channel_send, handle_close, pack_bytes, rights,
-    unpack_bytes, Error, Handle, RawMessage, Result, StorageEntryKind, StorageStatus, StorageTag, IPC_MAX_WORDS,
+    channel_call, channel_send, handle_close, pack_bytes, unpack_bytes, Error, Handle,
+    RawMessage, Result, StorageEntryKind, StorageStatus, StorageTag, IPC_MAX_WORDS,
 };
 
 pub fn storage_open(storage_handle: Handle, path: &str) -> Result<(Handle, usize)> {
@@ -10,19 +10,10 @@ pub fn storage_open(storage_handle: Handle, path: &str) -> Result<(Handle, usize
         return Err(Error::BufferTooSmall);
     }
 
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(StorageTag::OpenRequest as u32);
     request.word_count = 1 + pack_bytes(path_bytes, &mut request.words[1..])?;
     request.words[0] = path_bytes.len() as u64;
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(storage_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(storage_handle, &mut request)?;
     if response.tag != StorageTag::OpenReply as u32 || response.word_count < 2 {
         return Err(Error::InvalidArgument);
     }
@@ -42,20 +33,11 @@ pub fn storage_open(storage_handle: Handle, path: &str) -> Result<(Handle, usize
 pub fn storage_read(blob_handle: Handle, offset: usize, buffer: &mut [u8]) -> Result<usize> {
     let max_inline_bytes = (IPC_MAX_WORDS.saturating_sub(3)) * 8;
     let requested = buffer.len().min(max_inline_bytes);
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(StorageTag::ReadRequest as u32);
     request.word_count = 2;
     request.words[0] = offset as u64;
     request.words[1] = requested as u64;
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(blob_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(blob_handle, &mut request)?;
     if response.tag != StorageTag::ReadReply as u32 || response.word_count < 3 {
         return Err(Error::InvalidArgument);
     }
@@ -93,20 +75,11 @@ pub fn storage_list(
         return Err(Error::BufferTooSmall);
     }
 
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(StorageTag::ListRequest as u32);
     request.word_count = 2 + pack_bytes(prefix_bytes, &mut request.words[2..])?;
     request.words[0] = index as u64;
     request.words[1] = prefix_bytes.len() as u64;
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(storage_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(storage_handle, &mut request)?;
     if response.tag != StorageTag::ListReply as u32 || response.word_count < 3 {
         return Err(Error::InvalidArgument);
     }
@@ -159,20 +132,11 @@ pub fn storage_list_directory(
         return Err(Error::BufferTooSmall);
     }
 
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(StorageTag::DirectoryListRequest as u32);
     request.word_count = 2 + pack_bytes(prefix_bytes, &mut request.words[2..])?;
     request.words[0] = cursor as u64;
     request.words[1] = prefix_bytes.len() as u64;
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(storage_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(storage_handle, &mut request)?;
     if response.tag != StorageTag::DirectoryListReply as u32 || response.word_count < 4 {
         return Err(Error::InvalidArgument);
     }
@@ -210,20 +174,11 @@ pub fn storage_open_directory(
         return Err(Error::BufferTooSmall);
     }
 
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(StorageTag::DirectoryOpenRequest as u32);
     request.word_count = 2 + pack_bytes(path_bytes, &mut request.words[2..])?;
     request.words[0] = path_bytes.len() as u64;
     request.words[1] = u64::from(writable);
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(storage_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(storage_handle, &mut request)?;
     if response.tag != StorageTag::DirectoryOpenReply as u32 || response.word_count < 1 {
         return Err(Error::InvalidArgument);
     }
@@ -250,20 +205,11 @@ pub fn storage_directory_create(
         return Err(Error::BufferTooSmall);
     }
 
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(StorageTag::DirectoryCreateRequest as u32);
     request.word_count = 2 + pack_bytes(name_bytes, &mut request.words[2..])?;
     request.words[0] = kind as u32 as u64;
     request.words[1] = name_bytes.len() as u64;
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(directory_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(directory_handle, &mut request)?;
     if response.tag != StorageTag::DirectoryCreateReply as u32 || response.word_count < 1 {
         return Err(Error::InvalidArgument);
     }
@@ -285,19 +231,10 @@ pub fn storage_directory_remove(directory_handle: Handle, name: &str) -> Result<
         return Err(Error::BufferTooSmall);
     }
 
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(StorageTag::DirectoryRemoveRequest as u32);
     request.word_count = 1 + pack_bytes(name_bytes, &mut request.words[1..])?;
     request.words[0] = name_bytes.len() as u64;
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(directory_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(directory_handle, &mut request)?;
     if response.tag != StorageTag::DirectoryRemoveReply as u32 || response.word_count < 1 {
         return Err(Error::InvalidArgument);
     }
@@ -324,21 +261,12 @@ pub fn storage_directory_open_file(
         return Err(Error::BufferTooSmall);
     }
 
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(StorageTag::DirectoryOpenFileRequest as u32);
     request.word_count = 3 + pack_bytes(name_bytes, &mut request.words[3..])?;
     request.words[0] = name_bytes.len() as u64;
     request.words[1] = u64::from(create);
     request.words[2] = u64::from(writable);
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(directory_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(directory_handle, &mut request)?;
     if response.tag != StorageTag::DirectoryOpenFileReply as u32 || response.word_count < 2 {
         return Err(Error::InvalidArgument);
     }
@@ -362,21 +290,12 @@ pub fn storage_write(blob_handle: Handle, offset: usize, total_len: usize, bytes
         return Err(Error::BufferTooSmall);
     }
 
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(StorageTag::WriteRequest as u32);
     request.word_count = 3 + pack_bytes(bytes, &mut request.words[3..])?;
     request.words[0] = offset as u64;
     request.words[1] = total_len as u64;
     request.words[2] = bytes.len() as u64;
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(blob_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(blob_handle, &mut request)?;
     if response.tag != StorageTag::WriteReply as u32 || response.word_count < 2 {
         return Err(Error::InvalidArgument);
     }
@@ -395,19 +314,10 @@ pub fn storage_directory_read(
     cursor: usize,
     path_buffer: &mut [u8],
 ) -> Result<Option<(usize, StorageEntryKind, usize)>> {
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(StorageTag::DirectoryReadRequest as u32);
     request.word_count = 1;
     request.words[0] = cursor as u64;
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(directory_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(directory_handle, &mut request)?;
     if response.tag != StorageTag::DirectoryReadReply as u32 || response.word_count < 4 {
         return Err(Error::InvalidArgument);
     }

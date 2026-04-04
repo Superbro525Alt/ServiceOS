@@ -1,7 +1,7 @@
 use crate::{
-    channel_create, channel_receive_blocking, channel_send, handle_close, rights, service_id_from_word,
-    severity_from_word, domain_from_word, event_from_word, Error, Handle, LogDomain, LogEvent,
-    LogQueryStatus, LogRecord, LogSeverity, LogTag, RawMessage, Result, ServiceId,
+    channel_call, channel_send, domain_from_word, event_from_word, service_id_from_word,
+    severity_from_word, Error, Handle, LogDomain, LogEvent, LogQueryStatus, LogRecord,
+    LogSeverity, LogTag, RawMessage, Result, ServiceId,
 };
 
 pub fn send_log_record(
@@ -25,17 +25,8 @@ pub fn send_log_record(
 }
 
 pub fn log_query_info(log_handle: Handle) -> Result<(u64, u64)> {
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(LogTag::QueryInfoRequest as u32);
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(log_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(log_handle, &mut request)?;
     if response.tag != LogTag::QueryInfoReply as u32 || response.word_count < 2 {
         return Err(Error::InvalidArgument);
     }
@@ -43,19 +34,10 @@ pub fn log_query_info(log_handle: Handle) -> Result<(u64, u64)> {
 }
 
 pub fn log_query_record(log_handle: Handle, sequence: u64) -> Result<Option<LogRecord>> {
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(LogTag::QueryRecordRequest as u32);
     request.word_count = 1;
     request.words[0] = sequence;
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(log_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(log_handle, &mut request)?;
     if response.tag != LogTag::QueryRecordReply as u32 || response.word_count < 2 {
         return Err(Error::InvalidArgument);
     }

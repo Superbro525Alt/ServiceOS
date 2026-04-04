@@ -1,6 +1,6 @@
 use crate::{
-    channel_create, channel_receive_blocking, channel_send, handle_close, pack_bytes, rights,
-    ConsoleTag, Error, Handle, RawMessage, Result, IPC_MAX_WORDS,
+    channel_call, channel_send, pack_bytes, ConsoleTag, Error, Handle, RawMessage, Result,
+    IPC_MAX_WORDS,
 };
 
 pub fn console_write_record(
@@ -26,17 +26,8 @@ pub fn console_write_record(
 }
 
 pub fn console_session_open(console_handle: Handle) -> Result<Handle> {
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(ConsoleTag::SessionOpenRequest as u32);
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(console_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(console_handle, &mut request)?;
     if response.tag != ConsoleTag::SessionOpenReply as u32 || response.handle_count < 1 {
         return Err(Error::Busy);
     }
@@ -56,17 +47,8 @@ pub fn console_session_write(session_handle: Handle, text: &str) -> Result<()> {
 }
 
 pub fn console_session_read_line(session_handle: Handle, buffer: &mut [u8]) -> Result<usize> {
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(ConsoleTag::SessionReadLineRequest as u32);
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(session_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(session_handle, &mut request)?;
     if response.tag != ConsoleTag::SessionReadLineReply as u32 || response.word_count < 1 {
         return Err(Error::InvalidArgument);
     }

@@ -1,5 +1,5 @@
 use crate::{
-    channel_create, channel_receive_blocking, channel_send, display_backend_from_word,
+    channel_call, channel_create, channel_receive_blocking, channel_send, display_backend_from_word,
     display_pixel_format_from_word, display_state_from_word, graphics_status_error,
     graphics_status_from_word, handle_close, pack_bytes, rights, Error, GraphicsOutputStatusInfo,
     GraphicsStatus, GraphicsSurfaceStatusInfo, GraphicsTag, Handle, RawMessage, Result,
@@ -7,17 +7,8 @@ use crate::{
 };
 
 pub fn graphics_output_count(graphics_handle: Handle) -> Result<usize> {
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(GraphicsTag::OutputListRequest as u32);
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(graphics_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(graphics_handle, &mut request)?;
     if response.tag != GraphicsTag::OutputListReply as u32 || response.word_count < 2 {
         return Err(Error::InvalidArgument);
     }
@@ -32,19 +23,10 @@ pub fn graphics_output_status(
     graphics_handle: Handle,
     index: usize,
 ) -> Result<Option<GraphicsOutputStatusInfo>> {
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(GraphicsTag::OutputStatusRequest as u32);
     request.word_count = 1;
     request.words[0] = index as u64;
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(graphics_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(graphics_handle, &mut request)?;
     if response.tag != GraphicsTag::OutputStatusReply as u32 || response.word_count < 12 {
         return Err(Error::InvalidArgument);
     }
@@ -83,7 +65,6 @@ pub fn graphics_surface_create(
     fill_rgb: u32,
     visible: bool,
 ) -> Result<(u32, Handle)> {
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(GraphicsTag::SurfaceCreateRequest as u32);
     request.word_count = 8;
     request.words[0] = owner_session as u64;
@@ -94,15 +75,7 @@ pub fn graphics_surface_create(
     request.words[5] = z_order as u64;
     request.words[6] = fill_rgb as u64;
     request.words[7] = u64::from(visible);
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(graphics_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(graphics_handle, &mut request)?;
     if response.tag != GraphicsTag::SurfaceCreateReply as u32
         || response.word_count < 2
         || response.handle_count < 1
@@ -117,17 +90,8 @@ pub fn graphics_surface_create(
 }
 
 pub fn graphics_surface_list(graphics_handle: Handle, ids: &mut [u32]) -> Result<usize> {
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(GraphicsTag::SurfaceListRequest as u32);
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(graphics_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(graphics_handle, &mut request)?;
     if response.tag != GraphicsTag::SurfaceListReply as u32 || response.word_count < 2 {
         return Err(Error::InvalidArgument);
     }
@@ -150,19 +114,10 @@ pub fn graphics_surface_status(
     graphics_handle: Handle,
     surface_id: u32,
 ) -> Result<Option<GraphicsSurfaceStatusInfo>> {
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(GraphicsTag::SurfaceStatusRequest as u32);
     request.word_count = 1;
     request.words[0] = surface_id as u64;
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(graphics_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(graphics_handle, &mut request)?;
     if response.tag != GraphicsTag::SurfaceStatusReply as u32 || response.word_count < 16 {
         return Err(Error::InvalidArgument);
     }
@@ -205,7 +160,6 @@ pub fn surface_set_geometry(
     height: u32,
     z_order: u32,
 ) -> Result<()> {
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(SurfaceTag::SetGeometryRequest as u32);
     request.word_count = 5;
     request.words[0] = x as i64 as u64;
@@ -213,15 +167,7 @@ pub fn surface_set_geometry(
     request.words[2] = width as u64;
     request.words[3] = height as u64;
     request.words[4] = z_order as u64;
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(surface_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(surface_handle, &mut request)?;
     if response.tag != SurfaceTag::SetGeometryReply as u32 || response.word_count < 1 {
         return Err(Error::InvalidArgument);
     }
@@ -250,19 +196,10 @@ pub fn surface_set_geometry_async(
 }
 
 pub fn surface_set_fill(surface_handle: Handle, fill_rgb: u32) -> Result<()> {
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(SurfaceTag::SetFillRequest as u32);
     request.word_count = 1;
     request.words[0] = fill_rgb as u64;
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(surface_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(surface_handle, &mut request)?;
     if response.tag != SurfaceTag::SetFillReply as u32 || response.word_count < 1 {
         return Err(Error::InvalidArgument);
     }
@@ -273,19 +210,10 @@ pub fn surface_set_fill(surface_handle: Handle, fill_rgb: u32) -> Result<()> {
 }
 
 pub fn surface_set_visibility(surface_handle: Handle, visible: bool) -> Result<()> {
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(SurfaceTag::SetVisibilityRequest as u32);
     request.word_count = 1;
     request.words[0] = u64::from(visible);
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(surface_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(surface_handle, &mut request)?;
     if response.tag != SurfaceTag::SetVisibilityReply as u32 || response.word_count < 1 {
         return Err(Error::InvalidArgument);
     }
@@ -296,17 +224,8 @@ pub fn surface_set_visibility(surface_handle: Handle, visible: bool) -> Result<(
 }
 
 pub fn surface_clear_scene(surface_handle: Handle) -> Result<()> {
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(SurfaceTag::ClearSceneRequest as u32);
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(surface_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(surface_handle, &mut request)?;
     if response.tag != SurfaceTag::ClearSceneReply as u32 || response.word_count < 1 {
         return Err(Error::InvalidArgument);
     }
@@ -326,7 +245,6 @@ pub fn surface_set_rect(
     color_rgb: u32,
     visible: bool,
 ) -> Result<()> {
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(SurfaceTag::SetRectRequest as u32);
     request.word_count = 7;
     request.words[0] = slot as u64;
@@ -336,15 +254,7 @@ pub fn surface_set_rect(
     request.words[4] = height as u64;
     request.words[5] = color_rgb as u64;
     request.words[6] = u64::from(visible);
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(surface_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(surface_handle, &mut request)?;
     if response.tag != SurfaceTag::SetRectReply as u32 || response.word_count < 1 {
         return Err(Error::InvalidArgument);
     }
@@ -368,7 +278,6 @@ pub fn surface_set_label(
         return Err(Error::BufferTooSmall);
     }
 
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(SurfaceTag::SetLabelRequest as u32);
     request.word_count = 5 + pack_bytes(text_bytes, &mut request.words[5..])?;
     request.words[0] = slot as u64;
@@ -376,15 +285,7 @@ pub fn surface_set_label(
     request.words[2] = y as i64 as u64;
     request.words[3] = color_rgb as u64;
     request.words[4] = text_bytes.len() as u64;
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(surface_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(surface_handle, &mut request)?;
     if response.tag != SurfaceTag::SetLabelReply as u32 || response.word_count < 1 {
         return Err(Error::InvalidArgument);
     }
@@ -473,19 +374,10 @@ pub fn surface_present_buffer_slot(
 }
 
 pub fn surface_release_buffer(surface_handle: Handle, slot: u32) -> Result<()> {
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(SurfaceTag::ReleaseBufferRequest as u32);
     request.word_count = 1;
     request.words[0] = slot as u64;
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(surface_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(surface_handle, &mut request)?;
     if response.tag != SurfaceTag::ReleaseBufferReply as u32 || response.word_count < 1 {
         return Err(Error::InvalidArgument);
     }

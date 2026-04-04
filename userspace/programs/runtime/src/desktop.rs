@@ -1,5 +1,5 @@
 use crate::{
-    channel_create, channel_receive_blocking, channel_send, desktop_app_id_from_word,
+    channel_call, channel_create, channel_receive_blocking, channel_send, desktop_app_id_from_word,
     desktop_drag_mode_from_word, desktop_status_error, desktop_status_from_word, handle_close,
     pack_bytes, rights, unpack_bytes, unpack_i32_pair, unpack_u32_pair, DesktopAppId, DesktopAppInfo,
     DesktopDragMode, DesktopInputAction, DesktopNotificationInfo, DesktopShellStatusInfo,
@@ -8,17 +8,8 @@ use crate::{
 };
 
 pub fn desktop_status(desktop_handle: Handle) -> Result<DesktopShellStatusInfo> {
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(DesktopTag::StatusRequest as u32);
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(desktop_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(desktop_handle, &mut request)?;
     if response.tag != DesktopTag::StatusReply as u32 || response.word_count < 4 {
         return Err(Error::InvalidArgument);
     }
@@ -59,19 +50,10 @@ pub fn desktop_list_apps(desktop_handle: Handle, apps: &mut [DesktopAppInfo]) ->
     let mut start = 0usize;
 
     loop {
-        let reply = channel_create()?;
         let mut request = RawMessage::empty(DesktopTag::ListAppsRequest as u32);
         request.word_count = 1;
         request.words[0] = start as u64;
-        request.handle_count = 1;
-        request.handles[0] = reply.second;
-        request.handle_rights[0] = rights::SEND;
-        channel_send(desktop_handle, &request)?;
-        let _ = handle_close(reply.second);
-
-        let mut response = RawMessage::empty(0);
-        channel_receive_blocking(reply.first, &mut response)?;
-        let _ = handle_close(reply.first);
+        let response = channel_call(desktop_handle, &mut request)?;
         if response.tag != DesktopTag::ListAppsReply as u32 || response.word_count < 3 {
             return Err(Error::InvalidArgument);
         }
@@ -104,19 +86,10 @@ pub fn desktop_list_apps(desktop_handle: Handle, apps: &mut [DesktopAppInfo]) ->
 }
 
 pub fn desktop_launch_app(desktop_handle: Handle, app_id: DesktopAppId) -> Result<u32> {
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(DesktopTag::LaunchAppRequest as u32);
     request.word_count = 1;
     request.words[0] = app_id as u32 as u64;
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(desktop_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(desktop_handle, &mut request)?;
     if response.tag != DesktopTag::LaunchAppReply as u32 || response.word_count < 2 {
         return Err(Error::InvalidArgument);
     }
@@ -127,19 +100,10 @@ pub fn desktop_launch_app(desktop_handle: Handle, app_id: DesktopAppId) -> Resul
 }
 
 pub fn desktop_focus_app(desktop_handle: Handle, app_id: DesktopAppId) -> Result<u32> {
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(DesktopTag::FocusAppRequest as u32);
     request.word_count = 1;
     request.words[0] = app_id as u32 as u64;
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(desktop_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(desktop_handle, &mut request)?;
     if response.tag != DesktopTag::FocusAppReply as u32 || response.word_count < 2 {
         return Err(Error::InvalidArgument);
     }
@@ -157,19 +121,10 @@ pub fn desktop_list_windows(
     let mut start = 0u32;
 
     loop {
-        let reply = channel_create()?;
         let mut request = RawMessage::empty(DesktopTag::ListWindowsRequest as u32);
         request.word_count = 1;
         request.words[0] = start as u64;
-        request.handle_count = 1;
-        request.handles[0] = reply.second;
-        request.handle_rights[0] = rights::SEND;
-        channel_send(desktop_handle, &request)?;
-        let _ = handle_close(reply.second);
-
-        let mut response = RawMessage::empty(0);
-        channel_receive_blocking(reply.first, &mut response)?;
-        let _ = handle_close(reply.first);
+        let response = channel_call(desktop_handle, &mut request)?;
         if response.tag != DesktopTag::ListWindowsReply as u32 || response.word_count < 3 {
             return Err(Error::InvalidArgument);
         }
@@ -223,22 +178,13 @@ pub fn desktop_window_action(
     arg0: u64,
     arg1: u64,
 ) -> Result<u32> {
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(DesktopTag::WindowActionRequest as u32);
     request.word_count = 4;
     request.words[0] = action as u32 as u64;
     request.words[1] = app_id.map(|value| value as u32 as u64).unwrap_or(0);
     request.words[2] = arg0;
     request.words[3] = arg1;
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(desktop_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(desktop_handle, &mut request)?;
     if response.tag != DesktopTag::WindowActionReply as u32 || response.word_count < 2 {
         return Err(Error::InvalidArgument);
     }
@@ -329,19 +275,10 @@ pub fn desktop_notify(desktop_handle: Handle, text: &str) -> Result<()> {
     if text_bytes.len() > max_inline_bytes {
         return Err(Error::BufferTooSmall);
     }
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(DesktopTag::NotifyRequest as u32);
     request.word_count = 1 + pack_bytes(text_bytes, &mut request.words[1..])?;
     request.words[0] = text_bytes.len() as u64;
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(desktop_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(desktop_handle, &mut request)?;
     if response.tag != DesktopTag::NotifyReply as u32 || response.word_count < 1 {
         return Err(Error::InvalidArgument);
     }
@@ -355,19 +292,10 @@ pub fn desktop_notification_history(
     desktop_handle: Handle,
     index: u32,
 ) -> Result<DesktopNotificationInfo> {
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(DesktopTag::NotificationHistoryRequest as u32);
     request.word_count = 1;
     request.words[0] = index as u64;
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(desktop_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(desktop_handle, &mut request)?;
     if response.tag != DesktopTag::NotificationHistoryReply as u32 || response.word_count < 1 {
         return Err(Error::InvalidArgument);
     }
@@ -396,20 +324,11 @@ pub fn desktop_workspace_action(
     action: DesktopWorkspaceAction,
     workspace_id: u32,
 ) -> Result<DesktopWorkspaceInfo> {
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(DesktopTag::WorkspaceRequest as u32);
     request.word_count = 2;
     request.words[0] = action as u32 as u64;
     request.words[1] = workspace_id as u64;
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(desktop_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(desktop_handle, &mut request)?;
     if response.tag != DesktopTag::WorkspaceReply as u32 || response.word_count < 4 {
         return Err(Error::InvalidArgument);
     }
@@ -427,19 +346,10 @@ pub fn desktop_open_path(desktop_handle: Handle, path: &str) -> Result<u32> {
     if path.len() > IPC_MAX_WORDS * 8 {
         return Err(Error::BufferTooSmall);
     }
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(DesktopTag::OpenPathRequest as u32);
     request.word_count = 1 + pack_bytes(path.as_bytes(), &mut request.words[1..])?;
     request.words[0] = path.len() as u64;
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(desktop_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(desktop_handle, &mut request)?;
     if response.tag != DesktopTag::OpenPathReply as u32 || response.word_count < 2 {
         return Err(Error::InvalidArgument);
     }

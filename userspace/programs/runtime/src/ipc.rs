@@ -1,6 +1,6 @@
 use crate::{
     syscall1, syscall2, Error, Handle, HandlePair, RawMessage, Result, SyscallNumber,
-    IPC_FLAG_NONBLOCK, INVALID_HANDLE,
+    IPC_FLAG_NONBLOCK, INVALID_HANDLE, rights,
 };
 
 pub fn channel_create() -> Result<HandlePair> {
@@ -45,4 +45,21 @@ pub fn channel_receive_blocking(endpoint: Handle, message: &mut RawMessage) -> R
             Err(error) => return Err(error),
         }
     }
+}
+
+pub fn channel_call(endpoint: Handle, request: &mut RawMessage) -> Result<RawMessage> {
+    let reply = channel_create()?;
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+
+    let send_result = channel_send(endpoint, request);
+    let _ = crate::handle_close(reply.second);
+    send_result?;
+
+    let mut response = RawMessage::empty(0);
+    let receive_result = channel_receive_blocking(reply.first, &mut response);
+    let _ = crate::handle_close(reply.first);
+    receive_result?;
+    Ok(response)
 }

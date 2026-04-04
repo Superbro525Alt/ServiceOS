@@ -1,7 +1,6 @@
 use crate::{
     ClipboardHistoryEntry, ClipboardStatus, ClipboardTag, Error, Handle, IPC_MAX_WORDS, RawMessage,
-    Result, channel_create, channel_receive_blocking, channel_send, handle_close, pack_bytes,
-    rights, unpack_bytes,
+    Result, channel_call, pack_bytes, unpack_bytes,
 };
 
 pub fn clipboard_write(service_handle: Handle, bytes: &[u8]) -> Result<()> {
@@ -10,19 +9,10 @@ pub fn clipboard_write(service_handle: Handle, bytes: &[u8]) -> Result<()> {
         return Err(Error::BufferTooSmall);
     }
 
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(ClipboardTag::WriteRequest as u32);
     request.word_count = 1 + pack_bytes(bytes, &mut request.words[1..])?;
     request.words[0] = bytes.len() as u64;
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(service_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(service_handle, &mut request)?;
     if response.tag != ClipboardTag::WriteReply as u32 || response.word_count < 1 {
         return Err(Error::InvalidArgument);
     }
@@ -33,17 +23,8 @@ pub fn clipboard_write(service_handle: Handle, bytes: &[u8]) -> Result<()> {
 }
 
 pub fn clipboard_read(service_handle: Handle, buffer: &mut [u8]) -> Result<usize> {
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(ClipboardTag::ReadRequest as u32);
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(service_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(service_handle, &mut request)?;
     if response.tag != ClipboardTag::ReadReply as u32 || response.word_count < 1 {
         return Err(Error::InvalidArgument);
     }
@@ -61,19 +42,10 @@ pub fn clipboard_history_entry(
     service_handle: Handle,
     index: u32,
 ) -> Result<ClipboardHistoryEntry> {
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(ClipboardTag::HistoryRequest as u32);
     request.word_count = 1;
     request.words[0] = index as u64;
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(service_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(service_handle, &mut request)?;
     if response.tag != ClipboardTag::HistoryReply as u32 || response.word_count < 1 {
         return Err(Error::InvalidArgument);
     }
@@ -97,19 +69,10 @@ pub fn clipboard_history_entry(
 }
 
 pub fn clipboard_activate(service_handle: Handle, index: u32) -> Result<()> {
-    let reply = channel_create()?;
     let mut request = RawMessage::empty(ClipboardTag::ActivateRequest as u32);
     request.word_count = 1;
     request.words[0] = index as u64;
-    request.handle_count = 1;
-    request.handles[0] = reply.second;
-    request.handle_rights[0] = rights::SEND;
-    channel_send(service_handle, &request)?;
-    let _ = handle_close(reply.second);
-
-    let mut response = RawMessage::empty(0);
-    channel_receive_blocking(reply.first, &mut response)?;
-    let _ = handle_close(reply.first);
+    let response = channel_call(service_handle, &mut request)?;
     if response.tag != ClipboardTag::ActivateReply as u32 || response.word_count < 1 {
         return Err(Error::InvalidArgument);
     }

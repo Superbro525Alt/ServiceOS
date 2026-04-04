@@ -27,7 +27,7 @@ const PANEL_TITLE_HEIGHT: i32 = 26;
 const ROW_HEIGHT: i32 = 30;
 const BUTTON_HEIGHT: i32 = 22;
 const ACTION_BUTTON_WIDTH: i32 = 104;
-const ACTION_BUTTON_GAP: i32 = 10;
+const ACTION_BUTTON_GAP: i32 = 18;
 const STATUS_BAR_HEIGHT: i32 = 24;
 const KEY_ENTER: u32 = 28;
 const KEY_BACKSPACE: u32 = 14;
@@ -69,6 +69,7 @@ struct Layout {
     detail_body_y: i32,
     detail_chip_y: i32,
     detail_text_w: i32,
+    action_badge_y: i32,
     status_y: i32,
 }
 
@@ -773,10 +774,27 @@ fn draw_details(
             ui::TEXT_PRIMARY,
         );
         if entry.installed {
-            draw_chip(bytes, meta_x + 102, layout.detail_chip_y, "INSTALLED", ui::STATUS_OK, ui::BG_PANEL);
+            draw_chip(
+                bytes,
+                layout.install_x0,
+                layout.action_badge_y,
+                "INSTALLED",
+                ui::STATUS_OK,
+                ui::BG_PANEL,
+            );
         }
         if entry.active {
-            draw_chip(bytes, meta_x + 188, layout.detail_chip_y, "ACTIVE", ui::ACCENT, ui::BG_PANEL);
+            let active_x = if entry.installed {
+                layout.install_x0
+            } else {
+                layout.install_x0
+            };
+            let active_y = if entry.installed {
+                layout.action_badge_y + 20
+            } else {
+                layout.action_badge_y
+            };
+            draw_chip(bytes, active_x, active_y, "ACTIVE", ui::ACCENT, ui::BG_PANEL);
         }
     }
     draw_text_fit(
@@ -1141,6 +1159,7 @@ fn compute_layout_for_dims(width: i32, height: i32, selected_title: &str) -> Lay
     let detail_text_w = (install_x0 - (right_x + 12) - 12).max(64);
     let detail_chip_y = detail_title_y + 34;
     let detail_body_y = detail_chip_y + 26;
+    let action_badge_y = remove_y1 + 14;
     let sync_y0 = header_y + 18;
     let sync_y1 = sync_y0 + BUTTON_HEIGHT;
     let sync_x1 = header_x + header_w - 14;
@@ -1178,6 +1197,7 @@ fn compute_layout_for_dims(width: i32, height: i32, selected_title: &str) -> Lay
         detail_body_y,
         detail_chip_y,
         detail_text_w,
+        action_badge_y,
         status_y,
     }
 }

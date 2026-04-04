@@ -1,39 +1,29 @@
+mod faults;
+mod irq;
+mod pic;
+mod syscall;
+
 use core::arch::global_asm;
 
-use serviceos_kernel_core::{
-    interrupts::{self, ExceptionDetail, ExceptionReport, InterruptVector, TrapFrameView},
-    syscall::{SyscallContext, SyscallNumber},
-    task,
-};
+use serviceos_kernel_core::interrupts::InterruptVector;
 use spin::Once;
 use x86_64::{
     PrivilegeLevel, VirtAddr,
     instructions::{
-        port::Port,
         segmentation::{CS, DS, ES, SS, Segment},
         tables::load_tss,
     },
     structures::{
         gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector},
-        idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode},
+        idt::InterruptDescriptorTable,
         tss::TaskStateSegment,
     },
 };
 
-use crate::{cpu, serial, user::SavedUserContext};
+use crate::cpu;
 
 global_asm!(include_str!("syscall_entry.S"));
 
-const PIC1_COMMAND_PORT: u16 = 0x20;
-const PIC1_DATA_PORT: u16 = 0x21;
-const PIC2_COMMAND_PORT: u16 = 0xA0;
-const PIC2_DATA_PORT: u16 = 0xA1;
-const PIC_EOI: u8 = 0x20;
-const PIC_ICW1_INIT: u8 = 0x11;
-const PIC_ICW4_8086: u8 = 0x01;
-const PIT_COMMAND_PORT: u16 = 0x43;
-const PIT_CHANNEL0_PORT: u16 = 0x40;
-const PIT_INPUT_HZ: u32 = 1_193_182;
 const DOUBLE_FAULT_IST_INDEX: u16 = 0;
 const DOUBLE_FAULT_STACK_SIZE: usize = 16 * 1024;
 const PRIVILEGE_STACK_INDEX: usize = 0;
@@ -107,8 +97,8 @@ unsafe extern "C" {
 pub fn initialize() -> DescriptorState {
     install_descriptor_tables();
     install_interrupt_table();
-    initialize_pic();
-    initialize_pit(TIMER_TICK_HZ);
+    pic::initialize_pic();
+    pic::initialize_pit(TIMER_TICK_HZ);
 
     DescriptorState {
         gdt_loaded: true,
@@ -144,6 +134,30 @@ pub fn poll_wakeup() -> Option<serviceos_kernel_core::time::WakeEvent> {
     cpu::with_interrupts_disabled(|| {
         serviceos_kernel_core::time::manager().and_then(|manager| manager.take_wakeup())
     })
+}
+
+pub fn register_external_irq_handler(irq_line: u8, handler: fn(u8)) -> bool {
+    irq::register_external_irq_handler(irq_line, handler)
+}
+
+pub(crate) fn user_code_selector() -> SegmentSelector {
+    let selector = DESCRIPTOR_TABLES
+        .get()
+        .expect("descriptor tables initialized")
+        .selectors
+        .user_code;
+
+    SegmentSelector(selector.0 | 0b11)
+}
+
+pub(crate) fn user_data_selector() -> SegmentSelector {
+    let selector = DESCRIPTOR_TABLES
+        .get()
+        .expect("descriptor tables initialized")
+        .selectors
+        .user_data;
+
+    SegmentSelector(selector.0 | 0b11)
 }
 
 fn install_descriptor_tables() {
@@ -182,62 +196,62 @@ fn install_interrupt_table() {
     let idt = IDT.call_once(|| {
         let mut idt = InterruptDescriptorTable::new();
 
-        idt.divide_error.set_handler_fn(divide_error_handler);
-        idt.debug.set_handler_fn(debug_exception_handler);
+        idt.divide_error.set_handler_fn(faults::divide_error_handler);
+        idt.debug.set_handler_fn(faults::debug_exception_handler);
         idt.non_maskable_interrupt
-            .set_handler_fn(non_maskable_interrupt_handler);
-        idt.breakpoint.set_handler_fn(breakpoint_handler);
-        idt.overflow.set_handler_fn(overflow_handler);
+            .set_handler_fn(faults::non_maskable_interrupt_handler);
+        idt.breakpoint.set_handler_fn(faults::breakpoint_handler);
+        idt.overflow.set_handler_fn(faults::overflow_handler);
         idt.bound_range_exceeded
-            .set_handler_fn(bound_range_exceeded_handler);
-        idt.invalid_opcode.set_handler_fn(invalid_opcode_handler);
+            .set_handler_fn(faults::bound_range_exceeded_handler);
+        idt.invalid_opcode.set_handler_fn(faults::invalid_opcode_handler);
         idt.device_not_available
-            .set_handler_fn(device_not_available_handler);
+            .set_handler_fn(faults::device_not_available_handler);
         unsafe {
             idt.double_fault
-                .set_handler_fn(double_fault_handler)
+                .set_handler_fn(faults::double_fault_handler)
                 .set_stack_index(DOUBLE_FAULT_IST_INDEX);
         }
-        idt.invalid_tss.set_handler_fn(invalid_tss_handler);
+        idt.invalid_tss.set_handler_fn(faults::invalid_tss_handler);
         idt.segment_not_present
-            .set_handler_fn(segment_not_present_handler);
+            .set_handler_fn(faults::segment_not_present_handler);
         idt.stack_segment_fault
-            .set_handler_fn(stack_segment_fault_handler);
+            .set_handler_fn(faults::stack_segment_fault_handler);
         idt.general_protection_fault
-            .set_handler_fn(general_protection_fault_handler);
-        idt.page_fault.set_handler_fn(page_fault_handler);
+            .set_handler_fn(faults::general_protection_fault_handler);
+        idt.page_fault.set_handler_fn(faults::page_fault_handler);
         idt.x87_floating_point
-            .set_handler_fn(x87_floating_point_handler);
-        idt.alignment_check.set_handler_fn(alignment_check_handler);
-        idt.machine_check.set_handler_fn(machine_check_handler);
+            .set_handler_fn(faults::x87_floating_point_handler);
+        idt.alignment_check.set_handler_fn(faults::alignment_check_handler);
+        idt.machine_check.set_handler_fn(faults::machine_check_handler);
         idt.simd_floating_point
-            .set_handler_fn(simd_floating_point_handler);
-        idt.virtualization.set_handler_fn(virtualization_handler);
+            .set_handler_fn(faults::simd_floating_point_handler);
+        idt.virtualization.set_handler_fn(faults::virtualization_handler);
         idt.cp_protection_exception
-            .set_handler_fn(control_protection_handler);
+            .set_handler_fn(faults::control_protection_handler);
         idt.hv_injection_exception
-            .set_handler_fn(hypervisor_injection_handler);
+            .set_handler_fn(faults::hypervisor_injection_handler);
         idt.vmm_communication_exception
-            .set_handler_fn(vmm_communication_handler);
+            .set_handler_fn(faults::vmm_communication_handler);
         idt.security_exception
-            .set_handler_fn(security_exception_handler);
+            .set_handler_fn(faults::security_exception_handler);
         unsafe {
-            idt[TIMER_VECTOR].set_handler_fn(timer_interrupt_handler);
-            idt[PIC_PRIMARY_OFFSET + 1].set_handler_fn(external_irq1_handler);
-            idt[PIC_PRIMARY_OFFSET + 2].set_handler_fn(external_irq2_handler);
-            idt[PIC_PRIMARY_OFFSET + 3].set_handler_fn(external_irq3_handler);
-            idt[PIC_PRIMARY_OFFSET + 4].set_handler_fn(external_irq4_handler);
-            idt[PIC_PRIMARY_OFFSET + 5].set_handler_fn(external_irq5_handler);
-            idt[PIC_PRIMARY_OFFSET + 6].set_handler_fn(external_irq6_handler);
-            idt[PIC_PRIMARY_OFFSET + 7].set_handler_fn(external_irq7_handler);
-            idt[PIC_SECONDARY_OFFSET].set_handler_fn(external_irq8_handler);
-            idt[PIC_SECONDARY_OFFSET + 1].set_handler_fn(external_irq9_handler);
-            idt[PIC_SECONDARY_OFFSET + 2].set_handler_fn(external_irq10_handler);
-            idt[PIC_SECONDARY_OFFSET + 3].set_handler_fn(external_irq11_handler);
-            idt[PIC_SECONDARY_OFFSET + 4].set_handler_fn(external_irq12_handler);
-            idt[PIC_SECONDARY_OFFSET + 5].set_handler_fn(external_irq13_handler);
-            idt[PIC_SECONDARY_OFFSET + 6].set_handler_fn(external_irq14_handler);
-            idt[PIC_SECONDARY_OFFSET + 7].set_handler_fn(external_irq15_handler);
+            idt[TIMER_VECTOR].set_handler_fn(irq::timer_interrupt_handler);
+            idt[PIC_PRIMARY_OFFSET + 1].set_handler_fn(irq::external_irq1_handler);
+            idt[PIC_PRIMARY_OFFSET + 2].set_handler_fn(irq::external_irq2_handler);
+            idt[PIC_PRIMARY_OFFSET + 3].set_handler_fn(irq::external_irq3_handler);
+            idt[PIC_PRIMARY_OFFSET + 4].set_handler_fn(irq::external_irq4_handler);
+            idt[PIC_PRIMARY_OFFSET + 5].set_handler_fn(irq::external_irq5_handler);
+            idt[PIC_PRIMARY_OFFSET + 6].set_handler_fn(irq::external_irq6_handler);
+            idt[PIC_PRIMARY_OFFSET + 7].set_handler_fn(irq::external_irq7_handler);
+            idt[PIC_SECONDARY_OFFSET].set_handler_fn(irq::external_irq8_handler);
+            idt[PIC_SECONDARY_OFFSET + 1].set_handler_fn(irq::external_irq9_handler);
+            idt[PIC_SECONDARY_OFFSET + 2].set_handler_fn(irq::external_irq10_handler);
+            idt[PIC_SECONDARY_OFFSET + 3].set_handler_fn(irq::external_irq11_handler);
+            idt[PIC_SECONDARY_OFFSET + 4].set_handler_fn(irq::external_irq12_handler);
+            idt[PIC_SECONDARY_OFFSET + 5].set_handler_fn(irq::external_irq13_handler);
+            idt[PIC_SECONDARY_OFFSET + 6].set_handler_fn(irq::external_irq14_handler);
+            idt[PIC_SECONDARY_OFFSET + 7].set_handler_fn(irq::external_irq15_handler);
             idt[SYSCALL_VECTOR]
                 .set_handler_addr(VirtAddr::from_ptr(
                     serviceos_x86_64_syscall_entry as *const (),
@@ -262,474 +276,4 @@ fn tss() -> &'static TaskStateSegment {
             privilege_stack_base + PRIVILEGE_STACK_SIZE as u64;
         tss
     })
-}
-
-fn initialize_pic() {
-    let mut pic1_command = Port::<u8>::new(PIC1_COMMAND_PORT);
-    let mut pic1_data = Port::<u8>::new(PIC1_DATA_PORT);
-    let mut pic2_command = Port::<u8>::new(PIC2_COMMAND_PORT);
-    let mut pic2_data = Port::<u8>::new(PIC2_DATA_PORT);
-
-    unsafe {
-        let _saved_mask1 = pic1_data.read();
-        let _saved_mask2 = pic2_data.read();
-
-        pic1_command.write(PIC_ICW1_INIT);
-        io_wait();
-        pic2_command.write(PIC_ICW1_INIT);
-        io_wait();
-
-        pic1_data.write(PIC_PRIMARY_OFFSET);
-        io_wait();
-        pic2_data.write(PIC_SECONDARY_OFFSET);
-        io_wait();
-
-        pic1_data.write(0x04);
-        io_wait();
-        pic2_data.write(0x02);
-        io_wait();
-
-        pic1_data.write(PIC_ICW4_8086);
-        io_wait();
-        pic2_data.write(PIC_ICW4_8086);
-        io_wait();
-
-        pic1_data.write(0b1111_1110);
-        pic2_data.write(0b1111_1111);
-    }
-}
-
-fn initialize_pit(tick_hz: u32) {
-    let divisor = (PIT_INPUT_HZ / tick_hz.max(1)) as u16;
-    let [low, high] = divisor.to_le_bytes();
-    let mut pit_command = Port::<u8>::new(PIT_COMMAND_PORT);
-    let mut pit_channel0 = Port::<u8>::new(PIT_CHANNEL0_PORT);
-
-    unsafe {
-        pit_command.write(0x36);
-        pit_channel0.write(low);
-        pit_channel0.write(high);
-    }
-}
-
-fn io_wait() {
-    let mut wait_port = Port::<u8>::new(0x80);
-
-    unsafe {
-        wait_port.write(0);
-    }
-}
-
-fn acknowledge_pic(vector: u8) {
-    let mut pic1_command = Port::<u8>::new(PIC1_COMMAND_PORT);
-    let mut pic2_command = Port::<u8>::new(PIC2_COMMAND_PORT);
-
-    unsafe {
-        if vector >= PIC_SECONDARY_OFFSET {
-            pic2_command.write(PIC_EOI);
-        }
-
-        pic1_command.write(PIC_EOI);
-    }
-}
-
-fn unmask_pic_irq_line(irq_line: u8) {
-    let mut pic1_data = Port::<u8>::new(PIC1_DATA_PORT);
-    let mut pic2_data = Port::<u8>::new(PIC2_DATA_PORT);
-
-    unsafe {
-        if irq_line < 8 {
-            let mask = pic1_data.read() & !(1u8 << irq_line);
-            pic1_data.write(mask);
-            return;
-        }
-
-        let cascade_mask = pic1_data.read() & !(1u8 << 2);
-        pic1_data.write(cascade_mask);
-        let secondary_line = irq_line - 8;
-        let mask = pic2_data.read() & !(1u8 << secondary_line);
-        pic2_data.write(mask);
-    }
-}
-
-pub fn register_external_irq_handler(irq_line: u8, handler: fn(u8)) -> bool {
-    if irq_line as usize >= EXTERNAL_IRQ_LINES || irq_line == 0 {
-        return false;
-    }
-
-    let mut handlers = EXTERNAL_IRQ_HANDLERS.lock();
-    let line_handlers = &mut handlers[irq_line as usize];
-    for existing in line_handlers.iter().flatten().copied() {
-        if core::ptr::fn_addr_eq(existing, handler) {
-            drop(handlers);
-            unmask_pic_irq_line(irq_line);
-            return true;
-        }
-    }
-    if let Some(slot) = line_handlers.iter_mut().find(|slot| slot.is_none()) {
-        *slot = Some(handler);
-        drop(handlers);
-        unmask_pic_irq_line(irq_line);
-        return true;
-    }
-    false
-}
-
-fn frame_view(frame: &InterruptStackFrame) -> TrapFrameView {
-    TrapFrameView {
-        instruction_pointer: frame.instruction_pointer.as_u64(),
-        stack_pointer: frame.stack_pointer.as_u64(),
-        flags: frame.cpu_flags.bits(),
-        code_segment: frame.code_segment.0 as u64,
-    }
-}
-
-fn handle_exception(report: ExceptionReport) -> ! {
-    log_exception(report);
-
-    if matches!(
-        report.disposition,
-        serviceos_kernel_core::interrupts::FaultDisposition::TerminateTask
-    ) {
-        terminate_faulting_user_task(report);
-    }
-
-    cpu::halt_loop()
-}
-
-fn terminate_faulting_user_task(report: ExceptionReport) -> ! {
-    serial::write_args(format_args!(
-        "serviceos: interrupt: terminating faulting userspace task exit={:#x}\n",
-        user_fault_exit_code(report)
-    ));
-    serviceos_kernel_core::user::mark_current_thread_faulted(user_fault_exit_code(report));
-    if let Some(tasks) = task::system() {
-        let _ = tasks.scheduler().terminate_current();
-    }
-    crate::user::return_to_kernel()
-}
-
-fn user_fault_exit_code(report: ExceptionReport) -> u64 {
-    const USER_FAULT_EXIT_TAG: u64 = 0xf100_0000_0000_0000;
-
-    let detail = match report.detail {
-        ExceptionDetail::InvalidOpcode => 6,
-        ExceptionDetail::PageFault { error_code, .. } => 0x100 | (error_code & 0xff),
-        ExceptionDetail::GeneralProtection { error_code } => 0x200 | (error_code & 0xff),
-        ExceptionDetail::Unknown { vector, .. } => 0x300 | vector.0 as u64,
-        ExceptionDetail::DoubleFault { error_code } => 0x400 | (error_code & 0xff),
-        ExceptionDetail::Breakpoint => 3,
-    };
-
-    USER_FAULT_EXIT_TAG | detail
-}
-
-fn log_exception(report: ExceptionReport) {
-    match report.detail {
-        ExceptionDetail::Breakpoint => {
-            serial::write_args(format_args!(
-                "serviceos: breakpoint trap at ip={:#x}\n",
-                report.frame.instruction_pointer
-            ));
-        }
-        ExceptionDetail::InvalidOpcode => {
-            serial::write_args(format_args!(
-                "serviceos: invalid opcode at ip={:#x} origin={:?}\n",
-                report.frame.instruction_pointer,
-                report.frame.origin()
-            ));
-        }
-        ExceptionDetail::DoubleFault { error_code } => {
-            serial::write_args(format_args!(
-                "serviceos: double fault error={:#x} ip={:#x}\n",
-                error_code, report.frame.instruction_pointer
-            ));
-        }
-        ExceptionDetail::GeneralProtection { error_code } => {
-            serial::write_args(format_args!(
-                "serviceos: general protection fault error={:#x} ip={:#x} origin={:?}\n",
-                error_code,
-                report.frame.instruction_pointer,
-                report.frame.origin()
-            ));
-        }
-        ExceptionDetail::PageFault {
-            fault_address,
-            error_code,
-        } => {
-            serial::write_args(format_args!(
-                "serviceos: page fault addr={:#x} error={:#x} ip={:#x} origin={:?}\n",
-                fault_address,
-                error_code,
-                report.frame.instruction_pointer,
-                report.frame.origin()
-            ));
-        }
-        ExceptionDetail::Unknown { vector, error_code } => {
-            serial::write_args(format_args!(
-                "serviceos: exception vector={} error={:?} ip={:#x} origin={:?}\n",
-                vector.0,
-                error_code,
-                report.frame.instruction_pointer,
-                report.frame.origin()
-            ));
-        }
-    }
-}
-
-fn fatal_unknown_exception(frame: InterruptStackFrame, vector: u8, error_code: Option<u64>) -> ! {
-    handle_exception(interrupts::handle_exception(
-        ExceptionDetail::Unknown {
-            vector: serviceos_kernel_core::interrupts::ExceptionVector(vector),
-            error_code,
-        },
-        frame_view(&frame),
-    ))
-}
-
-extern "x86-interrupt" fn timer_interrupt_handler(_frame: InterruptStackFrame) {
-    let _ = interrupts::note_timer_interrupt(InterruptVector(TIMER_VECTOR as u16));
-    if let Some(hook) = *TIMER_TICK_HOOK.lock() {
-        hook();
-    }
-    acknowledge_pic(TIMER_VECTOR);
-}
-
-fn dispatch_external_irq(irq_line: u8) {
-    let vector = PIC_PRIMARY_OFFSET + irq_line;
-    interrupts::note_external_interrupt(InterruptVector(vector as u16));
-    let handlers = EXTERNAL_IRQ_HANDLERS.lock();
-    for handler in handlers[irq_line as usize].iter().flatten().copied() {
-        handler(irq_line);
-    }
-    acknowledge_pic(vector);
-}
-
-macro_rules! external_irq_handler {
-    ($name:ident, $line:expr) => {
-        extern "x86-interrupt" fn $name(_frame: InterruptStackFrame) {
-            dispatch_external_irq($line);
-        }
-    };
-}
-
-external_irq_handler!(external_irq1_handler, 1);
-external_irq_handler!(external_irq2_handler, 2);
-external_irq_handler!(external_irq3_handler, 3);
-external_irq_handler!(external_irq4_handler, 4);
-external_irq_handler!(external_irq5_handler, 5);
-external_irq_handler!(external_irq6_handler, 6);
-external_irq_handler!(external_irq7_handler, 7);
-external_irq_handler!(external_irq8_handler, 8);
-external_irq_handler!(external_irq9_handler, 9);
-external_irq_handler!(external_irq10_handler, 10);
-external_irq_handler!(external_irq11_handler, 11);
-external_irq_handler!(external_irq12_handler, 12);
-external_irq_handler!(external_irq13_handler, 13);
-external_irq_handler!(external_irq14_handler, 14);
-external_irq_handler!(external_irq15_handler, 15);
-
-extern "x86-interrupt" fn breakpoint_handler(frame: InterruptStackFrame) {
-    let report = interrupts::handle_exception(ExceptionDetail::Breakpoint, frame_view(&frame));
-    if matches!(
-        report.disposition,
-        serviceos_kernel_core::interrupts::FaultDisposition::Fatal
-    ) {
-        handle_exception(report);
-    }
-}
-
-extern "x86-interrupt" fn divide_error_handler(frame: InterruptStackFrame) {
-    fatal_unknown_exception(frame, 0, None);
-}
-
-extern "x86-interrupt" fn debug_exception_handler(frame: InterruptStackFrame) {
-    fatal_unknown_exception(frame, 1, None);
-}
-
-extern "x86-interrupt" fn non_maskable_interrupt_handler(frame: InterruptStackFrame) {
-    fatal_unknown_exception(frame, 2, None);
-}
-
-extern "x86-interrupt" fn overflow_handler(frame: InterruptStackFrame) {
-    fatal_unknown_exception(frame, 4, None);
-}
-
-extern "x86-interrupt" fn bound_range_exceeded_handler(frame: InterruptStackFrame) {
-    fatal_unknown_exception(frame, 5, None);
-}
-
-extern "x86-interrupt" fn invalid_opcode_handler(frame: InterruptStackFrame) {
-    handle_exception(interrupts::handle_exception(
-        ExceptionDetail::InvalidOpcode,
-        frame_view(&frame),
-    ));
-}
-
-extern "x86-interrupt" fn device_not_available_handler(frame: InterruptStackFrame) {
-    fatal_unknown_exception(frame, 7, None);
-}
-
-extern "x86-interrupt" fn double_fault_handler(frame: InterruptStackFrame, error_code: u64) -> ! {
-    handle_exception(interrupts::handle_exception(
-        ExceptionDetail::DoubleFault { error_code },
-        frame_view(&frame),
-    ));
-}
-
-extern "x86-interrupt" fn invalid_tss_handler(frame: InterruptStackFrame, error_code: u64) {
-    fatal_unknown_exception(frame, 10, Some(error_code));
-}
-
-extern "x86-interrupt" fn segment_not_present_handler(frame: InterruptStackFrame, error_code: u64) {
-    fatal_unknown_exception(frame, 11, Some(error_code));
-}
-
-extern "x86-interrupt" fn stack_segment_fault_handler(frame: InterruptStackFrame, error_code: u64) {
-    fatal_unknown_exception(frame, 12, Some(error_code));
-}
-
-extern "x86-interrupt" fn general_protection_fault_handler(
-    frame: InterruptStackFrame,
-    error_code: u64,
-) {
-    handle_exception(interrupts::handle_exception(
-        ExceptionDetail::GeneralProtection { error_code },
-        frame_view(&frame),
-    ));
-}
-
-extern "x86-interrupt" fn page_fault_handler(
-    frame: InterruptStackFrame,
-    error_code: PageFaultErrorCode,
-) {
-    handle_exception(interrupts::handle_exception(
-        ExceptionDetail::PageFault {
-            fault_address: cpu::read_page_fault_address(),
-            error_code: error_code.bits(),
-        },
-        frame_view(&frame),
-    ));
-}
-
-extern "x86-interrupt" fn x87_floating_point_handler(frame: InterruptStackFrame) {
-    fatal_unknown_exception(frame, 16, None);
-}
-
-extern "x86-interrupt" fn alignment_check_handler(frame: InterruptStackFrame, error_code: u64) {
-    fatal_unknown_exception(frame, 17, Some(error_code));
-}
-
-extern "x86-interrupt" fn machine_check_handler(frame: InterruptStackFrame) -> ! {
-    fatal_unknown_exception(frame, 18, None)
-}
-
-extern "x86-interrupt" fn simd_floating_point_handler(frame: InterruptStackFrame) {
-    fatal_unknown_exception(frame, 19, None);
-}
-
-extern "x86-interrupt" fn virtualization_handler(frame: InterruptStackFrame) {
-    fatal_unknown_exception(frame, 20, None);
-}
-
-extern "x86-interrupt" fn control_protection_handler(frame: InterruptStackFrame, error_code: u64) {
-    fatal_unknown_exception(frame, 21, Some(error_code));
-}
-
-extern "x86-interrupt" fn hypervisor_injection_handler(frame: InterruptStackFrame) {
-    fatal_unknown_exception(frame, 28, None);
-}
-
-extern "x86-interrupt" fn vmm_communication_handler(frame: InterruptStackFrame, error_code: u64) {
-    fatal_unknown_exception(frame, 29, Some(error_code));
-}
-
-extern "x86-interrupt" fn security_exception_handler(frame: InterruptStackFrame, error_code: u64) {
-    fatal_unknown_exception(frame, 30, Some(error_code));
-}
-
-#[unsafe(no_mangle)]
-extern "C" fn serviceos_x86_64_handle_syscall(frame: &mut SavedUserContext) -> u64 {
-    let context = SyscallContext {
-        instruction_pointer: frame.instruction_pointer,
-        stack_pointer: frame.user_stack_pointer,
-        flags: frame.cpu_flags,
-        arguments: [
-            frame.rdi, frame.rsi, frame.rdx, frame.r10, frame.r8, frame.r9,
-        ],
-    };
-    let result = interrupts::dispatch_syscall(SyscallNumber(frame.rax as u32), &context);
-
-    frame.rax = result.value;
-    frame.rdx = result.abi_error_code();
-    match result.action {
-        serviceos_kernel_core::syscall::SyscallAction::ReturnToCaller => 0,
-        serviceos_kernel_core::syscall::SyscallAction::YieldCurrentThread => {
-            if let Some(tasks) = serviceos_kernel_core::task::system() {
-                if let Some(thread_id) = tasks.scheduler().current_thread() {
-                    crate::user::save_thread_context(thread_id, frame);
-                }
-                let _ = tasks.scheduler().yield_current();
-            }
-            1
-        }
-        serviceos_kernel_core::syscall::SyscallAction::BlockCurrentThreadOnReceive { endpoint } => {
-            if let Some(tasks) = serviceos_kernel_core::task::system() {
-                if let Some(thread_id) = tasks.scheduler().current_thread() {
-                    crate::user::save_thread_context(thread_id, frame);
-                }
-                let _ = tasks.scheduler().block_current_on_receive(endpoint);
-            }
-            1
-        }
-        serviceos_kernel_core::syscall::SyscallAction::BlockCurrentThreadOnPacketReceive {
-            interface,
-        } => {
-            if let Some(tasks) = serviceos_kernel_core::task::system() {
-                if let Some(thread_id) = tasks.scheduler().current_thread() {
-                    crate::user::save_thread_context(thread_id, frame);
-                }
-                let _ = tasks.scheduler().block_current_on_packet_receive(interface);
-            }
-            1
-        }
-        serviceos_kernel_core::syscall::SyscallAction::BlockCurrentThreadOnInputReceive {
-            source,
-        } => {
-            if let Some(tasks) = serviceos_kernel_core::task::system() {
-                if let Some(thread_id) = tasks.scheduler().current_thread() {
-                    crate::user::save_thread_context(thread_id, frame);
-                }
-                let _ = tasks.scheduler().block_current_on_input_receive(source);
-            }
-            1
-        }
-        serviceos_kernel_core::syscall::SyscallAction::ExitCurrentThread { status } => {
-            serviceos_kernel_core::user::mark_current_thread_exited(status);
-            if let Some(tasks) = serviceos_kernel_core::task::system() {
-                let _ = tasks.scheduler().terminate_current();
-            }
-            1
-        }
-    }
-}
-
-pub(crate) fn user_code_selector() -> SegmentSelector {
-    let selector = DESCRIPTOR_TABLES
-        .get()
-        .expect("descriptor tables initialized")
-        .selectors
-        .user_code;
-
-    SegmentSelector(selector.0 | 0b11)
-}
-
-pub(crate) fn user_data_selector() -> SegmentSelector {
-    let selector = DESCRIPTOR_TABLES
-        .get()
-        .expect("descriptor tables initialized")
-        .selectors
-        .user_data;
-
-    SegmentSelector(selector.0 | 0b11)
 }

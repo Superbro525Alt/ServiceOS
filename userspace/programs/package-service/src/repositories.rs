@@ -47,7 +47,7 @@ pub(crate) fn load_boot_catalog(
             manifest.package.as_str().unwrap_or("SERVICE PACKAGE"),
             BUILTIN_REPOSITORY_INDEX,
             PackageTrustState::BootTrusted,
-            Some(manifest),
+            Some(&manifest),
             None,
             repos[BUILTIN_REPOSITORY_INDEX].channel,
             repos[BUILTIN_REPOSITORY_INDEX].ring,
@@ -72,7 +72,7 @@ pub(crate) fn add_or_update_version(
     summary: &str,
     repo_index: usize,
     trust_state: PackageTrustState,
-    manifest: Option<PackageManifest>,
+    manifest: Option<&PackageManifest>,
     pin_version: Option<&str>,
     channel: PackageChannel,
     ring: PackageRing,
@@ -83,14 +83,14 @@ pub(crate) fn add_or_update_version(
         if *package_count == packages.len() {
             return Err(rt::Error::CapacityExceeded);
         }
-        let mut slot = PackageSlot::empty();
+        let index = *package_count;
+        let slot = &mut packages[index];
+        *slot = PackageSlot::empty();
         slot.service_id = service_id;
         let _ = slot.package_name.set(package_name);
         slot.channel = channel;
         slot.ring = ring;
         slot.occupied = true;
-        packages[*package_count] = slot;
-        let index = *package_count;
         *package_count += 1;
         index
     };
@@ -108,7 +108,7 @@ pub(crate) fn add_or_update_version(
         version_slot.repo_index = repo_index;
         version_slot.trust_state = trust_state;
         if let Some(manifest) = manifest {
-            version_slot.manifest = manifest;
+            version_slot.manifest = *manifest;
             version_slot.manifest_loaded = true;
         }
         if let Some(pin) = pin_version {
@@ -123,7 +123,9 @@ pub(crate) fn add_or_update_version(
     if slot.version_count == slot.versions.len() {
         return Err(rt::Error::CapacityExceeded);
     }
-    let mut version_slot = PackageVersionSlot::empty();
+    let version_index = slot.version_count;
+    let version_slot = &mut slot.versions[version_index];
+    *version_slot = PackageVersionSlot::empty();
     let _ = version_slot.version.set(version);
     let _ = version_slot.compatibility.set(compatibility);
     let _ = version_slot.repo_manifest_path.set(repo_manifest_path);
@@ -134,10 +136,9 @@ pub(crate) fn add_or_update_version(
     version_slot.trust_state = trust_state;
     version_slot.occupied = true;
     if let Some(manifest) = manifest {
-        version_slot.manifest = manifest;
+        version_slot.manifest = *manifest;
         version_slot.manifest_loaded = true;
     }
-    slot.versions[slot.version_count] = version_slot;
     slot.version_count += 1;
     if let Some(pin) = pin_version {
         let _ = slot.pin_version.set(pin);

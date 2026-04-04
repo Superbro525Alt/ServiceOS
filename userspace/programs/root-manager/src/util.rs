@@ -485,6 +485,7 @@ pub(crate) fn event_name(event: LogEvent) -> &'static str {
         LogEvent::SecurityLaunchDenied => "security-launch-denied",
         LogEvent::RuntimeApprovalPending => "runtime-approval-pending",
         LogEvent::RuntimeApprovalChanged => "runtime-approval-changed",
+        LogEvent::KernelTrap => "kernel-trap",
     }
 }
 

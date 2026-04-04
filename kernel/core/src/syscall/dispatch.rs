@@ -11,11 +11,12 @@ use super::{
     handle_debug_console_write, handle_debug_log_write, handle_display_output_info,
     handle_display_output_present, handle_event_create, handle_event_reset, handle_event_signal,
     handle_handle_close, handle_handle_duplicate, handle_input_source_info,
-    handle_input_source_receive, handle_memory_create, handle_memory_info, handle_memory_map,
-    handle_memory_map_range, handle_memory_read, handle_memory_write, handle_monotonic_now,
-    handle_object_info, handle_object_wait, handle_packet_interface_info,
-    handle_packet_interface_receive, handle_packet_interface_transmit, handle_service_spawn,
-    handle_task_spawn_image, handle_task_status, handle_thread_exit, handle_yield_current,
+    handle_input_source_receive, handle_kernel_event_query_info, handle_kernel_event_query_record,
+    handle_memory_create, handle_memory_info, handle_memory_map, handle_memory_map_range,
+    handle_memory_read, handle_memory_write, handle_monotonic_now, handle_object_info,
+    handle_object_wait, handle_packet_interface_info, handle_packet_interface_receive,
+    handle_packet_interface_transmit, handle_service_spawn, handle_task_spawn_image,
+    handle_task_status, handle_thread_exit, handle_yield_current,
 };
 
 type Handler = fn(&SyscallContext) -> SyscallReturn;
@@ -106,6 +107,8 @@ pub fn initialize() -> &'static DispatchTable {
             Some(handle_event_reset),
             Some(handle_object_info),
             Some(handle_object_wait),
+            Some(handle_kernel_event_query_info),
+            Some(handle_kernel_event_query_record),
         ])
     })
 }

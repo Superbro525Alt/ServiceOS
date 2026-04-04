@@ -266,7 +266,8 @@ fn set_pixel(bytes: &mut [u8], x: usize, y: usize, rgb: u32) {
 }
 
 fn sample_snapshot(status_handle: rt::Handle, network_handle: rt::Handle) -> MonitorSnapshot {
-    let (heartbeat_count, heartbeat_tick) = rt::status_snapshot(status_handle).unwrap_or((0, 0));
+    let (heartbeat_count, heartbeat_tick, _) =
+        rt::status_snapshot(status_handle).unwrap_or((0, 0, 0));
     let interface = rt::network_interface_status(network_handle, 0)
         .ok()
         .flatten();

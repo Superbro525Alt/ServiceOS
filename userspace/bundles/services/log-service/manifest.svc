@@ -7,3 +7,4 @@ restart=on-failure:1:5
 depends=console-service,config-service
 grant=console-service:send
 grant=config-service:send
+lookup=storage-service:send

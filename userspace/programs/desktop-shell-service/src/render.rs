@@ -113,8 +113,8 @@ pub(crate) fn refresh_desktop_status(state: &mut DesktopState) -> rt::Result<()>
 }
 
 fn sample_desktop_status(state: &DesktopState) -> DesktopStatusSnapshot {
-    let (heartbeat_count, heartbeat_tick) =
-        rt::status_snapshot(state.system_status_handle).unwrap_or((0, 0));
+    let (heartbeat_count, heartbeat_tick, _) =
+        rt::status_snapshot(state.system_status_handle).unwrap_or((0, 0, 0));
     let ipv4_address = rt::network_interface_status(state.network_handle, 0)
         .ok()
         .flatten()

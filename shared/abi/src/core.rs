@@ -77,6 +77,8 @@ pub enum SyscallNumber {
     EventReset = 36,
     ObjectInfo = 37,
     ObjectWait = 38,
+    KernelEventQueryInfo = 39,
+    KernelEventQueryRecord = 40,
 }
 
 #[repr(u32)]
@@ -217,4 +219,24 @@ pub struct ObjectInfo {
     pub detail1: u64,
     pub detail2: u64,
     pub detail3: u64,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum KernelEventKind {
+    Trap = 1,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct KernelEventRecord {
+    pub sequence: u64,
+    pub kind: KernelEventKind,
+    pub reserved: u32,
+    pub tick: u64,
+    pub detail0: u64,
+    pub detail1: u64,
+    pub detail2: u64,
+    pub detail3: u64,
+    pub detail4: u64,
 }

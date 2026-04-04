@@ -74,8 +74,9 @@ pub(crate) fn write_log_record(output: ShellOutput, record: rt::LogRecord) -> rt
         rt::LogEvent::DisplayOutputReady => write_output_linef(
             output,
             format_args!(
-                "#{} {} {} {}/{} {}x{}",
+                "#{}@{} {} {} {}/{} {}x{}",
                 record.sequence,
+                record.tick,
                 severity_name(record.severity),
                 service_name(record.source),
                 domain_name(record.domain),
@@ -84,13 +85,29 @@ pub(crate) fn write_log_record(output: ShellOutput, record: rt::LogRecord) -> rt
                 record.arg1,
             ),
         ),
+        rt::LogEvent::KernelTrap => write_output_linef(
+            output,
+            format_args!(
+                "#{}@{} {} {} {}/{} code={:#x} ip={:#x} aux={:#x}",
+                record.sequence,
+                record.tick,
+                severity_name(record.severity),
+                service_name(record.source),
+                domain_name(record.domain),
+                event_name(record.event),
+                record.arg0,
+                record.arg1,
+                record.arg2,
+            ),
+        ),
         rt::LogEvent::SurfaceCreated
         | rt::LogEvent::SessionReady
         | rt::LogEvent::SessionFocusChanged => write_output_linef(
             output,
             format_args!(
-                "#{} {} {} {}/{} {} {}",
+                "#{}@{} {} {} {}/{} {} {}",
                 record.sequence,
+                record.tick,
                 severity_name(record.severity),
                 service_name(record.source),
                 domain_name(record.domain),
@@ -102,14 +119,16 @@ pub(crate) fn write_log_record(output: ShellOutput, record: rt::LogRecord) -> rt
         _ => write_output_linef(
             output,
             format_args!(
-                "#{} {} {} {}/{} {} {}",
+                "#{}@{} {} {} {}/{} {} {} {}",
                 record.sequence,
+                record.tick,
                 severity_name(record.severity),
                 service_name(record.source),
                 domain_name(record.domain),
                 event_name(record.event),
                 record.arg0,
                 record.arg1,
+                record.arg2,
             ),
         ),
     }

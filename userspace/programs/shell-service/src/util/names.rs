@@ -167,6 +167,7 @@ pub(crate) fn domain_name(domain: LogDomain) -> &'static str {
         LogDomain::Runtime => "runtime",
         LogDomain::Developer => "developer",
         LogDomain::Security => "security",
+        LogDomain::Kernel => "kernel",
     }
 }
 
@@ -241,6 +242,7 @@ pub(crate) fn event_name(event: LogEvent) -> &'static str {
         LogEvent::SecurityLaunchDenied => "security-launch-denied",
         LogEvent::RuntimeApprovalPending => "runtime-approval-pending",
         LogEvent::RuntimeApprovalChanged => "runtime-approval-changed",
+        LogEvent::KernelTrap => "kernel-trap",
     }
 }
 

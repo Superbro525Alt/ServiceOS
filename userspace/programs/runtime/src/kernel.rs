@@ -1,6 +1,6 @@
 use crate::{
-    OBJECT_WAIT_FLAG_NONBLOCK, ObjectInfo, syscall0, syscall1, syscall2, syscall3, Handle,
-    Result, ServiceImageId, SyscallNumber, TaskStateCode, TaskStatus,
+    KernelEventRecord, OBJECT_WAIT_FLAG_NONBLOCK, ObjectInfo, syscall0, syscall1, syscall2,
+    syscall3, Handle, Result, ServiceImageId, SyscallNumber, TaskStateCode, TaskStatus,
 };
 
 pub fn abi_version() -> Result<u64> {
@@ -135,6 +135,34 @@ pub fn event_signal(handle: Handle) -> Result<()> {
 
 pub fn event_reset(handle: Handle) -> Result<()> {
     syscall1(SyscallNumber::EventReset, handle as u64).map(|_| ())
+}
+
+pub fn kernel_event_query_info() -> Result<(u64, u64)> {
+    let packed = syscall0(SyscallNumber::KernelEventQueryInfo)?;
+    Ok((packed & 0xffff_ffff, packed >> 32))
+}
+
+pub fn kernel_event_query_record(sequence: u64) -> Result<Option<KernelEventRecord>> {
+    let mut record = KernelEventRecord {
+        sequence: 0,
+        kind: crate::KernelEventKind::Trap,
+        reserved: 0,
+        tick: 0,
+        detail0: 0,
+        detail1: 0,
+        detail2: 0,
+        detail3: 0,
+        detail4: 0,
+    };
+    match syscall2(
+        SyscallNumber::KernelEventQueryRecord,
+        sequence,
+        &mut record as *mut KernelEventRecord as u64,
+    ) {
+        Ok(_) => Ok(Some(record)),
+        Err(crate::Error::NotFound) => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 pub fn wait_for_exit(task_handle: Handle) -> Result<TaskStatus> {

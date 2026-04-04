@@ -1,10 +1,12 @@
+use serviceos_abi::KernelEventRecord as AbiKernelEventRecord;
+
 use super::super::SYSCALL_ABI_VERSION;
 
 use super::{
-    super::{SyscallAction, SyscallContext, SyscallError, SyscallReturn, user_slice},
+    super::{SyscallAction, SyscallContext, SyscallError, SyscallReturn, user_mut, user_slice},
     common::{DEBUG_CONSOLE_READER, DEBUG_CONSOLE_WRITER, DEBUG_LOG_WRITER},
 };
-use crate::time;
+use crate::{interrupts, time};
 
 pub(crate) fn handle_abi_version(_context: &SyscallContext) -> SyscallReturn {
     SyscallReturn::success(SYSCALL_ABI_VERSION)
@@ -62,4 +64,21 @@ pub(crate) fn handle_debug_console_write(context: &SyscallContext) -> SyscallRet
     };
     writer(bytes);
     SyscallReturn::success(length as u64)
+}
+
+pub(crate) fn handle_kernel_event_query_info(_context: &SyscallContext) -> SyscallReturn {
+    let (oldest, next) = interrupts::kernel_event_info();
+    let value = (next << 32) | (oldest & 0xffff_ffff);
+    SyscallReturn::success(value)
+}
+
+pub(crate) fn handle_kernel_event_query_record(context: &SyscallContext) -> SyscallReturn {
+    let Ok(record_out) = (unsafe { user_mut::<AbiKernelEventRecord>(context.arguments[1]) }) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Some(record) = interrupts::kernel_event_query(context.arguments[0]) else {
+        return SyscallReturn::error(SyscallError::NotFound);
+    };
+    *record_out = record;
+    SyscallReturn::success(0)
 }

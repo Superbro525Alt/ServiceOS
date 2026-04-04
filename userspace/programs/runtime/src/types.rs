@@ -14,12 +14,14 @@ use crate::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LogRecord {
     pub sequence: u64,
+    pub tick: u64,
     pub source: ServiceId,
     pub severity: LogSeverity,
     pub domain: LogDomain,
     pub event: LogEvent,
     pub arg0: u64,
     pub arg1: u64,
+    pub arg2: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

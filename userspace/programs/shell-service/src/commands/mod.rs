@@ -57,11 +57,21 @@ pub(crate) fn execute_command(
             None => write_output_linef(output, format_args!("usage: restart <name>")),
         },
         "logs" => {
-            let count = parts
-                .next()
-                .and_then(|value| value.parse::<usize>().ok())
-                .unwrap_or(12);
-            core::cmd_logs(bootstrap, output, count)
+            match parts.next() {
+                Some("stream") => {
+                    let count = parts
+                        .next()
+                        .and_then(|value| value.parse::<usize>().ok())
+                        .unwrap_or(12);
+                    core::cmd_logs_stream(bootstrap, output, count)
+                }
+                maybe_count => {
+                    let count = maybe_count
+                        .and_then(|value| value.parse::<usize>().ok())
+                        .unwrap_or(12);
+                    core::cmd_logs(bootstrap, output, count)
+                }
+            }
         }
         "config" => match parts.next() {
             None => core::cmd_config(bootstrap, output),

@@ -21,6 +21,18 @@ pub fn channel_send(endpoint: Handle, message: &RawMessage) -> Result<()> {
     .map(|_| ())
 }
 
+pub fn channel_send_blocking(endpoint: Handle, message: &RawMessage) -> Result<()> {
+    loop {
+        match channel_send(endpoint, message) {
+            Ok(()) => return Ok(()),
+            Err(Error::CapacityExceeded) => {
+                crate::yield_current()?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 pub fn channel_receive(endpoint: Handle, message: &mut RawMessage) -> Result<()> {
     syscall2(
         SyscallNumber::ChannelReceive,
@@ -53,7 +65,7 @@ pub fn channel_call(endpoint: Handle, request: &mut RawMessage) -> Result<RawMes
     request.handles[0] = reply.second;
     request.handle_rights[0] = rights::SEND;
 
-    let send_result = channel_send(endpoint, request);
+    let send_result = channel_send_blocking(endpoint, request);
     let _ = crate::handle_close(reply.second);
     send_result?;
 

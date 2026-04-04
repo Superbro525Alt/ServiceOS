@@ -66,6 +66,7 @@ pub(crate) fn domain_from_word(value: u64) -> LogDomain {
         x if x == LogDomain::Runtime as u32 => LogDomain::Runtime,
         x if x == LogDomain::Developer as u32 => LogDomain::Developer,
         x if x == LogDomain::Security as u32 => LogDomain::Security,
+        x if x == LogDomain::Kernel as u32 => LogDomain::Kernel,
         _ => LogDomain::Service,
     }
 }
@@ -135,6 +136,7 @@ pub(crate) fn event_from_word(value: u64) -> LogEvent {
         x if x == LogEvent::SecurityLaunchDenied as u32 => LogEvent::SecurityLaunchDenied,
         x if x == LogEvent::RuntimeApprovalPending as u32 => LogEvent::RuntimeApprovalPending,
         x if x == LogEvent::RuntimeApprovalChanged as u32 => LogEvent::RuntimeApprovalChanged,
+        x if x == LogEvent::KernelTrap as u32 => LogEvent::KernelTrap,
         _ => LogEvent::LookupGranted,
     }
 }

@@ -177,6 +177,23 @@ pub(crate) fn cmd_logs(
     Ok(())
 }
 
+pub(crate) fn cmd_logs_stream(
+    bootstrap: rt::Handle,
+    output: ShellOutput,
+    count: usize,
+) -> rt::Result<()> {
+    let log_handle = rt::lookup_service(bootstrap, ServiceId::Log)?;
+    let subscription =
+        rt::log_subscribe(log_handle, rt::LogSeverity::Trace, None, None)?;
+    let _ = rt::handle_close(log_handle);
+    for _ in 0..count {
+        let record = rt::log_receive_record(subscription)?;
+        write_log_record(output, record)?;
+    }
+    let _ = rt::handle_close(subscription);
+    Ok(())
+}
+
 pub(crate) fn cmd_config(bootstrap: rt::Handle, output: ShellOutput) -> rt::Result<()> {
     let config_handle = rt::lookup_service(bootstrap, ServiceId::Config)?;
     for key in [

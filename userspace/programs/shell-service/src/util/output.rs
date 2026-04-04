@@ -34,6 +34,7 @@ service-caps <name>: inspect delegated lookup capabilities for one service\r\n\
 service-revoke-lookup <service> <target> <revoke|default>: change future delegated lookup policy\r\n\
 restart <name>: request a service restart\r\n\
 logs [count]: show recent structured logs\r\n\
+logs stream [count]: subscribe to live structured logs\r\n\
 config: show core configuration values\r\n\
 config get <key>: read one persisted configuration key\r\n\
 config set <key> <value>: update one persisted configuration key\r\n\

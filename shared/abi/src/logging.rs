@@ -31,6 +31,7 @@ pub enum LogDomain {
     Runtime = 18,
     Developer = 19,
     Security = 20,
+    Kernel = 21,
 }
 
 #[repr(u32)]
@@ -105,6 +106,7 @@ pub enum LogEvent {
     SecurityLaunchDenied = 67,
     RuntimeApprovalPending = 68,
     RuntimeApprovalChanged = 69,
+    KernelTrap = 70,
 }
 
 #[repr(u32)]
@@ -115,6 +117,9 @@ pub enum LogTag {
     QueryInfoReply = 0x102,
     QueryRecordRequest = 0x103,
     QueryRecordReply = 0x104,
+    SubscribeRequest = 0x105,
+    SubscribeReply = 0x106,
+    StreamRecord = 0x107,
 }
 
 #[repr(u32)]
@@ -123,3 +128,12 @@ pub enum LogQueryStatus {
     Ok = 0,
     NotFound = 1,
 }
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LogStatus {
+    Ok = 0,
+    Busy = 1,
+}
+
+pub const LOG_FILTER_ANY: u64 = u64::MAX;

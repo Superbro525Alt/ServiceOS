@@ -3,7 +3,7 @@ use serviceos_abi::{SyscallErrorCode as AbiErrorCode, SyscallNumber as AbiSyscal
 use crate::object::ObjectId;
 
 pub const SYSCALL_ABI_VERSION: u64 = 0x0003_0001;
-pub const MAX_SYSCALL_SLOTS: usize = 39;
+pub const MAX_SYSCALL_SLOTS: usize = 41;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SyscallNumber(pub u32);
@@ -155,6 +155,8 @@ pub enum SyscallKind {
     EventReset = AbiSyscallNumber::EventReset as isize,
     ObjectInfo = AbiSyscallNumber::ObjectInfo as isize,
     ObjectWait = AbiSyscallNumber::ObjectWait as isize,
+    KernelEventQueryInfo = AbiSyscallNumber::KernelEventQueryInfo as isize,
+    KernelEventQueryRecord = AbiSyscallNumber::KernelEventQueryRecord as isize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -96,7 +96,18 @@ pub(crate) fn execute_command(
             Some(path) => core::cmd_cat(bootstrap, output, path),
             None => write_output_linef(output, format_args!("usage: cat <path>")),
         },
-        "status" => core::cmd_status(bootstrap, output),
+        "status" => match parts.next() {
+            None => core::cmd_status_snapshot(bootstrap, output),
+            Some("services") => core::cmd_status_services(bootstrap, output),
+            Some("watch") => {
+                let count = parts
+                    .next()
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .unwrap_or(8);
+                core::cmd_status_watch(bootstrap, output, count)
+            }
+            _ => write_output_linef(output, format_args!("usage: status [services|watch [count]]")),
+        },
         "net" => network::cmd_net(bootstrap, output, parts),
         "audio" => audio::cmd_audio(bootstrap, output, parts),
         "gfx" => graphics::cmd_gfx(bootstrap, output, parts),

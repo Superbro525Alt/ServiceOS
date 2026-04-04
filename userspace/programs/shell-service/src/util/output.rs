@@ -43,7 +43,9 @@ store mkdir <path>: create a writable directory under a mutable namespace\r\n\
 store write <path> <text>: create or replace a writable text file\r\n\
 store rm <path>: remove a writable file or empty directory\r\n\
 cat <path>: print a text resource\r\n\
-status: show system heartbeat status\r\n\
+status: show status-service heartbeat and tracked service count\r\n\
+status services: list structured service health/status entries\r\n\
+status watch [count]: stream status changes from status-service\r\n\
 net ifaces: show network interfaces\r\n\
 net route: show the default route\r\n\
 net sockets: show active network sockets\r\n\

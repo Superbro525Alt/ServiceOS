@@ -13,6 +13,7 @@ use crate::util::{
 };
 
 const MAX_SERVICE_LOOKUPS: usize = 8;
+const MAX_STATUS_SERVICES: usize = 24;
 
 pub(crate) fn cmd_services(bootstrap: rt::Handle, output: ShellOutput) -> rt::Result<()> {
     let graph = rt::manager_graph_status(bootstrap)?;
@@ -469,21 +470,104 @@ fn parse_config_key(value: &str) -> Option<ConfigKey> {
     }
 }
 
-pub(crate) fn cmd_status(bootstrap: rt::Handle, output: ShellOutput) -> rt::Result<()> {
+pub(crate) fn cmd_status_snapshot(bootstrap: rt::Handle, output: ShellOutput) -> rt::Result<()> {
     let status_handle = rt::lookup_service(bootstrap, ServiceId::Status)?;
-    let (heartbeats, last_tick) = rt::status_snapshot(status_handle)?;
+    let (heartbeats, last_tick, tracked_services) = rt::status_snapshot(status_handle)?;
     let _ = rt::handle_close(status_handle);
     let now = rt::monotonic_now()?;
     write_output_linef(
         output,
-        format_args!("ticks={} heartbeats={} last-heartbeat={}", now, heartbeats, last_tick),
+        format_args!(
+            "ticks={} heartbeats={} last-heartbeat={} tracked-services={}",
+            now, heartbeats, last_tick, tracked_services
+        ),
     )
+}
+
+pub(crate) fn cmd_status_services(bootstrap: rt::Handle, output: ShellOutput) -> rt::Result<()> {
+    let status_handle = rt::lookup_service(bootstrap, ServiceId::Status)?;
+    let mut entries = [rt::StatusServiceInfo {
+        service_id: ServiceId::RootManager,
+        phase: rt::ManagerServicePhase::Dormant,
+        health: rt::StatusHealth::Unknown,
+        detail_kind: 0,
+        detail0: 0,
+        detail1: 0,
+        updated_tick: 0,
+    }; MAX_STATUS_SERVICES];
+    let count = rt::status_list_services(status_handle, &mut entries)?;
+    let _ = rt::handle_close(status_handle);
+    for entry in entries[..count].iter().copied() {
+        write_output_linef(
+            output,
+            format_args!(
+                "{:<16} phase={} health={} detail={} {} {} updated={}",
+                service_name(entry.service_id),
+                phase_name(entry.phase),
+                health_name(entry.health),
+                detail_kind_name(entry.detail_kind),
+                entry.detail0,
+                entry.detail1,
+                entry.updated_tick,
+            ),
+        )?;
+    }
+    Ok(())
+}
+
+pub(crate) fn cmd_status_watch(
+    bootstrap: rt::Handle,
+    output: ShellOutput,
+    count: usize,
+) -> rt::Result<()> {
+    let status_handle = rt::lookup_service(bootstrap, ServiceId::Status)?;
+    let subscription = rt::status_subscribe(status_handle, None)?;
+    let _ = rt::handle_close(status_handle);
+    for _ in 0..count {
+        let entry = rt::status_receive_event(subscription)?;
+        write_output_linef(
+            output,
+            format_args!(
+                "{:<16} phase={} health={} detail={} {} {} updated={}",
+                service_name(entry.service_id),
+                phase_name(entry.phase),
+                health_name(entry.health),
+                detail_kind_name(entry.detail_kind),
+                entry.detail0,
+                entry.detail1,
+                entry.updated_tick,
+            ),
+        )?;
+    }
+    let _ = rt::handle_close(subscription);
+    Ok(())
 }
 
 fn lookup_policy_name(policy: ManagerLookupPolicy) -> &'static str {
     match policy {
         ManagerLookupPolicy::Default => "default",
         ManagerLookupPolicy::Revoked => "revoked",
+    }
+}
+
+fn health_name(health: rt::StatusHealth) -> &'static str {
+    match health {
+        rt::StatusHealth::Healthy => "healthy",
+        rt::StatusHealth::Degraded => "degraded",
+        rt::StatusHealth::Failing => "failing",
+        rt::StatusHealth::Recovering => "recovering",
+        rt::StatusHealth::Dormant => "dormant",
+        rt::StatusHealth::Unknown => "unknown",
+    }
+}
+
+fn detail_kind_name(kind: u32) -> &'static str {
+    match kind {
+        x if x == rt::status_detail_kind::LIFECYCLE => "lifecycle",
+        x if x == rt::status_detail_kind::BLOCKED_DEPENDENCY => "blocked",
+        x if x == rt::status_detail_kind::RESTART_BACKOFF => "backoff",
+        x if x == rt::status_detail_kind::HEARTBEAT => "heartbeat",
+        _ => "none",
     }
 }
 

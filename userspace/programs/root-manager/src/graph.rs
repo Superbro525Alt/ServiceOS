@@ -12,7 +12,7 @@ use crate::state::{
 use crate::util::{
     allocate_slot, bootstrap_resource_for, close_slot_handles, dependencies_ready,
     emit_manager_event, fallback_logf, find_slot_index, first_unready_dependency,
-    occupied_service_count, ready_service_count, service_name,
+    occupied_service_count, publish_manager_status, ready_service_count, service_name,
 };
 
 pub(crate) fn load_base_service_graph(
@@ -121,7 +121,7 @@ pub(crate) fn activate_base_service_graph(
                 Err(_) => {
                     progress = true;
                     graph_status.degraded_boot = true;
-                    mark_service_degraded(slots, index);
+                    mark_service_degraded(slots, *service_count, index);
                 }
             }
         }
@@ -166,6 +166,15 @@ pub(crate) fn start_service(
     slots[index].restart_requested = false;
     slots[index].next_restart_tick = 0;
     slots[index].last_start_tick = rt::monotonic_now().unwrap_or(0);
+    publish_manager_status(
+        slots,
+        service_count,
+        manifest.service_id,
+        ServicePhase::Starting,
+        rt::status_detail_kind::LIFECYCLE,
+        slots[index].attempts as u64,
+        0,
+    );
 
     let mut startup = rt::RawMessage::empty(rt::ControlTag::Startup as u32);
     startup.word_count = 5;
@@ -398,7 +407,7 @@ pub(crate) fn supervision_loop(
                     )
                     .is_err()
                     {
-                        mark_service_degraded(slots, index);
+                        mark_service_degraded(slots, *service_count, index);
                         graph_status.degraded_boot = true;
                     } else if wait_until_ready(
                         slots,
@@ -409,7 +418,7 @@ pub(crate) fn supervision_loop(
                     )
                     .is_err()
                     {
-                        mark_service_degraded(slots, index);
+                        mark_service_degraded(slots, *service_count, index);
                         graph_status.degraded_boot = true;
                     }
                 } else {
@@ -429,7 +438,7 @@ pub(crate) fn supervision_loop(
                 )
                 .is_err()
                 {
-                    mark_service_degraded(slots, index);
+                    mark_service_degraded(slots, *service_count, index);
                     graph_status.degraded_boot = true;
                 } else if wait_until_ready(
                     slots,
@@ -440,7 +449,7 @@ pub(crate) fn supervision_loop(
                 )
                 .is_err()
                 {
-                    mark_service_degraded(slots, index);
+                    mark_service_degraded(slots, *service_count, index);
                     graph_status.degraded_boot = true;
                 }
             }
@@ -467,6 +476,15 @@ pub(crate) fn supervision_loop(
             if status.exit_code == 0 && slots[index].manifest.startup == ServiceStartupMode::OnDemand {
                 slots[index].phase = ServicePhase::Dormant;
                 slots[index].restart_requested = false;
+                publish_manager_status(
+                    slots,
+                    *service_count,
+                    service_id,
+                    ServicePhase::Dormant,
+                    rt::status_detail_kind::LIFECYCLE,
+                    0,
+                    0,
+                );
                 continue;
             }
 
@@ -488,13 +506,22 @@ pub(crate) fn supervision_loop(
             if status.exit_code == 0 {
                 slots[index].phase = ServicePhase::Exited;
                 slots[index].restart_requested = false;
+                publish_manager_status(
+                    slots,
+                    *service_count,
+                    service_id,
+                    ServicePhase::Exited,
+                    rt::status_detail_kind::LIFECYCLE,
+                    status.exit_code,
+                    0,
+                );
                 continue;
             }
 
             slots[index].consecutive_failures = slots[index].consecutive_failures.saturating_add(1);
             let failures = slots[index].attempts.saturating_sub(1);
             if !requested_restart && failures >= restart_limit {
-                mark_service_degraded(slots, index);
+                mark_service_degraded(slots, *service_count, index);
                 graph_status.degraded_boot = true;
                 continue;
             }
@@ -511,6 +538,23 @@ pub(crate) fn supervision_loop(
             };
             slots[index].next_restart_tick = now.saturating_add(delay);
             slots[index].restart_requested = false;
+            publish_manager_status(
+                slots,
+                *service_count,
+                service_id,
+                slots[index].phase,
+                if delay == 0 {
+                    rt::status_detail_kind::LIFECYCLE
+                } else {
+                    rt::status_detail_kind::RESTART_BACKOFF
+                },
+                if delay == 0 {
+                    status.exit_code
+                } else {
+                    slots[index].next_restart_tick
+                },
+                slots[index].consecutive_failures as u64,
+            );
 
             let _ = emit_manager_event(
                 slots,
@@ -531,7 +575,7 @@ pub(crate) fn supervision_loop(
                 )
                 .is_err()
                 {
-                    mark_service_degraded(slots, index);
+                    mark_service_degraded(slots, *service_count, index);
                     graph_status.degraded_boot = true;
                 } else if wait_until_ready(
                     slots,
@@ -542,7 +586,7 @@ pub(crate) fn supervision_loop(
                 )
                 .is_err()
                 {
-                    mark_service_degraded(slots, index);
+                    mark_service_degraded(slots, *service_count, index);
                     graph_status.degraded_boot = true;
                 }
             }
@@ -576,12 +620,34 @@ fn mark_waiting_dependency(
     slots[index].phase = ServicePhase::WaitingDependencies;
     slots[index].blocked_dependency =
         first_unready_dependency(slots, service_count, index).unwrap_or(ServiceId::RootManager);
+    publish_manager_status(
+        slots,
+        service_count,
+        slots[index].manifest.service_id,
+        ServicePhase::WaitingDependencies,
+        rt::status_detail_kind::BLOCKED_DEPENDENCY,
+        slots[index].blocked_dependency as u32 as u64,
+        0,
+    );
 }
 
-fn mark_service_degraded(slots: &mut [ServiceSlot; MAX_SERVICE_SLOTS], index: usize) {
+fn mark_service_degraded(
+    slots: &mut [ServiceSlot; MAX_SERVICE_SLOTS],
+    service_count: usize,
+    index: usize,
+) {
     slots[index].phase = ServicePhase::Degraded;
     slots[index].restart_requested = false;
     slots[index].next_restart_tick = 0;
+    publish_manager_status(
+        slots,
+        service_count,
+        slots[index].manifest.service_id,
+        ServicePhase::Degraded,
+        rt::status_detail_kind::LIFECYCLE,
+        slots[index].last_exit_code,
+        slots[index].consecutive_failures as u64,
+    );
 }
 
 fn emit_blocked_graph_diagnostics(

@@ -32,6 +32,35 @@ pub(crate) fn emit_manager_event(
     fallback_manager_event(severity, event, target, detail)
 }
 
+pub(crate) fn publish_manager_status(
+    slots: &[ServiceSlot; MAX_SERVICE_SLOTS],
+    service_count: usize,
+    service_id: ServiceId,
+    phase: ServicePhase,
+    detail_kind: u32,
+    detail0: u64,
+    detail1: u64,
+) {
+    let Some(status_index) = find_slot_index_checked(slots, service_count, ServiceId::Status) else {
+        return;
+    };
+    let status_handle = slots[status_index].public_handle;
+    if status_handle == rt::INVALID_HANDLE {
+        return;
+    }
+    let updated_tick = rt::monotonic_now().unwrap_or(0);
+    let _ = rt::status_report_service(
+        status_handle,
+        service_id,
+        manager_phase(phase),
+        status_health(phase),
+        detail_kind,
+        detail0,
+        detail1,
+        updated_tick,
+    );
+}
+
 pub(crate) fn fallback_manager_event(
     severity: LogSeverity,
     event: LogEvent,
@@ -336,6 +365,18 @@ pub(crate) fn manager_phase(phase: ServicePhase) -> ManagerServicePhase {
         ServicePhase::Backoff => ManagerServicePhase::Backoff,
         ServicePhase::Degraded => ManagerServicePhase::Degraded,
         ServicePhase::Exited => ManagerServicePhase::Exited,
+    }
+}
+
+pub(crate) fn status_health(phase: ServicePhase) -> rt::StatusHealth {
+    match phase {
+        ServicePhase::Ready => rt::StatusHealth::Healthy,
+        ServicePhase::Backoff | ServicePhase::Starting | ServicePhase::WaitingDependencies => {
+            rt::StatusHealth::Recovering
+        }
+        ServicePhase::Degraded => rt::StatusHealth::Degraded,
+        ServicePhase::Exited => rt::StatusHealth::Failing,
+        ServicePhase::Dormant => rt::StatusHealth::Dormant,
     }
 }
 

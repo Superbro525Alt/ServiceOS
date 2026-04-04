@@ -83,6 +83,15 @@ fn handle_control_message(
                 service_id,
                 slots[service_index].attempts as u64,
             );
+            crate::util::publish_manager_status(
+                slots,
+                *service_count,
+                service_id,
+                crate::state::ServicePhase::Ready,
+                rt::status_detail_kind::LIFECYCLE,
+                slots[service_index].attempts as u64,
+                0,
+            );
         }
         x if x == ControlTag::LookupRequest as u32 => {
             handle_lookup_request(

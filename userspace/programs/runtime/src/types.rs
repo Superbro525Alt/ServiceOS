@@ -70,6 +70,17 @@ pub struct ManagerServiceLookupInfo {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StatusServiceInfo {
+    pub service_id: ServiceId,
+    pub phase: crate::ManagerServicePhase,
+    pub health: crate::StatusHealth,
+    pub detail_kind: u32,
+    pub detail0: u64,
+    pub detail1: u64,
+    pub updated_tick: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PackageListEntry {
     pub service_id: ServiceId,
     pub installed: bool,

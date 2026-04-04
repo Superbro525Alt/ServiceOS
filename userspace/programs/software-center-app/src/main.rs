@@ -442,31 +442,18 @@ fn handle_pointer_down(
 ) -> rt::Result<bool> {
     if y >= BUTTON_Y0 && y < BUTTON_Y1 {
         if x >= BUTTON_SYNC_X0 && x < BUTTON_SYNC_X1 {
-            let sync = rt::package_repository_sync(package_handle, None)?;
-            reload_catalog(package_handle, state)?;
-            set_statusf(state, format_args!("sync complete: {} ok, {} failed", sync.synced, sync.failed));
+            sync_repositories(package_handle, state);
             return Ok(true);
         }
         if x >= BUTTON_INSTALL_X0 && x < BUTTON_INSTALL_X1 {
             if let Some(entry) = selected_entry(state) {
-                if entry.installed {
-                    rt::package_update(package_handle, entry.service_id, None)?;
-                    set_statusf(state, format_args!("updated {}", service_label(entry.service_id)));
-                } else {
-                    rt::package_install(package_handle, entry.service_id, None)?;
-                    set_statusf(state, format_args!("installed {}", service_label(entry.service_id)));
-                }
-                reload_catalog(package_handle, state)?;
-                select_service(state, entry.service_id);
+                apply_selected_package_action(package_handle, state, entry, PackageAction::InstallOrUpdate);
                 return Ok(true);
             }
         }
         if x >= BUTTON_REMOVE_X0 && x < BUTTON_REMOVE_X1 {
             if let Some(entry) = selected_entry(state) {
-                rt::package_remove(package_handle, entry.service_id)?;
-                reload_catalog(package_handle, state)?;
-                select_service(state, entry.service_id);
-                set_statusf(state, format_args!("removed {}", service_label(entry.service_id)));
+                apply_selected_package_action(package_handle, state, entry, PackageAction::Remove);
                 return Ok(true);
             }
         }
@@ -516,36 +503,103 @@ fn handle_key_down(package_handle: rt::Handle, state: &mut AppState, key: u32) -
         }
         KEY_ENTER => {
             if let Some(entry) = selected_entry(state) {
-                if entry.installed {
-                    rt::package_update(package_handle, entry.service_id, None)?;
-                    set_statusf(state, format_args!("updated {}", service_label(entry.service_id)));
-                } else {
-                    rt::package_install(package_handle, entry.service_id, None)?;
-                    set_statusf(state, format_args!("installed {}", service_label(entry.service_id)));
-                }
-                reload_catalog(package_handle, state)?;
-                select_service(state, entry.service_id);
+                apply_selected_package_action(package_handle, state, entry, PackageAction::InstallOrUpdate);
                 return Ok(true);
             }
         }
         KEY_BACKSPACE | KEY_DELETE => {
             if let Some(entry) = selected_entry(state).filter(|entry| entry.installed) {
-                rt::package_remove(package_handle, entry.service_id)?;
-                reload_catalog(package_handle, state)?;
-                select_service(state, entry.service_id);
-                set_statusf(state, format_args!("removed {}", service_label(entry.service_id)));
+                apply_selected_package_action(package_handle, state, entry, PackageAction::Remove);
                 return Ok(true);
             }
         }
         KEY_R => {
-            let sync = rt::package_repository_sync(package_handle, None)?;
-            reload_catalog(package_handle, state)?;
-            set_statusf(state, format_args!("sync complete: {} ok, {} failed", sync.synced, sync.failed));
+            sync_repositories(package_handle, state);
             return Ok(true);
         }
         _ => {}
     }
     Ok(false)
+}
+
+#[derive(Clone, Copy)]
+enum PackageAction {
+    InstallOrUpdate,
+    Remove,
+}
+
+fn sync_repositories(package_handle: rt::Handle, state: &mut AppState) {
+    match rt::package_repository_sync(package_handle, None) {
+        Ok(sync) => {
+            if reload_catalog(package_handle, state).is_ok() {
+                set_statusf(
+                    state,
+                    format_args!("sync complete: {} ok, {} failed", sync.synced, sync.failed),
+                );
+            } else {
+                set_statusf(state, format_args!("sync complete but catalog reload failed"));
+            }
+        }
+        Err(error) => set_statusf(state, format_args!("sync failed: {}", error_label(error))),
+    }
+}
+
+fn apply_selected_package_action(
+    package_handle: rt::Handle,
+    state: &mut AppState,
+    entry: CatalogEntry,
+    action: PackageAction,
+) {
+    let result = match action {
+        PackageAction::InstallOrUpdate => {
+            if entry.installed {
+                rt::package_update(package_handle, entry.service_id, None)
+            } else {
+                rt::package_install(package_handle, entry.service_id, None)
+            }
+        }
+        PackageAction::Remove => rt::package_remove(package_handle, entry.service_id),
+    };
+
+    match result {
+        Ok(()) => {
+            if reload_catalog(package_handle, state).is_ok() {
+                select_service(state, entry.service_id);
+                match action {
+                    PackageAction::InstallOrUpdate => {
+                        if entry.installed {
+                            set_statusf(
+                                state,
+                                format_args!("updated {}", service_label(entry.service_id)),
+                            );
+                        } else {
+                            set_statusf(
+                                state,
+                                format_args!("installed {}", service_label(entry.service_id)),
+                            );
+                        }
+                    }
+                    PackageAction::Remove => {
+                        set_statusf(state, format_args!("removed {}", service_label(entry.service_id)));
+                    }
+                }
+            } else {
+                set_statusf(state, format_args!("package action completed but reload failed"));
+            }
+        }
+        Err(error) => {
+            let verb = match action {
+                PackageAction::InstallOrUpdate => {
+                    if entry.installed { "update" } else { "install" }
+                }
+                PackageAction::Remove => "remove",
+            };
+            set_statusf(
+                state,
+                format_args!("{} failed: {}", verb, error_label(error)),
+            );
+        }
+    }
 }
 
 fn draw_titlebar(bytes: &mut [u8], width: usize) {
@@ -775,6 +829,22 @@ fn set_statusf(state: &mut AppState, args: core::fmt::Arguments<'_>) {
     let _ = buffer.write_fmt(args);
     state.status_len = buffer.as_bytes().len().min(state.status.len());
     state.status[..state.status_len].copy_from_slice(&buffer.as_bytes()[..state.status_len]);
+}
+
+fn error_label(error: rt::Error) -> &'static str {
+    match error {
+        rt::Error::NotFound => "not found",
+        rt::Error::PermissionDenied => "denied",
+        rt::Error::Busy => "busy",
+        rt::Error::NotInitialized => "not ready",
+        rt::Error::InvalidArgument => "invalid",
+        rt::Error::InvalidCall => "verification failed",
+        rt::Error::Unsupported => "unsupported",
+        rt::Error::BufferTooSmall => "buffer too small",
+        rt::Error::CapacityExceeded => "capacity exceeded",
+        rt::Error::QueueEmpty => "timeout",
+        rt::Error::Unknown(_) => "unknown",
+    }
 }
 
 fn trust_label(value: rt::PackageTrustState) -> &'static str {

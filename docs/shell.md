@@ -73,6 +73,7 @@ Current built-in commands:
 - `logs [count]`
 - `config`
 - `store ls [prefix]`
+- `store mounts`
 - `store mkdir <path>`
 - `store write <path> <text>`
 - `store rm <path>`
@@ -154,6 +155,11 @@ Current built-in commands:
 
 These commands intentionally exercise the real service contracts rather than
 special shell-only backdoors.
+
+Storage commands now open the composed namespace root through
+`storage-service`, then traverse or mutate through scoped directory
+capabilities. `store mounts` also exposes the current mount table from the same
+service contract.
 
 Package commands call the real `package-service`, which then coordinates with
 the root manager. The shell does not edit manifests or activate services by

@@ -51,11 +51,11 @@ The current repository-backed optional package graph is:
 package-service
   -> announce-service package
        versioned at 1.0.0 and 1.1.0
-       activated on operator request
+       installed through package-service and activated on first lookup
   -> runtime-service package
-       activated on operator request
+       installed through package-service and activated on first lookup
   -> developer-service package
-       activated on operator request
+       installed through package-service and activated on first lookup
 ```
 
 The current transient graphical app graph is:
@@ -84,15 +84,62 @@ The root manager is the first real system coordinator in userspace. It owns:
 - starting `storage-service` from the kernel-provided boot-store capability
 - loading the service index and manifests from storage
 - dependency ordering
+- dependency blocking and degraded-graph reporting
 - startup capability grants
 - service registration and lookup mediation
-- restart supervision
+- eager vs on-demand activation policy
+- ready-timeout enforcement, restart backoff, and degraded-service suppression
+- restart supervision and crash-loop accounting
 - shell-facing service inspection and transient tool launch
 - execution of dynamic service activation and deactivation requests from
   `package-service`
 
 The kernel still only provides mechanisms: address spaces, threads, channels,
 capabilities, timers, and the executable launch path.
+
+The important boundary is unchanged: the kernel still does not own lifecycle
+policy. `root-manager` now has richer policy, but it is still a userspace
+service graph manager rather than a kernel restart daemon.
+
+## Service graph policy
+
+The manager now understands four distinct policy inputs from service manifests:
+
+- startup mode: `eager` or `on-demand`
+- availability: `required` or `optional`
+- ready timeout in ticks
+- restart limit plus restart backoff
+
+That leads to richer phases than the original boot-only graph:
+
+- `waiting-deps`
+- `starting`
+- `ready`
+- `backoff`
+- `degraded`
+- `dormant` for installed but on-demand services
+
+Current behavior:
+
+- eager required services still participate in base boot ordering
+- eager optional services can fail without pretending the whole graph is fully
+  healthy
+- on-demand services are registered in the manager but not started until an
+  allowed lookup or explicit activation path needs them
+- once restart limits are exhausted, the manager marks the service degraded
+  instead of entering an endless restart storm
+
+The shell inspection path now exposes:
+
+- graph degraded state
+- blocked service count
+- degraded service count
+- per-service startup mode
+- per-service availability
+- blocked dependency
+- last start / last ready ticks
+- next restart tick
+- restart limits and backoff
 
 ## Capability distribution
 
@@ -176,10 +223,14 @@ Current lookup permissions:
 ### `storage-service`
 
 - mounts the immutable boot store handed off from firmware through the kernel
+- exposes the composed storage namespace root as a scoped directory capability
+- reports the current namespace mount table through the storage contract
 - exposes an exact-path open contract to the root manager
 - turns persisted files into explicit blob capabilities
-- establishes the storage/resource capability pattern without exposing a global
-  filesystem namespace
+- establishes the storage/resource capability pattern without exposing ambient
+  write access
+- now supports relative traversal through directory capabilities so callers can
+  walk the composed namespace without falling back to root-handle string opens
 
 ### `console-service`
 

@@ -28,10 +28,10 @@
 | &#x2705; | Root bootstrap | Dependency-ordered startup |
 | &#x2705; | Root bootstrap | Capability-scoped startup grants |
 | &#x2705; | Root bootstrap | Manager-mediated registration and discovery |
-| &#x2B1C; | Packages / services | Add dynamic service installation, on-demand activation policy, and richer health-check definitions in manifests and package flows |
-| &#x2B1C; | Observability / supervision | Add richer root-manager supervision and health policy without moving service lifecycle policy back into the kernel |
-| &#x2B1C; | Bootstrap / service graph | Add smoother boot-mode selection, degraded-mode startup, and partial-graph recovery for failed service sets |
-| &#x2B1C; | Bootstrap / orchestration | Add richer dependency diagnostics, cycle explanation, and startup timing/ordering visibility for service bring-up |
+| &#x2705; | Packages / services | Add dynamic service installation, on-demand activation policy, and richer health-check definitions in manifests and package flows |
+| &#x2705; | Observability / supervision | Add richer root-manager supervision and health policy without moving service lifecycle policy back into the kernel |
+| &#x2B1C; | Bootstrap / service graph | Extend the current degraded startup and partial-graph recovery path with explicit boot-mode selection and operator-directed reduced graphs |
+| &#x2B1C; | Bootstrap / orchestration | Extend the current blocked-dependency diagnostics with cycle explanation and startup timing/ordering visibility for service bring-up |
 
 ## 3. Foundational Services
 
@@ -44,9 +44,9 @@
 | &#x2705; | Services | `status-service` |
 | &#x2705; | Services | `network-service` |
 | &#x2705; | Services | Explicit lookup policy and per-handle transfer-right control |
-| &#x2B1C; | Services / policy | Add richer service capability templates, revocation flows, and scoped delegation patterns across manager-launched services |
-| &#x2B1C; | Services / status | Add richer structured health/status surfaces across all foundational services instead of ad hoc per-service reporting |
-| &#x2B1C; | Services / resilience | Add service restart backoff, crash-loop detection, degraded-service state, and manager-facing escalation policy |
+| &#x2B1C; | Services / policy | Extend the current service capability-template inspection and scoped on-demand delegation model with explicit revocation flows and richer delegated-capability review |
+| &#x2B1C; | Services / status | Extend the current manager-structured graph and service status into broader per-service health/status surfaces across foundational services |
+| &#x2705; | Services / resilience | Add service restart backoff, crash-loop detection, degraded-service state, and manager-facing escalation policy |
 
 ## 4. Storage, Filesystem, Packages, and Configuration
 
@@ -54,7 +54,7 @@
 |---|---|---|
 | &#x2705; | Storage / filesystem | Replace the current in-memory writable overlay with persistent writable backing |
 | &#x2705; | Storage / filesystem | Add writable storage and directory capabilities as first-class scoped authorities instead of broad ambient write access |
-| &#x2B1C; | Storage / filesystem | Extend the new block-device-backed storage foundation into general mount management, namespace composition, and fuller application-facing filesystem protocols beyond the current scoped file/blob/directory service surface |
+| &#x2B1C; | Storage / filesystem | Extend the current mount inventory, composed namespace root, and relative directory-capability traversal into explicit mount mutation, broader namespace composition across multiple backends, and richer app-facing metadata/query protocols |
 | &#x2705; | Storage / policy | Add broader user-home and storage policy, plus writable project/workspace directories and persistent build outputs |
 | &#x2705; | Configuration | Add namespaced service configuration trees, write and update policy, and schema validation and migration |
 | &#x2B1C; | Storage / indexing | Add file indexing, metadata queries, search primitives, and content discovery support for desktop and developer workflows |

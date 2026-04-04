@@ -65,8 +65,16 @@ This keeps:
 - kernel object and syscall semantics in `kernel/core`
 - storage policy and snapshot format in `storage-service`
 
-The current system does not yet expose general mount orchestration or a full
-filesystem namespace service. Those remain follow-on work.
+The current system now exposes a first real namespace surface on top of that
+backing:
+
+- explicit mount inventory through `MountListRequest`
+- a composed namespace root through `DirectoryOpenRequest` on `""`
+- relative path traversal through scoped directory capabilities via
+  `DirectoryTraverseRequest`
+
+It is still not a full general-purpose mount daemon or VFS. Mount mutation,
+cross-backend composition, and richer namespace policy remain follow-on work.
 
 ## Boot-store path
 
@@ -109,15 +117,24 @@ Its public contract is:
 - `DirectoryOpenFileRequest`
   - input: directory capability plus child name, create flag, writable flag
   - output: scoped file/blob capability plus size
+- `DirectoryTraverseRequest`
+  - input: directory capability plus relative path, target kind, writable
+    intent
+  - output: scoped file/blob or directory capability below that namespace root
 - `WriteRequest`
   - input: writable blob capability, offset, total length, byte payload
   - output: written length and updated file length
+- `MountListRequest`
+  - input: enumeration cursor on the storage root handle
+  - output: mount path, backend kind, writable bit, persistent bit
 
 That protocol is now broad enough for practical app and tool workflows:
 
 - create/open/read/write/truncate/delete files
 - create/open/list/remove directories
 - enumerate children through scoped directory handles
+- traverse nested subpaths from an already-opened directory capability
+- inspect the current composed namespace mount table
 - save native build outputs into persistent storage
 - reopen and execute stored user-supplied images through the manager-owned
   loader path
@@ -174,6 +191,7 @@ loader flow instead of requiring only built-in image ids.
 
 The live shell now uses the real writable-storage path for:
 
+- `store mounts`
 - `store mkdir <path>`
 - `store write <path> <text>`
 - `store rm <path>`
@@ -197,6 +215,10 @@ bootstrap-only path.
 capability rather than through root-handle path walking. That keeps browsing,
 create, open-for-write, and removal flows aligned around the same scoped
 authority model.
+
+The shell now also opens the namespace root once, then traverses or mutates
+through scoped directory capabilities instead of relying on repeated root-path
+opens for ordinary file operations.
 
 ## Roadmap note
 

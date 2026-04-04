@@ -26,8 +26,11 @@ Current fields:
 
 - `service`: stable service identity used by the manager and registry
 - `image`: executable image identifier stored in the boot store
-- `startup`: current startup mode, currently `eager`
-- `restart`: restart policy, currently `on-failure:<count>`
+- `startup`: startup mode, currently `eager` or `on-demand`
+- `availability`: whether boot should treat the service as `required` or
+  `optional`
+- `ready_timeout`: manager-side ready deadline in ticks
+- `restart`: restart policy, currently `on-failure:<count>[:<backoff-ticks>]`
 - `depends`: comma-separated dependency list
 - `grant`: one startup service-capability grant per line
 - `lookup`: one lookup permission per line
@@ -39,7 +42,9 @@ Example:
 service=status-service
 image=status-service
 startup=eager
-restart=on-failure:2
+availability=required
+ready_timeout=250
+restart=on-failure:2:8
 depends=log-service,config-service
 grant=log-service:send
 lookup=config-service:send
@@ -49,6 +54,14 @@ resource=services/status-service/resources/banner.txt
 
 The current shell manifest uses the same schema to declare its dependencies and
 lookup permissions without needing any shell-specific manifest escape hatch.
+
+Package-delivered services now use the same manifest shape. The difference is
+policy:
+
+- always-on foundational services stay `startup=eager`
+- repository-installed background services can now be `startup=on-demand`
+- optional support services can now be marked `availability=optional` so the
+  manager can degrade honestly instead of pretending the graph is fully healthy
 
 ## Startup grants and resources
 
@@ -109,11 +122,17 @@ package/update layer rather than the root service manager.
 
 ## Restart policy
 
-The current implementation uses:
+The current implementation now uses:
 
-- `OnFailure { max_restarts }`
+- `OnFailure { max_restarts, backoff_ticks }`
 
-That is enough for the current always-on platform graph.
+The manager combines that with:
+
+- manifest `ready_timeout`
+- required vs optional availability
+- degraded-service state once restart limits are exceeded
+- on-demand startup for package-installed services that should not be eager
+  residents of the base graph
 
 ## Boot-store bundle layout
 

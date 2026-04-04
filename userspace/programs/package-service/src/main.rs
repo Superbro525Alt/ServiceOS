@@ -2160,7 +2160,7 @@ fn persist_installed_state(
 ) -> rt::Result<()> {
     let mut text = rt::FixedLogBuffer::<MAX_STATE_BYTES>::new();
     let _ = write!(&mut text, "version=1\n");
-    for slot in packages[..package_count].iter().copied().filter(|slot| slot.occupied) {
+    for slot in packages[..package_count].iter().filter(|slot| slot.occupied) {
         let active_manifest = slot
             .active
             .and_then(|index| slot.versions[index].local_manifest_path.as_str().ok())

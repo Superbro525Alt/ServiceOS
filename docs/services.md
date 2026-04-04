@@ -140,6 +140,10 @@ The shell inspection path now exposes:
 - last start / last ready ticks
 - next restart tick
 - restart limits and backoff
+- delegated lookup templates through `service-caps`
+- future delegated-lookup revocation through `service-revoke-lookup`
+- manager-backed status inspection through `status services`
+- live status monitoring through `status watch`
 
 ## Capability distribution
 
@@ -179,6 +183,8 @@ Current startup grants:
 
 Current lookup permissions:
 
+- `log-service`
+  - `storage-service` with send-only rights
 - `status-service`
   - `config-service` with send-only rights
   - `console-service` with send-only rights
@@ -248,12 +254,35 @@ Current lookup permissions:
 - is the durable userspace log sink
 - filters records by configured minimum severity
 - forwards readable output through `console-service`
+- persists a bounded structured record set under writable storage
+- supports live structured subscriptions for operator and later desktop
+  consumers
+- drains kernel trap records into the same structured pipeline
 
 ### `status-service`
 
 - is the first long-running dependent platform service
 - proves both manager-mediated lookup and startup-granted resource access
 - reads config, consumes a resource blob, and emits periodic heartbeats
+- maintains the current manager-backed per-service health table
+- exposes query/list/subscription status monitoring for shell and later desktop
+  consumers
+
+## Current observability baseline
+
+The current foundational observability stack is intentionally split:
+
+- `root-manager`
+  - authoritative service graph, delegated lookup policy, degraded state, and
+    restart policy
+- `status-service`
+  - current structured per-service health/state plus live subscriptions
+- `log-service`
+  - durable event history plus live event subscriptions
+
+That keeps logs from becoming the only source of truth for service state while
+still giving operators one coherent path for history, current health, and live
+transitions.
 
 ### `network-service`
 

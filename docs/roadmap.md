@@ -44,8 +44,8 @@
 | &#x2705; | Services | `status-service` |
 | &#x2705; | Services | `network-service` |
 | &#x2705; | Services | Explicit lookup policy and per-handle transfer-right control |
-| &#x2B1C; | Services / policy | Extend the current service capability-template inspection and scoped on-demand delegation model with explicit revocation flows and richer delegated-capability review |
-| &#x2B1C; | Services / status | Extend the current manager-structured graph and service status into broader per-service health/status surfaces across foundational services |
+| &#x2705; | Services / policy | Extend the current service capability-template inspection and scoped on-demand delegation model with explicit revocation flows and richer delegated-capability review |
+| &#x2705; | Services / status | Extend the current manager-structured graph and service status into broader per-service health/status surfaces across foundational services |
 | &#x2705; | Services / resilience | Add service restart backoff, crash-loop detection, degraded-service state, and manager-facing escalation policy |
 
 ## 4. Storage, Filesystem, Packages, and Configuration
@@ -230,8 +230,8 @@
 
 | Status | Area | Work Item |
 |---|---|---|
-| &#x2B1C; | Logging / observability | Add persistent log storage, streaming log subscriptions, richer structured payload schemas, and better kernel trap ingestion into the log pipeline |
-| &#x2B1C; | Status / observability | Add richer service health reporting, subscription-based status monitoring, and shell/session status views |
+| &#x2705; | Logging / observability | Add persistent log storage, streaming log subscriptions, richer structured payload schemas, and better kernel trap ingestion into the log pipeline |
+| &#x2705; | Status / observability | Add richer service health reporting, subscription-based status monitoring, and shell/session status views |
 | &#x2B1C; | Observability / desktop | Add desktop-facing logs, crash reports, service health surfaces, and app/runtime diagnostics on top of the current logging/status foundations |
 | &#x2B1C; | Observability / developer | Add richer trace capture, performance/event timeline views, and operator/developer diagnostics for graphics, networking, runtimes, and builds |
 

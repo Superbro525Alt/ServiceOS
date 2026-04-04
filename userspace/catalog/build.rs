@@ -8,7 +8,7 @@ use std::{
 
 use serviceos_bundle::{
     BOOT_STORE_MAGIC, BOOT_STORE_PATH_MAX, BOOT_STORE_VERSION, BootStoreEntryKind,
-    BootStoreEntryRecord, BootStoreHeader,
+    BootStoreEntryRecord, BootStoreHeader, parse_package_manifest,
 };
 
 const IMAGE_BASE: u64 = 0x0000_4000_0000_0000;
@@ -233,6 +233,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("cargo:rerun-if-changed={}", programs_root.display());
     println!("cargo:rerun-if-changed={}", bundles_root.display());
 
+    validate_package_manifests(&bundles_root)?;
+
     fs::create_dir_all(&target_dir)?;
     fs::create_dir_all(&out_dir)?;
     fs::create_dir_all(bootstore_output.parent().unwrap())?;
@@ -288,6 +290,51 @@ fn main() -> Result<(), Box<dyn Error>> {
     fs::write(out_dir.join("catalog.rs"), generated)?;
 
     Ok(())
+}
+
+fn validate_package_manifests(bundles_root: &Path) -> Result<(), Box<dyn Error>> {
+    for path in collect_bundle_files(bundles_root)? {
+        if path.extension().and_then(|value| value.to_str()) != Some("pkg") {
+            continue;
+        }
+        let bytes = fs::read(&path)?;
+        let manifest = parse_package_manifest(&bytes)
+            .map_err(|error| format!("invalid package manifest {}: {:?}", path.display(), error))?;
+        let actual = compute_package_integrity(bundles_root, &manifest)?;
+        if manifest.integrity != actual {
+            return Err(format!(
+                "package integrity mismatch for {}: manifest=0x{:016x} actual=0x{:016x}",
+                path.display(),
+                manifest.integrity,
+                actual
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
+fn compute_package_integrity(
+    bundles_root: &Path,
+    manifest: &serviceos_bundle::PackageManifest,
+) -> Result<u64, Box<dyn Error>> {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for content in manifest.contents[..manifest.content_count].iter() {
+        let path = content
+            .as_str()
+            .map_err(|_| "package content path is not valid utf-8")?;
+        update_fnv64(&mut hash, path.as_bytes());
+        let bytes = fs::read(bundles_root.join(path))?;
+        update_fnv64(&mut hash, &bytes);
+    }
+    Ok(hash)
+}
+
+fn update_fnv64(hash: &mut u64, bytes: &[u8]) {
+    for byte in bytes.iter().copied() {
+        *hash ^= byte as u64;
+        *hash = hash.wrapping_mul(0x1000_0000_01b3);
+    }
 }
 
 struct BootStoreEntry {

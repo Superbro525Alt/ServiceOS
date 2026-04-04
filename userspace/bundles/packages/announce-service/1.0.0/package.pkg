@@ -7,4 +7,4 @@ activation=manual
 depends=log-service
 content=packages/announce-service/1.0.0/service/manifest.svc
 content=packages/announce-service/1.0.0/resources/message.txt
-integrity=fnv64:0xe539f7c977f9bc62
+integrity=fnv64:0x4e7d67c977f9bc62

@@ -244,6 +244,20 @@ fn poll_control(
                     )?;
                 }
             }
+            Ok(()) if message.tag == AppControlTag::OpenPath as u32 && message.word_count >= 1 => {
+                did_work = true;
+                let requested = message.words[0] as usize;
+                let mut path = [0u8; MAX_STORAGE_PATH];
+                if rt::unpack_bytes(
+                    &message.words[1..message.word_count as usize],
+                    requested,
+                    &mut path,
+                )
+                .is_ok()
+                {
+                    changed |= open_path_in_explorer(state, storage_handle, &path[..requested]).is_ok();
+                }
+            }
             Ok(()) if message.tag == AppControlTag::Close as u32 => return Ok(ControlFlow::Exit),
             Ok(()) => {
                 did_work = true;
@@ -651,7 +665,7 @@ fn insert_unique_entry(state: &mut ExplorerState, kind: EntryKind, path: &[u8]) 
         return;
     }
     for entry in state.entries.iter().take(state.entry_count) {
-        if entry.kind == kind && entry.path_len == path.len() && entry.path[..entry.path_len] == *path {
+        if entry.kind == kind && entry.path_len == path.len() && entry.path[..entry.path_len] == path[..] {
             return;
         }
     }
@@ -790,6 +804,50 @@ fn open_selected(state: &mut ExplorerState, storage_handle: rt::Handle) -> rt::R
         }
         EntryKind::File => Ok(()),
     }
+}
+
+fn open_path_in_explorer(
+    state: &mut ExplorerState,
+    storage_handle: rt::Handle,
+    path: &[u8],
+) -> rt::Result<()> {
+    if path.len() > MAX_STORAGE_PATH {
+        return Err(rt::Error::BufferTooSmall);
+    }
+    let path_text = str::from_utf8(path).map_err(|_| rt::Error::InvalidArgument)?;
+    let is_directory = rt::storage_open_directory(storage_handle, path_text, false)
+        .map(|handle| {
+            let _ = rt::handle_close(handle);
+            true
+        })
+        .unwrap_or(false);
+
+    if is_directory || path.ends_with(b"/") {
+        state.current_path_len = path.len();
+        state.current_path[..path.len()].copy_from_slice(path);
+        reopen_directory(state, storage_handle)?;
+        reload_directory(state)?;
+        return Ok(());
+    }
+
+    let mut parent = [0u8; MAX_STORAGE_PATH];
+    let parent_len = parent_path_bytes(path, &mut parent);
+    state.current_path_len = parent_len;
+    state.current_path[..parent_len].copy_from_slice(&parent[..parent_len]);
+    reopen_directory(state, storage_handle)?;
+    reload_directory(state)?;
+    for index in 0..state.entry_count {
+        let entry = state.entries[index];
+        if entry.kind == EntryKind::File
+            && entry.path_len == path.len()
+            && entry.path[..entry.path_len] == path[..]
+        {
+            state.selected_index = index;
+            ensure_selected_visible(state);
+            break;
+        }
+    }
+    Ok(())
 }
 
 fn navigate_parent(state: &mut ExplorerState) {

@@ -1170,6 +1170,12 @@ pub enum DesktopTag {
     InputReply = 0xa0d,
     NotifyRequest = 0xa0e,
     NotifyReply = 0xa0f,
+    NotificationHistoryRequest = 0xa10,
+    NotificationHistoryReply = 0xa11,
+    WorkspaceRequest = 0xa12,
+    WorkspaceReply = 0xa13,
+    OpenPathRequest = 0xa14,
+    OpenPathReply = 0xa15,
 }
 
 #[repr(u32)]
@@ -1224,6 +1230,10 @@ pub enum ClipboardTag {
     ReadReply = 0xb21,
     WriteRequest = 0xb22,
     WriteReply = 0xb23,
+    HistoryRequest = 0xb24,
+    HistoryReply = 0xb25,
+    ActivateRequest = 0xb26,
+    ActivateReply = 0xb27,
 }
 
 #[repr(u32)]
@@ -1266,6 +1276,14 @@ pub enum DesktopDragMode {
     None = 0,
     Move = 1,
     Resize = 2,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DesktopWorkspaceAction {
+    Status = 1,
+    Switch = 2,
+    MoveFocused = 3,
 }
 
 #[repr(u32)]
@@ -1339,6 +1357,7 @@ pub enum AppControlTag {
     Pointer = 0xac3,
     Key = 0xac4,
     Text = 0xac5,
+    OpenPath = 0xac6,
 }
 
 #[repr(u32)]

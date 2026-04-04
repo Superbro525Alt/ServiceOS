@@ -48,15 +48,20 @@ handles.
 
 - desktop background and shell chrome surfaces
 - launcher and status presentation
+- command-palette, task-switcher, notification-center, and clipboard-history overlays
 - retained per-window state
 - app list, focused-app state, and z-order
+- MRU app-switch history and launcher ranking hints
+- workspace assignment and active-workspace state
 - move, edge or corner resize, minimize, maximize, restore, and close policy
 - pointer hit testing for launcher, titlebar, controls, and content regions
 - keyboard focus and app-target routing on top of session focus
 - app launch and window-action requests over the desktop-shell contract
+- file handoff into the files app through the desktop-shell contract
 - manager-mediated app launch requests
-- notifications presentation and timeout state
-- richer shortcut handling and task switching on top of the focused-window model
+- notifications presentation, timeout state, and retained history
+- richer shortcut handling, command routing, and task switching on top of the
+  focused-window model
 
 It does not own:
 
@@ -162,11 +167,22 @@ Current behavior:
 - edge and corner drags resize a window
 - titlebar controls close, minimize, and maximize or restore a window
 - app-content pointer events are routed only to the owning app window
-- `Alt+Tab` cycles focused windows
+- `Alt+Tab` cycles focused windows in MRU order and shows a switcher overlay
 - `Alt+Shift+Tab` cycles backward
 - `Alt+1..4` launches or focuses the primary desktop apps
 - `Alt+F4` requests close on the focused app
+- `Ctrl+Space` opens the command palette
+- `Alt+N` opens notification history
+- `Ctrl+Alt+V` opens clipboard history
+- `Ctrl+Alt+1..4` switches workspaces
+- `Ctrl+Alt+Shift+1..4` moves the focused app to another workspace
 - text input reaches the focused app when that app chooses to consume it
+
+The desktop-shell contract now also exposes:
+
+- workspace inspection and switching
+- notification history inspection
+- file handoff into the files app through `desktop open <path>`
 
 This establishes durable interaction boundaries:
 
@@ -212,12 +228,34 @@ Current per-app grants:
   - app-control channel
   - `terminal-service`
 
+The shell itself also consumes:
+
+- `clipboard-service`
+  - retained clipboard history display and activation
+- `security-service`
+  - existing launch policy and denial surfacing, still enforced outside the
+    desktop shell
+
 Apps do not inherit:
 
 - the desktop shell control channel
 - package authority
 - storage root access
 - graphics output ownership
+
+## Current deferred work
+
+Open follow-on work lives in [docs/roadmap.md](/home/paulh/os-dev/docs/roadmap.md).
+The current desktop shell now has workspaces, MRU task switching, command
+palette search, notification history, clipboard history, and basic file
+handoff, but it still defers:
+
+- multi-monitor shell policy
+- drag-and-drop
+- broader open-with and default-association policy
+- smoother animations, snap or tiling, and gesture policy
+- richer permissions-aware desktop flows
+- high-contrast, zoom, and broader assistive hooks
 - global input-routing power
 - other apps' surface handles
 

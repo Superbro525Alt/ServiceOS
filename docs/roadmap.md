@@ -129,11 +129,11 @@
 | &#x2705; | Desktop interaction | App-control channel for desktop-driven focus, resize, close, pointer, key, and text events |
 | &#x2705; | Desktop interaction | Physical input routing from the kernel input-source object through `session-service` into the desktop interaction contract |
 | &#x2705; | Desktop interaction | Shell/operator inspection and control of desktop windows through the desktop-shell contract |
-| &#x2B1C; | Desktop shell | Grow the desktop shell beyond current shortcuts, notifications, and task switching into notification history, gesture/snap/tiling/animation policy, file-opening/open-with flows, permissions UX, and richer system-status surfaces |
-| &#x2B1C; | Desktop shell | Add richer task switching, broader shortcut policy, gestures, smoother windowing and animation behavior, and a more macOS-like interaction feel without collapsing shell logic into platform services |
-| &#x2B1C; | Desktop shell | Add richer desktop search, launcher ranking, app switching history, workspaces/spaces, and multi-monitor shell behavior |
-| &#x2B1C; | Desktop shell | Add desktop-level clipboard, drag-and-drop, file handoff, and app-intent/open-with flows across apps and services |
-| &#x2B1C; | Desktop shell | Add permissions-aware desktop UX surfaces for app authority, notifications, file access, device access, and runtime launches |
+| &#x2B1C; | Desktop shell | Finish the remaining shell follow-on work with gesture/snap/tiling policy, smoother window transitions, fuller open-with and default-association flows, and richer system-status surfaces on top of the current notification history and workspace model |
+| &#x2B1C; | Desktop shell | Extend the current MRU task switcher, workspace shortcuts, and command-palette routing with smoother animation timing, broader gesture policy, and a more macOS-like interaction feel without collapsing shell logic into platform services |
+| &#x2B1C; | Desktop shell | Extend the current app-focused command palette, launcher ranking, app switching history, and workspaces into document/content search and multi-monitor shell behavior |
+| &#x2B1C; | Desktop shell | Finish the remaining inter-app desktop workflow work with drag-and-drop, broader app-intent/open-with/default-association policy, and richer file handoff beyond the current files-app open-path foundation and clipboard history |
+| &#x2B1C; | Desktop shell | Extend the current launch-denied and package/runtime security surfaces into broader permissions-aware desktop UX for app authority, file/device access, notification policy, and runtime launches |
 | &#x2B1C; | Desktop shell / wireless | Add desktop Wi-Fi UX for scanning, joining, saved networks, signal state, and connection troubleshooting |
 | &#x2B1C; | Desktop shell / Bluetooth | Add desktop Bluetooth UX for pairing, device management, battery/state display, and audio/input routing |
 | &#x2B1C; | Apps / UI | Add broader graphical application and toolkit/runtime layers on top of the current app and window foundations |
@@ -219,12 +219,12 @@
 
 | Status | Area | Work Item |
 |---|---|---|
-| &#x2B1C; | Desktop polish | Add richer task switching UX, smoother animations, gestures, and more macOS-like desktop feel on top of the existing shell and interaction model |
-| &#x2B1C; | Desktop polish | Add richer notifications, notification history, quick actions, and permissions-aware desktop surfaces |
+| &#x2B1C; | Desktop polish | Build on the current MRU task switcher and workspace overlays with smoother animations, gesture handling, and a more macOS-like desktop feel |
+| &#x2B1C; | Desktop polish | Build on the current notification history and quick-focus action path with richer quick actions and broader permissions-aware desktop surfaces |
 | &#x2B1C; | Desktop polish | Add smoother windowing behavior, animation timing, shadowing, transitions, and interaction polish without collapsing shell logic into compositor policy |
-| &#x2B1C; | Desktop polish | Add richer shortcut systems, command palette/search UX, global action routing, and cross-app interaction patterns |
-| &#x2B1C; | Desktop polish | Add broader drag-and-drop, clipboard history, desktop gestures, hot corners, and richer shell affordances |
-| &#x2B1C; | Desktop polish | Add accessibility surfaces such as keyboard-first navigation, high-contrast/visual accessibility settings, zoom, and assistive interaction hooks |
+| &#x2B1C; | Desktop polish | Extend the current command palette/search UX, launcher ranking, and workspace shortcuts with broader global action routing and cross-app interaction patterns |
+| &#x2B1C; | Desktop polish | Finish the remaining shell affordance work with drag-and-drop, desktop gestures, hot corners, and richer clipboard/file handoff beyond the current clipboard history foundation |
+| &#x2B1C; | Desktop polish | Build on the current keyboard-first shell overlays with high-contrast settings, zoom or magnification hooks, and broader assistive interaction hooks |
 
 ## 17. Observability, Logging, and Status
 

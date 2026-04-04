@@ -1,9 +1,10 @@
 use crate::{
     channel_create, channel_receive_blocking, channel_send, desktop_app_id_from_word,
     desktop_drag_mode_from_word, desktop_status_error, desktop_status_from_word, handle_close,
-    pack_bytes, rights, unpack_i32_pair, unpack_u32_pair, DesktopAppId, DesktopAppInfo,
-    DesktopDragMode, DesktopInputAction, DesktopShellStatusInfo, DesktopStatus, DesktopTag,
-    DesktopWindowAction, DesktopWindowInfo, Error, Handle, IPC_MAX_WORDS, RawMessage, Result,
+    pack_bytes, rights, unpack_bytes, unpack_i32_pair, unpack_u32_pair, DesktopAppId, DesktopAppInfo,
+    DesktopDragMode, DesktopInputAction, DesktopNotificationInfo, DesktopShellStatusInfo,
+    DesktopStatus, DesktopTag, DesktopWindowAction, DesktopWindowInfo, DesktopWorkspaceAction,
+    DesktopWorkspaceInfo, Error, Handle, IPC_MAX_WORDS, RawMessage, Result,
 };
 
 pub fn desktop_status(desktop_handle: Handle) -> Result<DesktopShellStatusInfo> {
@@ -45,6 +46,9 @@ pub fn desktop_status(desktop_handle: Handle) -> Result<DesktopShellStatusInfo> 
                 .copied()
                 .map(|value| unpack_i32_pair(value).1)
                 .unwrap_or(0),
+            active_workspace: response.words.get(7).copied().unwrap_or(1) as u32,
+            workspace_count: response.words.get(8).copied().unwrap_or(1) as u32,
+            notification_count: response.words.get(9).copied().unwrap_or(0) as u32,
         }),
         status => Err(desktop_status_error(status)),
     }
@@ -343,6 +347,104 @@ pub fn desktop_notify(desktop_handle: Handle, text: &str) -> Result<()> {
     }
     match desktop_status_from_word(response.words[0]) {
         DesktopStatus::Ok => Ok(()),
+        status => Err(desktop_status_error(status)),
+    }
+}
+
+pub fn desktop_notification_history(
+    desktop_handle: Handle,
+    index: u32,
+) -> Result<DesktopNotificationInfo> {
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(DesktopTag::NotificationHistoryRequest as u32);
+    request.word_count = 1;
+    request.words[0] = index as u64;
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(desktop_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != DesktopTag::NotificationHistoryReply as u32 || response.word_count < 1 {
+        return Err(Error::InvalidArgument);
+    }
+    match desktop_status_from_word(response.words[0]) {
+        DesktopStatus::Ok => {
+            if response.word_count < 5 {
+                return Err(Error::InvalidArgument);
+            }
+            let len = response.words[4] as usize;
+            let mut text = [0u8; 64];
+            unpack_bytes(&response.words[5..response.word_count as usize], len, &mut text)?;
+            Ok(DesktopNotificationInfo {
+                sequence: response.words[1] as u32,
+                source_app: desktop_app_id_from_word(response.words[2]).ok(),
+                actionable: response.words[3] != 0,
+                text_len: len as u32,
+                text,
+            })
+        }
+        status => Err(desktop_status_error(status)),
+    }
+}
+
+pub fn desktop_workspace_action(
+    desktop_handle: Handle,
+    action: DesktopWorkspaceAction,
+    workspace_id: u32,
+) -> Result<DesktopWorkspaceInfo> {
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(DesktopTag::WorkspaceRequest as u32);
+    request.word_count = 2;
+    request.words[0] = action as u32 as u64;
+    request.words[1] = workspace_id as u64;
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(desktop_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != DesktopTag::WorkspaceReply as u32 || response.word_count < 4 {
+        return Err(Error::InvalidArgument);
+    }
+    match desktop_status_from_word(response.words[0]) {
+        DesktopStatus::Ok => Ok(DesktopWorkspaceInfo {
+            active_workspace: response.words[1] as u32,
+            workspace_count: response.words[2] as u32,
+            focused_surface: response.words[3] as u32,
+        }),
+        status => Err(desktop_status_error(status)),
+    }
+}
+
+pub fn desktop_open_path(desktop_handle: Handle, path: &str) -> Result<u32> {
+    if path.len() > IPC_MAX_WORDS * 8 {
+        return Err(Error::BufferTooSmall);
+    }
+    let reply = channel_create()?;
+    let mut request = RawMessage::empty(DesktopTag::OpenPathRequest as u32);
+    request.word_count = 1 + pack_bytes(path.as_bytes(), &mut request.words[1..])?;
+    request.words[0] = path.len() as u64;
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rights::SEND;
+    channel_send(desktop_handle, &request)?;
+    let _ = handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(reply.first, &mut response)?;
+    let _ = handle_close(reply.first);
+    if response.tag != DesktopTag::OpenPathReply as u32 || response.word_count < 2 {
+        return Err(Error::InvalidArgument);
+    }
+    match desktop_status_from_word(response.words[0]) {
+        DesktopStatus::Ok => Ok(response.words[1] as u32),
         status => Err(desktop_status_error(status)),
     }
 }

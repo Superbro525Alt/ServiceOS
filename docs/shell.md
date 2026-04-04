@@ -91,6 +91,10 @@ Current built-in commands:
 - `desktop status`
 - `desktop apps`
 - `desktop windows`
+- `desktop workspace [status]`
+- `desktop workspace switch <1-4>`
+- `desktop workspace move <1-4>`
+- `desktop notifications [count]`
 - `desktop launch <settings|files|monitor|terminal|software>`
 - `desktop focus <settings|files|monitor|terminal|software>`
 - `desktop next`
@@ -102,6 +106,7 @@ Current built-in commands:
 - `desktop resize <settings|files|monitor|terminal|software> <width> <height>`
 - `desktop click <x> <y>`
 - `desktop notify <text>`
+- `desktop open <path>`
 - `run image <path>`
 - `pkg list`
 - `pkg catalog`

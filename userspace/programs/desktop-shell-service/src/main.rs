@@ -17,6 +17,7 @@ const SESSION_ID: u32 = 1;
 const APP_COUNT: usize = 5;
 const APP_PAGE_SIZE: usize = 4;
 const WINDOW_PAGE_SIZE: usize = 2;
+const WORKSPACE_COUNT: u32 = 4;
 const STATUS_REFRESH_TICKS: u64 = 100;
 const TOPBAR_HEIGHT: u32 = 42;
 const LAUNCHER_WIDTH: u32 = 250;
@@ -31,9 +32,31 @@ const CURSOR_SIZE: u32 = 14;
 const CURSOR_Z_ORDER: u32 = 4_096;
 const NOTIFICATION_TIMEOUT_TICKS: u64 = 300;
 const MAX_NOTIFICATION_BYTES: usize = 96;
+const NOTIFICATION_HISTORY_MAX: usize = 12;
+const NOTIFICATION_HISTORY_TEXT_MAX: usize = 64;
+const CLIPBOARD_HISTORY_LINES: usize = 5;
+const PALETTE_QUERY_MAX: usize = 32;
+const OVERLAY_RESULT_MAX: usize = 6;
+const SWITCHER_WIDTH: u32 = 280;
+const SWITCHER_HEIGHT: u32 = 132;
+const PALETTE_WIDTH: u32 = 360;
+const PALETTE_HEIGHT: u32 = 188;
+const HISTORY_WIDTH: u32 = 360;
+const HISTORY_HEIGHT: u32 = 188;
 const MOD_SHIFT: u32 = 1 << 0;
 const MOD_ALT: u32 = 1 << 1;
+const MOD_CTRL: u32 = 1 << 2;
+const KEY_ESC: u32 = 1;
 const KEY_TAB: u32 = 15;
+const KEY_BACKSPACE: u32 = 14;
+const KEY_ENTER: u32 = 28;
+const KEY_SPACE: u32 = 57;
+const KEY_V: u32 = 47;
+const KEY_N: u32 = 49;
+const KEY_UP: u32 = 103;
+const KEY_DOWN: u32 = 108;
+const KEY_LEFT_ALT: u32 = 56;
+const KEY_RIGHT_ALT: u32 = 100;
 const KEY_F4: u32 = 62;
 const KEY_1: u32 = 2;
 const KEY_2: u32 = 3;
@@ -47,6 +70,10 @@ struct Chrome {
     topbar_handle: rt::Handle,
     launcher_handle: rt::Handle,
     status_handle: rt::Handle,
+    switcher_handle: rt::Handle,
+    palette_handle: rt::Handle,
+    notifications_handle: rt::Handle,
+    clipboard_handle: rt::Handle,
     cursor_handle: rt::Handle,
     output_width: u32,
     output_height: u32,
@@ -102,6 +129,8 @@ struct AppSlot {
     task_handle: rt::Handle,
     window: WindowState,
     running: bool,
+    workspace_id: u32,
+    launch_count: u32,
 }
 
 impl AppSlot {
@@ -112,6 +141,8 @@ impl AppSlot {
             task_handle: rt::INVALID_HANDLE,
             window: WindowState::empty(),
             running: false,
+            workspace_id: 1,
+            launch_count: 0,
         }
     }
 }
@@ -120,9 +151,43 @@ impl AppSlot {
 struct DesktopStatusSnapshot {
     running_apps: u32,
     focused_app: Option<DesktopAppId>,
+    active_workspace: u32,
     heartbeat_count: u64,
     heartbeat_tick: u64,
     ipv4_address: u32,
+    notification_count: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OverlayMode {
+    None,
+    Switcher,
+    CommandPalette,
+    Notifications,
+    ClipboardHistory,
+}
+
+#[derive(Clone, Copy)]
+struct NotificationEntry {
+    occupied: bool,
+    sequence: u32,
+    source_app: Option<DesktopAppId>,
+    actionable: bool,
+    text_len: usize,
+    text: [u8; NOTIFICATION_HISTORY_TEXT_MAX],
+}
+
+impl NotificationEntry {
+    const fn empty() -> Self {
+        Self {
+            occupied: false,
+            sequence: 0,
+            source_app: None,
+            actionable: false,
+            text_len: 0,
+            text: [0; NOTIFICATION_HISTORY_TEXT_MAX],
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -209,9 +274,13 @@ struct DesktopState {
     session_handle: rt::Handle,
     network_handle: rt::Handle,
     system_status_handle: rt::Handle,
+    clipboard_service_handle: rt::Handle,
     chrome: Chrome,
     apps: [AppSlot; APP_COUNT],
     focused_app: Option<DesktopAppId>,
+    active_workspace: u32,
+    recent_focus: [DesktopAppId; APP_COUNT],
+    recent_focus_len: usize,
     next_status_refresh: u64,
     last_status_snapshot: Option<DesktopStatusSnapshot>,
     next_z_order: u32,
@@ -222,6 +291,22 @@ struct DesktopState {
     notification: [u8; MAX_NOTIFICATION_BYTES],
     notification_len: usize,
     notification_deadline: u64,
+    notification_history: [NotificationEntry; NOTIFICATION_HISTORY_MAX],
+    notification_history_len: usize,
+    next_notification_sequence: u32,
+    overlay_mode: OverlayMode,
+    overlay_selection: usize,
+    palette_query: [u8; PALETTE_QUERY_MAX],
+    palette_query_len: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PaletteAction {
+    Launch(DesktopAppId),
+    ShowNotifications,
+    ShowClipboardHistory,
+    SwitchWorkspace(u32),
+    FocusNext,
 }
 
 rt::entry!(main);
@@ -253,6 +338,8 @@ fn main() -> u64 {
         Ok(handle) => handle,
         Err(_) => return 0xfe06,
     };
+    let clipboard_service_handle =
+        rt::lookup_service(bootstrap, ServiceId::Clipboard).unwrap_or(rt::INVALID_HANDLE);
 
     let output = match rt::graphics_output_status(graphics_handle, 0) {
         Ok(Some(output)) => output,
@@ -279,6 +366,7 @@ fn main() -> u64 {
         session_handle,
         network_handle,
         system_status_handle,
+        clipboard_service_handle,
         chrome,
         apps: [
             AppSlot::new(DesktopAppId::Settings, ServiceImageId::SettingsApp),
@@ -288,6 +376,9 @@ fn main() -> u64 {
             AppSlot::new(DesktopAppId::SoftwareCenter, ServiceImageId::SoftwareCenterApp),
         ],
         focused_app: None,
+        active_workspace: 1,
+        recent_focus: [DesktopAppId::Settings; APP_COUNT],
+        recent_focus_len: 0,
         next_status_refresh: 0,
         last_status_snapshot: None,
         next_z_order: 10,
@@ -298,6 +389,13 @@ fn main() -> u64 {
         notification: [0; MAX_NOTIFICATION_BYTES],
         notification_len: 0,
         notification_deadline: 0,
+        notification_history: [NotificationEntry::empty(); NOTIFICATION_HISTORY_MAX],
+        notification_history_len: 0,
+        next_notification_sequence: 1,
+        overlay_mode: OverlayMode::None,
+        overlay_selection: 0,
+        palette_query: [0; PALETTE_QUERY_MAX],
+        palette_query_len: 0,
     };
 
     if render::render_desktop(&mut state).is_err() {
@@ -419,6 +517,50 @@ fn create_chrome(
         ui::BG_PANEL,
         false,
     )?;
+    let (_, switcher_handle) = rt::graphics_surface_create(
+        graphics_handle,
+        SESSION_ID,
+        ((output_width.saturating_sub(SWITCHER_WIDTH)) / 2) as i32,
+        ((output_height.saturating_sub(SWITCHER_HEIGHT)) / 2) as i32,
+        SWITCHER_WIDTH,
+        SWITCHER_HEIGHT,
+        CURSOR_Z_ORDER - 3,
+        ui::BG_PANEL,
+        false,
+    )?;
+    let (_, palette_handle) = rt::graphics_surface_create(
+        graphics_handle,
+        SESSION_ID,
+        ((output_width.saturating_sub(PALETTE_WIDTH)) / 2) as i32,
+        72,
+        PALETTE_WIDTH,
+        PALETTE_HEIGHT,
+        CURSOR_Z_ORDER - 3,
+        ui::BG_PANEL,
+        false,
+    )?;
+    let (_, notifications_handle) = rt::graphics_surface_create(
+        graphics_handle,
+        SESSION_ID,
+        (output_width.saturating_sub(HISTORY_WIDTH + PANEL_MARGIN)) as i32,
+        (TOPBAR_HEIGHT + PANEL_MARGIN + STATUS_PANEL_HEIGHT + 12) as i32,
+        HISTORY_WIDTH,
+        HISTORY_HEIGHT,
+        CURSOR_Z_ORDER - 3,
+        ui::BG_PANEL,
+        false,
+    )?;
+    let (_, clipboard_handle) = rt::graphics_surface_create(
+        graphics_handle,
+        SESSION_ID,
+        (output_width.saturating_sub(HISTORY_WIDTH + PANEL_MARGIN)) as i32,
+        (TOPBAR_HEIGHT + PANEL_MARGIN) as i32,
+        HISTORY_WIDTH,
+        HISTORY_HEIGHT,
+        CURSOR_Z_ORDER - 3,
+        ui::BG_PANEL,
+        false,
+    )?;
     let (_, cursor_handle) = rt::graphics_surface_create(
         graphics_handle,
         SESSION_ID,
@@ -437,6 +579,10 @@ fn create_chrome(
         topbar_handle,
         launcher_handle,
         status_handle,
+        switcher_handle,
+        palette_handle,
+        notifications_handle,
+        clipboard_handle,
         cursor_handle,
         output_width,
         output_height,
@@ -448,6 +594,132 @@ fn show_chrome(chrome: &Chrome) -> rt::Result<()> {
     rt::surface_set_visibility(chrome.topbar_handle, true)?;
     rt::surface_set_visibility(chrome.launcher_handle, true)?;
     rt::surface_set_visibility(chrome.status_handle, true)?;
+    rt::surface_set_visibility(chrome.switcher_handle, false)?;
+    rt::surface_set_visibility(chrome.palette_handle, false)?;
+    rt::surface_set_visibility(chrome.notifications_handle, false)?;
+    rt::surface_set_visibility(chrome.clipboard_handle, false)?;
     rt::surface_set_visibility(chrome.cursor_handle, true)?;
     Ok(())
+}
+
+fn palette_matches(state: &DesktopState, results: &mut [PaletteAction; OVERLAY_RESULT_MAX]) -> usize {
+    let query = core::str::from_utf8(&state.palette_query[..state.palette_query_len]).unwrap_or("");
+    let actions = [
+        PaletteAction::Launch(DesktopAppId::Settings),
+        PaletteAction::Launch(DesktopAppId::Files),
+        PaletteAction::Launch(DesktopAppId::Monitor),
+        PaletteAction::Launch(DesktopAppId::Terminal),
+        PaletteAction::Launch(DesktopAppId::SoftwareCenter),
+        PaletteAction::ShowNotifications,
+        PaletteAction::ShowClipboardHistory,
+        PaletteAction::SwitchWorkspace(1),
+        PaletteAction::SwitchWorkspace(2),
+        PaletteAction::SwitchWorkspace(3),
+        PaletteAction::SwitchWorkspace(4),
+        PaletteAction::FocusNext,
+    ];
+    let mut ranked = [(PaletteAction::ShowNotifications, 0u32); 12];
+    let mut ranked_len = 0usize;
+    for action in actions {
+        let label = palette_action_label(action);
+        let matches = query.is_empty() || contains_case_fold(label, query);
+        if !matches {
+            continue;
+        }
+        let mut score = 1u32;
+        if query.is_empty() {
+            score = score.saturating_add(1);
+        }
+        if starts_with_case_fold(label, query) {
+            score = score.saturating_add(32);
+        }
+        if let PaletteAction::Launch(app_id) = action {
+            if let Some(index) = windows::app_slot_index(&state.apps, app_id) {
+                score = score.saturating_add(state.apps[index].launch_count.saturating_mul(2));
+                if state.focused_app == Some(app_id) {
+                    score = score.saturating_add(24);
+                }
+                if state.apps[index].running {
+                    score = score.saturating_add(8);
+                }
+            }
+            if let Some(position) = state.recent_focus[..state.recent_focus_len]
+                .iter()
+                .position(|candidate| *candidate == app_id)
+            {
+                score = score.saturating_add((APP_COUNT - position) as u32 * 6);
+            }
+        }
+        ranked[ranked_len] = (action, score);
+        ranked_len += 1;
+    }
+
+    let mut index = 1usize;
+    while index < ranked_len {
+        let current = ranked[index];
+        let mut scan = index;
+        while scan > 0 && ranked[scan - 1].1 < current.1 {
+            ranked[scan] = ranked[scan - 1];
+            scan -= 1;
+        }
+        ranked[scan] = current;
+        index += 1;
+    }
+
+    let count = ranked_len.min(OVERLAY_RESULT_MAX);
+    for index in 0..count {
+        results[index] = ranked[index].0;
+    }
+    count
+}
+
+fn palette_action_label(action: PaletteAction) -> &'static str {
+    match action {
+        PaletteAction::Launch(DesktopAppId::Settings) => "Open Settings",
+        PaletteAction::Launch(DesktopAppId::Files) => "Open Files",
+        PaletteAction::Launch(DesktopAppId::Monitor) => "Open Monitor",
+        PaletteAction::Launch(DesktopAppId::Terminal) => "Open Terminal",
+        PaletteAction::Launch(DesktopAppId::SoftwareCenter) => "Open Software Center",
+        PaletteAction::ShowNotifications => "Show Notification History",
+        PaletteAction::ShowClipboardHistory => "Show Clipboard History",
+        PaletteAction::SwitchWorkspace(1) => "Switch to Workspace 1",
+        PaletteAction::SwitchWorkspace(2) => "Switch to Workspace 2",
+        PaletteAction::SwitchWorkspace(3) => "Switch to Workspace 3",
+        PaletteAction::SwitchWorkspace(4) => "Switch to Workspace 4",
+        PaletteAction::FocusNext => "Focus Next Window",
+        PaletteAction::SwitchWorkspace(_) => "Switch Workspace",
+    }
+}
+
+fn contains_case_fold(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    let haystack = haystack.as_bytes();
+    let needle = needle.as_bytes();
+    if needle.len() > haystack.len() {
+        return false;
+    }
+    for start in 0..=haystack.len() - needle.len() {
+        if haystack[start..start + needle.len()]
+            .iter()
+            .zip(needle.iter())
+            .all(|(left, right)| left.to_ascii_lowercase() == right.to_ascii_lowercase())
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn starts_with_case_fold(haystack: &str, needle: &str) -> bool {
+    let haystack = haystack.as_bytes();
+    let needle = needle.as_bytes();
+    if needle.len() > haystack.len() {
+        return false;
+    }
+    haystack[..needle.len()]
+        .iter()
+        .zip(needle.iter())
+        .all(|(left, right)| left.to_ascii_lowercase() == right.to_ascii_lowercase())
 }

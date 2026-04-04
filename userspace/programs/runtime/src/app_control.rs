@@ -1,5 +1,6 @@
 use crate::{
-    channel_send, AppControlTag, AppKeyAction, AppPointerAction, Handle, RawMessage, Result,
+    AppControlTag, AppKeyAction, AppPointerAction, Error, Handle, IPC_MAX_WORDS, RawMessage,
+    Result, channel_send, pack_bytes,
 };
 
 pub fn app_control_focus(control_handle: Handle, focused: bool) -> Result<()> {
@@ -58,5 +59,15 @@ pub fn app_control_text(control_handle: Handle, scalar: char) -> Result<()> {
     let mut request = RawMessage::empty(AppControlTag::Text as u32);
     request.word_count = 1;
     request.words[0] = scalar as u32 as u64;
+    channel_send(control_handle, &request)
+}
+
+pub fn app_control_open_path(control_handle: Handle, path: &str) -> Result<()> {
+    if path.len() > IPC_MAX_WORDS * 8 {
+        return Err(Error::BufferTooSmall);
+    }
+    let mut request = RawMessage::empty(AppControlTag::OpenPath as u32);
+    request.word_count = 1 + pack_bytes(path.as_bytes(), &mut request.words[1..])?;
+    request.words[0] = path.len() as u64;
     channel_send(control_handle, &request)
 }

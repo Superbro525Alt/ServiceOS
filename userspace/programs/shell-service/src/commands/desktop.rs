@@ -1,7 +1,10 @@
 use core::fmt::Write;
 
 use serviceos_userspace_runtime as rt;
-use rt::{DesktopAppId, DesktopAppInfo, DesktopWindowInfo, FixedLogBuffer, ServiceId};
+use rt::{
+    DesktopAppId, DesktopAppInfo, DesktopWindowInfo, DesktopWorkspaceAction, FixedLogBuffer,
+    ServiceId,
+};
 
 use crate::util::{
     desktop_app_name, desktop_drag_name, parse_desktop_app_name, write_output_linef, ShellOutput,
@@ -20,6 +23,8 @@ where
         Some("status") => cmd_desktop_status(bootstrap, output),
         Some("apps") => cmd_desktop_apps(bootstrap, output),
         Some("windows") => cmd_desktop_windows(bootstrap, output),
+        Some("workspace") => cmd_desktop_workspace(bootstrap, output, parts),
+        Some("notifications") => cmd_desktop_notifications(bootstrap, output, parts),
         Some("launch") => match parts.next().and_then(parse_desktop_app_name) {
             Some(app_id) => cmd_desktop_launch(bootstrap, output, app_id),
             None => write_output_linef(
@@ -111,10 +116,14 @@ where
                 cmd_desktop_notify(bootstrap, output, &message)
             }
         }
+        Some("open") => match parts.next() {
+            Some(path) => cmd_desktop_open(bootstrap, output, path),
+            None => write_output_linef(output, format_args!("usage: desktop open <path>")),
+        },
         _ => write_output_linef(
             output,
             format_args!(
-                "usage: desktop <status|apps|windows|launch|focus|next|close|minimize|restore|maximize|move|resize|click|notify> ..."
+                "usage: desktop <status|apps|windows|workspace|notifications|launch|focus|next|close|minimize|restore|maximize|move|resize|click|notify|open> ..."
             ),
         ),
     }
@@ -127,11 +136,14 @@ fn cmd_desktop_status(bootstrap: rt::Handle, output: ShellOutput) -> rt::Result<
     write_output_linef(
         output,
         format_args!(
-            "session={} focused-app={} focused-surface={} running-apps={} drag={} pointer=({}, {})",
+            "session={} focused-app={} focused-surface={} running-apps={} workspace={}/{} notifications={} drag={} pointer=({}, {})",
             status.session_id,
             status.focused_app.map(desktop_app_name).unwrap_or("none"),
             status.focused_surface,
             status.running_apps,
+            status.active_workspace,
+            status.workspace_count,
+            status.notification_count,
             desktop_drag_name(status.drag_mode),
             status.pointer_x,
             status.pointer_y,
@@ -242,6 +254,123 @@ fn cmd_desktop_notify(bootstrap: rt::Handle, output: ShellOutput, text: &str) ->
     rt::desktop_notify(desktop_handle, text)?;
     let _ = rt::handle_close(desktop_handle);
     write_output_linef(output, format_args!("notification posted"))
+}
+
+fn cmd_desktop_open(bootstrap: rt::Handle, output: ShellOutput, path: &str) -> rt::Result<()> {
+    let desktop_handle = rt::lookup_service(bootstrap, ServiceId::DesktopShell)?;
+    let surface_id = rt::desktop_open_path(desktop_handle, path)?;
+    let _ = rt::handle_close(desktop_handle);
+    write_output_linef(
+        output,
+        format_args!("opened {} via files on surface {}", path, surface_id),
+    )
+}
+
+fn cmd_desktop_workspace<'a, I>(
+    bootstrap: rt::Handle,
+    output: ShellOutput,
+    mut parts: I,
+) -> rt::Result<()>
+where
+    I: Iterator<Item = &'a str>,
+{
+    let desktop_handle = rt::lookup_service(bootstrap, ServiceId::DesktopShell)?;
+    let result = match parts.next() {
+        None | Some("status") => rt::desktop_workspace_action(
+            desktop_handle,
+            DesktopWorkspaceAction::Status,
+            0,
+        ),
+        Some("switch") => match parts.next().and_then(|value| value.parse::<u32>().ok()) {
+            Some(workspace_id) => rt::desktop_workspace_action(
+                desktop_handle,
+                DesktopWorkspaceAction::Switch,
+                workspace_id,
+            ),
+            None => {
+                let _ = rt::handle_close(desktop_handle);
+                return write_output_linef(
+                    output,
+                    format_args!("usage: desktop workspace switch <1-4>"),
+                );
+            }
+        },
+        Some("move") => match parts.next().and_then(|value| value.parse::<u32>().ok()) {
+            Some(workspace_id) => rt::desktop_workspace_action(
+                desktop_handle,
+                DesktopWorkspaceAction::MoveFocused,
+                workspace_id,
+            ),
+            None => {
+                let _ = rt::handle_close(desktop_handle);
+                return write_output_linef(
+                    output,
+                    format_args!("usage: desktop workspace move <1-4>"),
+                );
+            }
+        },
+        _ => {
+            let _ = rt::handle_close(desktop_handle);
+            return write_output_linef(
+                output,
+                format_args!("usage: desktop workspace <status|switch|move> [id]"),
+            );
+        }
+    }?;
+    let _ = rt::handle_close(desktop_handle);
+    write_output_linef(
+        output,
+        format_args!(
+            "workspace={}/{} focused-surface={}",
+            result.active_workspace,
+            result.workspace_count,
+            result.focused_surface,
+        ),
+    )
+}
+
+fn cmd_desktop_notifications<'a, I>(
+    bootstrap: rt::Handle,
+    output: ShellOutput,
+    mut parts: I,
+) -> rt::Result<()>
+where
+    I: Iterator<Item = &'a str>,
+{
+    let requested = parts
+        .next()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(6);
+    let desktop_handle = rt::lookup_service(bootstrap, ServiceId::DesktopShell)?;
+    let mut any = false;
+    for index in 0..requested {
+        match rt::desktop_notification_history(desktop_handle, index as u32) {
+            Ok(entry) => {
+                any = true;
+                let text = core::str::from_utf8(&entry.text[..entry.text_len as usize]).unwrap_or("NOTICE");
+                write_output_linef(
+                    output,
+                    format_args!(
+                        "#{:<2} app={} actionable={} {}",
+                        entry.sequence,
+                        entry.source_app.map(desktop_app_name).unwrap_or("shell"),
+                        entry.actionable,
+                        text,
+                    ),
+                )?;
+            }
+            Err(rt::Error::NotFound) => break,
+            Err(error) => {
+                let _ = rt::handle_close(desktop_handle);
+                return Err(error);
+            }
+        }
+    }
+    let _ = rt::handle_close(desktop_handle);
+    if !any {
+        return write_output_linef(output, format_args!("no desktop notifications"));
+    }
+    Ok(())
 }
 
 fn cmd_desktop_close(bootstrap: rt::Handle, output: ShellOutput, app_id: DesktopAppId) -> rt::Result<()> {

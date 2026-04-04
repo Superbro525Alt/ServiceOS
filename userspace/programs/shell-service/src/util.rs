@@ -84,6 +84,10 @@ gfx focus <surface-id>: change focused session surface\r\n\
 desktop status: show desktop shell status\r\n\
 desktop apps: list desktop app state\r\n\
 desktop windows: list desktop window state\r\n\
+desktop workspace [status]: show current workspace state\r\n\
+desktop workspace switch <1-4>: switch desktop workspace\r\n\
+desktop workspace move <1-4>: move the focused window to another workspace\r\n\
+desktop notifications [count]: show desktop notification history\r\n\
 desktop launch <settings|files|monitor|terminal|software>: launch a desktop app\r\n\
 desktop focus <settings|files|monitor|terminal|software>: focus a desktop app\r\n\
 desktop next: focus the next visible window\r\n\
@@ -95,6 +99,7 @@ desktop move <settings|files|monitor|terminal|software> <x> <y>: move a window\r
 desktop resize <settings|files|monitor|terminal|software> <width> <height>: resize a window\r\n\
 desktop click <x> <y>: inject a pointer click into the desktop session\r\n\
 desktop notify <text>: post a desktop shell notification\r\n\
+desktop open <path>: open a storage path in the files app\r\n\
 desktop launch terminal: open the graphical terminal app\r\n\
 pkg list: list repository packages\r\n\
 pkg catalog: browse the current package catalog\r\n\

@@ -302,6 +302,9 @@ pub struct DesktopShellStatusInfo {
     pub drag_mode: DesktopDragMode,
     pub pointer_x: i32,
     pub pointer_y: i32,
+    pub active_workspace: u32,
+    pub workspace_count: u32,
+    pub notification_count: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -324,4 +327,28 @@ pub struct DesktopWindowInfo {
     pub focused: bool,
     pub minimized: bool,
     pub visible: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DesktopNotificationInfo {
+    pub sequence: u32,
+    pub source_app: Option<DesktopAppId>,
+    pub actionable: bool,
+    pub text_len: u32,
+    pub text: [u8; 64],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DesktopWorkspaceInfo {
+    pub active_workspace: u32,
+    pub workspace_count: u32,
+    pub focused_surface: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ClipboardHistoryEntry {
+    pub index: u32,
+    pub active: bool,
+    pub len: u32,
+    pub bytes: [u8; 64],
 }

@@ -7,8 +7,10 @@ use rt::{DesktopAppId, FixedLogBuffer, LogEvent, LogSeverity, StartupHandle};
 use crate::{
     logging::{emit_log, emit_text_log},
     render::render_desktop,
-    AppSlot, DesktopState, WindowState, APP_COUNT, MAX_NOTIFICATION_BYTES,
-    NOTIFICATION_TIMEOUT_TICKS, PANEL_MARGIN, SESSION_ID, TOPBAR_HEIGHT,
+    AppSlot, DesktopState, NotificationEntry, OverlayMode, WindowState, APP_COUNT,
+    MAX_NOTIFICATION_BYTES, NOTIFICATION_HISTORY_MAX, NOTIFICATION_TIMEOUT_TICKS,
+    NOTIFICATION_HISTORY_TEXT_MAX, WORKSPACE_COUNT,
+    PANEL_MARGIN, SESSION_ID, TOPBAR_HEIGHT,
     WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH,
 };
 
@@ -67,6 +69,8 @@ pub(crate) fn launch_or_focus_app(state: &mut DesktopState, app_id: DesktopAppId
     let _ = rt::handle_close(control.second);
 
     state.apps[index].task_handle = task_handle;
+    state.apps[index].workspace_id = state.active_workspace;
+    state.apps[index].launch_count = state.apps[index].launch_count.saturating_add(1);
     state.apps[index].window = WindowState {
         surface_id,
         surface_handle,
@@ -108,6 +112,10 @@ pub(crate) fn focus_app(state: &mut DesktopState, app_id: DesktopAppId) -> rt::R
         state.apps[index].window.minimized = false;
         sync_window_surface(&state.apps[index])?;
     }
+    if state.apps[index].workspace_id != state.active_workspace {
+        state.active_workspace = state.apps[index].workspace_id.clamp(1, WORKSPACE_COUNT);
+        sync_workspace_visibility(state)?;
+    }
 
     if let Some(previous) = state.focused_app {
         if previous != app_id {
@@ -129,6 +137,7 @@ pub(crate) fn focus_app(state: &mut DesktopState, app_id: DesktopAppId) -> rt::R
     let surface_id = state.apps[index].window.surface_id;
     let _ = rt::session_focus(state.session_handle, SESSION_ID, surface_id)?;
     state.focused_app = Some(app_id);
+    push_recent_focus(state, app_id);
     let _ = emit_log(
         state.log_handle,
         LogSeverity::Info,
@@ -319,6 +328,7 @@ pub(crate) fn close_app(state: &mut DesktopState, app_id: DesktopAppId) -> rt::R
 
 pub(crate) fn refresh_apps(state: &mut DesktopState) -> rt::Result<()> {
     let mut changed = false;
+    let mut pending_fault_notice: Option<(DesktopAppId, FixedLogBuffer<MAX_NOTIFICATION_BYTES>)> = None;
     for slot in &mut state.apps {
         if !slot.running || slot.task_handle == rt::INVALID_HANDLE {
             continue;
@@ -364,13 +374,12 @@ pub(crate) fn refresh_apps(state: &mut DesktopState) -> rt::Result<()> {
                 app_title(exited_app),
                 exit_code
             );
-            let bytes = message.as_bytes();
-            state.notification[..bytes.len()].copy_from_slice(bytes);
-            state.notification_len = bytes.len();
-            state.notification_deadline =
-                rt::monotonic_now()?.saturating_add(NOTIFICATION_TIMEOUT_TICKS);
+            pending_fault_notice = Some((exited_app, message));
         }
         changed = true;
+    }
+    if let Some((app_id, message)) = pending_fault_notice {
+        post_notification(state, Some(app_id), true, message.as_bytes())?;
     }
     if changed {
         let _ = crate::input::focus_next_visible_without_cycle(state);
@@ -413,7 +422,7 @@ pub(crate) fn encode_window_page(state: &DesktopState, start: usize, reply: &mut
             window.z_order,
             state.focused_app == Some(app_id),
             window.minimized,
-            window.visible(),
+            visible_on_workspace(state, app_ids[index]),
         );
         reply.words[base + 3] = pack_i32_pair(window.x, window.y);
         reply.words[base + 4] = pack_u32_pair(window.width, window.height);
@@ -442,6 +451,138 @@ pub(crate) fn apply_window_geometry(slot: &AppSlot) -> rt::Result<()> {
 pub(crate) fn sync_window_surface(slot: &AppSlot) -> rt::Result<()> {
     apply_window_geometry(slot)?;
     rt::surface_set_visibility(slot.window.surface_handle, slot.window.visible())
+}
+
+pub(crate) fn sync_workspace_visibility(state: &DesktopState) -> rt::Result<()> {
+    for slot in state.apps.iter().copied() {
+        if !slot.running || slot.window.surface_handle == rt::INVALID_HANDLE {
+            continue;
+        }
+        rt::surface_set_visibility(
+            slot.window.surface_handle,
+            slot.window.visible() && slot.workspace_id == state.active_workspace,
+        )?;
+    }
+    Ok(())
+}
+
+pub(crate) fn switch_workspace(state: &mut DesktopState, workspace_id: u32) -> rt::Result<u32> {
+    let workspace_id = workspace_id.clamp(1, WORKSPACE_COUNT);
+    if state.active_workspace == workspace_id {
+        return Ok(focused_surface_id(state));
+    }
+    if let Some(current) = state.focused_app {
+        if let Some(index) = app_slot_index(&state.apps, current) {
+            let control = state.apps[index].window.control_handle;
+            if control != rt::INVALID_HANDLE {
+                let _ = rt::app_control_focus(control, false);
+            }
+        }
+    }
+    state.focused_app = None;
+    state.active_workspace = workspace_id;
+    sync_workspace_visibility(state)?;
+    let surface_id = crate::input::focus_next_visible_without_cycle(state)?;
+    render_desktop(state)?;
+    Ok(surface_id)
+}
+
+pub(crate) fn move_focused_to_workspace(
+    state: &mut DesktopState,
+    workspace_id: u32,
+) -> rt::Result<u32> {
+    let Some(app_id) = state.focused_app else {
+        return Err(rt::Error::NotFound);
+    };
+    let Some(index) = app_slot_index(&state.apps, app_id) else {
+        return Err(rt::Error::NotFound);
+    };
+    state.apps[index].workspace_id = workspace_id.clamp(1, WORKSPACE_COUNT);
+    sync_workspace_visibility(state)?;
+    if state.apps[index].workspace_id != state.active_workspace {
+        state.focused_app = None;
+        let _ = rt::session_focus(state.session_handle, SESSION_ID, 0);
+        let _ = crate::input::focus_next_visible_without_cycle(state)?;
+    }
+    render_desktop(state)?;
+    Ok(focused_surface_id(state))
+}
+
+pub(crate) fn open_path_in_files(state: &mut DesktopState, path: &str) -> rt::Result<u32> {
+    let surface_id = launch_or_focus_app(state, DesktopAppId::Files)?;
+    let Some(index) = app_slot_index(&state.apps, DesktopAppId::Files) else {
+        return Err(rt::Error::NotFound);
+    };
+    let control = state.apps[index].window.control_handle;
+    if control == rt::INVALID_HANDLE {
+        return Err(rt::Error::NotFound);
+    }
+    rt::app_control_open_path(control, path)?;
+    Ok(surface_id)
+}
+
+pub(crate) fn visible_on_workspace(state: &DesktopState, app_id: DesktopAppId) -> bool {
+    app_slot_index(&state.apps, app_id)
+        .map(|index| {
+            let slot = state.apps[index];
+            slot.running && slot.window.visible() && slot.workspace_id == state.active_workspace
+        })
+        .unwrap_or(false)
+}
+
+pub(crate) fn push_recent_focus(state: &mut DesktopState, app_id: DesktopAppId) {
+    if let Some(index) = state.recent_focus[..state.recent_focus_len]
+        .iter()
+        .position(|candidate| *candidate == app_id)
+    {
+        for scan in (1..=index).rev() {
+            state.recent_focus[scan] = state.recent_focus[scan - 1];
+        }
+        state.recent_focus[0] = app_id;
+        return;
+    }
+
+    let limit = state.recent_focus_len.min(APP_COUNT - 1);
+    for index in (0..limit).rev() {
+        state.recent_focus[index + 1] = state.recent_focus[index];
+    }
+    state.recent_focus[0] = app_id;
+    if state.recent_focus_len < APP_COUNT {
+        state.recent_focus_len += 1;
+    }
+}
+
+pub(crate) fn post_notification(
+    state: &mut DesktopState,
+    source_app: Option<DesktopAppId>,
+    actionable: bool,
+    text: &[u8],
+) -> rt::Result<()> {
+    let live_len = text.len().min(MAX_NOTIFICATION_BYTES);
+    state.notification[..live_len].copy_from_slice(&text[..live_len]);
+    state.notification_len = live_len;
+    state.notification_deadline = rt::monotonic_now()?.saturating_add(NOTIFICATION_TIMEOUT_TICKS);
+
+    let history_len = text.len().min(NOTIFICATION_HISTORY_TEXT_MAX);
+    let limit = state.notification_history_len.min(NOTIFICATION_HISTORY_MAX - 1);
+    for index in (0..limit).rev() {
+        state.notification_history[index + 1] = state.notification_history[index];
+    }
+    state.notification_history[0] = NotificationEntry::empty();
+    state.notification_history[0].occupied = true;
+    state.notification_history[0].sequence = state.next_notification_sequence;
+    state.notification_history[0].source_app = source_app;
+    state.notification_history[0].actionable = actionable;
+    state.notification_history[0].text_len = history_len;
+    state.notification_history[0].text[..history_len].copy_from_slice(&text[..history_len]);
+    state.next_notification_sequence = state.next_notification_sequence.saturating_add(1);
+    if state.notification_history_len < NOTIFICATION_HISTORY_MAX {
+        state.notification_history_len += 1;
+    }
+    if state.overlay_mode == OverlayMode::Notifications {
+        state.overlay_selection = state.overlay_selection.min(state.notification_history_len.saturating_sub(1));
+    }
+    render_desktop(state)
 }
 
 pub(crate) fn allocate_z_order(state: &mut DesktopState) -> u32 {

@@ -8,7 +8,8 @@ use crate::{
     input::{focus_next_app, handle_input},
     windows::{
         close_app, encode_window_page, focus_app, focused_surface_id, launch_or_focus_app,
-        maximize_app, minimize_app, move_app, resize_app, restore_app, running_app_count,
+        maximize_app, minimize_app, move_app, open_path_in_files, post_notification, resize_app,
+        restore_app, running_app_count, switch_workspace, move_focused_to_workspace,
     },
     DesktopState, SESSION_ID,
 };
@@ -21,7 +22,7 @@ pub(crate) fn handle_request(state: &mut DesktopState, request: &RawMessage) -> 
             }
             let reply_handle = request.handles[0];
             let mut reply = RawMessage::empty(DesktopTag::StatusReply as u32);
-            reply.word_count = 7;
+            reply.word_count = 10;
             reply.words[0] = DesktopStatus::Ok as u32 as u64;
             reply.words[1] = SESSION_ID as u64;
             reply.words[2] = state.focused_app.map(|app| app as u32 as u64).unwrap_or(0);
@@ -32,6 +33,9 @@ pub(crate) fn handle_request(state: &mut DesktopState, request: &RawMessage) -> 
                 .map(|drag| drag.mode())
                 .unwrap_or(DesktopDragMode::None) as u32 as u64;
             reply.words[6] = crate::windows::pack_i32_pair(state.pointer_x, state.pointer_y);
+            reply.words[7] = state.active_workspace as u64;
+            reply.words[8] = crate::WORKSPACE_COUNT as u64;
+            reply.words[9] = state.notification_history_len as u64;
             let _ = rt::channel_send(reply_handle, &reply);
             let _ = rt::handle_close(reply_handle);
         }
@@ -183,15 +187,98 @@ pub(crate) fn handle_request(state: &mut DesktopState, request: &RawMessage) -> 
             {
                 DesktopStatus::Busy
             } else {
-                state.notification_len = text_len;
-                state.notification_deadline =
-                    rt::monotonic_now().unwrap_or(0).saturating_add(crate::NOTIFICATION_TIMEOUT_TICKS);
-                crate::render::render_desktop(state)?;
+                let mut text = [0u8; crate::MAX_NOTIFICATION_BYTES];
+                text[..text_len].copy_from_slice(&state.notification[..text_len]);
+                post_notification(state, None, false, &text[..text_len])?;
                 DesktopStatus::Ok
             };
             let mut reply = RawMessage::empty(DesktopTag::NotifyReply as u32);
             reply.word_count = 1;
             reply.words[0] = status as u32 as u64;
+            let _ = rt::channel_send(reply_handle, &reply);
+            let _ = rt::handle_close(reply_handle);
+        }
+        x if x == DesktopTag::NotificationHistoryRequest as u32 => {
+            if request.handle_count < 1 || request.word_count < 1 {
+                return Ok(());
+            }
+            let reply_handle = request.handles[0];
+            let index = request.words[0] as usize;
+            let mut reply = RawMessage::empty(DesktopTag::NotificationHistoryReply as u32);
+            if let Some(entry) = state
+                .notification_history
+                .iter()
+                .copied()
+                .take(state.notification_history_len)
+                .nth(index)
+            {
+                reply.word_count = 5 + pack_bytes(&entry.text[..entry.text_len], &mut reply.words[5..])?;
+                reply.words[0] = DesktopStatus::Ok as u32 as u64;
+                reply.words[1] = entry.sequence as u64;
+                reply.words[2] = entry.source_app.map(|value| value as u32 as u64).unwrap_or(0);
+                reply.words[3] = u64::from(entry.actionable);
+                reply.words[4] = entry.text_len as u64;
+            } else {
+                reply.word_count = 1;
+                reply.words[0] = DesktopStatus::NotFound as u32 as u64;
+            }
+            let _ = rt::channel_send(reply_handle, &reply);
+            let _ = rt::handle_close(reply_handle);
+        }
+        x if x == DesktopTag::WorkspaceRequest as u32 => {
+            if request.handle_count < 1 || request.word_count < 1 {
+                return Ok(());
+            }
+            let reply_handle = request.handles[0];
+            let action = request.words[0] as u32;
+            let workspace = request.words.get(1).copied().unwrap_or(1) as u32;
+            let result = match action {
+                x if x == rt::DesktopWorkspaceAction::Status as u32 => Ok(focused_surface_id(state)),
+                x if x == rt::DesktopWorkspaceAction::Switch as u32 => switch_workspace(state, workspace),
+                x if x == rt::DesktopWorkspaceAction::MoveFocused as u32 => {
+                    move_focused_to_workspace(state, workspace)
+                }
+                _ => Err(rt::Error::NotFound),
+            };
+            let mut reply = RawMessage::empty(DesktopTag::WorkspaceReply as u32);
+            reply.word_count = 4;
+            match result {
+                Ok(surface_id) => {
+                    reply.words[0] = DesktopStatus::Ok as u32 as u64;
+                    reply.words[1] = state.active_workspace as u64;
+                    reply.words[2] = crate::WORKSPACE_COUNT as u64;
+                    reply.words[3] = surface_id as u64;
+                }
+                Err(rt::Error::PermissionDenied) => reply.words[0] = DesktopStatus::Denied as u32 as u64,
+                Err(rt::Error::NotFound) => reply.words[0] = DesktopStatus::NotFound as u32 as u64,
+                Err(_) => reply.words[0] = DesktopStatus::Busy as u32 as u64,
+            }
+            let _ = rt::channel_send(reply_handle, &reply);
+            let _ = rt::handle_close(reply_handle);
+        }
+        x if x == DesktopTag::OpenPathRequest as u32 => {
+            if request.handle_count < 1 || request.word_count < 1 {
+                return Ok(());
+            }
+            let reply_handle = request.handles[0];
+            let path_len = request.words[0] as usize;
+            let mut path = [0u8; rt::IPC_MAX_WORDS * 8];
+            let mut reply = RawMessage::empty(DesktopTag::OpenPathReply as u32);
+            reply.word_count = 2;
+            let result = if unpack_bytes(
+                &request.words[1..request.word_count as usize],
+                path_len,
+                &mut path,
+            )
+            .is_ok()
+            {
+                core::str::from_utf8(&path[..path_len])
+                    .map_err(|_| rt::Error::InvalidArgument)
+                    .and_then(|value| open_path_in_files(state, value))
+            } else {
+                Err(rt::Error::InvalidArgument)
+            };
+            reply_for_surface(&mut reply, result);
             let _ = rt::channel_send(reply_handle, &reply);
             let _ = rt::handle_close(reply_handle);
         }
@@ -216,6 +303,19 @@ fn unpack_bytes(words: &[u64], len: usize, destination: &mut [u8]) -> rt::Result
         copied += chunk;
     }
     Ok(())
+}
+
+fn pack_bytes(source: &[u8], words: &mut [u64]) -> rt::Result<u32> {
+    let required = source.len().div_ceil(8);
+    if required > words.len() {
+        return Err(rt::Error::BufferTooSmall);
+    }
+    for (index, chunk) in source.chunks(8).enumerate() {
+        let mut bytes = [0u8; 8];
+        bytes[..chunk.len()].copy_from_slice(chunk);
+        words[index] = u64::from_le_bytes(bytes);
+    }
+    Ok(required as u32)
 }
 
 fn reply_for_surface(reply: &mut RawMessage, result: rt::Result<u32>) {

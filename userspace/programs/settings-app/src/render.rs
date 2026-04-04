@@ -25,24 +25,15 @@ pub(crate) fn render(
     let height = state.height.min(BUFFER_HEIGHT) as usize;
     let bytes = &mut buffer.as_slice_mut()[..BUFFER_BYTES];
 
-    fill_rect(bytes, 0, 0, width, height, ui::BG_WINDOW_ALT);
-    fill_rect(
+    ui::draw_window_frame_rgba8888(
         bytes,
-        0,
-        0,
+        PIXEL_STRIDE,
         width,
-        ui::TITLEBAR_HEIGHT as usize,
-        if state.focused { ui::ACCENT } else { ui::ACCENT_DIM },
-    );
-    fill_rect(
-        bytes,
-        0,
-        ui::TITLEBAR_HEIGHT as usize,
-        width,
-        height.saturating_sub(ui::TITLEBAR_HEIGHT as usize),
+        height,
+        state.focused,
         ui::BG_WINDOW_ALT,
+        "SETTINGS",
     );
-    draw_titlebar(bytes, width);
     draw_tabs(bytes, state.page);
 
     match state.page {
@@ -159,8 +150,11 @@ fn draw_system_page(
     }
 
     rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, NOTE_FIELD_X0, 106, ui::TEXT_MUTED, "NOTE");
-    fill_rect(
+    ui::fill_rgba8888_rect(
         bytes,
+        PIXEL_STRIDE,
+        BUFFER_WIDTH as usize,
+        BUFFER_HEIGHT as usize,
         NOTE_FIELD_X0.max(0) as usize,
         NOTE_FIELD_Y0.max(0) as usize,
         (NOTE_FIELD_X1 - NOTE_FIELD_X0).max(0) as usize,
@@ -313,47 +307,6 @@ fn draw_security_page(
     Ok(())
 }
 
-fn draw_titlebar(bytes: &mut [u8], width: usize) {
-    let close_x = width as i32 - ui::WINDOW_BUTTON_RIGHT_MARGIN - ui::WINDOW_BUTTON_SIZE as i32;
-    let minimize_x = close_x - ui::WINDOW_BUTTON_GAP - ui::WINDOW_BUTTON_SIZE as i32;
-    let maximize_x = minimize_x - ui::WINDOW_BUTTON_GAP - ui::WINDOW_BUTTON_SIZE as i32;
-    fill_rect(
-        bytes,
-        maximize_x.max(0) as usize,
-        ui::WINDOW_BUTTON_TOP.max(0) as usize,
-        ui::WINDOW_BUTTON_SIZE as usize,
-        ui::WINDOW_BUTTON_SIZE as usize,
-        ui::ACCENT,
-    );
-    fill_rect(
-        bytes,
-        minimize_x.max(0) as usize,
-        ui::WINDOW_BUTTON_TOP.max(0) as usize,
-        ui::WINDOW_BUTTON_SIZE as usize,
-        ui::WINDOW_BUTTON_SIZE as usize,
-        ui::TEXT_MUTED,
-    );
-    fill_rect(
-        bytes,
-        close_x.max(0) as usize,
-        ui::WINDOW_BUTTON_TOP.max(0) as usize,
-        ui::WINDOW_BUTTON_SIZE as usize,
-        ui::WINDOW_BUTTON_SIZE as usize,
-        ui::STATUS_WARN,
-    );
-    fill_rect(
-        bytes,
-        (maximize_x + 3).max(0) as usize,
-        (ui::WINDOW_BUTTON_TOP + 3).max(0) as usize,
-        6,
-        6,
-        ui::BG_PANEL,
-    );
-    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, minimize_x + 3, ui::WINDOW_BUTTON_TOP + 2, ui::BG_PANEL, "_");
-    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, close_x + 3, ui::WINDOW_BUTTON_TOP + 2, ui::BG_PANEL, "X");
-    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, 10, 9, ui::TEXT_PRIMARY, "SETTINGS");
-}
-
 fn draw_tabs(bytes: &mut [u8], page: SettingsPage) {
     draw_button(
         bytes,
@@ -424,8 +377,11 @@ fn draw_button(
     label: &str,
     text_color: u32,
 ) {
-    fill_rect(
+    ui::fill_rgba8888_rect(
         bytes,
+        PIXEL_STRIDE,
+        BUFFER_WIDTH as usize,
+        BUFFER_HEIGHT as usize,
         x0.max(0) as usize,
         y0.max(0) as usize,
         (x1 - x0).max(0) as usize,
@@ -433,14 +389,4 @@ fn draw_button(
         color,
     );
     rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, x0 + 8, y0 + 6, text_color, label);
-}
-
-fn fill_rect(bytes: &mut [u8], x: usize, y: usize, width: usize, height: usize, rgb: u32) {
-    let end_x = (x + width).min(BUFFER_WIDTH as usize);
-    let end_y = (y + height).min(BUFFER_HEIGHT as usize);
-    for py in y..end_y {
-        for px in x..end_x {
-            rt::set_pixel_rgba8888(bytes, PIXEL_STRIDE, px, py, rgb);
-        }
-    }
 }

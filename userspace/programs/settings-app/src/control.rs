@@ -1,5 +1,6 @@
 use core::char;
 
+use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
 use rt::PermissionPolicyState;
 
@@ -17,8 +18,7 @@ pub(crate) enum ControlFlow {
 pub(crate) fn poll_control(
     control_handle: rt::Handle,
     surface_handle: rt::Handle,
-    buffers: &mut [Option<rt::MappedMemory>; SURFACE_BUFFER_SLOTS],
-    front_buffer_slot: &mut usize,
+    buffers: &mut ui::SurfaceBuffers<SURFACE_BUFFER_SLOTS>,
     config_handle: rt::Handle,
     network_handle: rt::Handle,
     audio_handle: rt::Handle,
@@ -84,11 +84,11 @@ pub(crate) fn poll_control(
     }
 
     if changed {
-        *front_buffer_slot = (*front_buffer_slot + 1) % SURFACE_BUFFER_SLOTS;
+        let (slot, buffer) = buffers.advance();
         render(
             surface_handle,
-            *front_buffer_slot as u32,
-            buffers[*front_buffer_slot].as_mut().unwrap(),
+            slot,
+            buffer,
             config_handle,
             network_handle,
             audio_handle,

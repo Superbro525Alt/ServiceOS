@@ -7,8 +7,7 @@ mod render;
 mod security;
 mod state;
 
-use core::array;
-
+use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
 use rt::ControlTag;
 
@@ -54,43 +53,22 @@ fn main() -> u64 {
         rt::audio_stream_open(audio_handle, rt::AudioStreamDirection::Playback, 0)
             .unwrap_or(rt::INVALID_HANDLE);
 
-    let mut buffer_handles = [rt::INVALID_HANDLE; SURFACE_BUFFER_SLOTS];
-    let mut mapped_buffers: [Option<rt::MappedMemory>; SURFACE_BUFFER_SLOTS] =
-        array::from_fn(|_| None);
-    for slot in 0..SURFACE_BUFFER_SLOTS {
-        let buffer_handle = match rt::memory_create(BUFFER_BYTES, true) {
-            Ok(handle) => handle,
-            Err(_) => return 0xf007,
-        };
-        if rt::surface_attach_buffer_slot(
-            surface_handle,
-            slot as u32,
-            buffer_handle,
-            BUFFER_WIDTH,
-            BUFFER_HEIGHT,
-            BUFFER_WIDTH,
-        )
-        .is_err()
-        {
-            let _ = rt::handle_close(buffer_handle);
-            return 0xf008;
-        }
-        let mapped_buffer = match rt::MappedMemory::map(buffer_handle, BUFFER_BYTES, true) {
-            Ok(buffer) => buffer,
-            Err(_) => {
-                let _ = rt::handle_close(buffer_handle);
-                return 0xf009;
-            }
-        };
-        buffer_handles[slot] = buffer_handle;
-        mapped_buffers[slot] = Some(mapped_buffer);
-    }
-    let mut front_buffer_slot = 0usize;
+    let mut buffers = match ui::SurfaceBuffers::<SURFACE_BUFFER_SLOTS>::new(
+        surface_handle,
+        BUFFER_WIDTH,
+        BUFFER_HEIGHT,
+        BUFFER_WIDTH,
+        BUFFER_BYTES,
+    ) {
+        Ok(buffers) => buffers,
+        Err(_) => return 0xf007,
+    };
 
+    let (slot, buffer) = buffers.current();
     if render(
         surface_handle,
-        front_buffer_slot as u32,
-        mapped_buffers[front_buffer_slot].as_mut().unwrap(),
+        slot,
+        buffer,
         config_handle,
         network_handle,
         audio_handle,
@@ -115,8 +93,7 @@ fn main() -> u64 {
         match poll_control(
             control_handle,
             surface_handle,
-            &mut mapped_buffers,
-            &mut front_buffer_slot,
+            &mut buffers,
             config_handle,
             network_handle,
             audio_handle,
@@ -138,10 +115,5 @@ fn main() -> u64 {
         }
     }
 
-    for handle in buffer_handles {
-        if handle != rt::INVALID_HANDLE {
-            let _ = rt::handle_close(handle);
-        }
-    }
     0
 }

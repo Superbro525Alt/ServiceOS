@@ -1,8 +1,6 @@
 #![no_std]
 #![no_main]
 
-use core::array;
-
 mod control;
 mod render;
 mod state;
@@ -39,38 +37,16 @@ fn main() -> u64 {
     let mut height = startup.words[2] as u32;
     let mut focused = startup.words[3] != 0;
 
-    let mut buffer_handles = [rt::INVALID_HANDLE; SURFACE_BUFFER_SLOTS];
-    let mut mapped_buffers: [Option<rt::MappedMemory>; SURFACE_BUFFER_SLOTS] =
-        array::from_fn(|_| None);
-    for slot in 0..SURFACE_BUFFER_SLOTS {
-        let buffer_handle = match rt::memory_create(BUFFER_BYTES, true) {
-            Ok(handle) => handle,
-            Err(_) => return 0xfa03,
-        };
-        if rt::surface_attach_buffer_slot(
-            surface_handle,
-            slot as u32,
-            buffer_handle,
-            BUFFER_WIDTH,
-            BUFFER_HEIGHT,
-            BUFFER_WIDTH,
-        )
-        .is_err()
-        {
-            let _ = rt::handle_close(buffer_handle);
-            return 0xfa04;
-        }
-        let mapped_buffer = match rt::MappedMemory::map(buffer_handle, BUFFER_BYTES, true) {
-            Ok(buffer) => buffer,
-            Err(_) => {
-                let _ = rt::handle_close(buffer_handle);
-                return 0xfa0a;
-            }
-        };
-        buffer_handles[slot] = buffer_handle;
-        mapped_buffers[slot] = Some(mapped_buffer);
-    }
-    let mut front_buffer_slot = 0usize;
+    let mut buffers = match ui::SurfaceBuffers::<SURFACE_BUFFER_SLOTS>::new(
+        surface_handle,
+        BUFFER_WIDTH,
+        BUFFER_HEIGHT,
+        BUFFER_WIDTH,
+        BUFFER_BYTES,
+    ) {
+        Ok(buffers) => buffers,
+        Err(_) => return 0xfa03,
+    };
 
     tabs::clear_all_tabs();
     let mut state = TerminalState {
@@ -92,12 +68,8 @@ fn main() -> u64 {
     if tabs::open_new_tab(&mut state).is_err() {
         return 0xfa05;
     }
-    let _ = render::render(
-        surface_handle,
-        front_buffer_slot as u32,
-        mapped_buffers[front_buffer_slot].as_mut().unwrap(),
-        &state,
-    );
+    let (slot, buffer) = buffers.current();
+    let _ = render::render(surface_handle, slot, buffer, &state);
 
     loop {
         let mut did_work = false;
@@ -181,13 +153,8 @@ fn main() -> u64 {
         }
 
         if changed {
-            front_buffer_slot = (front_buffer_slot + 1) % SURFACE_BUFFER_SLOTS;
-            let _ = render::render(
-                surface_handle,
-                front_buffer_slot as u32,
-                mapped_buffers[front_buffer_slot].as_mut().unwrap(),
-                &state,
-            );
+            let (slot, buffer) = buffers.advance();
+            let _ = render::render(surface_handle, slot, buffer, &state);
         }
         if did_work {
             continue;
@@ -201,11 +168,6 @@ fn main() -> u64 {
     for tab in state.tabs.iter().copied().filter(|tab| tab.occupied) {
         let _ = rt::terminal_session_close(tab.session_handle);
         let _ = rt::handle_close(tab.session_handle);
-    }
-    for handle in buffer_handles {
-        if handle != rt::INVALID_HANDLE {
-            let _ = rt::handle_close(handle);
-        }
     }
     0
 }

@@ -1,5 +1,6 @@
 use serviceos_userspace_runtime as rt;
 use rt::{AppControlTag, AppKeyAction, AppPointerAction, RawMessage};
+use serviceos_desktop_ui as ui;
 
 use crate::navigation::{
     clamp_view, ensure_selected_visible, navigate_parent, open_path_in_explorer, open_selected,
@@ -20,8 +21,7 @@ pub(crate) enum ControlFlow {
 pub(crate) fn poll_control(
     control_handle: rt::Handle,
     surface_handle: rt::Handle,
-    buffers: &mut [Option<rt::MappedMemory>; SURFACE_BUFFER_SLOTS],
-    front_buffer_slot: &mut usize,
+    buffers: &mut ui::SurfaceBuffers<SURFACE_BUFFER_SLOTS>,
     storage_handle: rt::Handle,
     state: &mut ExplorerState,
 ) -> rt::Result<ControlFlow> {
@@ -99,13 +99,8 @@ pub(crate) fn poll_control(
     }
 
     if changed {
-        *front_buffer_slot = (*front_buffer_slot + 1) % SURFACE_BUFFER_SLOTS;
-        render(
-            surface_handle,
-            *front_buffer_slot as u32,
-            buffers[*front_buffer_slot].as_mut().unwrap(),
-            state,
-        )?;
+        let (slot, buffer) = buffers.advance();
+        render(surface_handle, slot, buffer, state)?;
         return Ok(ControlFlow::Worked);
     }
 

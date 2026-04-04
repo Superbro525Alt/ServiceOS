@@ -1,5 +1,6 @@
 use serviceos_userspace_runtime as rt;
 use rt::{AppControlTag, RawMessage};
+use serviceos_desktop_ui as ui;
 
 use crate::actions::{apply_selected_package_action, sync_repositories, PackageAction};
 use crate::lifecycle::{key_action_from_word, pointer_action_from_word};
@@ -20,8 +21,7 @@ pub(crate) fn poll_control(
     control_handle: rt::Handle,
     surface_handle: rt::Handle,
     package_handle: rt::Handle,
-    buffers: &mut [Option<rt::MappedMemory>; SURFACE_BUFFER_SLOTS],
-    front_buffer_slot: &mut usize,
+    buffers: &mut ui::SurfaceBuffers<SURFACE_BUFFER_SLOTS>,
     state: &mut AppState,
 ) -> rt::Result<ControlFlow> {
     let mut changed = false;
@@ -79,14 +79,8 @@ pub(crate) fn poll_control(
     }
 
     if changed {
-        *front_buffer_slot = (*front_buffer_slot + 1) % SURFACE_BUFFER_SLOTS;
-        render(
-            surface_handle,
-            *front_buffer_slot as u32,
-            buffers[*front_buffer_slot].as_mut().unwrap(),
-            package_handle,
-            state,
-        )?;
+        let (slot, buffer) = buffers.advance();
+        render(surface_handle, slot, buffer, package_handle, state)?;
         return Ok(ControlFlow::Worked);
     }
     if did_work {

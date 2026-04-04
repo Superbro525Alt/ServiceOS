@@ -89,16 +89,15 @@ pub(crate) fn render(
         let _ = write!(&mut detail1, "Browse the catalog and inspect trust before installing.");
     }
 
-    fill_rect(bytes, 0, 0, width, height, ui::BG_WINDOW_ALT);
-    fill_rect(
+    ui::draw_window_frame_rgba8888(
         bytes,
-        0,
-        0,
+        PIXEL_STRIDE,
         width,
-        ui::TITLEBAR_HEIGHT as usize,
-        if state.focused { ui::ACCENT } else { ui::ACCENT_DIM },
+        height,
+        state.focused,
+        ui::BG_WINDOW_ALT,
+        "SOFTWARE CENTER",
     );
-    draw_titlebar(bytes, width);
     draw_header(bytes, layout, state);
     draw_panel(bytes, layout.left_x, layout.left_y, layout.left_w, layout.left_h, ui::BG_PANEL);
     draw_panel(bytes, layout.right_x, layout.right_y, layout.right_w, layout.right_h, ui::BG_PANEL);
@@ -157,61 +156,6 @@ pub(crate) fn render(
         state.width.min(BUFFER_WIDTH),
         state.height.min(BUFFER_HEIGHT),
     )
-}
-
-fn draw_titlebar(bytes: &mut [u8], width: usize) {
-    let close_x = width as i32 - ui::WINDOW_BUTTON_RIGHT_MARGIN - ui::WINDOW_BUTTON_SIZE as i32;
-    let minimize_x = close_x - ui::WINDOW_BUTTON_GAP - ui::WINDOW_BUTTON_SIZE as i32;
-    let maximize_x = minimize_x - ui::WINDOW_BUTTON_GAP - ui::WINDOW_BUTTON_SIZE as i32;
-    fill_rect(
-        bytes,
-        maximize_x.max(0) as usize,
-        ui::WINDOW_BUTTON_TOP.max(0) as usize,
-        ui::WINDOW_BUTTON_SIZE as usize,
-        ui::WINDOW_BUTTON_SIZE as usize,
-        ui::ACCENT,
-    );
-    fill_rect(
-        bytes,
-        minimize_x.max(0) as usize,
-        ui::WINDOW_BUTTON_TOP.max(0) as usize,
-        ui::WINDOW_BUTTON_SIZE as usize,
-        ui::WINDOW_BUTTON_SIZE as usize,
-        ui::TEXT_MUTED,
-    );
-    fill_rect(
-        bytes,
-        close_x.max(0) as usize,
-        ui::WINDOW_BUTTON_TOP.max(0) as usize,
-        ui::WINDOW_BUTTON_SIZE as usize,
-        ui::WINDOW_BUTTON_SIZE as usize,
-        ui::STATUS_WARN,
-    );
-    fill_rect(
-        bytes,
-        (maximize_x + 3).max(0) as usize,
-        (ui::WINDOW_BUTTON_TOP + 3).max(0) as usize,
-        6,
-        6,
-        ui::BG_PANEL,
-    );
-    rt::draw_text_rgba8888(
-        bytes,
-        PIXEL_STRIDE,
-        minimize_x + 3,
-        ui::WINDOW_BUTTON_TOP + 2,
-        ui::BG_PANEL,
-        "_",
-    );
-    rt::draw_text_rgba8888(
-        bytes,
-        PIXEL_STRIDE,
-        close_x + 3,
-        ui::WINDOW_BUTTON_TOP + 2,
-        ui::BG_PANEL,
-        "X",
-    );
-    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, 10, 9, ui::TEXT_PRIMARY, "SOFTWARE CENTER");
 }
 
 fn draw_header(bytes: &mut [u8], layout: Layout, state: &AppState) {
@@ -298,8 +242,11 @@ fn draw_list(bytes: &mut [u8], layout: Layout, state: &AppState) {
         let entry = state.entries[entry_index];
         let row_y = layout.list_rows_y as usize + row * ROW_HEIGHT as usize;
         let selected = entry_index == state.selected_index;
-        fill_rect(
+        ui::fill_rgba8888_rect(
             bytes,
+            PIXEL_STRIDE,
+            BUFFER_WIDTH as usize,
+            BUFFER_HEIGHT as usize,
             (layout.left_x + 8) as usize,
             row_y,
             (layout.left_w - 16).max(0) as usize,
@@ -346,8 +293,11 @@ fn draw_button(
     label: &str,
     text_color: u32,
 ) {
-    fill_rect(
+    ui::fill_rgba8888_rect(
         bytes,
+        PIXEL_STRIDE,
+        BUFFER_WIDTH as usize,
+        BUFFER_HEIGHT as usize,
         x0.max(0) as usize,
         y0.max(0) as usize,
         (x1 - x0).max(0) as usize,
@@ -358,8 +308,11 @@ fn draw_button(
 }
 
 fn draw_panel(bytes: &mut [u8], x: i32, y: i32, width: i32, height: i32, color: u32) {
-    fill_rect(
+    ui::fill_rgba8888_rect(
         bytes,
+        PIXEL_STRIDE,
+        BUFFER_WIDTH as usize,
+        BUFFER_HEIGHT as usize,
         x.max(0) as usize,
         y.max(0) as usize,
         width.max(0) as usize,
@@ -370,7 +323,17 @@ fn draw_panel(bytes: &mut [u8], x: i32, y: i32, width: i32, height: i32, color: 
 
 fn draw_chip(bytes: &mut [u8], x: i32, y: i32, label: &str, color: u32, text: u32) {
     let width = (label.len() as i32 * 8 + 12).min(128);
-    fill_rect(bytes, x.max(0) as usize, y.max(0) as usize, width.max(0) as usize, 16, color);
+    ui::fill_rgba8888_rect(
+        bytes,
+        PIXEL_STRIDE,
+        BUFFER_WIDTH as usize,
+        BUFFER_HEIGHT as usize,
+        x.max(0) as usize,
+        y.max(0) as usize,
+        width.max(0) as usize,
+        16,
+        color,
+    );
     rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, x + 6, y + 4, text, label);
 }
 
@@ -402,8 +365,11 @@ fn draw_text_fit(bytes: &mut [u8], x: i32, y: i32, color: u32, text: &str, width
 }
 
 fn draw_status_bar(bytes: &mut [u8], x: i32, y: i32, width: i32, status: &str) {
-    fill_rect(
+    ui::fill_rgba8888_rect(
         bytes,
+        PIXEL_STRIDE,
+        BUFFER_WIDTH as usize,
+        BUFFER_HEIGHT as usize,
         x.max(0) as usize,
         y.max(0) as usize,
         width.max(0) as usize,
@@ -411,14 +377,4 @@ fn draw_status_bar(bytes: &mut [u8], x: i32, y: i32, width: i32, status: &str) {
         ui::BG_WINDOW,
     );
     rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, x + 8, y + 8, ui::TEXT_MUTED, status);
-}
-
-fn fill_rect(bytes: &mut [u8], x: usize, y: usize, width: usize, height: usize, rgb: u32) {
-    let end_x = (x + width).min(BUFFER_WIDTH as usize);
-    let end_y = (y + height).min(BUFFER_HEIGHT as usize);
-    for py in y..end_y {
-        for px in x..end_x {
-            rt::set_pixel_rgba8888(bytes, PIXEL_STRIDE, px, py, rgb);
-        }
-    }
 }

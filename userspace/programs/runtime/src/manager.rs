@@ -1,8 +1,10 @@
 use crate::{
-    channel_receive_blocking, channel_send, manager_phase_from_word, manager_status_from_word,
-    pack_bytes, Error, Handle, IPC_MAX_HANDLES, IPC_MAX_WORDS, ManagerAction,
-    ManagerServiceInfo, ManagerServicePhase, ManagerStatus, ManagerTag, RawMessage, Result,
-    ServiceId, ServiceImageId, rights, service_id_from_word,
+    channel_receive_blocking, channel_send, manager_availability_from_word,
+    manager_phase_from_word, manager_startup_from_word, manager_status_from_word, pack_bytes,
+    Error, Handle, IPC_MAX_HANDLES, IPC_MAX_WORDS, ManagerAction, ManagerGraphStatusInfo,
+    ManagerServiceInfo, ManagerServiceStatusInfo, ManagerServiceTemplateInfo,
+    ManagerStatus, ManagerTag, RawMessage, Result, ServiceId, ServiceImageId, rights,
+    service_id_from_word,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -57,7 +59,7 @@ pub fn manager_list_services(
 pub fn manager_service_status(
     bootstrap: Handle,
     service_id: ServiceId,
-) -> Result<(ManagerStatus, ManagerServicePhase, u32, u64)> {
+) -> Result<ManagerServiceStatusInfo> {
     let mut request = RawMessage::empty(ManagerTag::ServiceStatusRequest as u32);
     request.word_count = 1;
     request.words[0] = service_id as u32 as u64;
@@ -65,16 +67,68 @@ pub fn manager_service_status(
 
     let mut response = RawMessage::empty(0);
     channel_receive_blocking(bootstrap, &mut response)?;
-    if response.tag != ManagerTag::ServiceStatusReply as u32 || response.word_count < 4 {
+    if response.tag != ManagerTag::ServiceStatusReply as u32 || response.word_count < 10 {
         return Err(Error::InvalidArgument);
     }
 
-    Ok((
-        manager_status_from_word(response.words[0]),
-        manager_phase_from_word(response.words[1]),
-        response.words[2] as u32,
-        response.words[3],
-    ))
+    Ok(ManagerServiceStatusInfo {
+        status: manager_status_from_word(response.words[0]),
+        phase: manager_phase_from_word(response.words[1]),
+        attempts: response.words[2] as u32,
+        last_exit: response.words[3],
+        startup: manager_startup_from_word(response.words[4]),
+        availability: manager_availability_from_word(response.words[5]),
+        blocked_dependency: service_id_from_word(response.words[6]),
+        last_start_tick: response.words[7],
+        last_ready_tick: response.words[8],
+        next_restart_tick: response.words[9],
+    })
+}
+
+pub fn manager_service_template(
+    bootstrap: Handle,
+    service_id: ServiceId,
+) -> Result<ManagerServiceTemplateInfo> {
+    let mut request = RawMessage::empty(ManagerTag::ServiceTemplateRequest as u32);
+    request.word_count = 1;
+    request.words[0] = service_id as u32 as u64;
+    channel_send(bootstrap, &request)?;
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(bootstrap, &mut response)?;
+    if response.tag != ManagerTag::ServiceTemplateReply as u32 || response.word_count < 8 {
+        return Err(Error::InvalidArgument);
+    }
+    if manager_status_from_word(response.words[0]) != ManagerStatus::Ok {
+        return Err(Error::NotFound);
+    }
+
+    Ok(ManagerServiceTemplateInfo {
+        startup: manager_startup_from_word(response.words[1]),
+        availability: manager_availability_from_word(response.words[2]),
+        ready_timeout_ticks: response.words[3] as u32,
+        restart_limit: response.words[4] as u32,
+        restart_backoff_ticks: response.words[5] as u32,
+        grant_count: response.words[6] as u32,
+        lookup_count: response.words[7] as u32,
+    })
+}
+
+pub fn manager_graph_status(bootstrap: Handle) -> Result<ManagerGraphStatusInfo> {
+    let request = RawMessage::empty(ManagerTag::ServiceGraphStatusRequest as u32);
+    channel_send(bootstrap, &request)?;
+
+    let mut response = RawMessage::empty(0);
+    channel_receive_blocking(bootstrap, &mut response)?;
+    if response.tag != ManagerTag::ServiceGraphStatusReply as u32 || response.word_count < 4 {
+        return Err(Error::InvalidArgument);
+    }
+    Ok(ManagerGraphStatusInfo {
+        degraded_boot: response.words[0] != 0,
+        blocked_services: response.words[1] as u32,
+        degraded_services: response.words[2] as u32,
+        service_count: response.words[3] as u32,
+    })
 }
 
 pub fn manager_restart_service(bootstrap: Handle, service_id: ServiceId) -> Result<()> {

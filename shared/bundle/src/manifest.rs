@@ -12,11 +12,21 @@ use crate::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ServiceStartupMode {
     Eager,
+    OnDemand,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ServiceAvailability {
+    Required,
+    Optional,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RestartPolicy {
-    OnFailure { max_restarts: u32 },
+    OnFailure {
+        max_restarts: u32,
+        backoff_ticks: u32,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -65,7 +75,9 @@ pub struct ServiceManifest {
     pub service_id: ServiceId,
     pub image_id: ServiceImageId,
     pub startup: ServiceStartupMode,
+    pub availability: ServiceAvailability,
     pub restart: RestartPolicy,
+    pub ready_timeout_ticks: u32,
     pub dependencies: [ServiceId; BOOT_STORE_MAX_DEPENDENCIES],
     pub dependency_count: usize,
     pub grants: [ServiceGrant; BOOT_STORE_MAX_GRANTS],
@@ -82,7 +94,12 @@ impl ServiceManifest {
             service_id: ServiceId::RootManager,
             image_id: ServiceImageId::RootManager,
             startup: ServiceStartupMode::Eager,
-            restart: RestartPolicy::OnFailure { max_restarts: 0 },
+            availability: ServiceAvailability::Required,
+            restart: RestartPolicy::OnFailure {
+                max_restarts: 0,
+                backoff_ticks: 0,
+            },
+            ready_timeout_ticks: 500,
             dependencies: [ServiceId::RootManager; BOOT_STORE_MAX_DEPENDENCIES],
             dependency_count: 0,
             grants: [ServiceGrant {
@@ -128,17 +145,37 @@ pub fn parse_manifest(bytes: &[u8]) -> Result<ServiceManifest, BootStoreError> {
             "startup" => {
                 manifest.startup = match value {
                     "eager" => ServiceStartupMode::Eager,
+                    "on-demand" => ServiceStartupMode::OnDemand,
+                    _ => return Err(BootStoreError::InvalidManifest),
+                };
+            }
+            "availability" => {
+                manifest.availability = match value {
+                    "required" => ServiceAvailability::Required,
+                    "optional" => ServiceAvailability::Optional,
                     _ => return Err(BootStoreError::InvalidManifest),
                 };
             }
             "restart" => {
-                let Some(limit) = value.strip_prefix("on-failure:") else {
+                let Some(rest) = value.strip_prefix("on-failure:") else {
                     return Err(BootStoreError::InvalidManifest);
                 };
+                let mut parts = rest.split(':');
+                let max_restarts =
+                    crate::parse_u32(parts.next().ok_or(BootStoreError::InvalidManifest)?)?;
+                let backoff_ticks = match parts.next() {
+                    Some(part) => crate::parse_u32(part)?,
+                    None => 0,
+                };
+                if parts.next().is_some() {
+                    return Err(BootStoreError::InvalidManifest);
+                }
                 manifest.restart = RestartPolicy::OnFailure {
-                    max_restarts: crate::parse_u32(limit)?,
+                    max_restarts,
+                    backoff_ticks,
                 };
             }
+            "ready_timeout" => manifest.ready_timeout_ticks = crate::parse_u32(value)?,
             "depends" => {
                 for entry in value.split(',').map(str::trim).filter(|v| !v.is_empty()) {
                     if manifest.dependency_count == manifest.dependencies.len() {

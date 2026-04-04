@@ -110,3 +110,72 @@ pub(crate) fn compose_child_path(
     }
     Some((path, total_len))
 }
+
+pub(crate) fn compose_relative_path(
+    parent: &[u8],
+    relative: &[u8],
+    kind: StorageEntryKind,
+) -> Option<([u8; MAX_STORAGE_PATH], usize)> {
+    if relative.is_empty() || relative[0] == b'/' {
+        return None;
+    }
+
+    let mut path = [0u8; MAX_STORAGE_PATH];
+    let mut len = parent.len();
+    if len > MAX_STORAGE_PATH {
+        return None;
+    }
+    path[..len].copy_from_slice(parent);
+
+    for (index, component) in relative.split(|byte| *byte == b'/').enumerate() {
+        if component.is_empty() || component == b"." || component == b".." {
+            return None;
+        }
+        if index != 0 && (len == 0 || path[len - 1] != b'/') {
+            if len >= MAX_STORAGE_PATH {
+                return None;
+            }
+            path[len] = b'/';
+            len += 1;
+        }
+        let end = len.checked_add(component.len())?;
+        if end > MAX_STORAGE_PATH {
+            return None;
+        }
+        path[len..end].copy_from_slice(component);
+        len = end;
+        if len < MAX_STORAGE_PATH {
+            path[len] = b'/';
+        }
+    }
+
+    match kind {
+        StorageEntryKind::Directory => {
+            if len == 0 || path[len - 1] != b'/' {
+                if len >= MAX_STORAGE_PATH {
+                    return None;
+                }
+                path[len] = b'/';
+                len += 1;
+            }
+        }
+        StorageEntryKind::File => {
+            if len > 0 && path[len - 1] == b'/' {
+                len -= 1;
+            }
+        }
+    }
+
+    Some((path, len))
+}
+
+pub(crate) fn directory_exists(
+    entries: &[EntrySlot],
+    mutable_entries: &[MutableEntry; MAX_MUTABLE_ENTRIES],
+    path: &[u8],
+) -> bool {
+    path.is_empty()
+        || is_mutable_root(path)
+        || boot_directory_exists(entries, path)
+        || find_mutable_directory(mutable_entries, path).is_some()
+}

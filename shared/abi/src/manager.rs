@@ -23,6 +23,10 @@ pub enum ManagerTag {
     LaunchPolicySetReply = 0x613,
     LaunchAuditListRequest = 0x614,
     LaunchAuditListReply = 0x615,
+    ServiceTemplateRequest = 0x616,
+    ServiceTemplateReply = 0x617,
+    ServiceGraphStatusRequest = 0x618,
+    ServiceGraphStatusReply = 0x619,
 }
 
 #[repr(u32)]
@@ -37,6 +41,20 @@ pub enum ManagerStatus {
 
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ManagerStartupMode {
+    Eager = 0,
+    OnDemand = 1,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ManagerAvailability {
+    Required = 0,
+    Optional = 1,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ManagerAction {
     Restart = 1,
 }
@@ -45,7 +63,10 @@ pub enum ManagerAction {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ManagerServicePhase {
     Dormant = 0,
-    Starting = 1,
-    Ready = 2,
-    Exited = 3,
+    WaitingDependencies = 1,
+    Starting = 2,
+    Ready = 3,
+    Backoff = 4,
+    Degraded = 5,
+    Exited = 6,
 }

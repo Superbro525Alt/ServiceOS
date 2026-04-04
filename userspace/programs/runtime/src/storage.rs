@@ -1,7 +1,17 @@
 use crate::{
     channel_call, channel_send, handle_close, pack_bytes, unpack_bytes, Error, Handle,
-    RawMessage, Result, StorageEntryKind, StorageStatus, StorageTag, IPC_MAX_WORDS,
+    RawMessage, Result, StorageEntryKind, StorageMountKind, StorageStatus, StorageTag,
+    IPC_MAX_WORDS,
 };
+
+#[derive(Clone, Copy)]
+pub struct StorageMountInfo {
+    pub next_cursor: usize,
+    pub kind: StorageMountKind,
+    pub writable: bool,
+    pub persistent: bool,
+    pub path_len: usize,
+}
 
 pub fn storage_open(storage_handle: Handle, path: &str) -> Result<(Handle, usize)> {
     let path_bytes = path.as_bytes();
@@ -345,4 +355,100 @@ pub fn storage_directory_read(
         path_buffer,
     )?;
     Ok(Some((next_cursor, entry_kind, path_len)))
+}
+
+pub fn storage_mount_list(
+    storage_handle: Handle,
+    cursor: usize,
+    path_buffer: &mut [u8],
+) -> Result<Option<StorageMountInfo>> {
+    let mut request = RawMessage::empty(StorageTag::MountListRequest as u32);
+    request.word_count = 1;
+    request.words[0] = cursor as u64;
+    let response = channel_call(storage_handle, &mut request)?;
+    if response.tag != StorageTag::MountListReply as u32 || response.word_count < 5 {
+        return Err(Error::InvalidArgument);
+    }
+
+    let status = match response.words[0] as u32 {
+        x if x == StorageStatus::Ok as u32 => StorageStatus::Ok,
+        x if x == StorageStatus::End as u32 => StorageStatus::End,
+        x if x == StorageStatus::Busy as u32 => StorageStatus::Busy,
+        _ => return Err(Error::InvalidArgument),
+    };
+    if status == StorageStatus::End {
+        return Ok(None);
+    }
+
+    let kind = match response.words[2] as u32 {
+        x if x == StorageMountKind::Boot as u32 => StorageMountKind::Boot,
+        x if x == StorageMountKind::Persistent as u32 => StorageMountKind::Persistent,
+        x if x == StorageMountKind::Ephemeral as u32 => StorageMountKind::Ephemeral,
+        _ => return Err(Error::InvalidArgument),
+    };
+    let path_len = response.words[4] as usize;
+    unpack_bytes(
+        &response.words[5..response.word_count as usize],
+        path_len,
+        path_buffer,
+    )?;
+    Ok(Some(StorageMountInfo {
+        next_cursor: response.words[1] as usize,
+        kind,
+        writable: response.words[3] & 1 != 0,
+        persistent: response.words[3] & 2 != 0,
+        path_len,
+    }))
+}
+
+fn storage_directory_traverse(
+    directory_handle: Handle,
+    path: &str,
+    directory: bool,
+    writable: bool,
+) -> Result<(Handle, usize)> {
+    let path_bytes = path.as_bytes();
+    let max_inline_bytes = (IPC_MAX_WORDS.saturating_sub(3)) * 8;
+    if path_bytes.len() > max_inline_bytes {
+        return Err(Error::BufferTooSmall);
+    }
+
+    let mut request = RawMessage::empty(StorageTag::DirectoryTraverseRequest as u32);
+    request.word_count = 3 + pack_bytes(path_bytes, &mut request.words[3..])?;
+    request.words[0] = path_bytes.len() as u64;
+    request.words[1] = u64::from(directory);
+    request.words[2] = u64::from(writable);
+    let response = channel_call(directory_handle, &mut request)?;
+    if response.tag != StorageTag::DirectoryTraverseReply as u32 || response.word_count < 3 {
+        return Err(Error::InvalidArgument);
+    }
+
+    match response.words[0] as u32 {
+        x if x == StorageStatus::Ok as u32 && response.handle_count > 0 => {
+            Ok((response.handles[0], response.words[2] as usize))
+        }
+        x if x == StorageStatus::NotFound as u32 => Err(Error::NotFound),
+        x if x == StorageStatus::Denied as u32 => Err(Error::PermissionDenied),
+        x if x == StorageStatus::Busy as u32 => Err(Error::Busy),
+        x if x == StorageStatus::InvalidPath as u32 => Err(Error::InvalidArgument),
+        x if x == StorageStatus::NotDirectory as u32 => Err(Error::InvalidArgument),
+        _ => Err(Error::InvalidArgument),
+    }
+}
+
+pub fn storage_directory_open_path(
+    directory_handle: Handle,
+    path: &str,
+    writable: bool,
+) -> Result<Handle> {
+    let (handle, _) = storage_directory_traverse(directory_handle, path, true, writable)?;
+    Ok(handle)
+}
+
+pub fn storage_directory_open_path_file(
+    directory_handle: Handle,
+    path: &str,
+    writable: bool,
+) -> Result<(Handle, usize)> {
+    storage_directory_traverse(directory_handle, path, false, writable)
 }

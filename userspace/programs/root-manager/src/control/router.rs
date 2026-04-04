@@ -1,7 +1,7 @@
 use serviceos_userspace_runtime as rt;
 use rt::{ControlTag, ManagerTag, RawMessage};
 
-use crate::state::{BootstrapResources, ServiceSlot, MAX_SERVICE_SLOTS};
+use crate::state::{BootstrapResources, GraphStatus, ServiceSlot, MAX_SERVICE_SLOTS};
 
 use super::{
     activation::{handle_activate_request, handle_deactivate_request},
@@ -9,8 +9,9 @@ use super::{
         handle_launch_image_request, handle_launch_request, handle_launch_stored_image_request,
     },
     lookup::{
-        handle_list_services_request, handle_lookup_request, handle_service_action_request,
-        handle_service_status_request,
+        handle_graph_status_request, handle_list_services_request, handle_lookup_request,
+        handle_service_action_request, handle_service_status_request,
+        handle_service_template_request,
     },
 };
 
@@ -19,6 +20,7 @@ pub(crate) fn pump_control_channels(
     service_count: &mut usize,
     bootstrap_authority: rt::Handle,
     bootstrap_resources: BootstrapResources,
+    graph_status: GraphStatus,
 ) -> rt::Result<()> {
     let mut index = 0usize;
     while index < *service_count {
@@ -36,6 +38,7 @@ pub(crate) fn pump_control_channels(
                     index,
                     bootstrap_authority,
                     bootstrap_resources,
+                    graph_status,
                     &message,
                 )?
             }
@@ -53,6 +56,7 @@ fn handle_control_message(
     service_index: usize,
     bootstrap_authority: rt::Handle,
     bootstrap_resources: BootstrapResources,
+    graph_status: GraphStatus,
     message: &RawMessage,
 ) -> rt::Result<()> {
     match message.tag {
@@ -66,6 +70,10 @@ fn handle_control_message(
             }
             slots[service_index].public_handle = message.handles[0];
             slots[service_index].phase = crate::state::ServicePhase::Ready;
+            slots[service_index].consecutive_failures = 0;
+            slots[service_index].blocked_dependency = rt::ServiceId::RootManager;
+            slots[service_index].next_restart_tick = 0;
+            slots[service_index].last_ready_tick = rt::monotonic_now().unwrap_or(0);
             let _ = crate::util::emit_manager_event(
                 slots,
                 *service_count,
@@ -76,7 +84,14 @@ fn handle_control_message(
             );
         }
         x if x == ControlTag::LookupRequest as u32 => {
-            handle_lookup_request(slots, *service_count, service_index, message)?
+            handle_lookup_request(
+                slots,
+                service_count,
+                service_index,
+                bootstrap_authority,
+                bootstrap_resources,
+                message,
+            )?
         }
         x if x == ManagerTag::ListServicesRequest as u32 => {
             handle_list_services_request(slots, *service_count, service_index, message)?
@@ -86,6 +101,15 @@ fn handle_control_message(
                 return Err(rt::Error::InvalidArgument);
             }
             handle_service_status_request(slots, *service_count, service_index, message.words[0])?;
+        }
+        x if x == ManagerTag::ServiceTemplateRequest as u32 => {
+            if message.word_count < 1 {
+                return Err(rt::Error::InvalidArgument);
+            }
+            handle_service_template_request(slots, *service_count, service_index, message.words[0])?;
+        }
+        x if x == ManagerTag::ServiceGraphStatusRequest as u32 => {
+            handle_graph_status_request(slots, service_index, graph_status, *service_count)?;
         }
         x if x == ManagerTag::ServiceActionRequest as u32 => {
             if message.word_count < 2 {

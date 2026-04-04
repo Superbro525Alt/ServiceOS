@@ -13,7 +13,10 @@ use rt::{ControlTag, LogEvent, LogSeverity, RawMessage, ServiceId, rights};
 use crate::graph::{
     activate_base_service_graph, start_service, supervision_loop, wait_until_ready,
 };
-use crate::state::{storage_manifest, BootstrapResource, BootstrapResources, ServiceSlot, MAX_SERVICE_SLOTS};
+use crate::state::{
+    storage_manifest, BootstrapResource, BootstrapResources, GraphStatus, ServiceSlot,
+    MAX_SERVICE_SLOTS,
+};
 use crate::util::{emit_manager_event, fallback_log, service_index_path};
 
 rt::entry!(main);
@@ -101,6 +104,7 @@ fn main() -> u64 {
     fallback_log("bootstrap started");
 
     let mut slots = [ServiceSlot::empty(); MAX_SERVICE_SLOTS];
+    let mut graph_status = GraphStatus::empty();
     slots[0].manifest = storage_manifest();
     slots[0].occupied = true;
     let mut service_count = 1usize;
@@ -142,6 +146,7 @@ fn main() -> u64 {
         &mut service_count,
         bootstrap_authority,
         bootstrap_resources,
+        &mut graph_status,
     )
     .is_err()
     {
@@ -162,5 +167,6 @@ fn main() -> u64 {
         &mut service_count,
         bootstrap_authority,
         bootstrap_resources,
+        &mut graph_status,
     )
 }

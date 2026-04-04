@@ -32,6 +32,8 @@ pub(crate) fn stop_service_slot(slot: &mut ServiceSlot) -> rt::Result<()> {
     }
     crate::util::close_slot_handles(slot);
     slot.phase = crate::state::ServicePhase::Exited;
+    slot.blocked_dependency = rt::ServiceId::RootManager;
+    slot.next_restart_tick = 0;
     slot.restart_requested = false;
     Ok(())
 }

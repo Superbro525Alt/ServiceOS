@@ -1,4 +1,4 @@
-use serviceos_bundle::BOOT_STORE_PATH_MAX;
+use serviceos_bundle::{BOOT_STORE_PATH_MAX, ServiceStartupMode};
 use serviceos_userspace_runtime as rt;
 use rt::{LogEvent, LogSeverity, ManagerStatus, ManagerTag, RawMessage, ServiceId};
 
@@ -74,22 +74,27 @@ pub(super) fn handle_activate_request(
         ..ServiceSlot::empty()
     };
 
-    let result = start_service(
-        slots,
-        *service_count,
-        target_index,
-        bootstrap_authority,
-        bootstrap_resources,
-    )
-    .and_then(|_| {
-        wait_until_ready(
+    let result = if manifest.startup == ServiceStartupMode::OnDemand {
+        slots[target_index].phase = crate::state::ServicePhase::Dormant;
+        Ok(())
+    } else {
+        start_service(
             slots,
-            service_count,
+            *service_count,
+            target_index,
             bootstrap_authority,
             bootstrap_resources,
-            manifest.service_id,
         )
-    });
+        .and_then(|_| {
+            wait_until_ready(
+                slots,
+                service_count,
+                bootstrap_authority,
+                bootstrap_resources,
+                manifest.service_id,
+            )
+        })
+    };
 
     reply.words[0] = if result.is_ok() {
         ManagerStatus::Ok as u32 as u64

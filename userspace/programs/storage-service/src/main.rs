@@ -184,19 +184,23 @@ fn main() -> u64 {
             }
         }
 
-        for session in &mut directory_sessions {
-            if !session.occupied {
+        for session_index in 0..directory_sessions.len() {
+            if !directory_sessions[session_index].occupied {
                 continue;
             }
             let mut request = RawMessage::empty(0);
-            match rt::channel_receive_nonblocking(session.endpoint, &mut request) {
+            match rt::channel_receive_nonblocking(
+                directory_sessions[session_index].endpoint,
+                &mut request,
+            ) {
                 Ok(()) => {
                     if directory::handle_directory_request(
                         &entries[..entry_count],
                         &mut mutable_entries,
+                        &mut directory_sessions,
                         &mut blob_sessions,
                         persistent_store.as_mut(),
-                        session,
+                        session_index,
                         &request,
                     )
                     .is_err()
@@ -205,7 +209,7 @@ fn main() -> u64 {
                     }
                 }
                 Err(rt::Error::QueueEmpty) => {}
-                Err(_) => release_directory_session(session),
+                Err(_) => release_directory_session(&mut directory_sessions[session_index]),
             }
         }
 

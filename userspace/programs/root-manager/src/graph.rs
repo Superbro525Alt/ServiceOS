@@ -1,16 +1,18 @@
 use core::str;
 
+use serviceos_bundle::{RestartPolicy, ServiceStartupMode};
 use serviceos_userspace_runtime as rt;
 use rt::{LogEvent, LogSeverity, ServiceId, TaskStateCode, rights, IPC_MAX_HANDLES};
 
 use crate::control::{load_manifest_from_storage, pump_control_channels};
 use crate::state::{
-    BootstrapResources, ServicePhase, ServiceSlot, MAX_INDEX_BYTES, MAX_SERVICE_SLOTS,
+    BootstrapResources, GraphStatus, ServicePhase, ServiceSlot, MAX_INDEX_BYTES,
+    MAX_SERVICE_SLOTS,
 };
 use crate::util::{
     allocate_slot, bootstrap_resource_for, close_slot_handles, dependencies_ready,
-    emit_manager_event, fallback_logf, find_slot_index, occupied_service_count,
-    ready_service_count, service_name,
+    emit_manager_event, fallback_logf, find_slot_index, first_unready_dependency,
+    occupied_service_count, ready_service_count, service_name,
 };
 
 pub(crate) fn load_base_service_graph(
@@ -59,44 +61,81 @@ pub(crate) fn activate_base_service_graph(
     service_count: &mut usize,
     bootstrap_authority: rt::Handle,
     bootstrap_resources: BootstrapResources,
+    graph_status: &mut GraphStatus,
 ) -> rt::Result<()> {
     loop {
         let total = occupied_service_count(slots, *service_count);
         let ready = ready_service_count(slots, *service_count);
         if ready == total {
+            graph_status.blocked_services = 0;
+            graph_status.degraded_services = count_phase(slots, *service_count, ServicePhase::Degraded) as u32;
             return Ok(());
         }
 
         let mut progress = false;
+        let mut pending_eager = false;
+        let mut blocked = 0u32;
         for index in 0..*service_count {
-            if !slots[index].occupied || slots[index].phase != ServicePhase::Dormant {
+            if !slots[index].occupied {
                 continue;
             }
-            if dependencies_ready(slots, *service_count, index) {
-                let _ = fallback_logf(format_args!(
-                    "activating {}",
-                    service_name(slots[index].manifest.service_id)
-                ));
-                start_service(
-                    slots,
-                    *service_count,
-                    index,
-                    bootstrap_authority,
-                    bootstrap_resources,
-                )?;
+
+            match slots[index].phase {
+                ServicePhase::Dormant | ServicePhase::WaitingDependencies => {}
+                ServicePhase::Starting | ServicePhase::Ready | ServicePhase::Backoff => continue,
+                ServicePhase::Degraded | ServicePhase::Exited => continue,
+            }
+
+            if slots[index].manifest.startup == ServiceStartupMode::OnDemand {
+                continue;
+            }
+            pending_eager = true;
+
+            if !dependencies_ready(slots, *service_count, index) {
+                mark_waiting_dependency(slots, *service_count, index);
+                blocked = blocked.saturating_add(1);
+                continue;
+            }
+
+            let _ = fallback_logf(format_args!(
+                "activating {}",
+                service_name(slots[index].manifest.service_id)
+            ));
+            match start_service(
+                slots,
+                *service_count,
+                index,
+                bootstrap_authority,
+                bootstrap_resources,
+            )
+            .and_then(|_| {
                 wait_until_ready(
                     slots,
                     service_count,
                     bootstrap_authority,
                     bootstrap_resources,
                     slots[index].manifest.service_id,
-                )?;
-                progress = true;
+                )
+            }) {
+                Ok(()) => progress = true,
+                Err(_) => {
+                    progress = true;
+                    graph_status.degraded_boot = true;
+                    mark_service_degraded(slots, index);
+                }
             }
         }
 
+        graph_status.blocked_services = blocked;
+        graph_status.degraded_services = count_phase(slots, *service_count, ServicePhase::Degraded) as u32;
+
+        if !pending_eager {
+            return Ok(());
+        }
         if !progress {
-            return Err(rt::Error::Busy);
+            graph_status.degraded_boot = true;
+            emit_blocked_graph_diagnostics(slots, *service_count);
+            return Ok(());
         }
     }
 }
@@ -123,7 +162,10 @@ pub(crate) fn start_service(
     slots[index].attempts = slots[index].attempts.saturating_add(1);
     slots[index].phase = ServicePhase::Starting;
     slots[index].last_exit_code = 0;
+    slots[index].blocked_dependency = ServiceId::RootManager;
     slots[index].restart_requested = false;
+    slots[index].next_restart_tick = 0;
+    slots[index].last_start_tick = rt::monotonic_now().unwrap_or(0);
 
     let mut startup = rt::RawMessage::empty(rt::ControlTag::Startup as u32);
     startup.word_count = 5;
@@ -226,11 +268,20 @@ pub(crate) fn wait_until_ready(
     service_id: ServiceId,
 ) -> rt::Result<()> {
     loop {
-        pump_control_channels(slots, service_count, bootstrap_authority, bootstrap_resources)?;
+        pump_control_channels(
+            slots,
+            service_count,
+            bootstrap_authority,
+            bootstrap_resources,
+            GraphStatus::empty(),
+        )?;
         let slot_index = find_slot_index(slots, *service_count, service_id)?;
         let slot = &slots[slot_index];
         if slot.phase == ServicePhase::Ready {
             return Ok(());
+        }
+        if matches!(slot.phase, ServicePhase::Backoff | ServicePhase::Degraded | ServicePhase::Exited) {
+            return Err(rt::Error::Busy);
         }
         let status = rt::task_status(slot.task_handle)?;
         if matches!(status.state, TaskStateCode::Exited | TaskStateCode::Faulted) {
@@ -242,8 +293,63 @@ pub(crate) fn wait_until_ready(
             );
             return Err(rt::Error::Busy);
         }
+        if slot.manifest.ready_timeout_ticks != 0 {
+            let now = rt::monotonic_now()?;
+            if now.saturating_sub(slot.last_start_tick) >= slot.manifest.ready_timeout_ticks as u64 {
+                return Err(rt::Error::Busy);
+            }
+        }
         rt::yield_current()?;
     }
+}
+
+pub(crate) fn ensure_service_ready(
+    slots: &mut [ServiceSlot; MAX_SERVICE_SLOTS],
+    service_count: &mut usize,
+    bootstrap_authority: rt::Handle,
+    bootstrap_resources: BootstrapResources,
+    service_id: ServiceId,
+) -> rt::Result<()> {
+    let index = find_slot_index(slots, *service_count, service_id)?;
+    match slots[index].phase {
+        ServicePhase::Ready => return Ok(()),
+        ServicePhase::Dormant | ServicePhase::WaitingDependencies => {}
+        ServicePhase::Backoff => {
+            if rt::monotonic_now()? < slots[index].next_restart_tick {
+                return Err(rt::Error::Busy);
+            }
+        }
+        ServicePhase::Starting => {
+            return wait_until_ready(
+                slots,
+                service_count,
+                bootstrap_authority,
+                bootstrap_resources,
+                service_id,
+            )
+        }
+        ServicePhase::Degraded | ServicePhase::Exited => return Err(rt::Error::Busy),
+    }
+
+    if !dependencies_ready(slots, *service_count, index) {
+        mark_waiting_dependency(slots, *service_count, index);
+        return Err(rt::Error::Busy);
+    }
+
+    start_service(
+        slots,
+        *service_count,
+        index,
+        bootstrap_authority,
+        bootstrap_resources,
+    )?;
+    wait_until_ready(
+        slots,
+        service_count,
+        bootstrap_authority,
+        bootstrap_resources,
+        service_id,
+    )
 }
 
 pub(crate) fn supervision_loop(
@@ -251,34 +357,69 @@ pub(crate) fn supervision_loop(
     service_count: &mut usize,
     bootstrap_authority: rt::Handle,
     bootstrap_resources: BootstrapResources,
+    graph_status: &mut GraphStatus,
 ) -> u64 {
     loop {
-        if pump_control_channels(slots, service_count, bootstrap_authority, bootstrap_resources)
-            .is_err()
+        if pump_control_channels(
+            slots,
+            service_count,
+            bootstrap_authority,
+            bootstrap_resources,
+            *graph_status,
+        )
+        .is_err()
         {
             return 0xf610;
         }
 
+        let now = match rt::monotonic_now() {
+            Ok(now) => now,
+            Err(_) => return 0xf611,
+        };
+
         for index in 0..*service_count {
-            if !slots[index].occupied || slots[index].task_handle == rt::INVALID_HANDLE {
+            if !slots[index].occupied {
                 continue;
             }
 
-            let status = match rt::task_status(slots[index].task_handle) {
-                Ok(status) => status,
-                Err(_) => return 0xf611 + index as u64,
-            };
-            if !matches!(status.state, TaskStateCode::Exited | TaskStateCode::Faulted) {
-                continue;
-            }
-
-            let service_id = slots[index].manifest.service_id;
-            let requested_restart = slots[index].restart_requested;
-            slots[index].phase = ServicePhase::Exited;
-            slots[index].last_exit_code = status.exit_code;
-
-            if requested_restart {
-                slots[index].restart_requested = false;
+            if slots[index].phase == ServicePhase::Backoff && now >= slots[index].next_restart_tick {
+                if dependencies_ready(slots, *service_count, index) {
+                    let service_id = slots[index].manifest.service_id;
+                    let _ = fallback_logf(format_args!(
+                        "restarting {} after backoff",
+                        service_name(service_id)
+                    ));
+                    if start_service(
+                        slots,
+                        *service_count,
+                        index,
+                        bootstrap_authority,
+                        bootstrap_resources,
+                    )
+                    .is_err()
+                    {
+                        mark_service_degraded(slots, index);
+                        graph_status.degraded_boot = true;
+                    } else if wait_until_ready(
+                        slots,
+                        service_count,
+                        bootstrap_authority,
+                        bootstrap_resources,
+                        service_id,
+                    )
+                    .is_err()
+                    {
+                        mark_service_degraded(slots, index);
+                        graph_status.degraded_boot = true;
+                    }
+                } else {
+                    mark_waiting_dependency(slots, *service_count, index);
+                }
+            } else if slots[index].phase == ServicePhase::WaitingDependencies
+                && slots[index].manifest.startup == ServiceStartupMode::Eager
+                && dependencies_ready(slots, *service_count, index)
+            {
+                let service_id = slots[index].manifest.service_id;
                 if start_service(
                     slots,
                     *service_count,
@@ -288,9 +429,9 @@ pub(crate) fn supervision_loop(
                 )
                 .is_err()
                 {
-                    return 0xf620 + index as u64;
-                }
-                if wait_until_ready(
+                    mark_service_degraded(slots, index);
+                    graph_status.degraded_boot = true;
+                } else if wait_until_ready(
                     slots,
                     service_count,
                     bootstrap_authority,
@@ -299,12 +440,33 @@ pub(crate) fn supervision_loop(
                 )
                 .is_err()
                 {
-                    return 0xf630 + index as u64;
+                    mark_service_degraded(slots, index);
+                    graph_status.degraded_boot = true;
                 }
+            }
+        }
+
+        for index in 0..*service_count {
+            if !slots[index].occupied || slots[index].task_handle == rt::INVALID_HANDLE {
                 continue;
             }
 
-            if status.exit_code == 0 {
+            let status = match rt::task_status(slots[index].task_handle) {
+                Ok(status) => status,
+                Err(_) => return 0xf620 + index as u64,
+            };
+            if !matches!(status.state, TaskStateCode::Exited | TaskStateCode::Faulted) {
+                continue;
+            }
+
+            let service_id = slots[index].manifest.service_id;
+            let requested_restart = slots[index].restart_requested;
+            slots[index].last_exit_code = status.exit_code;
+            close_slot_handles(&mut slots[index]);
+
+            if status.exit_code == 0 && slots[index].manifest.startup == ServiceStartupMode::OnDemand {
+                slots[index].phase = ServicePhase::Dormant;
+                slots[index].restart_requested = false;
                 continue;
             }
 
@@ -317,12 +479,38 @@ pub(crate) fn supervision_loop(
                 status.exit_code,
             );
 
-            let restart_limit = match slots[index].manifest.restart {
-                serviceos_bundle::RestartPolicy::OnFailure { max_restarts } => max_restarts,
+            let (restart_limit, base_backoff) = match slots[index].manifest.restart {
+                RestartPolicy::OnFailure {
+                    max_restarts,
+                    backoff_ticks,
+                } => (max_restarts, backoff_ticks),
             };
-            if slots[index].attempts.saturating_sub(1) >= restart_limit {
-                return 0xf640 + index as u64;
+            if status.exit_code == 0 {
+                slots[index].phase = ServicePhase::Exited;
+                slots[index].restart_requested = false;
+                continue;
             }
+
+            slots[index].consecutive_failures = slots[index].consecutive_failures.saturating_add(1);
+            let failures = slots[index].attempts.saturating_sub(1);
+            if !requested_restart && failures >= restart_limit {
+                mark_service_degraded(slots, index);
+                graph_status.degraded_boot = true;
+                continue;
+            }
+
+            let mut delay = base_backoff as u64;
+            if delay != 0 && slots[index].consecutive_failures > 1 {
+                let shift = (slots[index].consecutive_failures - 1).min(6);
+                delay = delay.saturating_mul(1u64 << shift);
+            }
+            slots[index].phase = if delay == 0 {
+                ServicePhase::Dormant
+            } else {
+                ServicePhase::Backoff
+            };
+            slots[index].next_restart_tick = now.saturating_add(delay);
+            slots[index].restart_requested = false;
 
             let _ = emit_manager_event(
                 slots,
@@ -330,35 +518,84 @@ pub(crate) fn supervision_loop(
                 LogSeverity::Warn,
                 LogEvent::ServiceRestarting,
                 service_id,
-                slots[index].attempts as u64 + 1,
+                slots[index].next_restart_tick,
             );
 
-            if start_service(
-                slots,
-                *service_count,
-                index,
-                bootstrap_authority,
-                bootstrap_resources,
-            )
-            .is_err()
-            {
-                return 0xf650 + index as u64;
-            }
-            if wait_until_ready(
-                slots,
-                service_count,
-                bootstrap_authority,
-                bootstrap_resources,
-                service_id,
-            )
-            .is_err()
-            {
-                return 0xf660 + index as u64;
+            if delay == 0 {
+                if start_service(
+                    slots,
+                    *service_count,
+                    index,
+                    bootstrap_authority,
+                    bootstrap_resources,
+                )
+                .is_err()
+                {
+                    mark_service_degraded(slots, index);
+                    graph_status.degraded_boot = true;
+                } else if wait_until_ready(
+                    slots,
+                    service_count,
+                    bootstrap_authority,
+                    bootstrap_resources,
+                    service_id,
+                )
+                .is_err()
+                {
+                    mark_service_degraded(slots, index);
+                    graph_status.degraded_boot = true;
+                }
             }
         }
+
+        graph_status.blocked_services = count_phase(slots, *service_count, ServicePhase::WaitingDependencies) as u32;
+        graph_status.degraded_services = count_phase(slots, *service_count, ServicePhase::Degraded) as u32;
 
         if rt::yield_current().is_err() {
             return 0xf670;
         }
+    }
+}
+
+fn count_phase(
+    slots: &[ServiceSlot; MAX_SERVICE_SLOTS],
+    service_count: usize,
+    phase: ServicePhase,
+) -> usize {
+    slots[..service_count]
+        .iter()
+        .filter(|slot| slot.occupied && slot.phase == phase)
+        .count()
+}
+
+fn mark_waiting_dependency(
+    slots: &mut [ServiceSlot; MAX_SERVICE_SLOTS],
+    service_count: usize,
+    index: usize,
+) {
+    slots[index].phase = ServicePhase::WaitingDependencies;
+    slots[index].blocked_dependency =
+        first_unready_dependency(slots, service_count, index).unwrap_or(ServiceId::RootManager);
+}
+
+fn mark_service_degraded(slots: &mut [ServiceSlot; MAX_SERVICE_SLOTS], index: usize) {
+    slots[index].phase = ServicePhase::Degraded;
+    slots[index].restart_requested = false;
+    slots[index].next_restart_tick = 0;
+}
+
+fn emit_blocked_graph_diagnostics(
+    slots: &[ServiceSlot; MAX_SERVICE_SLOTS],
+    service_count: usize,
+) {
+    for slot in &slots[..service_count] {
+        if !slot.occupied || slot.phase != ServicePhase::WaitingDependencies {
+            continue;
+        }
+        let _ = fallback_logf(format_args!(
+            "service {} blocked waiting for {}",
+            service_name(slot.manifest.service_id),
+            service_name(slot.blocked_dependency),
+        ));
     }
 }

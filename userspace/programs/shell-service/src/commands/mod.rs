@@ -57,6 +57,7 @@ pub(crate) fn execute_command(
         },
         "store" => match parts.next() {
             Some("ls") => core::cmd_store_ls(bootstrap, output, parts.next().unwrap_or("")),
+            Some("mounts") => core::cmd_store_mounts(bootstrap, output),
             Some("mkdir") => match parts.next() {
                 Some(path) => core::cmd_store_mkdir(bootstrap, output, path),
                 None => write_output_linef(output, format_args!("usage: store mkdir <path>")),
@@ -69,7 +70,7 @@ pub(crate) fn execute_command(
                 Some(path) => core::cmd_store_rm(bootstrap, output, path),
                 None => write_output_linef(output, format_args!("usage: store rm <path>")),
             },
-            _ => write_output_linef(output, format_args!("usage: store <ls|mkdir|write|rm> ...")),
+            _ => write_output_linef(output, format_args!("usage: store <ls|mounts|mkdir|write|rm> ...")),
         },
         "cat" => match parts.next() {
             Some(path) => core::cmd_cat(bootstrap, output, path),

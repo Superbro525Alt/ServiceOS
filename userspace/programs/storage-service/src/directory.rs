@@ -4,41 +4,47 @@ use rt::{RawMessage, StorageEntryKind, StorageStatus, StorageTag};
 
 use crate::{
     path::{
-        boot_directory_exists, compose_child_path, directory_child_from_path, find_mutable_entry,
-        is_mutable_path, mutable_directory_has_children, mutable_root_has_materialized_children,
+        boot_directory_exists, compose_child_path, compose_relative_path, directory_child_from_path,
+        directory_exists, find_mutable_entry, is_mutable_path, mutable_directory_has_children,
+        mutable_root_has_materialized_children,
     },
     persistent::persist_mutable_entries,
-    util::{pack_bytes, send_blob_open_reply, send_status_only, unpack_bytes},
-    BlobSession, DirectorySession, EntrySlot, MutableEntry, PersistentStore, MAX_BLOB_SESSIONS,
-    MAX_MUTABLE_ENTRIES, MAX_STORAGE_PATH, MUTABLE_ROOTS, INITIAL_FILE_CAPACITY,
+    util::{
+        pack_bytes, send_blob_open_reply, send_status_only, send_traverse_reply, unpack_bytes,
+    },
+    BlobSession, DirectorySession, EntrySlot, MutableEntry, PersistentStore,
+    MAX_BLOB_SESSIONS, MAX_DIRECTORY_SESSIONS, MAX_MUTABLE_ENTRIES, MAX_STORAGE_PATH,
+    MUTABLE_ROOTS, INITIAL_FILE_CAPACITY,
 };
 
 pub(crate) fn handle_directory_request(
     entries: &[EntrySlot],
     mutable_entries: &mut [MutableEntry; MAX_MUTABLE_ENTRIES],
+    directory_sessions: &mut [DirectorySession; MAX_DIRECTORY_SESSIONS],
     blob_sessions: &mut [BlobSession; MAX_BLOB_SESSIONS],
     persistent_store: Option<&mut PersistentStore>,
-    session: &mut DirectorySession,
+    session_index: usize,
     message: &RawMessage,
 ) -> rt::Result<()> {
+    let session = directory_sessions[session_index];
     if message.tag == StorageTag::CloseRequest as u32 {
-        crate::release_directory_session(session);
+        crate::release_directory_session(&mut directory_sessions[session_index]);
         return Ok(());
     }
 
     match message.tag {
         x if x == StorageTag::DirectoryReadRequest as u32 => {
-            handle_directory_read_request(entries, mutable_entries, session, message)
+            handle_directory_read_request(entries, mutable_entries, &session, message)
         }
         x if x == StorageTag::DirectoryCreateRequest as u32 => {
-            handle_directory_create_request(mutable_entries, persistent_store, session, message)
+            handle_directory_create_request(mutable_entries, persistent_store, &session, message)
         }
         x if x == StorageTag::DirectoryRemoveRequest as u32 => {
             handle_directory_remove_request(
                 entries,
                 mutable_entries,
                 persistent_store,
-                session,
+                &session,
                 message,
             )
         }
@@ -48,10 +54,18 @@ pub(crate) fn handle_directory_request(
                 mutable_entries,
                 blob_sessions,
                 persistent_store,
-                session,
+                &session,
                 message,
             )
         }
+        x if x == StorageTag::DirectoryTraverseRequest as u32 => handle_directory_traverse_request(
+            entries,
+            mutable_entries,
+            directory_sessions,
+            blob_sessions,
+            &session,
+            message,
+        ),
         _ => Ok(()),
     }
 }
@@ -456,4 +470,166 @@ fn handle_directory_open_file_request(
     );
     let _ = rt::handle_close(pair.second);
     Ok(())
+}
+
+fn handle_directory_traverse_request(
+    entries: &[EntrySlot],
+    mutable_entries: &mut [MutableEntry; MAX_MUTABLE_ENTRIES],
+    directory_sessions: &mut [DirectorySession; MAX_DIRECTORY_SESSIONS],
+    blob_sessions: &mut [crate::BlobSession; crate::MAX_BLOB_SESSIONS],
+    session: &DirectorySession,
+    message: &RawMessage,
+) -> rt::Result<()> {
+    if message.word_count < 3 || message.handle_count < 1 {
+        return Ok(());
+    }
+
+    let reply_handle = message.handles[0];
+    let path_len = message.words[0] as usize;
+    let want_directory = message.words[1] != 0;
+    let writable = message.words[2] != 0;
+    let mut path = [0u8; MAX_STORAGE_PATH];
+    if unpack_bytes(
+        &message.words[3..message.word_count as usize],
+        path_len,
+        &mut path,
+    )
+    .is_err()
+    {
+        send_traverse_reply(
+            reply_handle,
+            StorageStatus::InvalidPath,
+            StorageEntryKind::File,
+            0,
+            None,
+        );
+        return Ok(());
+    }
+
+    let kind = if want_directory {
+        StorageEntryKind::Directory
+    } else {
+        StorageEntryKind::File
+    };
+    let Some((resolved, resolved_len)) = compose_relative_path(
+        &session.path[..session.path_len],
+        &path[..path_len],
+        kind,
+    ) else {
+        send_traverse_reply(
+            reply_handle,
+            StorageStatus::InvalidPath,
+            kind,
+            0,
+            None,
+        );
+        return Ok(());
+    };
+
+    if writable && !session.writable {
+        send_traverse_reply(reply_handle, StorageStatus::Denied, kind, 0, None);
+        return Ok(());
+    }
+
+    if want_directory {
+        if writable && !is_mutable_path(&resolved[..resolved_len]) {
+            send_traverse_reply(reply_handle, StorageStatus::Denied, kind, 0, None);
+            return Ok(());
+        }
+        if !directory_exists(entries, mutable_entries, &resolved[..resolved_len]) {
+            send_traverse_reply(reply_handle, StorageStatus::NotFound, kind, 0, None);
+            return Ok(());
+        }
+        let Some(dir_session) = open_directory_session(
+            directory_sessions,
+            &resolved[..resolved_len],
+            writable,
+        )? else {
+            send_traverse_reply(reply_handle, StorageStatus::Busy, kind, 0, None);
+            return Ok(());
+        };
+        send_traverse_reply(reply_handle, StorageStatus::Ok, kind, 0, Some(dir_session));
+        return Ok(());
+    }
+
+    let (status, opened_file) = open_file_session(
+        entries,
+        mutable_entries,
+        blob_sessions,
+        &resolved[..resolved_len],
+        writable,
+    )?;
+    let Some((blob_handle, len)) = opened_file else {
+        send_traverse_reply(reply_handle, status, kind, 0, None);
+        return Ok(());
+    };
+    send_traverse_reply(reply_handle, StorageStatus::Ok, kind, len, Some(blob_handle));
+    Ok(())
+}
+
+fn open_directory_session(
+    directory_sessions: &mut [DirectorySession; MAX_DIRECTORY_SESSIONS],
+    path: &[u8],
+    writable: bool,
+) -> rt::Result<Option<rt::Handle>> {
+    let Some(dir_session) = directory_sessions.iter_mut().find(|entry| !entry.occupied) else {
+        return Ok(None);
+    };
+    let pair = rt::channel_create()?;
+    dir_session.endpoint = pair.first;
+    dir_session.path[..path.len()].copy_from_slice(path);
+    dir_session.path_len = path.len();
+    dir_session.writable = writable;
+    dir_session.occupied = true;
+    Ok(Some(pair.second))
+}
+
+fn open_file_session(
+    entries: &[EntrySlot],
+    mutable_entries: &mut [MutableEntry; MAX_MUTABLE_ENTRIES],
+    blob_sessions: &mut [crate::BlobSession; crate::MAX_BLOB_SESSIONS],
+    path: &[u8],
+    writable: bool,
+) -> rt::Result<(StorageStatus, Option<(rt::Handle, usize)>)> {
+    if let Some(index) = find_mutable_entry(mutable_entries, path) {
+        if mutable_entries[index].kind != StorageEntryKind::File {
+            return Ok((StorageStatus::InvalidPath, None));
+        }
+        let Some(blob_session) = blob_sessions.iter_mut().find(|entry| !entry.occupied) else {
+            return Ok((StorageStatus::Busy, None));
+        };
+        let pair = rt::channel_create()?;
+        blob_session.endpoint = pair.first;
+        blob_session.source = crate::BlobSource::Mutable;
+        blob_session.data_offset = 0;
+        blob_session.data_len = mutable_entries[index].data_len;
+        blob_session.data_handle = mutable_entries[index].data_handle;
+        blob_session.entry_index = index;
+        blob_session.writable = writable;
+        blob_session.occupied = true;
+        return Ok((StorageStatus::Ok, Some((pair.second, mutable_entries[index].data_len))));
+    }
+
+    if writable {
+        return Ok((StorageStatus::Denied, None));
+    }
+    let Some(entry) = entries.iter().find(|entry| entry.matches(path)) else {
+        return Ok((StorageStatus::NotFound, None));
+    };
+    if entry.kind != BootStoreEntryKind::Data {
+        return Ok((StorageStatus::InvalidPath, None));
+    }
+    let Some(blob_session) = blob_sessions.iter_mut().find(|entry| !entry.occupied) else {
+        return Ok((StorageStatus::Busy, None));
+    };
+    let pair = rt::channel_create()?;
+    blob_session.endpoint = pair.first;
+    blob_session.source = crate::BlobSource::BootStore;
+    blob_session.data_offset = entry.data_offset;
+    blob_session.data_len = entry.data_len;
+    blob_session.data_handle = rt::INVALID_HANDLE;
+    blob_session.entry_index = usize::MAX;
+    blob_session.writable = false;
+    blob_session.occupied = true;
+    Ok((StorageStatus::Ok, Some((pair.second, entry.data_len))))
 }

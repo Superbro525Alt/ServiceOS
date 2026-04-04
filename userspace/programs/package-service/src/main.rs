@@ -14,7 +14,8 @@ pub(crate) use util::*;
 use core::{cmp::Ordering, fmt::Write, str};
 
 use serviceos_bundle::{
-    parse_package_manifest, BOOT_STORE_PATH_MAX, InlinePath, PackageManifest,
+    parse_manifest, parse_package_manifest, BOOT_STORE_PATH_MAX, InlinePath, PackageManifest,
+    ServiceManifest, ServiceStartupMode,
 };
 use serviceos_userspace_runtime as rt;
 use rt::{

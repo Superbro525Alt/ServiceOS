@@ -131,7 +131,9 @@ mod tests {
 service=status-service
 image=status-service
 startup=eager
-restart=on-failure:2
+availability=required
+ready_timeout=250
+restart=on-failure:2:8
 depends=log-service, config-service
 grant=log-service:send
 lookup=config-service:send
@@ -142,6 +144,9 @@ resource=services/status-service/resources/banner.txt
 
         assert_eq!(manifest.service_id, ServiceId::Status);
         assert_eq!(manifest.image_id, ServiceImageId::StatusService);
+        assert_eq!(manifest.startup, crate::ServiceStartupMode::Eager);
+        assert_eq!(manifest.availability, crate::ServiceAvailability::Required);
+        assert_eq!(manifest.ready_timeout_ticks, 250);
         assert_eq!(manifest.dependency_count, 2);
         assert_eq!(manifest.grant_count, 1);
         assert_eq!(manifest.lookup_count, 1);

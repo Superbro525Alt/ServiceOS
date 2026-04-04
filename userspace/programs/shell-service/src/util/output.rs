@@ -3,7 +3,7 @@ use core::fmt::Write;
 use serviceos_userspace_runtime as rt;
 use rt::{FixedLogBuffer, LogDomain, LogEvent, LogSeverity, ServiceId};
 
-pub(crate) const MAX_LISTED_SERVICES: usize = 12;
+pub(crate) const MAX_LISTED_SERVICES: usize = 24;
 pub(crate) const MAX_STORAGE_PATH: usize = 96;
 pub(crate) const MAX_CAT_CHUNK: usize = 96;
 pub(crate) const MAX_VERSION_BYTES: usize = 24;
@@ -36,6 +36,7 @@ config: show core configuration values\r\n\
 config get <key>: read one persisted configuration key\r\n\
 config set <key> <value>: update one persisted configuration key\r\n\
 store ls [prefix]: list storage paths\r\n\
+store mounts: list storage namespace mounts\r\n\
 store mkdir <path>: create a writable directory under a mutable namespace\r\n\
 store write <path> <text>: create or replace a writable text file\r\n\
 store rm <path>: remove a writable file or empty directory\r\n\

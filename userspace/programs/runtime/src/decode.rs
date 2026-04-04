@@ -3,11 +3,11 @@ use crate::{
     AudioStreamDirection, AudioStreamState, DesktopAppId, DesktopDragMode, DesktopStatus,
     DeveloperArtifactFormat, DeveloperJobState, DeveloperStatus, DeveloperTarget,
     DeveloperToolchainState, DisplayOutputBackend, DisplayOutputState, DisplayPixelFormat, Error,
-    GraphicsStatus, LogDomain, LogEvent, LogSeverity, ManagerServicePhase, ManagerStatus,
-    NetworkConfigMode, NetworkConfigState, NetworkSocketKind, NetworkSocketState, NetworkStatus,
-    PacketInterfaceBackend, PacketInterfaceLinkState, PackageStatus, RuntimeEnvState,
-    RuntimeKind, RuntimeRunState, RuntimeStatus, RuntimeWorkloadKind, SecurityAuditKind,
-    ServiceId, SessionInputSource, SessionStatus,
+    GraphicsStatus, LogDomain, LogEvent, LogSeverity, ManagerAvailability, ManagerServicePhase,
+    ManagerStartupMode, ManagerStatus, NetworkConfigMode, NetworkConfigState, NetworkSocketKind,
+    NetworkSocketState, NetworkStatus, PacketInterfaceBackend, PacketInterfaceLinkState,
+    PackageStatus, RuntimeEnvState, RuntimeKind, RuntimeRunState, RuntimeStatus,
+    RuntimeWorkloadKind, SecurityAuditKind, ServiceId, SessionInputSource, SessionStatus,
 };
 
 pub(crate) fn service_id_from_word(value: u64) -> ServiceId {
@@ -141,9 +141,14 @@ pub(crate) fn event_from_word(value: u64) -> LogEvent {
 pub(crate) fn manager_phase_from_word(value: u64) -> ManagerServicePhase {
     match value as u32 {
         x if x == ManagerServicePhase::Dormant as u32 => ManagerServicePhase::Dormant,
+        x if x == ManagerServicePhase::WaitingDependencies as u32 => {
+            ManagerServicePhase::WaitingDependencies
+        }
         x if x == ManagerServicePhase::Starting as u32 => ManagerServicePhase::Starting,
-        x if x == ManagerServicePhase::Exited as u32 => ManagerServicePhase::Exited,
-        _ => ManagerServicePhase::Ready,
+        x if x == ManagerServicePhase::Ready as u32 => ManagerServicePhase::Ready,
+        x if x == ManagerServicePhase::Backoff as u32 => ManagerServicePhase::Backoff,
+        x if x == ManagerServicePhase::Degraded as u32 => ManagerServicePhase::Degraded,
+        _ => ManagerServicePhase::Exited,
     }
 }
 
@@ -155,6 +160,20 @@ pub(crate) fn manager_status_from_word(value: u64) -> ManagerStatus {
         x if x == ManagerStatus::Busy as u32 => ManagerStatus::Busy,
         x if x == ManagerStatus::Failed as u32 => ManagerStatus::Failed,
         _ => ManagerStatus::Busy,
+    }
+}
+
+pub(crate) fn manager_startup_from_word(value: u64) -> ManagerStartupMode {
+    match value as u32 {
+        x if x == ManagerStartupMode::OnDemand as u32 => ManagerStartupMode::OnDemand,
+        _ => ManagerStartupMode::Eager,
+    }
+}
+
+pub(crate) fn manager_availability_from_word(value: u64) -> ManagerAvailability {
+    match value as u32 {
+        x if x == ManagerAvailability::Optional as u32 => ManagerAvailability::Optional,
+        _ => ManagerAvailability::Required,
     }
 }
 

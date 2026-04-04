@@ -83,9 +83,26 @@ pub(crate) fn desktop_drag_name(mode: DesktopDragMode) -> &'static str {
 pub(crate) fn phase_name(phase: ManagerServicePhase) -> &'static str {
     match phase {
         ManagerServicePhase::Dormant => "dormant",
+        ManagerServicePhase::WaitingDependencies => "waiting-deps",
         ManagerServicePhase::Starting => "starting",
         ManagerServicePhase::Ready => "ready",
+        ManagerServicePhase::Backoff => "backoff",
+        ManagerServicePhase::Degraded => "degraded",
         ManagerServicePhase::Exited => "exited",
+    }
+}
+
+pub(crate) fn startup_name(startup: rt::ManagerStartupMode) -> &'static str {
+    match startup {
+        rt::ManagerStartupMode::Eager => "eager",
+        rt::ManagerStartupMode::OnDemand => "on-demand",
+    }
+}
+
+pub(crate) fn availability_name(availability: rt::ManagerAvailability) -> &'static str {
+    match availability {
+        rt::ManagerAvailability::Required => "required",
+        rt::ManagerAvailability::Optional => "optional",
     }
 }
 

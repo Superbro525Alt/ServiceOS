@@ -2,17 +2,28 @@ use core::fmt::Write;
 
 use serviceos_userspace_runtime as rt;
 use rt::{
-    ConfigKey, FixedLogBuffer, ManagerServiceInfo, ManagerServicePhase, ServiceId, ServiceImageId,
-    StorageEntryKind,
+    ConfigKey, FixedLogBuffer, ManagerServiceInfo, ManagerServicePhase, ServiceId,
+    ServiceImageId, StorageEntryKind, StorageMountKind,
 };
 
 use crate::util::{
-    config_key_name, config_value_text, manager_status_name, phase_name,
-    service_name, write_log_record, write_output_linef, shell_output_write, ShellOutput,
-    MAX_CAT_CHUNK, MAX_LISTED_SERVICES, MAX_STORAGE_PATH,
+    availability_name, config_key_name, config_value_text, manager_status_name, phase_name,
+    service_name, startup_name, write_log_record, write_output_linef, shell_output_write,
+    ShellOutput, MAX_CAT_CHUNK, MAX_LISTED_SERVICES, MAX_STORAGE_PATH,
 };
 
 pub(crate) fn cmd_services(bootstrap: rt::Handle, output: ShellOutput) -> rt::Result<()> {
+    let graph = rt::manager_graph_status(bootstrap)?;
+    write_output_linef(
+        output,
+        format_args!(
+            "graph degraded={} blocked={} degraded-services={} total={}",
+            graph.degraded_boot,
+            graph.blocked_services,
+            graph.degraded_services,
+            graph.service_count,
+        ),
+    )?;
     let mut services = [ManagerServiceInfo {
         service_id: ServiceId::RootManager,
         phase: ManagerServicePhase::Dormant,
@@ -34,16 +45,34 @@ pub(crate) fn cmd_services(bootstrap: rt::Handle, output: ShellOutput) -> rt::Re
 }
 
 pub(crate) fn cmd_service(bootstrap: rt::Handle, output: ShellOutput, service_id: ServiceId) -> rt::Result<()> {
-    let (status, phase, attempts, last_exit) = rt::manager_service_status(bootstrap, service_id)?;
+    let info = rt::manager_service_status(bootstrap, service_id)?;
+    let template = rt::manager_service_template(bootstrap, service_id)?;
     write_output_linef(
         output,
         format_args!(
-            "{} status={} phase={} attempts={} last-exit={:#x}",
+            "{} status={} phase={} startup={} availability={} attempts={} last-exit={:#x}",
             service_name(service_id),
-            manager_status_name(status),
-            phase_name(phase),
-            attempts,
-            last_exit,
+            manager_status_name(info.status),
+            phase_name(info.phase),
+            startup_name(info.startup),
+            availability_name(info.availability),
+            info.attempts,
+            info.last_exit,
+        ),
+    )?;
+    write_output_linef(
+        output,
+        format_args!(
+            "blocked-on={} last-start={} last-ready={} next-restart={} ready-timeout={} restart-limit={} restart-backoff={} grants={} lookups={}",
+            service_name(info.blocked_dependency),
+            info.last_start_tick,
+            info.last_ready_tick,
+            info.next_restart_tick,
+            template.ready_timeout_ticks,
+            template.restart_limit,
+            template.restart_backoff_ticks,
+            template.grant_count,
+            template.lookup_count,
         ),
     )
 }
@@ -148,17 +177,68 @@ pub(crate) fn cmd_store_ls(
     prefix: &str,
 ) -> rt::Result<()> {
     let storage_handle = rt::lookup_service(bootstrap, ServiceId::Storage)?;
+    let namespace_root = rt::storage_open_directory(storage_handle, "", false)?;
+    let _ = rt::handle_close(storage_handle);
+    let listing_handle = if prefix.is_empty() {
+        namespace_root
+    } else {
+        match rt::storage_directory_open_path(namespace_root, prefix.trim_matches('/'), false) {
+            Ok(handle) => {
+                let _ = rt::handle_close(namespace_root);
+                handle
+            }
+            Err(error) => {
+                let _ = rt::handle_close(namespace_root);
+                return Err(error);
+            }
+        }
+    };
+
     let mut path_buffer = [0u8; MAX_STORAGE_PATH];
-    let mut index = 0usize;
-    while let Some((_, path_len)) = rt::storage_list(storage_handle, prefix, index, &mut path_buffer)? {
+    let mut cursor = 0usize;
+    while let Some((next_cursor, _, path_len)) =
+        rt::storage_directory_read(listing_handle, cursor, &mut path_buffer)?
+    {
         let path =
             core::str::from_utf8(&path_buffer[..path_len]).map_err(|_| rt::Error::InvalidArgument)?;
         write_output_linef(output, format_args!("{path}"))?;
-        index += 1;
+        cursor = next_cursor;
+    }
+    let _ = rt::handle_close(listing_handle);
+    if cursor == 0 {
+        write_output_linef(output, format_args!("no entries"))
+    } else {
+        Ok(())
+    }
+}
+
+pub(crate) fn cmd_store_mounts(bootstrap: rt::Handle, output: ShellOutput) -> rt::Result<()> {
+    let storage_handle = rt::lookup_service(bootstrap, ServiceId::Storage)?;
+    let mut path_buffer = [0u8; MAX_STORAGE_PATH];
+    let mut cursor = 0usize;
+    let mut listed = 0usize;
+    while let Some(mount) = rt::storage_mount_list(storage_handle, cursor, &mut path_buffer)? {
+        let path = core::str::from_utf8(&path_buffer[..mount.path_len])
+            .map_err(|_| rt::Error::InvalidArgument)?;
+        let kind = match mount.kind {
+            StorageMountKind::Boot => "boot",
+            StorageMountKind::Persistent => "persistent",
+            StorageMountKind::Ephemeral => "ephemeral",
+        };
+        let mount_path = if path.is_empty() { "/" } else { path };
+        write_output_linef(
+            output,
+            format_args!(
+                "{} kind={} writable={} persistent={}",
+                mount_path, kind, mount.writable, mount.persistent
+            ),
+        )?;
+        cursor = mount.next_cursor;
+        listed += 1;
     }
     let _ = rt::handle_close(storage_handle);
-    if index == 0 {
-        write_output_linef(output, format_args!("no entries"))
+    if listed == 0 {
+        write_output_linef(output, format_args!("no mounts"))
     } else {
         Ok(())
     }
@@ -170,12 +250,14 @@ pub(crate) fn cmd_store_mkdir(
     path: &str,
 ) -> rt::Result<()> {
     let storage_handle = rt::lookup_service(bootstrap, ServiceId::Storage)?;
+    let directory_handle = rt::storage_open_directory(storage_handle, "", true)?;
+    let _ = rt::handle_close(storage_handle);
     let mut parent = FixedLogBuffer::<96>::new();
     let name = split_parent_path(path, &mut parent)?;
-    let directory_handle = rt::storage_open_directory(storage_handle, parent.as_str(), true)?;
-    let _ = rt::handle_close(storage_handle);
-    let result = rt::storage_directory_create(directory_handle, name, StorageEntryKind::Directory);
+    let parent_handle = open_parent_directory(directory_handle, parent.as_str(), true)?;
     let _ = rt::handle_close(directory_handle);
+    let result = rt::storage_directory_create(parent_handle, name, StorageEntryKind::Directory);
+    let _ = rt::handle_close(parent_handle);
     result?;
     write_output_linef(output, format_args!("created directory {}", path.trim_end_matches('/')))
 }
@@ -190,10 +272,12 @@ where
     I: Iterator<Item = &'a str>,
 {
     let storage_handle = rt::lookup_service(bootstrap, ServiceId::Storage)?;
+    let directory_handle = rt::storage_open_directory(storage_handle, "", true)?;
+    let _ = rt::handle_close(storage_handle);
     let mut parent = FixedLogBuffer::<96>::new();
     let name = split_parent_path(path, &mut parent)?;
-    let directory_handle = rt::storage_open_directory(storage_handle, parent.as_str(), true)?;
-    let _ = rt::handle_close(storage_handle);
+    let parent_handle = open_parent_directory(directory_handle, parent.as_str(), true)?;
+    let _ = rt::handle_close(directory_handle);
 
     let mut content = FixedLogBuffer::<128>::new();
     let mut wrote_any = false;
@@ -206,12 +290,12 @@ where
     }
     let bytes = content.as_bytes();
     if bytes.is_empty() {
-        let _ = rt::handle_close(directory_handle);
+        let _ = rt::handle_close(parent_handle);
         return Err(rt::Error::InvalidArgument);
     }
 
-    let (file_handle, _) = rt::storage_directory_open_file(directory_handle, name, true, true)?;
-    let _ = rt::handle_close(directory_handle);
+    let (file_handle, _) = rt::storage_directory_open_file(parent_handle, name, true, true)?;
+    let _ = rt::handle_close(parent_handle);
     let result = rt::storage_write(file_handle, 0, bytes.len(), bytes);
     let _ = rt::storage_blob_close(file_handle);
     let _ = result?;
@@ -224,20 +308,25 @@ pub(crate) fn cmd_store_rm(
     path: &str,
 ) -> rt::Result<()> {
     let storage_handle = rt::lookup_service(bootstrap, ServiceId::Storage)?;
+    let directory_handle = rt::storage_open_directory(storage_handle, "", true)?;
+    let _ = rt::handle_close(storage_handle);
     let mut parent = FixedLogBuffer::<96>::new();
     let name = split_parent_path(path, &mut parent)?;
-    let directory_handle = rt::storage_open_directory(storage_handle, parent.as_str(), true)?;
-    let _ = rt::handle_close(storage_handle);
-    let result = rt::storage_directory_remove(directory_handle, name);
+    let parent_handle = open_parent_directory(directory_handle, parent.as_str(), true)?;
     let _ = rt::handle_close(directory_handle);
+    let result = rt::storage_directory_remove(parent_handle, name);
+    let _ = rt::handle_close(parent_handle);
     result?;
     write_output_linef(output, format_args!("removed {}", path.trim_end_matches('/')))
 }
 
 pub(crate) fn cmd_cat(bootstrap: rt::Handle, output: ShellOutput, path: &str) -> rt::Result<()> {
     let storage_handle = rt::lookup_service(bootstrap, ServiceId::Storage)?;
-    let (blob_handle, blob_len) = rt::storage_open(storage_handle, path)?;
+    let directory_handle = rt::storage_open_directory(storage_handle, "", false)?;
     let _ = rt::handle_close(storage_handle);
+    let (blob_handle, blob_len) =
+        rt::storage_directory_open_path_file(directory_handle, path.trim_matches('/'), false)?;
+    let _ = rt::handle_close(directory_handle);
 
     let mut offset = 0usize;
     let mut buffer = [0u8; MAX_CAT_CHUNK];
@@ -254,6 +343,23 @@ pub(crate) fn cmd_cat(bootstrap: rt::Handle, output: ShellOutput, path: &str) ->
     let _ = rt::storage_blob_close(blob_handle);
     shell_output_write(output, "\r\n")?;
     Ok(())
+}
+
+fn open_parent_directory(
+    root_directory: rt::Handle,
+    parent: &str,
+    writable: bool,
+) -> rt::Result<rt::Handle> {
+    if parent.is_empty() {
+        return rt::handle_duplicate(
+            root_directory,
+            rt::rights::SEND
+                | rt::rights::RECEIVE
+                | rt::rights::DUPLICATE
+                | rt::rights::TRANSFER,
+        );
+    }
+    rt::storage_directory_open_path(root_directory, parent.trim_matches('/'), writable)
 }
 
 fn split_parent_path<'a>(

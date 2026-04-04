@@ -1,12 +1,12 @@
 use serviceos_bundle::BootStoreEntryKind;
 use serviceos_userspace_runtime as rt;
-use rt::{RawMessage, StorageEntryKind, StorageStatus, StorageTag};
+use rt::{RawMessage, StorageEntryKind, StorageMountKind, StorageStatus, StorageTag};
 
 use crate::{
     path::{
-        boot_directory_exists, directory_child_from_path, find_mutable_directory,
-        find_mutable_entry, is_mutable_directory_path, is_mutable_root, path_matches_prefix,
-        valid_directory_path, mutable_root_has_materialized_children,
+        directory_child_from_path, directory_exists, find_mutable_entry,
+        is_mutable_directory_path, path_matches_prefix, valid_directory_path,
+        mutable_root_has_materialized_children,
     },
     util::{pack_bytes, send_blob_open_reply, send_directory_open_reply, unpack_bytes},
     BlobSession, DirectorySession, EntrySlot, MutableEntry, MAX_BLOB_SESSIONS,
@@ -32,9 +32,18 @@ pub(crate) fn handle_root_request(
         x if x == StorageTag::DirectoryOpenRequest as u32 => {
             handle_directory_open_request(entries, mutable_entries, directory_sessions, message)
         }
+        x if x == StorageTag::MountListRequest as u32 => handle_mount_list_request(message),
         _ => Ok(()),
     }
 }
+
+const STORAGE_MOUNTS: [(&[u8], StorageMountKind, u64); 5] = [
+    (b"", StorageMountKind::Boot, 0),
+    (b"home/", StorageMountKind::Persistent, 0b11),
+    (b"state/", StorageMountKind::Persistent, 0b11),
+    (b"projects/", StorageMountKind::Persistent, 0b11),
+    (b"tmp/", StorageMountKind::Ephemeral, 0b01),
+];
 
 fn handle_open_request(
     entries: &[EntrySlot],
@@ -140,11 +149,7 @@ fn handle_directory_open_request(
         return Ok(());
     }
 
-    let exists = path.is_empty()
-        || is_mutable_root(path)
-        || boot_directory_exists(entries, path)
-        || find_mutable_directory(mutable_entries, path).is_some();
-    if !exists {
+    if !directory_exists(entries, mutable_entries, path) {
         send_directory_open_reply(reply_handle, StorageStatus::NotFound, None);
         return Ok(());
     }
@@ -219,6 +224,37 @@ fn handle_list_request(
             return Ok(());
         }
         current += 1;
+    }
+
+    let _ = rt::channel_send(reply_handle, &reply);
+    let _ = rt::handle_close(reply_handle);
+    Ok(())
+}
+
+fn handle_mount_list_request(message: &RawMessage) -> rt::Result<()> {
+    if message.word_count < 1 || message.handle_count < 1 {
+        return Ok(());
+    }
+
+    let cursor = message.words[0] as usize;
+    let reply_handle = message.handles[0];
+    let mut reply = RawMessage::empty(StorageTag::MountListReply as u32);
+    reply.word_count = 5;
+    reply.words[0] = StorageStatus::End as u32 as u64;
+    reply.words[1] = cursor as u64;
+    reply.words[2] = StorageMountKind::Boot as u32 as u64;
+    reply.words[3] = 0;
+    reply.words[4] = 0;
+
+    if let Some((index, (path, kind, flags))) =
+        STORAGE_MOUNTS.iter().enumerate().skip(cursor).next()
+    {
+        reply.words[0] = StorageStatus::Ok as u32 as u64;
+        reply.words[1] = (index + 1) as u64;
+        reply.words[2] = *kind as u32 as u64;
+        reply.words[3] = *flags;
+        reply.words[4] = path.len() as u64;
+        reply.word_count += pack_bytes(path, &mut reply.words[5..])?;
     }
 
     let _ = rt::channel_send(reply_handle, &reply);

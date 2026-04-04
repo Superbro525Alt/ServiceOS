@@ -2,12 +2,13 @@ use crate::{
     AudioEndpointBackend, AudioEndpointDirection, AudioEndpointState, AudioStreamDirection,
     AudioStreamState, DesktopAppId, DesktopDragMode, DisplayOutputBackend, DisplayOutputState,
     DeveloperArtifactFormat, DeveloperJobState, DeveloperTarget, DeveloperToolchainState,
-    DisplayPixelFormat, LogDomain, LogEvent, LogSeverity, ManagerServicePhase, NetworkConfigMode,
-    NetworkConfigState, NetworkSocketKind, NetworkSocketState, PackageChannel, PermissionPolicyState,
-    PackageMaintenanceAction, PackageRepositorySyncState, PackageRepositoryTrustMode, PackageRing,
-    PackageTrustState, PacketInterfaceBackend, PacketInterfaceLinkState, RuntimeEnvState,
-    SecurityAuditKind,
-    RuntimeKind, RuntimeRunState, RuntimeWorkloadKind, ServiceId, SessionInputSource,
+    DisplayPixelFormat, LogDomain, LogEvent, LogSeverity, ManagerAvailability,
+    ManagerServicePhase, ManagerStartupMode, NetworkConfigMode, NetworkConfigState,
+    NetworkSocketKind, NetworkSocketState, PackageChannel, PermissionPolicyState,
+    PackageMaintenanceAction, PackageRepositorySyncState, PackageRepositoryTrustMode,
+    PackageRing, PackageTrustState, PacketInterfaceBackend, PacketInterfaceLinkState,
+    RuntimeEnvState, SecurityAuditKind, RuntimeKind, RuntimeRunState, RuntimeWorkloadKind,
+    ServiceId, SessionInputSource,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -26,6 +27,39 @@ pub struct ManagerServiceInfo {
     pub service_id: ServiceId,
     pub phase: ManagerServicePhase,
     pub attempts: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ManagerServiceStatusInfo {
+    pub status: crate::ManagerStatus,
+    pub phase: ManagerServicePhase,
+    pub attempts: u32,
+    pub last_exit: u64,
+    pub startup: ManagerStartupMode,
+    pub availability: ManagerAvailability,
+    pub blocked_dependency: ServiceId,
+    pub last_start_tick: u64,
+    pub last_ready_tick: u64,
+    pub next_restart_tick: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ManagerServiceTemplateInfo {
+    pub startup: ManagerStartupMode,
+    pub availability: ManagerAvailability,
+    pub ready_timeout_ticks: u32,
+    pub restart_limit: u32,
+    pub restart_backoff_ticks: u32,
+    pub grant_count: u32,
+    pub lookup_count: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ManagerGraphStatusInfo {
+    pub degraded_boot: bool,
+    pub blocked_services: u32,
+    pub degraded_services: u32,
+    pub service_count: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

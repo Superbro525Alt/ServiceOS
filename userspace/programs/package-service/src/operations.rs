@@ -246,6 +246,10 @@ fn activate_package_version(
         Ok(manifest) => manifest,
         Err(_) => return PackageStatus::NotFound,
     };
+    let service_manifest = match load_service_manifest(storage_handle, manifest) {
+        Ok(manifest) => manifest,
+        Err(_) => return PackageStatus::Unsupported,
+    };
     match verify_package_integrity(storage_handle, manifest) {
         Ok(true) => {}
         Ok(false) => return PackageStatus::IntegrityFailed,
@@ -257,7 +261,11 @@ fn activate_package_version(
         Ok(_) => {
             slot.rollback = previous;
             slot.installed = Some(target);
-            slot.active = Some(target);
+            slot.active = if service_manifest.startup == ServiceStartupMode::OnDemand {
+                None
+            } else {
+                Some(target)
+            };
             let _ = emit_package_event(
                 log_handle,
                 LogSeverity::Info,
@@ -423,6 +431,22 @@ pub(crate) fn load_manifest_from_storage_path(
     let loaded = rt::storage_read_all(handle, &mut bytes, requested)?;
     let _ = rt::storage_blob_close(handle);
     parse_package_manifest(&bytes[..loaded]).map_err(|_| rt::Error::InvalidArgument)
+}
+
+fn load_service_manifest(
+    storage_handle: rt::Handle,
+    manifest: PackageManifest,
+) -> rt::Result<ServiceManifest> {
+    let path = manifest
+        .service_manifest
+        .as_str()
+        .map_err(|_| rt::Error::InvalidArgument)?;
+    let (blob_handle, blob_len) = rt::storage_open(storage_handle, path)?;
+    let mut bytes = [0u8; MAX_PACKAGE_BYTES];
+    let requested = blob_len.min(bytes.len());
+    let loaded = rt::storage_read_all(blob_handle, &mut bytes, requested)?;
+    let _ = rt::storage_blob_close(blob_handle);
+    parse_manifest(&bytes[..loaded]).map_err(|_| rt::Error::InvalidArgument)
 }
 
 fn verify_package_integrity(storage_handle: rt::Handle, manifest: PackageManifest) -> rt::Result<bool> {

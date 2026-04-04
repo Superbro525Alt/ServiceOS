@@ -1,7 +1,8 @@
 use serviceos_bundle::ServiceManifest;
 use serviceos_userspace_runtime as rt;
 use rt::{
-    LogDomain, LogEvent, LogSeverity, ManagerAction, ManagerServicePhase, ServiceId, ServiceImageId,
+    LogDomain, LogEvent, LogSeverity, ManagerAction, ManagerAvailability, ManagerServicePhase,
+    ManagerStartupMode, ServiceId, ServiceImageId,
 };
 
 use crate::state::{BootstrapResources, ServicePhase, ServiceSlot, MAX_SERVICE_SLOTS};
@@ -98,6 +99,38 @@ pub(crate) fn dependencies_ready(
                 .map(|slot| slots[slot].phase == ServicePhase::Ready)
                 .unwrap_or(false)
         })
+}
+
+pub(crate) fn first_unready_dependency(
+    slots: &[ServiceSlot; MAX_SERVICE_SLOTS],
+    service_count: usize,
+    index: usize,
+) -> Option<ServiceId> {
+    slots[index].manifest.dependencies[..slots[index].manifest.dependency_count]
+        .iter()
+        .copied()
+        .find(|dependency| {
+            if *dependency == ServiceId::RootManager {
+                return false;
+            }
+            find_slot_index_checked(slots, service_count, *dependency)
+                .map(|slot| slots[slot].phase != ServicePhase::Ready)
+                .unwrap_or(true)
+        })
+}
+
+pub(crate) fn service_startup_mode(manifest: ServiceManifest) -> ManagerStartupMode {
+    match manifest.startup {
+        serviceos_bundle::ServiceStartupMode::Eager => ManagerStartupMode::Eager,
+        serviceos_bundle::ServiceStartupMode::OnDemand => ManagerStartupMode::OnDemand,
+    }
+}
+
+pub(crate) fn service_availability(manifest: ServiceManifest) -> ManagerAvailability {
+    match manifest.availability {
+        serviceos_bundle::ServiceAvailability::Required => ManagerAvailability::Required,
+        serviceos_bundle::ServiceAvailability::Optional => ManagerAvailability::Optional,
+    }
 }
 
 pub(crate) fn lookup_rights(manifest: ServiceManifest, requested: ServiceId) -> Option<u64> {
@@ -271,8 +304,11 @@ pub(crate) fn encode_phase(phase: ServicePhase, attempts: u32) -> u64 {
 pub(crate) fn manager_phase(phase: ServicePhase) -> ManagerServicePhase {
     match phase {
         ServicePhase::Dormant => ManagerServicePhase::Dormant,
+        ServicePhase::WaitingDependencies => ManagerServicePhase::WaitingDependencies,
         ServicePhase::Starting => ManagerServicePhase::Starting,
         ServicePhase::Ready => ManagerServicePhase::Ready,
+        ServicePhase::Backoff => ManagerServicePhase::Backoff,
+        ServicePhase::Degraded => ManagerServicePhase::Degraded,
         ServicePhase::Exited => ManagerServicePhase::Exited,
     }
 }

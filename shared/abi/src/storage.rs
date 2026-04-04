@@ -22,6 +22,10 @@ pub enum StorageTag {
     WriteReply = 0x512,
     DirectoryReadRequest = 0x513,
     DirectoryReadReply = 0x514,
+    MountListRequest = 0x515,
+    MountListReply = 0x516,
+    DirectoryTraverseRequest = 0x517,
+    DirectoryTraverseReply = 0x518,
 }
 
 #[repr(u32)]
@@ -43,4 +47,12 @@ pub enum StorageStatus {
 pub enum StorageEntryKind {
     File = 0,
     Directory = 1,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StorageMountKind {
+    Boot = 0,
+    Persistent = 1,
+    Ephemeral = 2,
 }

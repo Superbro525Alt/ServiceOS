@@ -9,6 +9,7 @@ pub(crate) const MAX_LABEL_BYTES: usize = 56;
 pub(crate) const MAX_BUFFER_ROW_BYTES: usize = 8192;
 pub(crate) const DEFAULT_BACKGROUND_RGB: u32 = 0x10151d;
 pub(crate) const PRESENT_COALESCE_TICKS: u64 = 2;
+pub(crate) const CURSOR_PRESENT_COALESCE_TICKS: u64 = 1;
 pub(crate) const CURSOR_SURFACE_Z_ORDER_MIN: u32 = 4_096;
 pub(crate) const CURSOR_SURFACE_MAX_SIZE: u32 = 64;
 pub(crate) const MAX_PUBLIC_REQUESTS_PER_TURN: usize = 32;

@@ -14,8 +14,8 @@ use crate::{
     logging::{emit_log, poll_lifecycle},
     requests::{drain_public_requests, drain_surface_requests},
     types::{
-        DirtyState, MAX_FRAMEBUFFER_BYTES, MAX_SURFACES, PRESENT_COALESCE_TICKS, SurfaceSlot,
-        active_surface_count,
+        CURSOR_PRESENT_COALESCE_TICKS, DirtyState, MAX_FRAMEBUFFER_BYTES, MAX_SURFACES,
+        PRESENT_COALESCE_TICKS, SurfaceSlot, active_surface_count,
     },
 };
 
@@ -93,11 +93,14 @@ fn main() -> u64 {
         if !matches!(dirty, DirtyState::Clean) {
             let now = rt::monotonic_now().unwrap_or(0);
             if present_deadline == 0 {
-                present_deadline = now.saturating_add(PRESENT_COALESCE_TICKS);
+                present_deadline = now.saturating_add(match dirty {
+                    DirtyState::CursorOnly(_) => CURSOR_PRESENT_COALESCE_TICKS,
+                    _ => PRESENT_COALESCE_TICKS,
+                });
             }
             let should_present = match dirty {
                 DirtyState::Clean => false,
-                DirtyState::CursorOnly(_) => true,
+                DirtyState::CursorOnly(_) => now >= present_deadline,
                 DirtyState::Region { immediate, .. } => {
                     immediate || (!had_work && now >= present_deadline)
                 }

@@ -86,6 +86,7 @@ fn main() -> u64 {
         active_workspace: 1,
         recent_focus: [DesktopAppId::Settings; APP_COUNT],
         recent_focus_len: 0,
+        next_app_refresh: 0,
         next_status_refresh: 0,
         last_status_snapshot: None,
         next_z_order: 10,
@@ -124,6 +125,7 @@ fn main() -> u64 {
 
     loop {
         let mut did_work = false;
+        let mut pending_pointer_move: Option<(i32, i32, i32)> = None;
         match requests::poll_lifecycle(bootstrap) {
             Ok(true) => return 0,
             Ok(false) => {}
@@ -135,6 +137,24 @@ fn main() -> u64 {
             match rt::channel_receive_nonblocking(public.first, &mut request) {
                 Ok(()) => {
                     did_work = true;
+                    if let Some(move_request) = requests::coalescible_pointer_move(&request) {
+                        pending_pointer_move = Some(move_request);
+                        continue;
+                    }
+                    if let Some((x, y, detail)) = pending_pointer_move.take() {
+                        if requests::dispatch_input_request(
+                            &mut state,
+                            rt::DesktopInputAction::PointerMove,
+                            x,
+                            y,
+                            detail,
+                            None,
+                        )
+                        .is_err()
+                        {
+                            return 0xfe0e;
+                        }
+                    }
                     if requests::handle_request(&mut state, &request).is_err() {
                         return 0xfe0e;
                     }
@@ -144,25 +164,44 @@ fn main() -> u64 {
             }
         }
 
-        if windows::refresh_apps(&mut state).is_err() {
-            return 0xfe10;
+        if let Some((x, y, detail)) = pending_pointer_move.take() {
+            if requests::dispatch_input_request(
+                &mut state,
+                rt::DesktopInputAction::PointerMove,
+                x,
+                y,
+                detail,
+                None,
+            )
+            .is_err()
+            {
+                return 0xfe0e;
+            }
         }
 
         let now = match rt::monotonic_now() {
             Ok(now) => now,
             Err(_) => return 0xfe11,
         };
-        if state.notification_len != 0 && now >= state.notification_deadline {
-            state.notification_len = 0;
-            if render::render_desktop(&mut state).is_err() {
-                return 0xfe15;
+        if !did_work {
+            if now >= state.next_app_refresh {
+                if windows::refresh_apps(&mut state).is_err() {
+                    return 0xfe10;
+                }
+                state.next_app_refresh = now.saturating_add(APP_REFRESH_TICKS);
             }
-        }
-        if now >= state.next_status_refresh {
-            if render::refresh_desktop_status(&mut state).is_err() {
-                return 0xfe12;
+            if state.notification_len != 0 && now >= state.notification_deadline {
+                state.notification_len = 0;
+                if render::render_desktop(&mut state).is_err() {
+                    return 0xfe15;
+                }
             }
-            state.next_status_refresh = now.saturating_add(STATUS_REFRESH_TICKS);
+            if now >= state.next_status_refresh {
+                if render::refresh_desktop_status(&mut state).is_err() {
+                    return 0xfe12;
+                }
+                state.next_status_refresh = now.saturating_add(STATUS_REFRESH_TICKS);
+            }
         }
 
         if did_work {

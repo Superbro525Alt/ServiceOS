@@ -14,6 +14,41 @@ use crate::{
     DesktopState, SESSION_ID,
 };
 
+pub(crate) fn coalescible_pointer_move(request: &RawMessage) -> Option<(i32, i32, i32)> {
+    if request.tag != DesktopTag::InputRequest as u32 || request.word_count < 4 || request.handle_count != 0 {
+        return None;
+    }
+    match desktop_input_action_from_word(request.words[0]) {
+        Some(DesktopInputAction::PointerMove) => Some((
+            request.words[1] as i64 as i32,
+            request.words[2] as i64 as i32,
+            request.words[3] as i64 as i32,
+        )),
+        _ => None,
+    }
+}
+
+pub(crate) fn dispatch_input_request(
+    state: &mut DesktopState,
+    action: DesktopInputAction,
+    x: i32,
+    y: i32,
+    detail: i32,
+    reply_handle: Option<rt::Handle>,
+) -> rt::Result<()> {
+    let result = handle_input(state, action, x, y, detail);
+    if let Some(reply_handle) = reply_handle {
+        let mut reply = RawMessage::empty(DesktopTag::InputReply as u32);
+        reply.word_count = 2;
+        reply_for_surface(&mut reply, result);
+        let _ = rt::channel_send(reply_handle, &reply);
+        let _ = rt::handle_close(reply_handle);
+        Ok(())
+    } else {
+        result.map(|_| ())
+    }
+}
+
 pub(crate) fn handle_request(state: &mut DesktopState, request: &RawMessage) -> rt::Result<()> {
     match request.tag {
         x if x == DesktopTag::StatusRequest as u32 => {
@@ -157,17 +192,30 @@ pub(crate) fn handle_request(state: &mut DesktopState, request: &RawMessage) -> 
             let x = request.words[1] as i64 as i32;
             let y = request.words[2] as i64 as i32;
             let detail = request.words[3] as i64 as i32;
-            let result = match action {
-                Some(action) => handle_input(state, action, x, y, detail),
-                None => Err(rt::Error::NotFound),
-            };
-            if request.handle_count >= 1 {
-                let reply_handle = request.handles[0];
-                let mut reply = RawMessage::empty(DesktopTag::InputReply as u32);
-                reply.word_count = 2;
-                reply_for_surface(&mut reply, result);
-                let _ = rt::channel_send(reply_handle, &reply);
-                let _ = rt::handle_close(reply_handle);
+            match action {
+                Some(action) => dispatch_input_request(
+                    state,
+                    action,
+                    x,
+                    y,
+                    detail,
+                    if request.handle_count >= 1 {
+                        Some(request.handles[0])
+                    } else {
+                        None
+                    },
+                )?,
+                None => {
+                    if request.handle_count >= 1 {
+                        let reply_handle = request.handles[0];
+                        let mut reply = RawMessage::empty(DesktopTag::InputReply as u32);
+                        reply.word_count = 2;
+                        reply.words[0] = DesktopStatus::NotFound as u32 as u64;
+                        reply.words[1] = 0;
+                        let _ = rt::channel_send(reply_handle, &reply);
+                        let _ = rt::handle_close(reply_handle);
+                    }
+                }
             }
         }
         x if x == DesktopTag::NotifyRequest as u32 => {

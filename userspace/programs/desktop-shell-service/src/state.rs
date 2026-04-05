@@ -6,6 +6,7 @@ pub(crate) const APP_COUNT: usize = 5;
 pub(crate) const APP_PAGE_SIZE: usize = 4;
 pub(crate) const WINDOW_PAGE_SIZE: usize = 2;
 pub(crate) const WORKSPACE_COUNT: u32 = 4;
+pub(crate) const APP_REFRESH_TICKS: u64 = 10;
 pub(crate) const STATUS_REFRESH_TICKS: u64 = 100;
 pub(crate) const TOPBAR_HEIGHT: u32 = 42;
 pub(crate) const LAUNCHER_WIDTH: u32 = 250;
@@ -269,6 +270,7 @@ pub(crate) struct DesktopState {
     pub(crate) active_workspace: u32,
     pub(crate) recent_focus: [DesktopAppId; APP_COUNT],
     pub(crate) recent_focus_len: usize,
+    pub(crate) next_app_refresh: u64,
     pub(crate) next_status_refresh: u64,
     pub(crate) last_status_snapshot: Option<DesktopStatusSnapshot>,
     pub(crate) next_z_order: u32,

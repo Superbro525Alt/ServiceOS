@@ -31,6 +31,12 @@ pub(crate) fn handle_input(
     y: i32,
     detail: i32,
 ) -> rt::Result<u32> {
+    let overlay_before = state.overlay_mode;
+    let overlay_selection_before = state.overlay_selection;
+    let palette_query_len_before = state.palette_query_len;
+    let active_workspace_before = state.active_workspace;
+    let focused_app_before = state.focused_app;
+
     let result = match action {
         DesktopInputAction::PointerDown => {
             state.pointer_x = x;
@@ -72,8 +78,20 @@ pub(crate) fn handle_input(
         DesktopInputAction::TextInput => keyboard::handle_text_input(state, x as u32),
     }?;
     sync_cursor(state)?;
+
+    let shell_changed = state.overlay_mode != overlay_before
+        || state.overlay_selection != overlay_selection_before
+        || state.palette_query_len != palette_query_len_before
+        || state.active_workspace != active_workspace_before
+        || state.focused_app != focused_app_before;
+
     match action {
         DesktopInputAction::PointerMove | DesktopInputAction::PointerScroll => {}
+        DesktopInputAction::KeyDown | DesktopInputAction::KeyUp | DesktopInputAction::TextInput => {
+            if shell_changed {
+                render_desktop(state)?;
+            }
+        }
         _ => render_desktop(state)?,
     }
     Ok(result)

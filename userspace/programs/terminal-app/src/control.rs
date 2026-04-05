@@ -55,13 +55,15 @@ pub(crate) fn poll_control(
             }
             Ok(()) if message.tag == AppControlTag::Text as u32 && message.word_count > 0 => {
                 if let Some(ch) = core::char::from_u32(message.words[0] as u32) {
+                    let mut visual_changed = state.selection.is_some();
                     state.selection = None;
                     if let Some(tab) = crate::tabs::active_tab_mut(state) {
                         let mut bytes = [0u8; 4];
                         let encoded = ch.encode_utf8(&mut bytes);
+                        visual_changed |= tab.scroll_offset != 0;
                         tab.scroll_offset = 0;
                         let _ = rt::terminal_session_send_input(tab.session_handle, encoded.as_bytes());
-                        changed = true;
+                        changed |= visual_changed;
                         did_work = true;
                     }
                 }
@@ -163,6 +165,7 @@ pub(crate) fn handle_key_down(
     let Some(tab) = crate::tabs::active_tab_mut(state) else {
         return Ok(false);
     };
+    let visual_changed = tab.scroll_offset != 0;
     tab.scroll_offset = 0;
     match key_code {
         KEY_BACKSPACE => rt::terminal_session_send_input(tab.session_handle, &[0x7f])?,
@@ -172,7 +175,7 @@ pub(crate) fn handle_key_down(
         KEY_LEFT => rt::terminal_session_send_input(tab.session_handle, b"\x1b[D")?,
         _ => return Ok(false),
     }
-    Ok(true)
+    Ok(visual_changed)
 }
 
 fn handle_pointer_down(state: &mut TerminalState, x: i32, y: i32) -> bool {

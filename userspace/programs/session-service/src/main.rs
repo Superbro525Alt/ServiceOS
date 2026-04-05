@@ -11,6 +11,8 @@ const SESSION_ID: u32 = 1;
 const MOD_SHIFT: u32 = 1 << 0;
 const MOD_ALT: u32 = 1 << 1;
 const MOD_CTRL: u32 = 1 << 2;
+const MAX_SESSION_REQUESTS_PER_TURN: usize = 16;
+const MAX_INPUT_EVENTS_PER_TURN: usize = 32;
 
 const KEY_LEFT_SHIFT: u32 = 42;
 const KEY_RIGHT_SHIFT: u32 = 54;
@@ -91,6 +93,7 @@ fn main() -> u64 {
             Err(_) => return 0xfd05,
         }
 
+        let mut request_budget = MAX_SESSION_REQUESTS_PER_TURN;
         loop {
             let mut request = RawMessage::empty(0);
             match rt::channel_receive_nonblocking(public.first, &mut request) {
@@ -98,6 +101,10 @@ fn main() -> u64 {
                     did_work = true;
                     if handle_request(&request, log_handle, &mut state).is_err() {
                         return 0xfd06;
+                    }
+                    request_budget = request_budget.saturating_sub(1);
+                    if request_budget == 0 {
+                        break;
                     }
                 }
                 Err(rt::Error::QueueEmpty) => break,
@@ -212,6 +219,7 @@ fn handle_request(
 fn poll_input(bootstrap: rt::Handle, state: &mut SessionState) -> rt::Result<bool> {
     let mut processed = false;
     let mut pending_pointer_move = false;
+    let mut remaining = MAX_INPUT_EVENTS_PER_TURN;
     loop {
         let event = match rt::input_source_receive_nonblocking(state.input_handle) {
             Ok(event) => {
@@ -246,6 +254,13 @@ fn poll_input(bootstrap: rt::Handle, state: &mut SessionState) -> rt::Result<boo
                 }
                 process_input_event(bootstrap, state, event)?;
             }
+        }
+        remaining = remaining.saturating_sub(1);
+        if remaining == 0 {
+            if pending_pointer_move {
+                flush_pointer_move(bootstrap, state)?;
+            }
+            return Ok(processed);
         }
     }
 }

@@ -126,6 +126,7 @@ fn main() -> u64 {
     loop {
         let mut did_work = false;
         let mut pending_pointer_move: Option<(i32, i32, i32)> = None;
+        let mut request_budget = MAX_DESKTOP_REQUESTS_PER_TURN;
         match requests::poll_lifecycle(bootstrap) {
             Ok(true) => return 0,
             Ok(false) => {}
@@ -157,6 +158,10 @@ fn main() -> u64 {
                     }
                     if requests::handle_request(&mut state, &request).is_err() {
                         return 0xfe0e;
+                    }
+                    request_budget = request_budget.saturating_sub(1);
+                    if request_budget == 0 {
+                        break;
                     }
                 }
                 Err(rt::Error::QueueEmpty) => break,

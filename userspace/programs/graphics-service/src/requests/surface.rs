@@ -23,6 +23,7 @@ pub(crate) fn drain_surface_requests(
             continue;
         }
         let mut surface_processed = 0usize;
+        let mut deferred: Option<RawMessage> = None;
         loop {
             if processed >= MAX_SURFACE_REQUESTS_PER_TURN {
                 return Ok(had_work);
@@ -30,12 +31,25 @@ pub(crate) fn drain_surface_requests(
             if surface_processed >= MAX_SURFACE_MESSAGES_PER_SLOT_PER_TURN {
                 break;
             }
-            let mut message = RawMessage::empty(0);
-            match rt::channel_receive_nonblocking(surface.endpoint, &mut message) {
+            let mut message = deferred.take().unwrap_or(RawMessage::empty(0));
+            let receive_result = if message.tag == 0 {
+                rt::channel_receive_nonblocking(surface.endpoint, &mut message)
+            } else {
+                Ok(())
+            };
+            match receive_result {
                 Ok(()) => {
                     had_work = true;
                     processed += 1;
                     surface_processed += 1;
+                    if is_async_geometry_request(&message) {
+                        deferred = coalesce_async_geometry_request(
+                            surface,
+                            &mut message,
+                            processed,
+                            surface_processed,
+                        )?;
+                    }
                     handle_surface_request(surface, &message, dirty)?;
                 }
                 Err(rt::Error::QueueEmpty) => break,
@@ -48,6 +62,41 @@ pub(crate) fn drain_surface_requests(
         }
     }
     Ok(had_work)
+}
+
+fn is_async_geometry_request(message: &RawMessage) -> bool {
+    message.tag == SurfaceTag::SetGeometryRequest as u32 && message.handle_count == 0
+}
+
+fn coalesce_async_geometry_request(
+    surface: &mut SurfaceSlot,
+    message: &mut RawMessage,
+    processed: usize,
+    surface_processed: usize,
+) -> rt::Result<Option<RawMessage>> {
+    let mut processed = processed;
+    let mut surface_processed = surface_processed;
+    loop {
+        if processed >= MAX_SURFACE_REQUESTS_PER_TURN
+            || surface_processed >= MAX_SURFACE_MESSAGES_PER_SLOT_PER_TURN
+        {
+            return Ok(None);
+        }
+        let mut next = RawMessage::empty(0);
+        match rt::channel_receive_nonblocking(surface.endpoint, &mut next) {
+            Ok(()) => {
+                processed += 1;
+                surface_processed += 1;
+                if is_async_geometry_request(&next) {
+                    *message = next;
+                    continue;
+                }
+                return Ok(Some(next));
+            }
+            Err(rt::Error::QueueEmpty) => return Ok(None),
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 fn handle_surface_request(

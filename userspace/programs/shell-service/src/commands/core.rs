@@ -159,6 +159,7 @@ pub(crate) fn cmd_logs(
     output: ShellOutput,
     count: usize,
 ) -> rt::Result<()> {
+    const MAX_LOG_QUERY_COUNT: usize = 32;
     let log_handle = rt::lookup_service(bootstrap, ServiceId::Log)?;
     let (oldest, next) = rt::log_query_info(log_handle)?;
     if next == 0 || oldest == next {
@@ -166,10 +167,25 @@ pub(crate) fn cmd_logs(
         return write_output_linef(output, format_args!("no log records"));
     }
 
-    let start = oldest.max(next.saturating_sub(count as u64));
-    for sequence in start..next {
+    let requested = count.max(1);
+    let limited = requested.min(MAX_LOG_QUERY_COUNT);
+    if limited != requested {
+        write_output_linef(
+            output,
+            format_args!(
+                "showing latest {} records (requested {})",
+                limited, requested
+            ),
+        )?;
+    }
+
+    let start = oldest.max(next.saturating_sub(limited as u64));
+    for (index, sequence) in (start..next).enumerate() {
         if let Some(record) = rt::log_query_record(log_handle, sequence)? {
             write_log_record(output, record)?;
+        }
+        if (index + 1) % 4 == 0 {
+            rt::yield_current()?;
         }
     }
 

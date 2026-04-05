@@ -211,17 +211,55 @@ fn handle_request(
 
 fn poll_input(bootstrap: rt::Handle, state: &mut SessionState) -> rt::Result<bool> {
     let mut processed = false;
+    let mut pending_pointer_move = false;
     loop {
         let event = match rt::input_source_receive_nonblocking(state.input_handle) {
             Ok(event) => {
                 processed = true;
                 event
             }
-            Err(rt::Error::QueueEmpty) => return Ok(processed),
+            Err(rt::Error::QueueEmpty) => {
+                if pending_pointer_move {
+                    flush_pointer_move(bootstrap, state)?;
+                }
+                return Ok(processed);
+            }
             Err(error) => return Err(error),
         };
-        process_input_event(bootstrap, state, event)?;
+        match event.kind {
+            x if x == InputEventKind::PointerMotion as u32 => {
+                state.pointer_x = scale_input_axis(event.value0, state.output_width);
+                state.pointer_y = scale_input_axis(event.value1, state.output_height);
+                pending_pointer_move = true;
+            }
+            x if x == InputEventKind::PointerDelta as u32 => {
+                state.pointer_x =
+                    clamp_axis(state.pointer_x.saturating_add(event.value0), state.output_width);
+                state.pointer_y =
+                    clamp_axis(state.pointer_y.saturating_add(event.value1), state.output_height);
+                pending_pointer_move = true;
+            }
+            _ => {
+                if pending_pointer_move {
+                    flush_pointer_move(bootstrap, state)?;
+                    pending_pointer_move = false;
+                }
+                process_input_event(bootstrap, state, event)?;
+            }
+        }
     }
+}
+
+fn flush_pointer_move(bootstrap: rt::Handle, state: &mut SessionState) -> rt::Result<()> {
+    let Some(desktop_handle) = desktop_handle(bootstrap, state)? else {
+        return Ok(());
+    };
+    tolerate_input_backpressure(rt::desktop_pointer_input_async(
+        desktop_handle,
+        DesktopInputAction::PointerMove,
+        state.pointer_x,
+        state.pointer_y,
+    ))
 }
 
 fn process_input_event(
@@ -234,28 +272,6 @@ fn process_input_event(
     };
 
     match event.kind {
-        x if x == InputEventKind::PointerMotion as u32 => {
-            state.pointer_x = scale_input_axis(event.value0, state.output_width);
-            state.pointer_y = scale_input_axis(event.value1, state.output_height);
-            tolerate_input_backpressure(rt::desktop_pointer_input_async(
-                desktop_handle,
-                DesktopInputAction::PointerMove,
-                state.pointer_x,
-                state.pointer_y,
-            ))?;
-        }
-        x if x == InputEventKind::PointerDelta as u32 => {
-            state.pointer_x =
-                clamp_axis(state.pointer_x.saturating_add(event.value0), state.output_width);
-            state.pointer_y =
-                clamp_axis(state.pointer_y.saturating_add(event.value1), state.output_height);
-            tolerate_input_backpressure(rt::desktop_pointer_input_async(
-                desktop_handle,
-                DesktopInputAction::PointerMove,
-                state.pointer_x,
-                state.pointer_y,
-            ))?;
-        }
         x if x == InputEventKind::PointerButton as u32 => {
             let action = if event.value0 == 0 {
                 DesktopInputAction::PointerUp
@@ -305,6 +321,8 @@ fn process_input_event(
                 }
             }
         }
+        x if x == InputEventKind::PointerMotion as u32
+            || x == InputEventKind::PointerDelta as u32 => {}
         _ => {}
     }
 

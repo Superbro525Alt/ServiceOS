@@ -3,9 +3,10 @@ use rt::{GraphicsStatus, RawMessage, SurfaceTag};
 
 use crate::{
     types::{
-        BufferBinding, DirtyState, MAX_BUFFER_ROW_BYTES, MAX_LABEL_BYTES, MAX_SURFACE_BUFFERS,
-        MAX_SURFACE_LABELS, MAX_SURFACE_RECTS, SurfaceSlot, Surfaces, is_cursor_surface,
-        release_surface, surface_bounds,
+        BufferBinding, DirtyState, MAX_BUFFER_ROW_BYTES, MAX_LABEL_BYTES,
+        MAX_SURFACE_BUFFERS, MAX_SURFACE_LABELS, MAX_SURFACE_MESSAGES_PER_SLOT_PER_TURN,
+        MAX_SURFACE_RECTS, MAX_SURFACE_REQUESTS_PER_TURN, SurfaceSlot, Surfaces,
+        is_cursor_surface, release_surface, surface_bounds,
     },
 };
 
@@ -16,15 +17,25 @@ pub(crate) fn drain_surface_requests(
     dirty: &mut DirtyState,
 ) -> rt::Result<bool> {
     let mut had_work = false;
+    let mut processed = 0usize;
     for surface in surfaces {
         if !surface.occupied {
             continue;
         }
+        let mut surface_processed = 0usize;
         loop {
+            if processed >= MAX_SURFACE_REQUESTS_PER_TURN {
+                return Ok(had_work);
+            }
+            if surface_processed >= MAX_SURFACE_MESSAGES_PER_SLOT_PER_TURN {
+                break;
+            }
             let mut message = RawMessage::empty(0);
             match rt::channel_receive_nonblocking(surface.endpoint, &mut message) {
                 Ok(()) => {
                     had_work = true;
+                    processed += 1;
+                    surface_processed += 1;
                     handle_surface_request(surface, &message, dirty)?;
                 }
                 Err(rt::Error::QueueEmpty) => break,

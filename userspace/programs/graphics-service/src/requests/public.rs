@@ -4,8 +4,8 @@ use rt::{GraphicsStatus, GraphicsTag, LogEvent, LogSeverity, RawMessage};
 use crate::{
     logging::emit_log,
     types::{
-        DirtyState, MAX_SURFACE_LABELS, MAX_SURFACE_RECTS, Surfaces, active_buffer,
-        active_surface_count, attached_buffer_count, find_surface,
+        DirtyState, MAX_PUBLIC_REQUESTS_PER_TURN, MAX_SURFACE_LABELS, MAX_SURFACE_RECTS,
+        Surfaces, active_buffer, active_surface_count, attached_buffer_count, find_surface,
     },
 };
 
@@ -19,11 +19,16 @@ pub(crate) fn drain_public_requests(
     dirty: &mut DirtyState,
 ) -> rt::Result<bool> {
     let mut had_work = false;
+    let mut processed = 0usize;
     loop {
+        if processed >= MAX_PUBLIC_REQUESTS_PER_TURN {
+            return Ok(had_work);
+        }
         let mut request = RawMessage::empty(0);
         match rt::channel_receive_nonblocking(public_handle, &mut request) {
             Ok(()) => {
                 had_work = true;
+                processed += 1;
                 handle_public_request(
                     &request,
                     log_handle,

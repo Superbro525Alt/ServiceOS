@@ -74,9 +74,9 @@ pub(crate) fn launch_or_focus_app(state: &mut DesktopState, app_id: DesktopAppId
         restore_height: height,
     };
     state.apps[index].running = true;
-    sync_window_surface(&state.apps[index])?;
     let _ = rt::app_control_resize(control.first, width, height);
-    let surface_id = focus_app(state, app_id)?;
+    let _ = set_window_visibility(&state.apps[index], true);
+    let surface_id = focus_app_internal(state, app_id, true, false)?;
     let _ = emit_log(
         state.log_handle,
         LogSeverity::Info,
@@ -88,6 +88,15 @@ pub(crate) fn launch_or_focus_app(state: &mut DesktopState, app_id: DesktopAppId
 }
 
 pub(crate) fn focus_app(state: &mut DesktopState, app_id: DesktopAppId) -> rt::Result<u32> {
+    focus_app_internal(state, app_id, true, true)
+}
+
+fn focus_app_internal(
+    state: &mut DesktopState,
+    app_id: DesktopAppId,
+    rerender: bool,
+    update_z_order: bool,
+) -> rt::Result<u32> {
     let Some(index) = app_slot_index(&state.apps, app_id) else {
         return Err(rt::Error::NotFound);
     };
@@ -96,7 +105,7 @@ pub(crate) fn focus_app(state: &mut DesktopState, app_id: DesktopAppId) -> rt::R
     }
     if state.apps[index].window.minimized {
         state.apps[index].window.minimized = false;
-        sync_window_surface(&state.apps[index])?;
+        let _ = set_window_visibility(&state.apps[index], true);
     }
     if state.apps[index].workspace_id != state.active_workspace {
         state.active_workspace = state.apps[index].workspace_id.clamp(1, WORKSPACE_COUNT);
@@ -114,8 +123,10 @@ pub(crate) fn focus_app(state: &mut DesktopState, app_id: DesktopAppId) -> rt::R
         }
     }
 
-    state.apps[index].window.z_order = allocate_z_order(state);
-    apply_window_geometry(&state.apps[index])?;
+    if update_z_order {
+        state.apps[index].window.z_order = allocate_z_order(state);
+        apply_window_geometry(&state.apps[index])?;
+    }
     let control_handle = state.apps[index].window.control_handle;
     if control_handle != rt::INVALID_HANDLE {
         let _ = rt::app_control_focus(control_handle, true);
@@ -131,7 +142,9 @@ pub(crate) fn focus_app(state: &mut DesktopState, app_id: DesktopAppId) -> rt::R
         app_id as u32 as u64,
         surface_id as u64,
     );
-    render_desktop(state)?;
+    if rerender {
+        render_desktop(state)?;
+    }
     Ok(surface_id)
 }
 
@@ -143,7 +156,7 @@ pub(crate) fn minimize_app(state: &mut DesktopState, app_id: DesktopAppId) -> rt
         return Err(rt::Error::NotFound);
     }
     state.apps[index].window.minimized = true;
-    sync_window_surface(&state.apps[index])?;
+    set_window_visibility(&state.apps[index], false)?;
     if state.focused_app == Some(app_id) {
         state.focused_app = None;
         let _ = rt::session_focus(state.session_handle, SESSION_ID, 0);
@@ -186,8 +199,7 @@ pub(crate) fn restore_app(state: &mut DesktopState, app_id: DesktopAppId) -> rt:
         }
     }
     state.apps[index].window.minimized = false;
-    sync_window_surface(&state.apps[index])?;
-    focus_app(state, app_id)
+    focus_app_internal(state, app_id, true, true)
 }
 
 pub(crate) fn maximize_app(state: &mut DesktopState, app_id: DesktopAppId) -> rt::Result<u32> {
@@ -225,8 +237,7 @@ pub(crate) fn maximize_app(state: &mut DesktopState, app_id: DesktopAppId) -> rt
             state.apps[index].window.height,
         );
     }
-    render_desktop(state)?;
-    focus_app(state, app_id)
+    focus_app_internal(state, app_id, true, true)
 }
 
 pub(crate) fn move_app(state: &mut DesktopState, app_id: DesktopAppId, x: i32, y: i32) -> rt::Result<u32> {

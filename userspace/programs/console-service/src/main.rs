@@ -15,7 +15,7 @@ use crate::input::handle_input_byte;
 use crate::lifecycle::poll_lifecycle;
 use crate::public::handle_public_message;
 use crate::session::handle_session_message;
-use crate::state::{release_session, Session, MAX_SESSIONS};
+use crate::state::{release_session, BootProgress, Session, MAX_SESSIONS};
 
 rt::entry!(main);
 
@@ -36,6 +36,7 @@ fn main() -> u64 {
     let _ = rt::handle_close(public.second);
 
     let mut sessions = [Session::empty(); MAX_SESSIONS];
+    let mut boot_progress = BootProgress::new();
     loop {
         match poll_lifecycle(bootstrap) {
             Ok(true) => return 0,
@@ -46,7 +47,7 @@ fn main() -> u64 {
         let mut message = RawMessage::empty(0);
         match rt::channel_receive_nonblocking(public.first, &mut message) {
             Ok(()) => {
-                if handle_public_message(&mut sessions, &message).is_err() {
+                if handle_public_message(&mut sessions, &mut boot_progress, &message).is_err() {
                     return 0xf305;
                 }
             }

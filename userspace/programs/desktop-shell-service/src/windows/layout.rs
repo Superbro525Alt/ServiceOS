@@ -11,9 +11,8 @@ pub(crate) fn apply_window_geometry(slot: &AppSlot) -> rt::Result<()> {
     )
 }
 
-pub(crate) fn sync_window_surface(slot: &AppSlot) -> rt::Result<()> {
-    apply_window_geometry(slot)?;
-    rt::surface_set_visibility(slot.window.surface_handle, slot.window.visible())
+pub(crate) fn set_window_visibility(slot: &AppSlot, visible: bool) -> rt::Result<()> {
+    rt::surface_set_visibility(slot.window.surface_handle, visible)
 }
 
 pub(crate) fn sync_workspace_visibility(state: &DesktopState) -> rt::Result<()> {

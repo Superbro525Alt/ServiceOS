@@ -1,9 +1,93 @@
 use serviceos_userspace_runtime as rt;
+use rt::{LogEvent, ServiceId};
 
 pub(crate) const MAX_SESSIONS: usize = 2;
 pub(crate) const MAX_LINE_BYTES: usize = 128;
 pub(crate) const MAX_DISPLAY_BYTES: usize = 192;
 pub(crate) const MAX_HISTORY: usize = 16;
+
+#[derive(Clone, Copy)]
+pub(crate) struct BootProgress {
+    pub(crate) manifest_mask: u64,
+    pub(crate) started_mask: u64,
+    pub(crate) ready_mask: u64,
+    pub(crate) failed_mask: u64,
+    pub(crate) complete: bool,
+}
+
+impl BootProgress {
+    pub(crate) const fn new() -> Self {
+        Self {
+            manifest_mask: 0,
+            started_mask: 0,
+            ready_mask: 0,
+            failed_mask: 0,
+            complete: false,
+        }
+    }
+
+    pub(crate) fn note_event(&mut self, event: LogEvent, service_id: ServiceId) -> bool {
+        if self.complete {
+            return false;
+        }
+        let Some(bit) = service_bit(service_id) else {
+            return false;
+        };
+        match event {
+            LogEvent::ManifestLoaded => {
+                self.manifest_mask |= bit;
+                true
+            }
+            LogEvent::ServiceStarted | LogEvent::ServiceRestarting => {
+                self.started_mask |= bit;
+                true
+            }
+            LogEvent::ServiceReady => {
+                self.started_mask |= bit;
+                self.ready_mask |= bit;
+                true
+            }
+            LogEvent::ServiceFailed => {
+                self.started_mask |= bit;
+                self.failed_mask |= bit;
+                true
+            }
+            LogEvent::DesktopReady => {
+                self.complete = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub(crate) fn total_services(&self) -> u32 {
+        self.manifest_mask.count_ones()
+    }
+
+    pub(crate) fn ready_services(&self) -> u32 {
+        (self.ready_mask & self.manifest_mask).count_ones()
+    }
+
+    pub(crate) fn failed_services(&self) -> u32 {
+        (self.failed_mask & self.manifest_mask).count_ones()
+    }
+
+    pub(crate) fn starting_services(&self) -> u32 {
+        (self.started_mask & self.manifest_mask)
+            .count_ones()
+            .saturating_sub(self.ready_services())
+            .saturating_sub(self.failed_services())
+    }
+}
+
+fn service_bit(service_id: ServiceId) -> Option<u64> {
+    let index = service_id as u32;
+    if index < 64 {
+        Some(1u64 << index)
+    } else {
+        None
+    }
+}
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) enum EscapeState {

@@ -7,10 +7,11 @@ use crate::format::{
 };
 use crate::input::render_session_line;
 use crate::session::handle_session_open;
-use crate::state::{active_session, Session, MAX_SESSIONS};
+use crate::state::{active_session, BootProgress, Session, MAX_SESSIONS};
 
 pub(crate) fn handle_public_message(
     sessions: &mut [Session; MAX_SESSIONS],
+    boot_progress: &mut BootProgress,
     message: &RawMessage,
 ) -> rt::Result<()> {
     match message.tag {
@@ -23,6 +24,19 @@ pub(crate) fn handle_public_message(
             let severity = severity_from_word(message.words[1]);
             let domain = domain_from_word(message.words[2]);
             let event = event_from_word(message.words[3]);
+            let target_service = service_id_from_word(message.words[4]);
+            let boot_changed = (source == rt::ServiceId::RootManager
+                || event == LogEvent::DesktopReady)
+                && boot_progress.note_event(event, target_service);
+
+            if boot_changed {
+                write_boot_progress_line(sessions, *boot_progress)?;
+            }
+
+            if should_suppress_console_record(*boot_progress, severity, event) {
+                return Ok(());
+            }
+
             let _ = match event {
                 LogEvent::ServiceStarted | LogEvent::ServiceReady | LogEvent::ServiceRestarting => {
                     write_structured_line(
@@ -35,7 +49,7 @@ pub(crate) fn handle_public_message(
                             service_name(source),
                             domain_name(domain),
                             event_name(event),
-                            service_name(service_id_from_word(message.words[4])),
+                            service_name(target_service),
                             message.words[5],
                         ),
                     )
@@ -50,7 +64,7 @@ pub(crate) fn handle_public_message(
                         service_name(source),
                         domain_name(domain),
                         event_name(event),
-                        service_name(service_id_from_word(message.words[4])),
+                        service_name(target_service),
                         message.words[5],
                     ),
                 ),
@@ -306,6 +320,58 @@ pub(crate) fn handle_public_message(
         _ => {}
     }
 
+    Ok(())
+}
+
+fn should_suppress_console_record(
+    boot_progress: BootProgress,
+    severity: rt::LogSeverity,
+    event: LogEvent,
+) -> bool {
+    if severity != rt::LogSeverity::Info {
+        return false;
+    }
+
+    if !boot_progress.complete {
+        return true;
+    }
+
+    !matches!(event, LogEvent::DesktopReady)
+}
+
+fn write_boot_progress_line(
+    sessions: &[Session; MAX_SESSIONS],
+    boot_progress: BootProgress,
+) -> rt::Result<()> {
+    let total = boot_progress.total_services();
+    if total == 0 {
+        return Ok(());
+    }
+
+    let ready = boot_progress.ready_services();
+    let failed = boot_progress.failed_services();
+    let starting = boot_progress.starting_services();
+    let completed = ready.saturating_add(failed).min(total);
+    let filled = (completed as usize * 20) / total as usize;
+    let mut bar = [b'-'; 20];
+    for slot in bar.iter_mut().take(filled) {
+        *slot = b'=';
+    }
+    let bar = core::str::from_utf8(&bar).unwrap_or("--------------------");
+
+    if active_session(sessions).is_some() {
+        let _ = rt::debug_console_write(b"\r\n");
+    }
+    rt::write_logf(
+        "boot",
+        format_args!(
+            "[{}] ready={}/{} starting={} failed={}",
+            bar, ready, total, starting, failed
+        ),
+    )?;
+    if let Some(session) = active_session(sessions) {
+        let _ = render_session_line(session);
+    }
     Ok(())
 }
 

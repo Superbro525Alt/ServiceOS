@@ -1,7 +1,7 @@
 use serviceos_userspace_runtime as rt;
 use rt::{GraphicsStatus, RawMessage, SurfaceTag};
 
-use crate::types::DirtyState;
+use crate::types::{DamageSet, DirtyState};
 
 pub(crate) fn reply_surface_status(
     handles: [rt::Handle; rt::IPC_MAX_HANDLES],
@@ -43,16 +43,19 @@ pub(crate) fn merge_region_dirty(
     immediate: bool,
 ) {
     *dirty = match *dirty {
-        DirtyState::Clean => DirtyState::Region { damage, immediate },
+        DirtyState::Clean => DirtyState::Region {
+            damages: DamageSet::empty().push(damage),
+            immediate,
+        },
         DirtyState::CursorOnly(existing) => DirtyState::Region {
-            damage: existing.merge(damage),
+            damages: DamageSet::empty().push(existing).push(damage),
             immediate,
         },
         DirtyState::Region {
-            damage: existing,
+            damages: existing,
             immediate: current,
         } => DirtyState::Region {
-            damage: existing.merge(damage),
+            damages: existing.push(damage),
             immediate: current || immediate,
         },
         DirtyState::Full { immediate: current } => DirtyState::Full {

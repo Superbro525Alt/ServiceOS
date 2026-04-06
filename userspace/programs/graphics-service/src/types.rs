@@ -15,6 +15,7 @@ pub(crate) const CURSOR_SURFACE_MAX_SIZE: u32 = 64;
 pub(crate) const MAX_PUBLIC_REQUESTS_PER_TURN: usize = 32;
 pub(crate) const MAX_SURFACE_REQUESTS_PER_TURN: usize = 64;
 pub(crate) const MAX_SURFACE_MESSAGES_PER_SLOT_PER_TURN: usize = 8;
+pub(crate) const MAX_DAMAGE_RECTS: usize = 8;
 
 pub(crate) type Surfaces = [SurfaceSlot; MAX_SURFACES];
 
@@ -177,10 +178,67 @@ impl DamageRect {
 }
 
 #[derive(Clone, Copy)]
+pub(crate) struct DamageSet {
+    pub(crate) len: usize,
+    pub(crate) rects: [DamageRect; MAX_DAMAGE_RECTS],
+}
+
+impl DamageSet {
+    pub(crate) const fn empty() -> Self {
+        Self {
+            len: 0,
+            rects: [DamageRect::empty(); MAX_DAMAGE_RECTS],
+        }
+    }
+
+    pub(crate) fn push(mut self, rect: DamageRect) -> Self {
+        if rect.width == 0 || rect.height == 0 {
+            return self;
+        }
+        for index in 0..self.len {
+            if rects_touch_or_overlap(self.rects[index], rect) {
+                self.rects[index] = self.rects[index].merge(rect);
+                return self;
+            }
+        }
+        if self.len < MAX_DAMAGE_RECTS {
+            self.rects[self.len] = rect;
+            self.len += 1;
+            return self;
+        }
+        self.rects[0] = self.bounding_rect().merge(rect);
+        self.len = 1;
+        self
+    }
+
+    pub(crate) fn bounding_rect(self) -> DamageRect {
+        let mut merged = DamageRect::empty();
+        for index in 0..self.len {
+            merged = merged.merge(self.rects[index]);
+        }
+        merged
+    }
+}
+
+fn rects_touch_or_overlap(left: DamageRect, right: DamageRect) -> bool {
+    let left_right = left.x.saturating_add(left.width as i32);
+    let left_bottom = left.y.saturating_add(left.height as i32);
+    let right_right = right.x.saturating_add(right.width as i32);
+    let right_bottom = right.y.saturating_add(right.height as i32);
+    left.x <= right_right
+        && left_right >= right.x
+        && left.y <= right_bottom
+        && left_bottom >= right.y
+}
+
+#[derive(Clone, Copy)]
 pub(crate) enum DirtyState {
     Clean,
     CursorOnly(DamageRect),
-    Region { damage: DamageRect, immediate: bool },
+    Region {
+        damages: DamageSet,
+        immediate: bool,
+    },
     Full { immediate: bool },
 }
 

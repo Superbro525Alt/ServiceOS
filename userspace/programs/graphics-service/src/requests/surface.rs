@@ -20,6 +20,33 @@ fn visible_surface_damage(surface: &SurfaceSlot) -> crate::types::DamageRect {
     }
 }
 
+fn scene_rect_damage(surface: &SurfaceSlot, rect: crate::types::RectSlot) -> crate::types::DamageRect {
+    if !rect.occupied || !rect.visible || rect.width == 0 || rect.height == 0 || !surface.visible {
+        return crate::types::DamageRect::empty();
+    }
+    crate::types::DamageRect {
+        x: surface.x.saturating_add(rect.x),
+        y: surface.y.saturating_add(rect.y),
+        width: rect.width,
+        height: rect.height,
+    }
+}
+
+fn scene_label_damage(
+    surface: &SurfaceSlot,
+    label: crate::types::LabelSlot,
+) -> crate::types::DamageRect {
+    if !label.occupied || label.len == 0 || !surface.visible {
+        return crate::types::DamageRect::empty();
+    }
+    crate::types::DamageRect {
+        x: surface.x.saturating_add(label.x),
+        y: surface.y.saturating_add(label.y),
+        width: (label.len * rt::BITMAP_GLYPH_ADVANCE) as u32,
+        height: rt::BITMAP_GLYPH_HEIGHT as u32,
+    }
+}
+
 fn mark_surface_dirty(dirty: &mut DirtyState, surface: &SurfaceSlot, immediate: bool) {
     let damage = visible_surface_damage(surface);
     if damage.width != 0 && damage.height != 0 {
@@ -128,18 +155,37 @@ fn handle_surface_request(
                 return Ok(());
             }
             let old_rect = surface_bounds(surface);
-            surface.x = message.words[0] as i64 as i32;
-            surface.y = message.words[1] as i64 as i32;
-            surface.width = message.words[2] as u32;
-            surface.height = message.words[3] as u32;
-            surface.z_order = message.words[4] as u32;
+            let new_x = message.words[0] as i64 as i32;
+            let new_y = message.words[1] as i64 as i32;
+            let new_width = message.words[2] as u32;
+            let new_height = message.words[3] as u32;
+            let new_z = message.words[4] as u32;
+            if surface.x == new_x
+                && surface.y == new_y
+                && surface.width == new_width
+                && surface.height == new_height
+                && surface.z_order == new_z
+            {
+                reply_surface_status(
+                    message.handles,
+                    message.handle_count,
+                    SurfaceTag::SetGeometryReply,
+                    GraphicsStatus::Ok,
+                );
+                return Ok(());
+            }
+            surface.x = new_x;
+            surface.y = new_y;
+            surface.width = new_width;
+            surface.height = new_height;
+            surface.z_order = new_z;
             let new_rect = surface_bounds(surface);
             let damage = old_rect.merge(new_rect);
             if is_cursor_surface(surface) && !matches!(dirty, DirtyState::Full { .. }) {
                 *dirty = match *dirty {
                     DirtyState::CursorOnly(existing) => DirtyState::CursorOnly(existing.merge(damage)),
-                    DirtyState::Region { damage: existing, immediate } => DirtyState::Region {
-                        damage: existing.merge(damage),
+                    DirtyState::Region { damages: existing, immediate } => DirtyState::Region {
+                        damages: existing.push(damage),
                         immediate,
                     },
                     DirtyState::Clean => DirtyState::CursorOnly(damage),
@@ -159,8 +205,11 @@ fn handle_surface_request(
             if message.word_count < 1 || message.handle_count < 1 {
                 return Ok(());
             }
-            surface.fill_rgb = message.words[0] as u32;
-            mark_surface_dirty(dirty, surface, false);
+            let fill_rgb = message.words[0] as u32;
+            if surface.fill_rgb != fill_rgb {
+                surface.fill_rgb = fill_rgb;
+                mark_surface_dirty(dirty, surface, false);
+            }
             reply_surface_status(
                 message.handles,
                 message.handle_count,
@@ -173,7 +222,17 @@ fn handle_surface_request(
                 return Ok(());
             }
             let old_rect = visible_surface_damage(surface);
-            surface.visible = message.words[0] != 0;
+            let visible = message.words[0] != 0;
+            if surface.visible == visible {
+                reply_surface_status(
+                    message.handles,
+                    message.handle_count,
+                    SurfaceTag::SetVisibilityReply,
+                    GraphicsStatus::Ok,
+                );
+                return Ok(());
+            }
+            surface.visible = visible;
             let new_rect = visible_surface_damage(surface);
             let damage = old_rect.merge(new_rect);
             if damage.width != 0 && damage.height != 0 {
@@ -188,6 +247,17 @@ fn handle_surface_request(
         }
         x if x == SurfaceTag::ClearSceneRequest as u32 => {
             if message.handle_count < 1 {
+                return Ok(());
+            }
+            let rects_empty = surface.rects.iter().all(|slot| !slot.occupied);
+            let labels_empty = surface.labels.iter().all(|slot| !slot.occupied);
+            if rects_empty && labels_empty {
+                reply_surface_status(
+                    message.handles,
+                    message.handle_count,
+                    SurfaceTag::ClearSceneReply,
+                    GraphicsStatus::Ok,
+                );
                 return Ok(());
             }
             surface.rects = [crate::types::RectSlot::empty(); MAX_SURFACE_RECTS];
@@ -206,14 +276,30 @@ fn handle_surface_request(
             }
             let slot_index = message.words[0] as usize;
             let status = if let Some(slot) = surface.rects.get_mut(slot_index) {
-                slot.x = message.words[1] as i64 as i32;
-                slot.y = message.words[2] as i64 as i32;
-                slot.width = message.words[3] as u32;
-                slot.height = message.words[4] as u32;
-                slot.color_rgb = message.words[5] as u32;
-                slot.visible = message.words[6] != 0;
-                slot.occupied = slot.visible;
-                mark_surface_dirty(dirty, surface, false);
+                let old = *slot;
+                let new = crate::types::RectSlot {
+                    x: message.words[1] as i64 as i32,
+                    y: message.words[2] as i64 as i32,
+                    width: message.words[3] as u32,
+                    height: message.words[4] as u32,
+                    color_rgb: message.words[5] as u32,
+                    visible: message.words[6] != 0,
+                    occupied: message.words[6] != 0,
+                };
+                if old.x != new.x
+                    || old.y != new.y
+                    || old.width != new.width
+                    || old.height != new.height
+                    || old.color_rgb != new.color_rgb
+                    || old.visible != new.visible
+                    || old.occupied != new.occupied
+                {
+                    *slot = new;
+                    let damage = scene_rect_damage(surface, old).merge(scene_rect_damage(surface, new));
+                    if damage.width != 0 && damage.height != 0 {
+                        merge_region_dirty(dirty, damage, false);
+                    }
+                }
                 GraphicsStatus::Ok
             } else {
                 GraphicsStatus::CapacityExceeded
@@ -231,6 +317,7 @@ fn handle_surface_request(
             }
             let slot_index = message.words[0] as usize;
             let status = if let Some(slot) = surface.labels.get_mut(slot_index) {
+                let old = *slot;
                 let text_len = message.words[4] as usize;
                 if text_len > MAX_LABEL_BYTES
                     || unpack_bytes(
@@ -242,12 +329,29 @@ fn handle_surface_request(
                 {
                     GraphicsStatus::CapacityExceeded
                 } else {
-                    slot.x = message.words[1] as i64 as i32;
-                    slot.y = message.words[2] as i64 as i32;
-                    slot.color_rgb = message.words[3] as u32;
-                    slot.len = text_len;
-                    slot.occupied = text_len != 0;
-                    mark_surface_dirty(dirty, surface, false);
+                    let new = *slot;
+                    let candidate = crate::types::LabelSlot {
+                        x: message.words[1] as i64 as i32,
+                        y: message.words[2] as i64 as i32,
+                        color_rgb: message.words[3] as u32,
+                        len: text_len,
+                        bytes: new.bytes,
+                        occupied: text_len != 0,
+                    };
+                    if old.x != candidate.x
+                        || old.y != candidate.y
+                        || old.color_rgb != candidate.color_rgb
+                        || old.len != candidate.len
+                        || old.occupied != candidate.occupied
+                        || old.bytes[..text_len] != candidate.bytes[..text_len]
+                    {
+                        *slot = candidate;
+                        let damage =
+                            scene_label_damage(surface, old).merge(scene_label_damage(surface, candidate));
+                        if damage.width != 0 && damage.height != 0 {
+                            merge_region_dirty(dirty, damage, false);
+                        }
+                    }
                     GraphicsStatus::Ok
                 }
             } else {
@@ -337,9 +441,9 @@ fn handle_surface_request(
                 } else if is_cursor_surface(surface) && !matches!(dirty, DirtyState::Full { .. }) {
                     *dirty = match *dirty {
                         DirtyState::CursorOnly(existing) => DirtyState::CursorOnly(existing.merge(damage)),
-                        DirtyState::Region { damage: existing, immediate } => {
+                        DirtyState::Region { damages: existing, immediate } => {
                             DirtyState::Region {
-                                damage: existing.merge(damage),
+                                damages: existing.push(damage),
                                 immediate,
                             }
                         }

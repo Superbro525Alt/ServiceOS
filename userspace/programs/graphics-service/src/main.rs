@@ -109,8 +109,20 @@ fn main() -> u64 {
                     DirtyState::CursorOnly(damage) => {
                         cursor_present(output_handle, output, &surfaces, damage)
                     }
-                    DirtyState::Region { damage, .. } => {
-                        compose_damage_and_present(output_handle, output, &surfaces, damage)
+                    DirtyState::Region { damages, .. } => {
+                        let mut result = Ok(());
+                        for index in 0..damages.len {
+                            result = compose_damage_and_present(
+                                output_handle,
+                                output,
+                                &surfaces,
+                                damages.rects[index],
+                            );
+                            if result.is_err() {
+                                break;
+                            }
+                        }
+                        result
                     }
                     DirtyState::Full { .. } => compose_and_present(output_handle, output, &surfaces),
                     DirtyState::Clean => Ok(()),

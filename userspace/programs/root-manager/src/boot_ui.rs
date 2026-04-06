@@ -90,6 +90,7 @@ pub(crate) fn update(
         )?;
         boot_ui.surface_handle = surface_handle;
         boot_ui.active = true;
+        rt::surface_set_visibility(surface_handle, true)?;
     }
 
     let snapshot = sample_boot_snapshot(slots, service_count, graph_status);
@@ -141,8 +142,6 @@ fn render(surface_handle: rt::Handle, snapshot: BootSnapshot) -> rt::Result<()> 
         snapshot.degraded_services
     );
 
-    rt::surface_set_fill(surface_handle, BG)?;
-    rt::surface_clear_scene(surface_handle)?;
     rt::surface_set_rect(surface_handle, 0, 0, 0, BOOT_SURFACE_WIDTH, BOOT_SURFACE_HEIGHT, PANEL, true)?;
     rt::surface_set_rect(surface_handle, 1, 0, 0, BOOT_SURFACE_WIDTH, 30, PANEL_ALT, true)?;
     rt::surface_set_label(surface_handle, 0, 18, 10, TEXT_PRIMARY, "SERVICEOS STARTING")?;
@@ -177,7 +176,7 @@ fn render(surface_handle: rt::Handle, snapshot: BootSnapshot) -> rt::Result<()> 
     rt::surface_set_rect(surface_handle, 4, 20, 122, progress_width, 18, ACCENT_DIM, true)?;
     rt::surface_set_rect(surface_handle, 5, 20, 122, filled.max(6).min(progress_width), 18, ACCENT, true)?;
     rt::surface_set_label(surface_handle, 6, 20, 150, TEXT_SECONDARY, "Loading core services and desktop runtime")?;
-    rt::surface_set_visibility(surface_handle, true)
+    Ok(())
 }
 
 fn close(boot_ui: &mut BootUi) {

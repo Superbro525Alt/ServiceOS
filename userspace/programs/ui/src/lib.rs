@@ -66,8 +66,6 @@ pub fn render_window_state(
     focused: bool,
 ) -> rt::Result<()> {
     let titlebar_rgb = if focused { ACCENT } else { ACCENT_DIM };
-    rt::surface_set_fill(surface, background_rgb)?;
-    rt::surface_clear_scene(surface)?;
     rt::surface_set_rect(surface, 0, 0, 0, width, TITLEBAR_HEIGHT, titlebar_rgb, true)?;
     rt::surface_set_rect(
         surface,
@@ -147,8 +145,7 @@ pub fn render_panel_uniform(
     lines: &[&str],
     color: u32,
 ) -> rt::Result<()> {
-    rt::surface_set_fill(surface, BG_PANEL)?;
-    rt::surface_clear_scene(surface)?;
+    rt::surface_set_rect(surface, 1, 0, TITLEBAR_HEIGHT as i32, width, height.saturating_sub(TITLEBAR_HEIGHT), BG_PANEL, true)?;
     rt::surface_set_rect(surface, 0, 0, 0, width, TITLEBAR_HEIGHT, ACCENT_DIM, true)?;
     rt::surface_set_label(surface, 0, 10, 9, TEXT_PRIMARY, title)?;
     for (index, line) in lines.iter().copied().enumerate() {
@@ -172,8 +169,7 @@ pub fn render_status_panel(
     title: &str,
     lines: &[(&str, u32)],
 ) -> rt::Result<()> {
-    rt::surface_set_fill(surface, BG_PANEL)?;
-    rt::surface_clear_scene(surface)?;
+    rt::surface_set_rect(surface, 7, 0, 24, width, height.saturating_sub(24), BG_PANEL, true)?;
     rt::surface_set_rect(surface, 0, 0, 0, width, 24, ACCENT_DIM, true)?;
     rt::surface_set_label(surface, 0, 8, 8, TEXT_PRIMARY, title)?;
     for (index, (line, color)) in lines.iter().copied().enumerate() {

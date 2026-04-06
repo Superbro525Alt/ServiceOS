@@ -10,4 +10,5 @@ path = "src/main.rs"
 [dependencies]
 serviceos-abi = { path = "../../../shared/abi" }
 serviceos-bundle = { path = "../../../shared/bundle" }
+serviceos-desktop-ui = { path = "../ui" }
 serviceos-userspace-runtime = { path = "../runtime" }

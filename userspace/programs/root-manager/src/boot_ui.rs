@@ -1,5 +1,6 @@
 use core::{fmt::Write, str};
 
+use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
 use rt::{FixedLogBuffer, ServiceId};
 
@@ -8,21 +9,38 @@ use crate::{
     util::{find_slot_index_checked, service_name},
 };
 
-const BOOT_SURFACE_WIDTH: u32 = 520;
-const BOOT_SURFACE_HEIGHT: u32 = 180;
+const BOOT_SURFACE_WIDTH: u32 = 620;
+const BOOT_SURFACE_HEIGHT: u32 = 236;
 const BOOT_SURFACE_Z: u32 = 3_000;
-const BG: u32 = 0x111821;
-const PANEL: u32 = 0x1a2432;
-const PANEL_ALT: u32 = 0x223247;
+const BOOT_BUFFER_SLOTS: usize = 2;
+const BOOT_BUFFER_BYTES: usize = BOOT_SURFACE_WIDTH as usize * BOOT_SURFACE_HEIGHT as usize * 4;
+const PANEL_X: usize = 22;
+const PANEL_Y: usize = 46;
+const PANEL_W: usize = BOOT_SURFACE_WIDTH as usize - 44;
+const PANEL_H: usize = BOOT_SURFACE_HEIGHT as usize - 68;
+const BAR_X: usize = PANEL_X + 18;
+const BAR_Y: usize = PANEL_Y + 86;
+const BAR_W: usize = PANEL_W - 36;
+const BAR_H: usize = 18;
+const CHIP_Y: usize = BAR_Y + 34;
+const FOOTER_Y: usize = CHIP_Y + 34;
+
+const BG: u32 = 0x0d1420;
+const PANEL: u32 = 0x172233;
+const PANEL_ALT: u32 = 0x23344a;
+const PANEL_LINE: u32 = 0x2c425e;
 const ACCENT: u32 = 0x7cc6ff;
-const ACCENT_DIM: u32 = 0x36506b;
+const ACCENT_DIM: u32 = 0x324f70;
+const READY: u32 = 0x8de19d;
+const WARN: u32 = 0xf2c36b;
 const TEXT_PRIMARY: u32 = 0xe7f1ff;
 const TEXT_SECONDARY: u32 = 0xa6b9cf;
-const TEXT_WARN: u32 = 0xf2c36b;
+const TEXT_MUTED: u32 = 0x7488a0;
 
-#[derive(Clone, Copy)]
 pub(crate) struct BootUi {
     surface_handle: rt::Handle,
+    buffers: Option<ui::SurfaceBuffers<BOOT_BUFFER_SLOTS>>,
+    presenter: Option<ui::FirstPresentSurface>,
     active: bool,
     last_snapshot: Option<BootSnapshot>,
 }
@@ -31,6 +49,8 @@ impl BootUi {
     pub(crate) const fn empty() -> Self {
         Self {
             surface_handle: rt::INVALID_HANDLE,
+            buffers: None,
+            presenter: None,
             active: false,
             last_snapshot: None,
         }
@@ -88,9 +108,17 @@ pub(crate) fn update(
             BG,
             false,
         )?;
+        let buffers = ui::SurfaceBuffers::<BOOT_BUFFER_SLOTS>::new(
+            surface_handle,
+            BOOT_SURFACE_WIDTH,
+            BOOT_SURFACE_HEIGHT,
+            BOOT_SURFACE_WIDTH,
+            BOOT_BUFFER_BYTES,
+        )?;
         boot_ui.surface_handle = surface_handle;
+        boot_ui.buffers = Some(buffers);
+        boot_ui.presenter = Some(ui::FirstPresentSurface::new(surface_handle));
         boot_ui.active = true;
-        rt::surface_set_visibility(surface_handle, true)?;
     }
 
     let snapshot = sample_boot_snapshot(slots, service_count, graph_status);
@@ -98,7 +126,7 @@ pub(crate) fn update(
         return Ok(());
     }
 
-    render(boot_ui.surface_handle, snapshot)?;
+    render(boot_ui, snapshot)?;
     boot_ui.last_snapshot = Some(snapshot);
     Ok(())
 }
@@ -117,66 +145,207 @@ fn sample_boot_snapshot(
     }
 }
 
-fn render(surface_handle: rt::Handle, snapshot: BootSnapshot) -> rt::Result<()> {
-    let total = snapshot.total;
+fn render(boot_ui: &mut BootUi, snapshot: BootSnapshot) -> rt::Result<()> {
+    let Some(buffers) = boot_ui.buffers.as_mut() else {
+        return Err(rt::Error::NotInitialized);
+    };
+    let Some(presenter) = boot_ui.presenter.as_mut() else {
+        return Err(rt::Error::NotInitialized);
+    };
+    let (slot, buffer) = buffers.advance();
+    let frame = &mut buffer.as_slice_mut()[..BOOT_BUFFER_BYTES];
+    let width = BOOT_SURFACE_WIDTH as usize;
+    let height = BOOT_SURFACE_HEIGHT as usize;
+
+    ui::fill_rgba8888_rect(
+        frame,
+        BOOT_SURFACE_WIDTH as usize,
+        width,
+        height,
+        0,
+        0,
+        width,
+        height,
+        BG,
+    );
+    ui::fill_rgba8888_rect(
+        frame,
+        BOOT_SURFACE_WIDTH as usize,
+        width,
+        height,
+        PANEL_X,
+        PANEL_Y,
+        PANEL_W,
+        PANEL_H,
+        PANEL,
+    );
+    ui::fill_rgba8888_rect(
+        frame,
+        BOOT_SURFACE_WIDTH as usize,
+        width,
+        height,
+        PANEL_X,
+        PANEL_Y,
+        PANEL_W,
+        34,
+        PANEL_ALT,
+    );
+    ui::fill_rgba8888_rect(
+        frame,
+        BOOT_SURFACE_WIDTH as usize,
+        width,
+        height,
+        PANEL_X,
+        PANEL_Y + 34,
+        PANEL_W,
+        1,
+        PANEL_LINE,
+    );
+
+    rt::draw_text_rgba8888(frame, BOOT_SURFACE_WIDTH as usize, 28, 22, TEXT_MUTED, "SERVICEOS");
+    rt::draw_text_rgba8888(frame, BOOT_SURFACE_WIDTH as usize, PANEL_X as i32 + 18, PANEL_Y as i32 + 11, TEXT_PRIMARY, "STARTING ESSENTIAL SERVICES");
+
     let ready = snapshot.ready;
-    let progress_width = 472u32;
-    let filled = ((progress_width as u64 * ready as u64) / total as u64) as u32;
+    let total = snapshot.total.max(1);
+    let percent = ((ready as u64 * 100) / total as u64) as u32;
+    let filled = ((BAR_W as u64 * ready as u64) / total as u64) as usize;
 
     let mut summary = FixedLogBuffer::<64>::new();
-    let _ = write!(&mut summary, "{} / {} essential services ready", ready, total);
-    let mut pending = FixedLogBuffer::<64>::new();
-    let _ = write!(
-        &mut pending,
-        "CURRENT {}",
-        snapshot
-            .pending_service
-            .map(service_name)
-            .unwrap_or("FINALIZING")
-    );
-    let mut detail = FixedLogBuffer::<64>::new();
-    let _ = write!(
-        &mut detail,
-        "blocked={} degraded={}",
-        snapshot.blocked_services,
-        snapshot.degraded_services
+    let _ = write!(&mut summary, "{} of {} core services ready", ready, total);
+    rt::draw_text_rgba8888(
+        frame,
+        BOOT_SURFACE_WIDTH as usize,
+        PANEL_X as i32 + 18,
+        PANEL_Y as i32 + 54,
+        TEXT_PRIMARY,
+        summary.as_str(),
     );
 
-    rt::surface_set_rect(surface_handle, 0, 0, 0, BOOT_SURFACE_WIDTH, BOOT_SURFACE_HEIGHT, PANEL, true)?;
-    rt::surface_set_rect(surface_handle, 1, 0, 0, BOOT_SURFACE_WIDTH, 30, PANEL_ALT, true)?;
-    rt::surface_set_label(surface_handle, 0, 18, 10, TEXT_PRIMARY, "SERVICEOS STARTING")?;
-    rt::surface_set_label(
-        surface_handle,
-        1,
-        20,
-        52,
-        TEXT_PRIMARY,
-        str::from_utf8(summary.as_bytes()).unwrap_or("starting"),
-    )?;
-    rt::surface_set_label(
-        surface_handle,
-        2,
-        20,
-        72,
+    let mut current = FixedLogBuffer::<72>::new();
+    let _ = write!(
+        &mut current,
+        "Current: {}",
+        snapshot.pending_service.map(service_name).unwrap_or("Finalizing desktop")
+    );
+    rt::draw_text_rgba8888(
+        frame,
+        BOOT_SURFACE_WIDTH as usize,
+        PANEL_X as i32 + 18,
+        PANEL_Y as i32 + 72,
         TEXT_SECONDARY,
-        str::from_utf8(pending.as_bytes()).unwrap_or("current"),
-    )?;
-    rt::surface_set_label(
-        surface_handle,
-        3,
-        20,
-        92,
-        if snapshot.degraded_services != 0 || snapshot.blocked_services != 0 {
-            TEXT_WARN
-        } else {
-            TEXT_SECONDARY
-        },
-        str::from_utf8(detail.as_bytes()).unwrap_or("status"),
-    )?;
-    rt::surface_set_rect(surface_handle, 4, 20, 122, progress_width, 18, ACCENT_DIM, true)?;
-    rt::surface_set_rect(surface_handle, 5, 20, 122, filled.max(6).min(progress_width), 18, ACCENT, true)?;
-    rt::surface_set_label(surface_handle, 6, 20, 150, TEXT_SECONDARY, "Loading core services and desktop runtime")?;
-    Ok(())
+        current.as_str(),
+    );
+
+    ui::fill_rgba8888_rect(
+        frame,
+        BOOT_SURFACE_WIDTH as usize,
+        width,
+        height,
+        BAR_X,
+        BAR_Y,
+        BAR_W,
+        BAR_H,
+        ACCENT_DIM,
+    );
+    if filled != 0 {
+        ui::fill_rgba8888_rect(
+            frame,
+            BOOT_SURFACE_WIDTH as usize,
+            width,
+            height,
+            BAR_X,
+            BAR_Y,
+            filled,
+            BAR_H,
+            ACCENT,
+        );
+    }
+
+    let mut percent_text = FixedLogBuffer::<16>::new();
+    let _ = write!(&mut percent_text, "{}%", percent);
+    rt::draw_text_rgba8888(
+        frame,
+        BOOT_SURFACE_WIDTH as usize,
+        (BAR_X + BAR_W - 34) as i32,
+        (BAR_Y as i32) - 14,
+        TEXT_SECONDARY,
+        percent_text.as_str(),
+    );
+
+    draw_chip(
+        frame,
+        26,
+        CHIP_Y,
+        118,
+        22,
+        READY,
+        "READY",
+        ready,
+    );
+    draw_chip(
+        frame,
+        154,
+        CHIP_Y,
+        118,
+        22,
+        if snapshot.blocked_services == 0 { PANEL_LINE } else { WARN },
+        "BLOCKED",
+        snapshot.blocked_services,
+    );
+    draw_chip(
+        frame,
+        282,
+        CHIP_Y,
+        126,
+        22,
+        if snapshot.degraded_services == 0 { PANEL_LINE } else { WARN },
+        "DEGRADED",
+        snapshot.degraded_services,
+    );
+
+    rt::draw_text_rgba8888(
+        frame,
+        BOOT_SURFACE_WIDTH as usize,
+        PANEL_X as i32 + 18,
+        FOOTER_Y as i32,
+        TEXT_MUTED,
+        "Preparing services, storage, session, and desktop runtime",
+    );
+
+    presenter.present(slot, BOOT_SURFACE_WIDTH, BOOT_SURFACE_HEIGHT)
+}
+
+fn draw_chip(
+    frame: &mut [u8],
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    color: u32,
+    label: &str,
+    value: u32,
+) {
+    ui::fill_rgba8888_rect(
+        frame,
+        BOOT_SURFACE_WIDTH as usize,
+        BOOT_SURFACE_WIDTH as usize,
+        BOOT_SURFACE_HEIGHT as usize,
+        x,
+        y,
+        width,
+        height,
+        color,
+    );
+    let mut text = FixedLogBuffer::<32>::new();
+    let _ = write!(&mut text, "{} {}", label, value);
+    rt::draw_text_rgba8888(
+        frame,
+        BOOT_SURFACE_WIDTH as usize,
+        x as i32 + 10,
+        y as i32 + 7,
+        if color == READY || color == WARN { BG } else { TEXT_SECONDARY },
+        text.as_str(),
+    );
 }
 
 fn close(boot_ui: &mut BootUi) {
@@ -184,7 +353,10 @@ fn close(boot_ui: &mut BootUi) {
         return;
     }
     let _ = rt::surface_set_visibility(boot_ui.surface_handle, false);
-    let _ = rt::handle_close(boot_ui.surface_handle);
+    boot_ui.buffers = None;
+    if boot_ui.surface_handle != rt::INVALID_HANDLE {
+        let _ = rt::handle_close(boot_ui.surface_handle);
+    }
     *boot_ui = BootUi::empty();
 }
 

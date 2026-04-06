@@ -99,7 +99,7 @@ pub(crate) fn handle_input(
                 if overlay_changed && !shell_core_changed {
                     render_overlays_only(state)?;
                 } else if focus_only_changed {
-                    state.pending_focus_refresh = true;
+                    state.pending_focus_refresh.set();
                 } else {
                     render_desktop(state)?;
                 }
@@ -110,7 +110,7 @@ pub(crate) fn handle_input(
                 if overlay_changed && !shell_core_changed {
                     render_overlays_only(state)?;
                 } else if focus_only_changed {
-                    state.pending_focus_refresh = true;
+                    state.pending_focus_refresh.set();
                 } else {
                     render_desktop(state)?;
                 }

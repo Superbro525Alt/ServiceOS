@@ -82,7 +82,7 @@ pub(crate) fn launch_or_focus_app(state: &mut DesktopState, app_id: DesktopAppId
     };
     state.apps[index].running = true;
     let surface_id = focus_app_internal(state, app_id, false, false)?;
-    state.pending_shell_refresh = true;
+    state.pending_shell_refresh.set();
     let _ = emit_log(
         state.log_handle,
         LogSeverity::Info,
@@ -106,7 +106,7 @@ pub(crate) fn schedule_launch_or_focus_app(
         }
         return focus_app(state, app_id);
     }
-    state.pending_app_launch = Some(app_id);
+    state.pending_app_launch.replace(app_id);
     Ok(focused_surface_id(state))
 }
 
@@ -166,7 +166,7 @@ fn focus_app_internal(
         surface_id as u64,
     );
     if rerender {
-        state.pending_focus_refresh = true;
+        state.pending_focus_refresh.set();
     }
     Ok(surface_id)
 }

@@ -8,7 +8,7 @@ pub(crate) const WINDOW_PAGE_SIZE: usize = 2;
 pub(crate) const WORKSPACE_COUNT: u32 = 4;
 pub(crate) const MAX_DESKTOP_REQUESTS_PER_TURN: usize = 24;
 pub(crate) const APP_REFRESH_TICKS: u64 = 10;
-pub(crate) const STATUS_REFRESH_TICKS: u64 = 100;
+pub(crate) const STATUS_REFRESH_TICKS: u64 = 300;
 pub(crate) const TOPBAR_HEIGHT: u32 = 42;
 pub(crate) const LAUNCHER_WIDTH: u32 = 250;
 pub(crate) const LAUNCHER_HEIGHT: u32 = 144;
@@ -142,8 +142,7 @@ pub(crate) struct DesktopStatusSnapshot {
     pub(crate) running_apps: u32,
     pub(crate) focused_app: Option<DesktopAppId>,
     pub(crate) active_workspace: u32,
-    pub(crate) heartbeat_count: u64,
-    pub(crate) heartbeat_tick: u64,
+    pub(crate) tracked_services: u64,
     pub(crate) ipv4_address: u32,
     pub(crate) notification_count: u32,
 }

@@ -116,13 +116,9 @@ fn render_status_surface(
     write_network_status(&mut network_buf, status_snapshot.ipv4_address);
     let network_text = str::from_utf8(network_buf.as_bytes()).unwrap_or("NET OFFLINE");
 
-    let mut hb_buf = FixedLogBuffer::<32>::new();
-    let _ = write!(&mut hb_buf, "HEARTBEAT {}", status_snapshot.heartbeat_count);
-    let heartbeat_text = str::from_utf8(hb_buf.as_bytes()).unwrap_or("HEARTBEAT ?");
-
-    let mut tick_buf = FixedLogBuffer::<32>::new();
-    let _ = write!(&mut tick_buf, "LAST TICK {}", status_snapshot.heartbeat_tick);
-    let tick_text = str::from_utf8(tick_buf.as_bytes()).unwrap_or("LAST TICK ?");
+    let mut service_buf = FixedLogBuffer::<32>::new();
+    let _ = write!(&mut service_buf, "SERVICES {}", status_snapshot.tracked_services);
+    let service_text = str::from_utf8(service_buf.as_bytes()).unwrap_or("SERVICES ?");
 
     let mut notif_buf = FixedLogBuffer::<32>::new();
     let _ = write!(&mut notif_buf, "NOTICES {}", status_snapshot.notification_count);
@@ -135,8 +131,8 @@ fn render_status_surface(
         "SYSTEM STATUS",
         &[
             (network_text, ui::TEXT_PRIMARY),
-            (heartbeat_text, ui::STATUS_OK),
-            (tick_text, ui::TEXT_SECONDARY),
+            ("STATUS STEADY", ui::STATUS_OK),
+            (service_text, ui::TEXT_SECONDARY),
             (space_text, ui::TEXT_SECONDARY),
             (notif_text, ui::TEXT_MUTED),
             (focus_text, ui::TEXT_SECONDARY),
@@ -145,7 +141,7 @@ fn render_status_surface(
 }
 
 fn sample_desktop_status(state: &DesktopState) -> DesktopStatusSnapshot {
-    let (heartbeat_count, heartbeat_tick, _) =
+    let (_, _, tracked_services) =
         rt::status_snapshot(state.system_status_handle).unwrap_or((0, 0, 0));
     let ipv4_address = rt::network_interface_status(state.network_handle, 0)
         .ok()
@@ -156,8 +152,7 @@ fn sample_desktop_status(state: &DesktopState) -> DesktopStatusSnapshot {
         running_apps: running_app_count(&state.apps) as u32,
         focused_app: state.focused_app,
         active_workspace: state.active_workspace,
-        heartbeat_count,
-        heartbeat_tick,
+        tracked_services,
         ipv4_address,
         notification_count: state.notification_history_len as u32,
     }

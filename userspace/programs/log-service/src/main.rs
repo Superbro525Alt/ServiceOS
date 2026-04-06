@@ -13,6 +13,8 @@ const PERSIST_MAGIC: u64 = 0x5356_4f53_4c4f_4731;
 const PERSIST_WORDS: usize = 4 + (MAX_LOG_RECORDS * 9);
 const PERSIST_BYTES: usize = PERSIST_WORDS * 8;
 const MAX_WRITE_CHUNK: usize = (rt::IPC_MAX_WORDS - 3) * 8;
+const PERSIST_FLUSH_TICKS: u64 = 10;
+const PERSIST_BATCH_RECORDS: usize = 8;
 
 #[derive(Clone, Copy)]
 struct StoredRecord {
@@ -113,6 +115,9 @@ fn main() -> u64 {
     let mut sequence = 0u64;
     let mut subscribers = [Subscriber::empty(); MAX_SUBSCRIBERS];
     let mut next_kernel_sequence = 0u64;
+    let mut persist_dirty = false;
+    let mut persist_pending_records = 0usize;
+    let mut last_persist_tick = rt::monotonic_now().unwrap_or(0);
 
     if let Some(file_handle) = persistence {
         let _ = load_records(file_handle, &mut records, &mut record_count, &mut next_slot, &mut sequence);
@@ -122,8 +127,22 @@ fn main() -> u64 {
     }
 
     loop {
+        let mut did_work = false;
         match poll_lifecycle(bootstrap) {
-            Ok(true) => return 0,
+            Ok(true) => {
+                if persist_dirty {
+                    if let Some(file_handle) = persistence {
+                        let _ = persist_records(
+                            file_handle,
+                            &records,
+                            record_count,
+                            next_slot,
+                            sequence,
+                        );
+                    }
+                }
+                return 0;
+            }
             Ok(false) => {}
             Err(_) => return 0xf106,
         }
@@ -136,8 +155,9 @@ fn main() -> u64 {
             &mut next_slot,
             &mut sequence,
             &mut subscribers,
-            persistence,
             &mut next_kernel_sequence,
+            &mut persist_dirty,
+            &mut persist_pending_records,
         )
         .is_err()
         {
@@ -147,6 +167,7 @@ fn main() -> u64 {
         let mut message = RawMessage::empty(0);
         match rt::channel_receive_nonblocking(public.first, &mut message) {
             Ok(()) => {
+                did_work = true;
                 if handle_request(
                     &message,
                     console_handle,
@@ -156,7 +177,8 @@ fn main() -> u64 {
                     &mut next_slot,
                     &mut sequence,
                     &mut subscribers,
-                    persistence,
+                    &mut persist_dirty,
+                    &mut persist_pending_records,
                 )
                 .is_err()
                 {
@@ -167,7 +189,23 @@ fn main() -> u64 {
             Err(_) => return 0xf109,
         }
 
-        if rt::yield_current().is_err() {
+        let now = rt::monotonic_now().unwrap_or(last_persist_tick);
+        if persist_dirty
+            && (persist_pending_records >= PERSIST_BATCH_RECORDS
+                || now.saturating_sub(last_persist_tick) >= PERSIST_FLUSH_TICKS)
+        {
+            if let Some(file_handle) = persistence {
+                if persist_records(file_handle, &records, record_count, next_slot, sequence).is_err() {
+                    return 0xf10a;
+                }
+            }
+            persist_dirty = false;
+            persist_pending_records = 0;
+            last_persist_tick = now;
+            did_work = true;
+        }
+
+        if !did_work && rt::yield_current().is_err() {
             return 0xf10a;
         }
     }
@@ -182,7 +220,8 @@ fn handle_request(
     next_slot: &mut usize,
     sequence: &mut u64,
     subscribers: &mut [Subscriber; MAX_SUBSCRIBERS],
-    persistence: Option<rt::Handle>,
+    persist_dirty: &mut bool,
+    persist_pending_records: &mut usize,
 ) -> rt::Result<()> {
     match message.tag {
         x if x == LogTag::Record as u32 => {
@@ -212,8 +251,9 @@ fn handle_request(
                 next_slot,
                 sequence,
                 subscribers,
-                persistence,
                 record,
+                persist_dirty,
+                persist_pending_records,
             )?;
         }
         x if x == LogTag::QueryInfoRequest as u32 => {
@@ -296,8 +336,9 @@ fn append_record(
     next_slot: &mut usize,
     sequence: &mut u64,
     subscribers: &mut [Subscriber; MAX_SUBSCRIBERS],
-    persistence: Option<rt::Handle>,
     mut record: StoredRecord,
+    persist_dirty: &mut bool,
+    persist_pending_records: &mut usize,
 ) -> rt::Result<()> {
     *sequence = sequence.saturating_add(1);
     record.sequence = *sequence;
@@ -317,9 +358,8 @@ fn append_record(
     );
 
     emit_to_subscribers(subscribers, record);
-    if let Some(file_handle) = persistence {
-        let _ = persist_records(file_handle, records, *record_count, *next_slot, *sequence);
-    }
+    *persist_dirty = true;
+    *persist_pending_records = persist_pending_records.saturating_add(1);
     Ok(())
 }
 
@@ -365,8 +405,9 @@ fn drain_kernel_events(
     next_slot: &mut usize,
     sequence: &mut u64,
     subscribers: &mut [Subscriber; MAX_SUBSCRIBERS],
-    persistence: Option<rt::Handle>,
     next_kernel_sequence: &mut u64,
+    persist_dirty: &mut bool,
+    persist_pending_records: &mut usize,
 ) -> rt::Result<()> {
     let (oldest, next) = rt::kernel_event_query_info()?;
     if *next_kernel_sequence == 0 {
@@ -402,8 +443,9 @@ fn drain_kernel_events(
             next_slot,
             sequence,
             subscribers,
-            persistence,
             record,
+            persist_dirty,
+            persist_pending_records,
         )?;
     }
     Ok(())

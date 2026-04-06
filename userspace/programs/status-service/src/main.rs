@@ -154,6 +154,7 @@ fn main() -> u64 {
     );
 
     loop {
+        let mut did_work = false;
         match poll_lifecycle(bootstrap) {
             Ok(true) => return 0,
             Ok(false) => {}
@@ -163,6 +164,7 @@ fn main() -> u64 {
         let mut request = RawMessage::empty(0);
         match rt::channel_receive_nonblocking(public.first, &mut request) {
             Ok(()) => {
+                did_work = true;
                 if handle_request(
                     &request,
                     &mut entries,
@@ -185,6 +187,7 @@ fn main() -> u64 {
             Err(_) => return 0xf411,
         };
         if now >= next_heartbeat {
+            did_work = true;
             heartbeat_count = heartbeat_count.saturating_add(1);
             last_tick = now;
             next_heartbeat = now.saturating_add(heartbeat_ticks);
@@ -227,7 +230,7 @@ fn main() -> u64 {
             }
         }
 
-        if rt::yield_current().is_err() {
+        if !did_work && rt::yield_current().is_err() {
             return 0xf412;
         }
     }

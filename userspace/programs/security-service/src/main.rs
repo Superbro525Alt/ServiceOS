@@ -131,6 +131,7 @@ fn main() -> u64 {
     let _ = load_policy_state(storage_handle, &mut policy_states);
 
     loop {
+        let mut did_work = false;
         if poll_lifecycle(bootstrap).unwrap_or(false) {
             let _ = rt::handle_close(storage_handle);
             return 0;
@@ -139,6 +140,7 @@ fn main() -> u64 {
         let mut request = RawMessage::empty(0);
         match rt::channel_receive_nonblocking(public.first, &mut request) {
             Ok(()) => {
+                did_work = true;
                 if handle_request(
                     storage_handle,
                     log_handle,
@@ -156,7 +158,7 @@ fn main() -> u64 {
             Err(_) => return 0xfd27,
         }
 
-        if rt::yield_current().is_err() {
+        if !did_work && rt::yield_current().is_err() {
             return 0xfd28;
         }
     }

@@ -134,6 +134,7 @@ fn main() -> u64 {
     );
 
     loop {
+        let mut did_work = false;
         match lifecycle::poll_lifecycle(bootstrap) {
             Ok(true) => return 0,
             Ok(false) => {}
@@ -143,6 +144,7 @@ fn main() -> u64 {
         let mut root_request = RawMessage::empty(0);
         match rt::channel_receive_nonblocking(public.first, &mut root_request) {
             Ok(()) => {
+                did_work = true;
                 if root::handle_root_request(
                     &entries[..entry_count],
                     &mut mutable_entries,
@@ -167,6 +169,7 @@ fn main() -> u64 {
             let mut request = RawMessage::empty(0);
             match rt::channel_receive_nonblocking(session.endpoint, &mut request) {
                 Ok(()) => {
+                    did_work = true;
                     if blob::handle_blob_request(
                         bootstore_handle,
                         &mut mutable_entries,
@@ -194,6 +197,7 @@ fn main() -> u64 {
                 &mut request,
             ) {
                 Ok(()) => {
+                    did_work = true;
                     if directory::handle_directory_request(
                         &entries[..entry_count],
                         &mut mutable_entries,
@@ -213,7 +217,7 @@ fn main() -> u64 {
             }
         }
 
-        if rt::yield_current().is_err() {
+        if !did_work && rt::yield_current().is_err() {
             return 0xf511;
         }
     }

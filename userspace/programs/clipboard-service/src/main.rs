@@ -51,6 +51,7 @@ fn main() -> u64 {
     let mut history_len = 0usize;
 
     loop {
+        let mut did_work = false;
         match poll_lifecycle(bootstrap) {
             Ok(true) => return 0,
             Ok(false) => {}
@@ -60,6 +61,7 @@ fn main() -> u64 {
         let mut message = RawMessage::empty(0);
         match rt::channel_receive_nonblocking(public.first, &mut message) {
             Ok(()) => {
+                did_work = true;
                 if handle_public_request(
                     &mut bytes,
                     &mut len,
@@ -76,7 +78,7 @@ fn main() -> u64 {
             Err(_) => return 0xfd07,
         }
 
-        if rt::yield_current().is_err() {
+        if !did_work && rt::yield_current().is_err() {
             return 0xfd08;
         }
     }

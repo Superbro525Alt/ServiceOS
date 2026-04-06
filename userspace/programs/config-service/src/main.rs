@@ -70,6 +70,7 @@ fn main() -> u64 {
     }
 
     loop {
+        let mut did_work = false;
         match poll_lifecycle(bootstrap) {
             Ok(true) => return 0,
             Ok(false) => {}
@@ -79,6 +80,7 @@ fn main() -> u64 {
         let mut request = RawMessage::empty(0);
         match rt::channel_receive_nonblocking(public.first, &mut request) {
             Ok(()) if request.tag == ConfigTag::ReadRequest as u32 => {
+                did_work = true;
                 if request.word_count < 1 || request.handle_count < 1 {
                     continue;
                 }
@@ -99,6 +101,7 @@ fn main() -> u64 {
                 let _ = rt::handle_close(reply_handle);
             }
             Ok(()) if request.tag == ConfigTag::WriteRequest as u32 => {
+                did_work = true;
                 if request.word_count < 2 || request.handle_count < 1 {
                     continue;
                 }
@@ -145,7 +148,7 @@ fn main() -> u64 {
             Err(_) => return 0xf208,
         }
 
-        if rt::yield_current().is_err() {
+        if !did_work && rt::yield_current().is_err() {
             return 0xf209;
         }
     }

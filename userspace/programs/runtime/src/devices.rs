@@ -1,5 +1,5 @@
 use crate::{
-    syscall1, syscall2, syscall3, syscall4, AudioEndpointInfo, AudioToneRequest, BlockDeviceBackend,
+    syscall1, syscall2, syscall3, syscall4, syscall5, AudioEndpointInfo, AudioToneRequest, BlockDeviceBackend,
     BlockDeviceInfo, DisplayOutputBackend, DisplayOutputInfo, DisplayOutputState,
     DisplayPixelFormat, Handle, InputEventInfo, InputSourceBackend, InputSourceInfo,
     PacketInterfaceBackend, PacketInterfaceInfo, PacketInterfaceLinkState, Result, SyscallNumber, INPUT_SOURCE_FLAG_NONBLOCK,
@@ -125,6 +125,25 @@ pub fn display_output_present(handle: Handle, frame: &[u8]) -> Result<usize> {
         handle as u64,
         frame.as_ptr() as u64,
         frame.len() as u64,
+    )
+    .map(|value| value as usize)
+}
+
+pub fn display_output_present_damage(
+    handle: Handle,
+    frame: &[u8],
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> Result<usize> {
+    syscall5(
+        SyscallNumber::DisplayOutputPresentDamage,
+        handle as u64,
+        frame.as_ptr() as u64,
+        frame.len() as u64,
+        ((y as u32 as u64) << 32) | (x as u32 as u64),
+        ((height as u64) << 32) | (width as u64),
     )
     .map(|value| value as usize)
 }

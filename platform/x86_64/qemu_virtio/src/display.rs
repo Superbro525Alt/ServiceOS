@@ -81,6 +81,56 @@ impl DisplayBackend for BootFramebufferBackend {
         state.present_count = state.present_count.saturating_add(1);
         Ok(())
     }
+
+    fn present_damage(
+        &self,
+        frame: &[u8],
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> Result<(), DisplayOutputError> {
+        if frame.len() != self.framebuffer.byte_len || frame.len() > MAX_FRAMEBUFFER_BYTES {
+            return Err(DisplayOutputError::BufferTooSmall);
+        }
+
+        let start_x = x.max(0) as usize;
+        let start_y = y.max(0) as usize;
+        let end_x = ((x + width as i32).max(0) as usize).min(self.framebuffer.width);
+        let end_y = ((y + height as i32).max(0) as usize).min(self.framebuffer.height);
+        if start_x >= end_x || start_y >= end_y {
+            return Ok(());
+        }
+
+        let mut state = self.state.lock();
+        let row_bytes = self.framebuffer.stride * self.framebuffer.bytes_per_pixel;
+        let bytes_per_pixel = self.framebuffer.bytes_per_pixel;
+        let framebuffer = self.framebuffer.physical_base.as_u64() as *mut u8;
+        let shadow_frame = shadow_frame_slice(frame.len());
+        let copy_start = start_x * bytes_per_pixel;
+        let copy_end = end_x * bytes_per_pixel;
+
+        for row in start_y..end_y {
+            let row_offset = row * row_bytes;
+            let previous = &mut shadow_frame[row_offset + copy_start..row_offset + copy_end];
+            let current = &frame[row_offset + copy_start..row_offset + copy_end];
+            if previous == current {
+                continue;
+            }
+
+            unsafe {
+                ptr::copy_nonoverlapping(
+                    current.as_ptr(),
+                    framebuffer.add(row_offset + copy_start),
+                    copy_end - copy_start,
+                );
+            }
+            previous.copy_from_slice(current);
+        }
+
+        state.present_count = state.present_count.saturating_add(1);
+        Ok(())
+    }
 }
 
 fn dirty_span(previous: &[u8], current: &[u8]) -> Option<(usize, usize)> {

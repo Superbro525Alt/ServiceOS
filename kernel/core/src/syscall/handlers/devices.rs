@@ -277,6 +277,47 @@ pub(crate) fn handle_display_output_present(context: &SyscallContext) -> Syscall
     }
 }
 
+pub(crate) fn handle_display_output_present_damage(context: &SyscallContext) -> SyscallReturn {
+    let Ok(current_task) = current_task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let object = match resolve_object(
+        &current_task,
+        context.arguments[0] as Handle,
+        CapabilityRights::WRITE,
+    ) {
+        Ok(view) => view.object,
+        Err(error) => return SyscallReturn::error(error),
+    };
+    let Some(output) = object.display_output() else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Ok(length) = usize::try_from(context.arguments[2]) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Ok(buffer) = (unsafe { user_slice(context.arguments[1], length) }) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+
+    let packed_position = context.arguments[3];
+    let packed_size = context.arguments[4];
+    let x = packed_position as u32 as i32;
+    let y = (packed_position >> 32) as u32 as i32;
+    let width = packed_size as u32;
+    let height = (packed_size >> 32) as u32;
+
+    match output.present_damage(buffer, x, y, width, height) {
+        Ok(()) => SyscallReturn::success(length as u64),
+        Err(crate::display::DisplayOutputError::BufferTooSmall) => {
+            SyscallReturn::error(SyscallError::BufferTooSmall)
+        }
+        Err(crate::display::DisplayOutputError::Busy) => SyscallReturn::error(SyscallError::Busy),
+        Err(crate::display::DisplayOutputError::Unsupported) => {
+            SyscallReturn::error(SyscallError::Unsupported)
+        }
+    }
+}
+
 pub(crate) fn handle_input_source_info(context: &SyscallContext) -> SyscallReturn {
     let Ok(current_task) = current_task() else {
         return SyscallReturn::error(SyscallError::NotInitialized);

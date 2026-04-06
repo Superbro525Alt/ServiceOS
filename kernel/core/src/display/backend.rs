@@ -11,6 +11,17 @@ pub enum DisplayOutputError {
 pub trait DisplayBackend: Send + Sync {
     fn info(&self) -> DisplayOutputInfo;
     fn present(&self, frame: &[u8]) -> Result<(), DisplayOutputError>;
+    fn present_damage(
+        &self,
+        frame: &[u8],
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> Result<(), DisplayOutputError> {
+        let _ = (x, y, width, height);
+        self.present(frame)
+    }
 }
 
 pub struct DisplayOutputObject {
@@ -28,5 +39,16 @@ impl DisplayOutputObject {
 
     pub fn present(&self, frame: &[u8]) -> Result<(), DisplayOutputError> {
         self.backend.present(frame)
+    }
+
+    pub fn present_damage(
+        &self,
+        frame: &[u8],
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> Result<(), DisplayOutputError> {
+        self.backend.present_damage(frame, x, y, width, height)
     }
 }

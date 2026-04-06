@@ -79,6 +79,7 @@ pub enum SyscallNumber {
     ObjectWait = 38,
     KernelEventQueryInfo = 39,
     KernelEventQueryRecord = 40,
+    DisplayOutputPresentDamage = 41,
 }
 
 #[repr(u32)]

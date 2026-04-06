@@ -82,6 +82,18 @@ pub(crate) fn syscall4(
     decode_result(value, error)
 }
 
+pub(crate) fn syscall5(
+    number: SyscallNumber,
+    arg0: u64,
+    arg1: u64,
+    arg2: u64,
+    arg3: u64,
+    arg4: u64,
+) -> Result<u64> {
+    let (value, error) = raw_syscall(number as u32 as u64, arg0, arg1, arg2, arg3, arg4, 0);
+    decode_result(value, error)
+}
+
 pub fn pack_bytes(source: &[u8], words: &mut [u64]) -> Result<u32> {
     let required_words = source.len().div_ceil(8);
     if required_words > words.len() {

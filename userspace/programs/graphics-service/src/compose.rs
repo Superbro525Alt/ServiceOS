@@ -37,7 +37,14 @@ pub(crate) fn cursor_present(
     let base = base_framebuffer_slice(byte_len);
     restore_damage_from_base(frame, base, output, damage);
     overlay_cursor_surfaces(frame, output, surfaces);
-    let _ = rt::display_output_present(output_handle, &frame[..byte_len])?;
+    let _ = rt::display_output_present_damage(
+        output_handle,
+        &frame[..byte_len],
+        damage.x,
+        damage.y,
+        damage.width,
+        damage.height,
+    )?;
     Ok(())
 }
 
@@ -53,7 +60,14 @@ pub(crate) fn compose_damage_and_present(
     let frame = framebuffer_slice(byte_len);
     restore_damage_from_base(frame, base, output, damage);
     overlay_cursor_surfaces_damage(frame, output, surfaces, damage);
-    let _ = rt::display_output_present(output_handle, &frame[..byte_len])?;
+    let _ = rt::display_output_present_damage(
+        output_handle,
+        &frame[..byte_len],
+        damage.x,
+        damage.y,
+        damage.width,
+        damage.height,
+    )?;
     Ok(())
 }
 

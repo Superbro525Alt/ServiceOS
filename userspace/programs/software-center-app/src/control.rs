@@ -18,9 +18,9 @@ pub(crate) enum ControlFlow {
 
 pub(crate) fn poll_control(
     control_handle: rt::Handle,
-    surface_handle: rt::Handle,
     package_handle: rt::Handle,
     buffers: &mut ui::SurfaceBuffers<SURFACE_BUFFER_SLOTS>,
+    presenter: &mut ui::FirstPresentSurface,
     state: &mut AppState,
 ) -> rt::Result<ControlFlow> {
     let mut changed = false;
@@ -79,7 +79,7 @@ pub(crate) fn poll_control(
 
     if changed {
         let (slot, buffer) = buffers.advance();
-        render(surface_handle, slot, buffer, package_handle, state)?;
+        render(presenter, slot, buffer, package_handle, state)?;
         return Ok(ControlFlow::Worked);
     }
     if did_work {

@@ -11,7 +11,7 @@ use crate::state::{
 };
 
 pub(crate) fn render(
-    surface_handle: rt::Handle,
+    presenter: &mut ui::FirstPresentSurface,
     buffer_slot: u32,
     buffer: &mut rt::MappedMemory,
     state: &ExplorerState,
@@ -33,11 +33,8 @@ pub(crate) fn render(
     draw_list(bytes, state);
     draw_footer(bytes, state);
 
-    rt::surface_present_buffer_slot(
-        surface_handle,
+    presenter.present(
         buffer_slot,
-        0,
-        0,
         state.width.min(BUFFER_WIDTH),
         state.height.min(BUFFER_HEIGHT),
     )

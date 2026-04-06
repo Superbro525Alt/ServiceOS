@@ -51,10 +51,11 @@ fn main() -> u64 {
         Ok(buffers) => buffers,
         Err(_) => return 0xf507,
     };
+    let mut presenter = ui::FirstPresentSurface::new(surface_handle);
 
     let _ = reload_catalog(package_handle, &mut state);
     let (slot, buffer) = buffers.current();
-    if render(surface_handle, slot, buffer, package_handle, &state).is_err()
+    if render(&mut presenter, slot, buffer, package_handle, &state).is_err()
     {
         return 0xf503;
     }
@@ -68,9 +69,9 @@ fn main() -> u64 {
 
         match poll_control(
             control_handle,
-            surface_handle,
             package_handle,
             &mut buffers,
+            &mut presenter,
             &mut state,
         ) {
             Ok(ControlFlow::Idle) => {}

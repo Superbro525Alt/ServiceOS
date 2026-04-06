@@ -16,8 +16,8 @@ pub(crate) enum ControlFlow {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn poll_control(
     control_handle: rt::Handle,
-    surface_handle: rt::Handle,
     buffers: &mut ui::SurfaceBuffers<SURFACE_BUFFER_SLOTS>,
+    presenter: &mut ui::FirstPresentSurface,
     config_handle: rt::Handle,
     network_handle: rt::Handle,
     audio_handle: rt::Handle,
@@ -85,7 +85,7 @@ pub(crate) fn poll_control(
     if changed {
         let (slot, buffer) = buffers.advance();
         render(
-            surface_handle,
+            presenter,
             slot,
             buffer,
             config_handle,

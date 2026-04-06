@@ -47,6 +47,7 @@ fn main() -> u64 {
         Ok(buffers) => buffers,
         Err(_) => return 0xfa03,
     };
+    let mut presenter = ui::FirstPresentSurface::new(surface_handle);
 
     tabs::clear_all_tabs();
     let mut state = TerminalState {
@@ -69,7 +70,7 @@ fn main() -> u64 {
         return 0xfa05;
     }
     let (slot, buffer) = buffers.current();
-    let _ = render::render(surface_handle, slot, buffer, &state);
+    let _ = render::render(&mut presenter, slot, buffer, &state);
 
     loop {
         let mut did_work = false;
@@ -159,7 +160,7 @@ fn main() -> u64 {
 
         if changed {
             let (slot, buffer) = buffers.advance();
-            let _ = render::render(surface_handle, slot, buffer, &state);
+            let _ = render::render(&mut presenter, slot, buffer, &state);
         }
         if did_work {
             continue;

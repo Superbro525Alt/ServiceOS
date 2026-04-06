@@ -57,11 +57,12 @@ fn main() -> u64 {
         Ok(buffers) => buffers,
         Err(_) => return 0xf103,
     };
+    let mut presenter = ui::FirstPresentSurface::new(surface_handle);
 
     let _ = reopen_directory(&mut state, storage_handle);
     let _ = reload_directory(&mut state);
     let (slot, buffer) = buffers.current();
-    let _ = render(surface_handle, slot, buffer, &state);
+    let _ = render(&mut presenter, slot, buffer, &state);
 
     loop {
         match ui::poll_app_lifecycle(bootstrap) {
@@ -72,8 +73,8 @@ fn main() -> u64 {
 
         match poll_control(
             control_handle,
-            surface_handle,
             &mut buffers,
+            &mut presenter,
             storage_handle,
             &mut state,
         ) {

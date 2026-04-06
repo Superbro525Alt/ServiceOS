@@ -8,6 +8,8 @@ Current shared entry points:
 
 - `SurfaceBuffers`
   - owns mapped double-buffer setup and slot rotation for client-rendered surfaces
+- `FirstPresentSurface`
+  - keeps newly launched mapped-buffer windows hidden until their first complete frame is submitted
 - `draw_window_frame_rgba8888` / `draw_window_titlebar_rgba8888`
   - shared RGBA window chrome for standard desktop apps
 - `poll_app_lifecycle`

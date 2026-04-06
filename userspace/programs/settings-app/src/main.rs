@@ -61,10 +61,11 @@ fn main() -> u64 {
         Ok(buffers) => buffers,
         Err(_) => return 0xf007,
     };
+    let mut presenter = ui::FirstPresentSurface::new(surface_handle);
 
     let (slot, buffer) = buffers.current();
     if render(
-        surface_handle,
+        &mut presenter,
         slot,
         buffer,
         config_handle,
@@ -90,8 +91,8 @@ fn main() -> u64 {
         }
         match poll_control(
             control_handle,
-            surface_handle,
             &mut buffers,
+            &mut presenter,
             config_handle,
             network_handle,
             audio_handle,

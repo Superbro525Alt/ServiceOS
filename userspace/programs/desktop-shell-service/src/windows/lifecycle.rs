@@ -75,7 +75,6 @@ pub(crate) fn launch_or_focus_app(state: &mut DesktopState, app_id: DesktopAppId
     };
     state.apps[index].running = true;
     let _ = rt::app_control_resize(control.first, width, height);
-    let _ = set_window_visibility(&state.apps[index], true);
     let surface_id = focus_app_internal(state, app_id, true, false)?;
     let _ = emit_log(
         state.log_handle,

@@ -14,7 +14,7 @@ use crate::state::{
 };
 
 pub(crate) fn render(
-    surface_handle: rt::Handle,
+    presenter: &mut ui::FirstPresentSurface,
     buffer_slot: u32,
     buffer: &mut rt::MappedMemory,
     package_handle: rt::Handle,
@@ -148,11 +148,8 @@ pub(crate) fn render(
         ui::BG_PANEL,
     );
     draw_list(bytes, layout, state);
-    rt::surface_present_buffer_slot(
-        surface_handle,
+    presenter.present(
         buffer_slot,
-        0,
-        0,
         state.width.min(BUFFER_WIDTH),
         state.height.min(BUFFER_HEIGHT),
     )

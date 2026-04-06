@@ -3,7 +3,7 @@ use core::fmt::Write;
 use super::*;
 
 pub(crate) fn render(
-    surface_handle: rt::Handle,
+    presenter: &mut ui::FirstPresentSurface,
     buffer_slot: u32,
     mapped: &mut rt::MappedMemory,
     state: &TerminalState,
@@ -25,11 +25,8 @@ pub(crate) fn render(
     draw_titlebar(bytes, width, theme);
     draw_tab_strip(bytes, width, state, theme);
     draw_terminal_contents(bytes, width, height, state, theme);
-    rt::surface_present_buffer_slot(
-        surface_handle,
+    presenter.present(
         buffer_slot,
-        0,
-        0,
         state.width.min(BUFFER_WIDTH),
         state.height.min(BUFFER_HEIGHT),
     )

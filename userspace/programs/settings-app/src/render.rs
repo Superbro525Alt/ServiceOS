@@ -11,7 +11,7 @@ use crate::security::{
 use crate::state::*;
 
 pub(crate) fn render(
-    surface_handle: rt::Handle,
+    presenter: &mut ui::FirstPresentSurface,
     buffer_slot: u32,
     buffer: &mut rt::MappedMemory,
     config_handle: rt::Handle,
@@ -53,14 +53,7 @@ pub(crate) fn render(
         )?,
     }
 
-    rt::surface_present_buffer_slot(
-        surface_handle,
-        buffer_slot,
-        0,
-        0,
-        width as u32,
-        height as u32,
-    )
+    presenter.present(buffer_slot, width as u32, height as u32)
 }
 
 fn draw_system_page(

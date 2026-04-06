@@ -2,12 +2,14 @@
 
 mod buffer;
 mod events;
+mod present;
 mod rgba;
 
 use serviceos_userspace_runtime as rt;
 
 pub use buffer::*;
 pub use events::*;
+pub use present::*;
 pub use rgba::*;
 
 pub const BG_DESKTOP: u32 = 0x132033;

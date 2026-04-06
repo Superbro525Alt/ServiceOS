@@ -53,6 +53,7 @@ fn main() -> u64 {
         Ok(buffers) => buffers,
         Err(_) => return 0xf206,
     };
+    let mut presenter = ui::FirstPresentSurface::new(surface_handle);
 
     let mut next_refresh = 0u64;
     let mut last_snapshot: Option<MonitorSnapshot> = None;
@@ -70,6 +71,7 @@ fn main() -> u64 {
                     let (slot, buffer) = buffers.advance();
                     let _ = render(
                         surface_handle,
+                        &mut presenter,
                         slot,
                         buffer,
                         width,
@@ -91,6 +93,7 @@ fn main() -> u64 {
                 let (slot, buffer) = buffers.advance();
                 let _ = render(
                     surface_handle,
+                    &mut presenter,
                     slot,
                     buffer,
                     width,
@@ -113,6 +116,7 @@ fn main() -> u64 {
 
 fn render(
     surface_handle: rt::Handle,
+    presenter: &mut ui::FirstPresentSurface,
     buffer_slot: u32,
     buffer: &mut rt::MappedMemory,
     width: u32,
@@ -161,11 +165,8 @@ fn render(
         ],
         focused,
     )?;
-    rt::surface_present_buffer_slot(
-        surface_handle,
+    presenter.present(
         buffer_slot,
-        0,
-        0,
         width.min(BUFFER_WIDTH),
         height.min(BUFFER_HEIGHT),
     )

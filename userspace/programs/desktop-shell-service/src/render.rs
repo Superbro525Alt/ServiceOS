@@ -33,6 +33,10 @@ pub(crate) fn refresh_desktop_status(state: &mut DesktopState) -> rt::Result<()>
     Ok(())
 }
 
+pub(crate) fn render_overlays_only(state: &mut DesktopState) -> rt::Result<()> {
+    render_overlays(state)
+}
+
 fn render_topbar(state: &DesktopState, status_snapshot: DesktopStatusSnapshot) -> rt::Result<()> {
     let mut running_buf = FixedLogBuffer::<32>::new();
     let _ = write!(&mut running_buf, "RUNNING {}", status_snapshot.running_apps);

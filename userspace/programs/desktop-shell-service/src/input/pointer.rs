@@ -4,7 +4,7 @@ pub(super) fn handle_pointer_down(state: &mut DesktopState, x: i32, y: i32) -> r
     if state.overlay_mode != OverlayMode::None {
         state.overlay_mode = OverlayMode::None;
         state.overlay_selection = 0;
-        render_desktop(state)?;
+        render_overlays_only(state)?;
         return Ok(focused_surface_id(state));
     }
     match hit_test::hit_test(state, x, y) {

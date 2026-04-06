@@ -9,7 +9,7 @@ use rt::{AppKeyAction, AppPointerAction, DesktopAppId, DesktopInputAction};
 
 use crate::{
     palette_matches,
-    render::{render_desktop, sync_cursor},
+    render::{render_desktop, render_overlays_only, sync_cursor},
     windows::{
         app_slot_index, clamp_window_x, clamp_window_y, close_app, focus_app,
         focused_surface_id, maximize_app, minimize_app, move_app, move_focused_to_workspace,
@@ -83,15 +83,30 @@ pub(crate) fn handle_input(
         || state.palette_query_len != palette_query_len_before
         || state.active_workspace != active_workspace_before
         || state.focused_app != focused_app_before;
+    let overlay_changed = state.overlay_mode != overlay_before
+        || state.overlay_selection != overlay_selection_before
+        || state.palette_query_len != palette_query_len_before;
+    let shell_core_changed = state.active_workspace != active_workspace_before
+        || state.focused_app != focused_app_before;
 
     match action {
         DesktopInputAction::PointerMove | DesktopInputAction::PointerScroll => {}
         DesktopInputAction::KeyDown | DesktopInputAction::KeyUp | DesktopInputAction::TextInput => {
             if shell_changed {
+                if overlay_changed && !shell_core_changed {
+                    render_overlays_only(state)?;
+                } else {
+                    render_desktop(state)?;
+                }
+            }
+        }
+        _ => {
+            if overlay_changed && !shell_core_changed {
+                render_overlays_only(state)?;
+            } else {
                 render_desktop(state)?;
             }
         }
-        _ => render_desktop(state)?,
     }
     Ok(result)
 }

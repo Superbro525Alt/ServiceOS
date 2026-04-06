@@ -263,7 +263,7 @@ fn resize_drag(
         state.apps[index].window.z_order,
     )?;
     if state.apps[index].window.control_handle != rt::INVALID_HANDLE {
-        state.pending_resize = Some(PendingResize {
+        state.pending_resize = Some(crate::PendingResize {
             app_id,
             width: state.apps[index].window.width,
             height: state.apps[index].window.height,

@@ -24,6 +24,7 @@ const TEXT_WARN: u32 = 0xf2c36b;
 pub(crate) struct BootUi {
     surface_handle: rt::Handle,
     active: bool,
+    last_snapshot: Option<BootSnapshot>,
 }
 
 impl BootUi {
@@ -31,8 +32,18 @@ impl BootUi {
         Self {
             surface_handle: rt::INVALID_HANDLE,
             active: false,
+            last_snapshot: None,
         }
     }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct BootSnapshot {
+    ready: u32,
+    total: u32,
+    blocked_services: u32,
+    degraded_services: u32,
+    pending_service: Option<ServiceId>,
 }
 
 pub(crate) fn update(
@@ -81,18 +92,33 @@ pub(crate) fn update(
         boot_ui.active = true;
     }
 
-    render(boot_ui.surface_handle, slots, service_count, graph_status)?;
+    let snapshot = sample_boot_snapshot(slots, service_count, graph_status);
+    if boot_ui.last_snapshot == Some(snapshot) {
+        return Ok(());
+    }
+
+    render(boot_ui.surface_handle, snapshot)?;
+    boot_ui.last_snapshot = Some(snapshot);
     Ok(())
 }
 
-fn render(
-    surface_handle: rt::Handle,
+fn sample_boot_snapshot(
     slots: &[ServiceSlot; MAX_SERVICE_SLOTS],
     service_count: usize,
     graph_status: GraphStatus,
-) -> rt::Result<()> {
-    let total = total_boot_services(slots, service_count).max(1);
-    let ready = ready_boot_services(slots, service_count);
+) -> BootSnapshot {
+    BootSnapshot {
+        ready: ready_boot_services(slots, service_count),
+        total: total_boot_services(slots, service_count).max(1),
+        blocked_services: graph_status.blocked_services,
+        degraded_services: graph_status.degraded_services,
+        pending_service: pending_service_id(slots, service_count),
+    }
+}
+
+fn render(surface_handle: rt::Handle, snapshot: BootSnapshot) -> rt::Result<()> {
+    let total = snapshot.total;
+    let ready = snapshot.ready;
     let progress_width = 472u32;
     let filled = ((progress_width as u64 * ready as u64) / total as u64) as u32;
 
@@ -102,14 +128,17 @@ fn render(
     let _ = write!(
         &mut pending,
         "CURRENT {}",
-        pending_service_name(slots, service_count)
+        snapshot
+            .pending_service
+            .map(service_name)
+            .unwrap_or("FINALIZING")
     );
     let mut detail = FixedLogBuffer::<64>::new();
     let _ = write!(
         &mut detail,
         "blocked={} degraded={}",
-        graph_status.blocked_services,
-        graph_status.degraded_services
+        snapshot.blocked_services,
+        snapshot.degraded_services
     );
 
     rt::surface_set_fill(surface_handle, BG)?;
@@ -138,7 +167,7 @@ fn render(
         3,
         20,
         92,
-        if graph_status.degraded_services != 0 || graph_status.blocked_services != 0 {
+        if snapshot.degraded_services != 0 || snapshot.blocked_services != 0 {
             TEXT_WARN
         } else {
             TEXT_SECONDARY
@@ -198,10 +227,10 @@ fn ready_boot_services(slots: &[ServiceSlot; MAX_SERVICE_SLOTS], service_count: 
         .count() as u32
 }
 
-fn pending_service_name(
+fn pending_service_id(
     slots: &[ServiceSlot; MAX_SERVICE_SLOTS],
     service_count: usize,
-) -> &'static str {
+) -> Option<ServiceId> {
     slots[..service_count]
         .iter()
         .find(|slot| {
@@ -209,6 +238,5 @@ fn pending_service_name(
                 && slot.manifest.startup == serviceos_bundle::ServiceStartupMode::Eager
                 && slot.phase != ServicePhase::Ready
         })
-        .map(|slot| service_name(slot.manifest.service_id))
-        .unwrap_or("FINALIZING")
+        .map(|slot| slot.manifest.service_id)
 }

@@ -6,6 +6,8 @@ pub(crate) const MAX_HISTORY: usize = 16;
 pub(crate) const MAX_INLINE_BYTES: usize = (rt::IPC_MAX_WORDS - 1) * 8;
 pub(crate) const DEFAULT_COLS: u32 = 80;
 pub(crate) const DEFAULT_ROWS: u32 = 25;
+pub(crate) const MAX_PUBLIC_REQUESTS_PER_TURN: usize = 8;
+pub(crate) const MAX_SESSION_MESSAGES_PER_TURN: usize = 16;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) enum EscapeState {

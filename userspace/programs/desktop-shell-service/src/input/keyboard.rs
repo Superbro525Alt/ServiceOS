@@ -108,13 +108,6 @@ pub(super) fn handle_key_input(
         return Ok(0);
     }
     rt::app_control_key(control, action, key_code, modifiers)?;
-    let _ = emit_log(
-        state.log_handle,
-        LogSeverity::Debug,
-        LogEvent::InputKeyDelivered,
-        app_id as u32 as u64,
-        key_code as u64,
-    );
     Ok(state.apps[index].window.surface_id)
 }
 

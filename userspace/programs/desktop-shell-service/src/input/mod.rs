@@ -5,10 +5,9 @@ mod pointer;
 
 use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
-use rt::{AppKeyAction, AppPointerAction, DesktopAppId, DesktopInputAction, LogEvent, LogSeverity};
+use rt::{AppKeyAction, AppPointerAction, DesktopAppId, DesktopInputAction};
 
 use crate::{
-    logging::emit_log,
     palette_matches,
     render::{render_desktop, sync_cursor},
     windows::{

@@ -129,12 +129,17 @@ fn main() -> u64 {
             if !state.tabs[tab_index].occupied {
                 continue;
             }
+            let mut output_budget = MAX_OUTPUT_MESSAGES_PER_TAB_PER_TURN;
             loop {
                 match control::receive_terminal_message(state.tabs[tab_index].session_handle, &mut data) {
                     Ok(Some(control::TerminalMessage::Output(len))) => {
                         vt::apply_output(&mut state, tab_index, &data[..len]);
                         changed = true;
                         did_work = true;
+                        output_budget = output_budget.saturating_sub(1);
+                        if output_budget == 0 {
+                            break;
+                        }
                     }
                     Ok(Some(control::TerminalMessage::Closed)) => {
                         tabs::close_tab(&mut state, tab_index);

@@ -9,6 +9,7 @@ pub(crate) const SURFACE_BUFFER_SLOTS: usize = 2;
 pub(crate) const MAX_TABS: usize = 4;
 pub(crate) const MAX_COLS: usize = 120;
 pub(crate) const MAX_SCROLLBACK_LINES: usize = 256;
+pub(crate) const MAX_OUTPUT_MESSAGES_PER_TAB_PER_TURN: usize = 8;
 pub(crate) const CLIPBOARD_BYTES: usize = 1024;
 pub(crate) const MAX_TITLE_BYTES: usize = 24;
 pub(crate) const MAX_OSC_BYTES: usize = 64;

@@ -13,7 +13,9 @@ use crate::{
     logging::poll_lifecycle,
     requests::{handle_public_request, handle_session_message},
     session::release_session,
-    state::{MAX_SESSIONS, Session},
+    state::{
+        MAX_PUBLIC_REQUESTS_PER_TURN, MAX_SESSION_MESSAGES_PER_TURN, MAX_SESSIONS, Session,
+    },
 };
 
 rt::entry!(main);
@@ -47,29 +49,46 @@ fn main() -> u64 {
             Err(_) => return 0xf905,
         }
 
-        let mut request = RawMessage::empty(0);
-        match rt::channel_receive_nonblocking(public.first, &mut request) {
-            Ok(()) => {
-                if handle_public_request(bootstrap, &mut sessions, &mut next_session_id, &request)
+        let mut public_budget = MAX_PUBLIC_REQUESTS_PER_TURN;
+        loop {
+            let mut request = RawMessage::empty(0);
+            match rt::channel_receive_nonblocking(public.first, &mut request) {
+                Ok(()) => {
+                    if handle_public_request(
+                        bootstrap,
+                        &mut sessions,
+                        &mut next_session_id,
+                        &request,
+                    )
                     .is_err()
-                {
-                    return 0xf906;
+                    {
+                        return 0xf906;
+                    }
+                    public_budget = public_budget.saturating_sub(1);
+                    if public_budget == 0 {
+                        break;
+                    }
                 }
+                Err(rt::Error::QueueEmpty) => break,
+                Err(_) => return 0xf907,
             }
-            Err(rt::Error::QueueEmpty) => {}
-            Err(_) => return 0xf907,
         }
 
         for session in &mut sessions {
             if !session.occupied {
                 continue;
             }
+            let mut session_budget = MAX_SESSION_MESSAGES_PER_TURN;
             loop {
                 let mut message = RawMessage::empty(0);
                 match rt::channel_receive_nonblocking(session.endpoint, &mut message) {
                     Ok(()) => {
                         if handle_session_message(bootstrap, session, &message).is_err() {
                             release_session(bootstrap, session);
+                            break;
+                        }
+                        session_budget = session_budget.saturating_sub(1);
+                        if session_budget == 0 {
                             break;
                         }
                     }

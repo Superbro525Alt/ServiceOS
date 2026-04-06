@@ -72,7 +72,7 @@ pub(crate) fn drain_surface_requests(
                     let old_rect = visible_surface_damage(surface);
                     release_surface(surface);
                     if old_rect.width != 0 && old_rect.height != 0 {
-                        merge_region_dirty(dirty, old_rect, true);
+                        merge_region_dirty(dirty, old_rect, false);
                     }
                     break;
                 }
@@ -146,7 +146,7 @@ fn handle_surface_request(
                     DirtyState::Full { immediate } => DirtyState::Full { immediate },
                 };
             } else {
-                merge_region_dirty(dirty, damage, true);
+                merge_region_dirty(dirty, damage, false);
             }
             reply_surface_status(
                 message.handles,
@@ -177,7 +177,7 @@ fn handle_surface_request(
             let new_rect = visible_surface_damage(surface);
             let damage = old_rect.merge(new_rect);
             if damage.width != 0 && damage.height != 0 {
-                merge_region_dirty(dirty, damage, true);
+                merge_region_dirty(dirty, damage, false);
             }
             reply_surface_status(
                 message.handles,
@@ -306,7 +306,7 @@ fn handle_surface_request(
                 if surface.active_buffer_slot.is_none() {
                     surface.active_buffer_slot = Some(slot);
                 }
-                mark_surface_dirty(dirty, surface, true);
+                mark_surface_dirty(dirty, surface, false);
                 GraphicsStatus::Ok
             };
             if status != GraphicsStatus::Ok {
@@ -333,7 +333,7 @@ fn handle_surface_request(
                     height: message.words[4] as u32,
                 };
                 if damage.width == 0 || damage.height == 0 || previous_slot != Some(slot) {
-                    mark_surface_dirty(dirty, surface, true);
+                    mark_surface_dirty(dirty, surface, false);
                 } else if is_cursor_surface(surface) && !matches!(dirty, DirtyState::Full { .. }) {
                     *dirty = match *dirty {
                         DirtyState::CursorOnly(existing) => DirtyState::CursorOnly(existing.merge(damage)),
@@ -378,7 +378,7 @@ fn handle_surface_request(
                         .find(|(_, buffer)| buffer.attached())
                         .map(|(index, _)| index);
                 }
-                mark_surface_dirty(dirty, surface, true);
+                mark_surface_dirty(dirty, surface, false);
                 GraphicsStatus::Ok
             };
             reply_surface_status(
@@ -392,7 +392,7 @@ fn handle_surface_request(
             let old_rect = visible_surface_damage(surface);
             release_surface(surface);
             if old_rect.width != 0 && old_rect.height != 0 {
-                merge_region_dirty(dirty, old_rect, true);
+                merge_region_dirty(dirty, old_rect, false);
             }
         }
         _ => {}

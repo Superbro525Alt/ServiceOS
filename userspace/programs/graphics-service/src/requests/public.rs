@@ -180,7 +180,7 @@ fn handle_public_request(
             slot.rects = [crate::types::RectSlot::empty(); MAX_SURFACE_RECTS];
             slot.labels = [crate::types::LabelSlot::empty(); MAX_SURFACE_LABELS];
             if slot.visible {
-                super::common::merge_region_dirty(dirty, surface_bounds(slot), true);
+                super::common::merge_region_dirty(dirty, surface_bounds(slot), false);
             }
 
             let mut reply = RawMessage::empty(GraphicsTag::SurfaceCreateReply as u32);

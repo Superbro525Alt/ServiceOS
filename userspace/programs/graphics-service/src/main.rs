@@ -88,7 +88,7 @@ fn main() -> u64 {
             Ok(had_work) => had_work,
             Err(_) => return 0xfc0a,
         };
-        let had_work = had_public_work || had_surface_work;
+        let _had_work = had_public_work || had_surface_work;
 
         if !matches!(dirty, DirtyState::Clean) {
             let now = rt::monotonic_now().unwrap_or(0);
@@ -101,12 +101,8 @@ fn main() -> u64 {
             let should_present = match dirty {
                 DirtyState::Clean => false,
                 DirtyState::CursorOnly(_) => now >= present_deadline,
-                DirtyState::Region { immediate, .. } => {
-                    immediate || (!had_work && now >= present_deadline)
-                }
-                DirtyState::Full { immediate } => {
-                    immediate || (!had_work && now >= present_deadline)
-                }
+                DirtyState::Region { immediate, .. } => immediate || now >= present_deadline,
+                DirtyState::Full { immediate } => immediate || now >= present_deadline,
             };
             if should_present {
                 let result = match dirty {

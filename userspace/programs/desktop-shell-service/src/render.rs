@@ -18,6 +18,25 @@ pub(crate) fn render_desktop(state: &mut DesktopState) -> rt::Result<()> {
     rt::surface_set_fill(state.chrome.desktop_handle, ui::BG_DESKTOP)?;
     rt::surface_clear_scene(state.chrome.desktop_handle)?;
 
+    render_topbar(state, status_snapshot)?;
+    render_launcher(state)?;
+    render_status_surface(state, status_snapshot)?;
+    render_overlays(state)?;
+    state.last_status_snapshot = Some(status_snapshot);
+    Ok(())
+}
+
+pub(crate) fn refresh_desktop_status(state: &mut DesktopState) -> rt::Result<()> {
+    let snapshot = sample_desktop_status(state);
+    if state.last_status_snapshot == Some(snapshot) {
+        return Ok(());
+    }
+    render_status_surface(state, snapshot)?;
+    state.last_status_snapshot = Some(snapshot);
+    Ok(())
+}
+
+fn render_topbar(state: &DesktopState, status_snapshot: DesktopStatusSnapshot) -> rt::Result<()> {
     let mut running_buf = FixedLogBuffer::<32>::new();
     let _ = write!(&mut running_buf, "RUNNING {}", status_snapshot.running_apps);
     let running_text = str::from_utf8(running_buf.as_bytes()).unwrap_or("RUNNING ?");
@@ -39,9 +58,6 @@ pub(crate) fn render_desktop(state: &mut DesktopState) -> rt::Result<()> {
     );
     let space_text = str::from_utf8(space_buf.as_bytes()).unwrap_or("SPACE ?");
 
-    let mut network_buf = FixedLogBuffer::<48>::new();
-    write_network_status(&mut network_buf, status_snapshot.ipv4_address);
-    let network_text = str::from_utf8(network_buf.as_bytes()).unwrap_or("NET OFFLINE");
     let notification_text = if state.notification_len != 0 {
         str::from_utf8(&state.notification[..state.notification_len]).unwrap_or("NOTICE")
     } else {
@@ -54,8 +70,10 @@ pub(crate) fn render_desktop(state: &mut DesktopState) -> rt::Result<()> {
         TOPBAR_HEIGHT,
         "SERVICEOS DESKTOP",
         &[running_text, focus_text, space_text, notification_text],
-    )?;
+    )
+}
 
+fn render_launcher(state: &DesktopState) -> rt::Result<()> {
     let launcher_lines = [
         launcher_line(state.apps[0]),
         launcher_line(state.apps[1]),
@@ -70,7 +88,33 @@ pub(crate) fn render_desktop(state: &mut DesktopState) -> rt::Result<()> {
         "APPS",
         &launcher_lines,
         ui::TEXT_PRIMARY,
-    )?;
+    )
+}
+
+fn render_status_surface(
+    state: &DesktopState,
+    status_snapshot: DesktopStatusSnapshot,
+) -> rt::Result<()> {
+    let mut space_buf = FixedLogBuffer::<32>::new();
+    let _ = write!(
+        &mut space_buf,
+        "SPACE {}/{}",
+        status_snapshot.active_workspace,
+        WORKSPACE_COUNT
+    );
+    let space_text = str::from_utf8(space_buf.as_bytes()).unwrap_or("SPACE ?");
+
+    let mut focus_buf = FixedLogBuffer::<40>::new();
+    let _ = write!(
+        &mut focus_buf,
+        "FOCUS {}",
+        status_snapshot.focused_app.map(app_title).unwrap_or("NONE")
+    );
+    let focus_text = str::from_utf8(focus_buf.as_bytes()).unwrap_or("FOCUS ?");
+
+    let mut network_buf = FixedLogBuffer::<48>::new();
+    write_network_status(&mut network_buf, status_snapshot.ipv4_address);
+    let network_text = str::from_utf8(network_buf.as_bytes()).unwrap_or("NET OFFLINE");
 
     let mut hb_buf = FixedLogBuffer::<32>::new();
     let _ = write!(&mut hb_buf, "HEARTBEAT {}", status_snapshot.heartbeat_count);
@@ -97,19 +141,7 @@ pub(crate) fn render_desktop(state: &mut DesktopState) -> rt::Result<()> {
             (notif_text, ui::TEXT_MUTED),
             (focus_text, ui::TEXT_SECONDARY),
         ],
-    )?;
-
-    render_overlays(state)?;
-    state.last_status_snapshot = Some(status_snapshot);
-    Ok(())
-}
-
-pub(crate) fn refresh_desktop_status(state: &mut DesktopState) -> rt::Result<()> {
-    let snapshot = sample_desktop_status(state);
-    if state.last_status_snapshot == Some(snapshot) {
-        return Ok(());
-    }
-    render_desktop(state)
+    )
 }
 
 fn sample_desktop_status(state: &DesktopState) -> DesktopStatusSnapshot {

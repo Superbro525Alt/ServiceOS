@@ -56,6 +56,17 @@ fn main() -> u64 {
         Ok(chrome) => chrome,
         Err(_) => return 0xfe08,
     };
+    let palette_buffers = match serviceos_desktop_ui::SurfaceBuffers::<PALETTE_BUFFER_SLOTS>::new(
+        chrome.palette_handle,
+        PALETTE_WIDTH,
+        PALETTE_HEIGHT,
+        PALETTE_WIDTH,
+        PALETTE_BUFFER_BYTES,
+    ) {
+        Ok(buffers) => buffers,
+        Err(_) => return 0xfe17,
+    };
+    let palette_presenter = serviceos_desktop_ui::FirstPresentSurface::new(chrome.palette_handle);
 
     let public = match rt::channel_create() {
         Ok(pair) => pair,
@@ -75,6 +86,8 @@ fn main() -> u64 {
         system_status_handle,
         clipboard_service_handle,
         chrome,
+        palette_buffers,
+        palette_presenter,
         apps: [
             AppSlot::new(DesktopAppId::Settings, ServiceImageId::SettingsApp),
             AppSlot::new(DesktopAppId::Files, ServiceImageId::FilesApp),

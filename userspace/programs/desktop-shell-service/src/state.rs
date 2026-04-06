@@ -1,5 +1,6 @@
 use serviceos_userspace_runtime as rt;
 use rt::{DesktopAppId, ServiceImageId};
+use serviceos_desktop_ui as ui;
 
 pub(crate) const SESSION_ID: u32 = 1;
 pub(crate) const APP_COUNT: usize = 5;
@@ -31,6 +32,8 @@ pub(crate) const SWITCHER_WIDTH: u32 = 280;
 pub(crate) const SWITCHER_HEIGHT: u32 = 132;
 pub(crate) const PALETTE_WIDTH: u32 = 360;
 pub(crate) const PALETTE_HEIGHT: u32 = 188;
+pub(crate) const PALETTE_BUFFER_SLOTS: usize = 2;
+pub(crate) const PALETTE_BUFFER_BYTES: usize = PALETTE_WIDTH as usize * PALETTE_HEIGHT as usize * 4;
 pub(crate) const HISTORY_WIDTH: u32 = 360;
 pub(crate) const HISTORY_HEIGHT: u32 = 188;
 pub(crate) const MOD_SHIFT: u32 = 1 << 0;
@@ -272,6 +275,8 @@ pub(crate) struct DesktopState {
     pub(crate) system_status_handle: rt::Handle,
     pub(crate) clipboard_service_handle: rt::Handle,
     pub(crate) chrome: Chrome,
+    pub(crate) palette_buffers: ui::SurfaceBuffers<PALETTE_BUFFER_SLOTS>,
+    pub(crate) palette_presenter: ui::FirstPresentSurface,
     pub(crate) apps: [AppSlot; APP_COUNT],
     pub(crate) focused_app: Option<DesktopAppId>,
     pub(crate) active_workspace: u32,

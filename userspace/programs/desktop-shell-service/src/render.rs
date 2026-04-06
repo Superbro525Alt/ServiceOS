@@ -9,7 +9,7 @@ use crate::{
     windows::{app_title, launcher_line, running_app_count, visible_on_workspace},
     DesktopState, DesktopStatusSnapshot, OverlayMode, CLIPBOARD_HISTORY_LINES, CURSOR_SIZE,
     CURSOR_Z_ORDER, HISTORY_HEIGHT, HISTORY_WIDTH, LAUNCHER_HEIGHT, LAUNCHER_WIDTH, OVERLAY_RESULT_MAX,
-    PALETTE_HEIGHT, PALETTE_WIDTH, STATUS_PANEL_HEIGHT, STATUS_PANEL_WIDTH, SWITCHER_HEIGHT,
+    PALETTE_BUFFER_BYTES, PALETTE_HEIGHT, PALETTE_WIDTH, STATUS_PANEL_HEIGHT, STATUS_PANEL_WIDTH, SWITCHER_HEIGHT,
     SWITCHER_WIDTH, TOPBAR_HEIGHT, WORKSPACE_COUNT,
 };
 
@@ -248,37 +248,55 @@ fn render_switcher_overlay(state: &DesktopState) -> rt::Result<()> {
     )
 }
 
-fn render_palette_overlay(state: &DesktopState) -> rt::Result<()> {
+fn render_palette_overlay(state: &mut DesktopState) -> rt::Result<()> {
     let mut results = [crate::PaletteAction::ShowNotifications; OVERLAY_RESULT_MAX];
     let count = palette_matches(state, &mut results);
     let query = str::from_utf8(&state.palette_query[..state.palette_query_len]).unwrap_or("");
-    let mut lines: [FixedLogBuffer<64>; OVERLAY_RESULT_MAX + 1] =
-        array::from_fn(|_| FixedLogBuffer::new());
+    let (buffer_slot, buffer) = state.palette_buffers.advance();
+    let bytes = &mut buffer.as_slice_mut()[..PALETTE_BUFFER_BYTES];
+    ui::draw_window_frame_rgba8888(
+        bytes,
+        PALETTE_WIDTH as usize,
+        PALETTE_WIDTH as usize,
+        PALETTE_HEIGHT as usize,
+        true,
+        ui::BG_PANEL,
+        "COMMAND PALETTE",
+    );
+
+    let mut line0 = FixedLogBuffer::<64>::new();
     let _ = write!(
-        &mut lines[0],
+        &mut line0,
         "QUERY {}",
         if query.is_empty() { "TYPE TO SEARCH" } else { query }
     );
-    for index in 0..count {
-        let prefix = if index == state.overlay_selection { "> " } else { "  " };
-        let _ = write!(
-            &mut lines[index + 1],
-            "{}{}",
-            prefix,
-            palette_action_label(results[index])
-        );
-    }
+    rt::draw_text_rgba8888(bytes, PALETTE_WIDTH as usize, 12, 42, ui::TEXT_PRIMARY, line0.as_str());
+
     if count == 0 {
-        let _ = write!(&mut lines[1], "NO MATCHES");
+        rt::draw_text_rgba8888(bytes, PALETTE_WIDTH as usize, 12, 56, ui::TEXT_SECONDARY, "NO MATCHES");
+    } else {
+        for index in 0..count {
+            let prefix = if index == state.overlay_selection { "> " } else { "  " };
+            let mut line = FixedLogBuffer::<64>::new();
+            let _ = write!(&mut line, "{}{}", prefix, palette_action_label(results[index]));
+            rt::draw_text_rgba8888(
+                bytes,
+                PALETTE_WIDTH as usize,
+                12,
+                56 + (index as i32 * ui::PANEL_LINE_STEP),
+                if index == state.overlay_selection {
+                    ui::TEXT_PRIMARY
+                } else {
+                    ui::TEXT_SECONDARY
+                },
+                line.as_str(),
+            );
+        }
     }
-    let line_count = if count == 0 { 2 } else { 1 + count };
-    render_overlay_panel(
-        state.chrome.palette_handle,
-        PALETTE_WIDTH,
-        PALETTE_HEIGHT,
-        "COMMAND PALETTE",
-        &lines[..line_count],
-    )
+
+    state
+        .palette_presenter
+        .present(buffer_slot, PALETTE_WIDTH, PALETTE_HEIGHT)
 }
 
 fn render_notification_overlay(state: &DesktopState) -> rt::Result<()> {

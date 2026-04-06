@@ -37,6 +37,7 @@ fn main() -> u64 {
         width: startup.words[1] as u32,
         height: startup.words[2] as u32,
         focused: startup.words[3] != 0,
+        loading_initial_directory: true,
         current_directory_handle: rt::INVALID_HANDLE,
         current_path: [0; state::MAX_STORAGE_PATH],
         current_path_len: 0,
@@ -58,9 +59,7 @@ fn main() -> u64 {
         Err(_) => return 0xf103,
     };
     let mut presenter = ui::FirstPresentSurface::new(surface_handle);
-
-    let _ = reopen_directory(&mut state, storage_handle);
-    let _ = reload_directory(&mut state);
+    let mut startup = ui::DeferredStartup::new();
     let (slot, buffer) = buffers.current();
     let _ = render(&mut presenter, slot, buffer, &state);
 
@@ -81,6 +80,24 @@ fn main() -> u64 {
             Ok(ControlFlow::Idle) => {}
             Ok(ControlFlow::Worked) => continue,
             Ok(ControlFlow::Exit) => break,
+            Err(_) => return 0xf106,
+        }
+
+        match startup.run(|| {
+            let result = reopen_directory(&mut state, storage_handle)
+                .and_then(|_| reload_directory(&mut state));
+            state.loading_initial_directory = false;
+            match result {
+                Ok(()) => Ok(true),
+                Err(_) => Ok(true),
+            }
+        }) {
+            Ok(true) => {
+                let (slot, buffer) = buffers.advance();
+                let _ = render(&mut presenter, slot, buffer, &state);
+                continue;
+            }
+            Ok(false) => {}
             Err(_) => return 0xf106,
         }
 

@@ -76,6 +76,18 @@ fn draw_list(bytes: &mut [u8], state: &ExplorerState) {
         ui::BG_WINDOW,
     );
 
+    if state.loading_initial_directory {
+        rt::draw_text_rgba8888(
+            bytes,
+            PIXEL_STRIDE,
+            LIST_X as i32 + 6,
+            LIST_Y as i32 + 8,
+            ui::TEXT_MUTED,
+            "LOADING",
+        );
+        return;
+    }
+
     if state.load_failed {
         rt::draw_text_rgba8888(
             bytes,

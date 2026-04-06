@@ -10,7 +10,7 @@ use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
 use rt::{ControlTag, RawMessage};
 
-use crate::actions::reload_catalog;
+use crate::actions::{error_label, reload_catalog, set_statusf};
 use crate::control::{poll_control, ControlFlow};
 use crate::render::render;
 use crate::state::{AppState, CatalogEntry, BUFFER_BYTES, BUFFER_HEIGHT, BUFFER_WIDTH, MAX_ENTRIES, MAX_STATUS_BYTES, SURFACE_BUFFER_SLOTS};
@@ -52,8 +52,9 @@ fn main() -> u64 {
         Err(_) => return 0xf507,
     };
     let mut presenter = ui::FirstPresentSurface::new(surface_handle);
+    let mut startup = ui::DeferredStartup::new();
 
-    let _ = reload_catalog(package_handle, &mut state);
+    set_statusf(&mut state, format_args!("Loading catalog..."));
     let (slot, buffer) = buffers.current();
     if render(&mut presenter, slot, buffer, package_handle, &state).is_err()
     {
@@ -77,6 +78,27 @@ fn main() -> u64 {
             Ok(ControlFlow::Idle) => {}
             Ok(ControlFlow::Worked) => continue,
             Ok(ControlFlow::Exit) => break,
+            Err(_) => return 0xf505,
+        }
+
+        match startup.run(|| match reload_catalog(package_handle, &mut state) {
+            Ok(()) => Ok(true),
+            Err(error) => {
+                set_statusf(
+                    &mut state,
+                    format_args!("catalog load failed: {}", error_label(error)),
+                );
+                Ok(true)
+            }
+        }) {
+            Ok(true) => {
+                let (slot, buffer) = buffers.advance();
+                if render(&mut presenter, slot, buffer, package_handle, &state).is_err() {
+                    return 0xf503;
+                }
+                continue;
+            }
+            Ok(false) => {}
             Err(_) => return 0xf505,
         }
 

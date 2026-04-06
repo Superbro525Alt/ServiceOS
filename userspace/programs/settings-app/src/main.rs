@@ -47,9 +47,7 @@ fn main() -> u64 {
         note: [0; NOTE_MAX_BYTES],
         note_len: 0,
     };
-    let audio_stream_handle =
-        rt::audio_stream_open(audio_handle, rt::AudioStreamDirection::Playback, 0)
-            .unwrap_or(rt::INVALID_HANDLE);
+    let mut audio_stream_handle = rt::INVALID_HANDLE;
 
     let mut buffers = match ui::SurfaceBuffers::<SURFACE_BUFFER_SLOTS>::new(
         surface_handle,
@@ -62,6 +60,7 @@ fn main() -> u64 {
         Err(_) => return 0xf007,
     };
     let mut presenter = ui::FirstPresentSurface::new(surface_handle);
+    let mut startup = ui::DeferredStartup::new();
 
     let (slot, buffer) = buffers.current();
     if render(
@@ -106,6 +105,16 @@ fn main() -> u64 {
                 cleanup_audio(audio_stream_handle, audio_handle);
                 break;
             }
+            Err(_) => return 0xf006,
+        }
+        match startup.run(|| {
+            audio_stream_handle =
+                rt::audio_stream_open(audio_handle, rt::AudioStreamDirection::Playback, 0)
+                    .unwrap_or(rt::INVALID_HANDLE);
+            Ok(false)
+        }) {
+            Ok(false) => {}
+            Ok(true) => continue,
             Err(_) => return 0xf006,
         }
         if rt::yield_current().is_err() {

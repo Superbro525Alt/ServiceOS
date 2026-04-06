@@ -22,3 +22,24 @@ impl FirstPresentSurface {
         Ok(())
     }
 }
+
+pub struct DeferredStartup {
+    pending: bool,
+}
+
+impl DeferredStartup {
+    pub const fn new() -> Self {
+        Self { pending: true }
+    }
+
+    pub fn run<F>(&mut self, task: F) -> rt::Result<bool>
+    where
+        F: FnOnce() -> rt::Result<bool>,
+    {
+        if !self.pending {
+            return Ok(false);
+        }
+        self.pending = false;
+        task()
+    }
+}

@@ -50,6 +50,7 @@ pub(crate) struct ExplorerState {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) focused: bool,
+    pub(crate) loading_initial_directory: bool,
     pub(crate) current_directory_handle: rt::Handle,
     pub(crate) current_path: [u8; MAX_STORAGE_PATH],
     pub(crate) current_path_len: usize,

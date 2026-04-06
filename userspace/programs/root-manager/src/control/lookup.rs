@@ -41,12 +41,14 @@ pub(super) fn handle_lookup_request(
             if slots[target_index].phase != ServicePhase::Ready
                 && slots[target_index].manifest.startup == serviceos_bundle::ServiceStartupMode::OnDemand
             {
+                let mut boot_ui = crate::boot_ui::BootUi::empty();
                 let _ = ensure_service_ready(
                     slots,
                     service_count,
                     bootstrap_authority,
                     bootstrap_resources,
                     requested,
+                    &mut boot_ui,
                 );
             }
 

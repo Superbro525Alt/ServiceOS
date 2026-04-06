@@ -62,8 +62,10 @@ pub(crate) fn activate_base_service_graph(
     bootstrap_authority: rt::Handle,
     bootstrap_resources: BootstrapResources,
     graph_status: &mut GraphStatus,
+    boot_ui: &mut crate::boot_ui::BootUi,
 ) -> rt::Result<()> {
     loop {
+        let _ = crate::boot_ui::update(boot_ui, slots, *service_count, *graph_status);
         let total = occupied_service_count(slots, *service_count);
         let ready = ready_service_count(slots, *service_count);
         if ready == total {
@@ -115,6 +117,7 @@ pub(crate) fn activate_base_service_graph(
                     bootstrap_authority,
                     bootstrap_resources,
                     slots[index].manifest.service_id,
+                    boot_ui,
                 )
             }) {
                 Ok(()) => progress = true,
@@ -275,6 +278,7 @@ pub(crate) fn wait_until_ready(
     bootstrap_authority: rt::Handle,
     bootstrap_resources: BootstrapResources,
     service_id: ServiceId,
+    boot_ui: &mut crate::boot_ui::BootUi,
 ) -> rt::Result<()> {
     loop {
         pump_control_channels(
@@ -284,6 +288,7 @@ pub(crate) fn wait_until_ready(
             bootstrap_resources,
             GraphStatus::empty(),
         )?;
+        let _ = crate::boot_ui::update(boot_ui, slots, *service_count, GraphStatus::empty());
         let slot_index = find_slot_index(slots, *service_count, service_id)?;
         let slot = &slots[slot_index];
         if slot.phase == ServicePhase::Ready {
@@ -318,6 +323,7 @@ pub(crate) fn ensure_service_ready(
     bootstrap_authority: rt::Handle,
     bootstrap_resources: BootstrapResources,
     service_id: ServiceId,
+    boot_ui: &mut crate::boot_ui::BootUi,
 ) -> rt::Result<()> {
     let index = find_slot_index(slots, *service_count, service_id)?;
     match slots[index].phase {
@@ -335,6 +341,7 @@ pub(crate) fn ensure_service_ready(
                 bootstrap_authority,
                 bootstrap_resources,
                 service_id,
+                boot_ui,
             )
         }
         ServicePhase::Degraded | ServicePhase::Exited => return Err(rt::Error::Busy),
@@ -358,6 +365,7 @@ pub(crate) fn ensure_service_ready(
         bootstrap_authority,
         bootstrap_resources,
         service_id,
+        boot_ui,
     )
 }
 
@@ -367,8 +375,10 @@ pub(crate) fn supervision_loop(
     bootstrap_authority: rt::Handle,
     bootstrap_resources: BootstrapResources,
     graph_status: &mut GraphStatus,
+    boot_ui: &mut crate::boot_ui::BootUi,
 ) -> u64 {
     loop {
+        let _ = crate::boot_ui::update(boot_ui, slots, *service_count, *graph_status);
         if pump_control_channels(
             slots,
             service_count,
@@ -415,6 +425,7 @@ pub(crate) fn supervision_loop(
                         bootstrap_authority,
                         bootstrap_resources,
                         service_id,
+                        boot_ui,
                     )
                     .is_err()
                     {
@@ -446,6 +457,7 @@ pub(crate) fn supervision_loop(
                     bootstrap_authority,
                     bootstrap_resources,
                     service_id,
+                    boot_ui,
                 )
                 .is_err()
                 {
@@ -583,6 +595,7 @@ pub(crate) fn supervision_loop(
                     bootstrap_authority,
                     bootstrap_resources,
                     service_id,
+                    boot_ui,
                 )
                 .is_err()
                 {

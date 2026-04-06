@@ -78,6 +78,7 @@ pub(super) fn handle_activate_request(
         slots[target_index].phase = crate::state::ServicePhase::Dormant;
         Ok(())
     } else {
+        let mut boot_ui = crate::boot_ui::BootUi::empty();
         start_service(
             slots,
             *service_count,
@@ -92,6 +93,7 @@ pub(super) fn handle_activate_request(
                 bootstrap_authority,
                 bootstrap_resources,
                 manifest.service_id,
+                &mut boot_ui,
             )
         })
     };

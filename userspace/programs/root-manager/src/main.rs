@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 
+mod boot_ui;
 mod control;
 mod graph;
 mod state;
@@ -105,6 +106,7 @@ fn main() -> u64 {
 
     let mut slots = [ServiceSlot::empty(); MAX_SERVICE_SLOTS];
     let mut graph_status = GraphStatus::empty();
+    let mut boot_ui = boot_ui::BootUi::empty();
     slots[0].manifest = storage_manifest();
     slots[0].occupied = true;
     let mut service_count = 1usize;
@@ -126,6 +128,7 @@ fn main() -> u64 {
         bootstrap_authority,
         bootstrap_resources,
         ServiceId::Storage,
+        &mut boot_ui,
     )
     .is_err()
     {
@@ -147,6 +150,7 @@ fn main() -> u64 {
         bootstrap_authority,
         bootstrap_resources,
         &mut graph_status,
+        &mut boot_ui,
     )
     .is_err()
     {
@@ -168,5 +172,6 @@ fn main() -> u64 {
         bootstrap_authority,
         bootstrap_resources,
         &mut graph_status,
+        &mut boot_ui,
     )
 }

@@ -15,9 +15,6 @@ use crate::{
 
 pub(crate) fn render_desktop(state: &mut DesktopState) -> rt::Result<()> {
     let status_snapshot = sample_desktop_status(state);
-    rt::surface_set_fill(state.chrome.desktop_handle, ui::BG_DESKTOP)?;
-    rt::surface_clear_scene(state.chrome.desktop_handle)?;
-
     render_topbar(state, status_snapshot)?;
     render_launcher(state)?;
     render_status_surface(state, status_snapshot)?;

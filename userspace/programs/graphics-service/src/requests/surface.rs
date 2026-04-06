@@ -12,6 +12,21 @@ use crate::{
 
 use super::common::{merge_region_dirty, reply_surface_status, unpack_bytes};
 
+fn visible_surface_damage(surface: &SurfaceSlot) -> crate::types::DamageRect {
+    if surface.visible {
+        surface_bounds(surface)
+    } else {
+        crate::types::DamageRect::empty()
+    }
+}
+
+fn mark_surface_dirty(dirty: &mut DirtyState, surface: &SurfaceSlot, immediate: bool) {
+    let damage = visible_surface_damage(surface);
+    if damage.width != 0 && damage.height != 0 {
+        merge_region_dirty(dirty, damage, immediate);
+    }
+}
+
 pub(crate) fn drain_surface_requests(
     surfaces: &mut Surfaces,
     dirty: &mut DirtyState,
@@ -54,8 +69,11 @@ pub(crate) fn drain_surface_requests(
                 }
                 Err(rt::Error::QueueEmpty) => break,
                 Err(_) => {
+                    let old_rect = visible_surface_damage(surface);
                     release_surface(surface);
-                    *dirty = DirtyState::Full { immediate: true };
+                    if old_rect.width != 0 && old_rect.height != 0 {
+                        merge_region_dirty(dirty, old_rect, true);
+                    }
                     break;
                 }
             }
@@ -116,8 +134,8 @@ fn handle_surface_request(
             surface.height = message.words[3] as u32;
             surface.z_order = message.words[4] as u32;
             let new_rect = surface_bounds(surface);
+            let damage = old_rect.merge(new_rect);
             if is_cursor_surface(surface) && !matches!(dirty, DirtyState::Full { .. }) {
-                let damage = old_rect.merge(new_rect);
                 *dirty = match *dirty {
                     DirtyState::CursorOnly(existing) => DirtyState::CursorOnly(existing.merge(damage)),
                     DirtyState::Region { damage: existing, immediate } => DirtyState::Region {
@@ -128,7 +146,7 @@ fn handle_surface_request(
                     DirtyState::Full { immediate } => DirtyState::Full { immediate },
                 };
             } else {
-                *dirty = DirtyState::Full { immediate: true };
+                merge_region_dirty(dirty, damage, true);
             }
             reply_surface_status(
                 message.handles,
@@ -142,7 +160,7 @@ fn handle_surface_request(
                 return Ok(());
             }
             surface.fill_rgb = message.words[0] as u32;
-            *dirty = DirtyState::Full { immediate: false };
+            mark_surface_dirty(dirty, surface, false);
             reply_surface_status(
                 message.handles,
                 message.handle_count,
@@ -154,8 +172,13 @@ fn handle_surface_request(
             if message.word_count < 1 {
                 return Ok(());
             }
+            let old_rect = visible_surface_damage(surface);
             surface.visible = message.words[0] != 0;
-            *dirty = DirtyState::Full { immediate: true };
+            let new_rect = visible_surface_damage(surface);
+            let damage = old_rect.merge(new_rect);
+            if damage.width != 0 && damage.height != 0 {
+                merge_region_dirty(dirty, damage, true);
+            }
             reply_surface_status(
                 message.handles,
                 message.handle_count,
@@ -169,7 +192,7 @@ fn handle_surface_request(
             }
             surface.rects = [crate::types::RectSlot::empty(); MAX_SURFACE_RECTS];
             surface.labels = [crate::types::LabelSlot::empty(); MAX_SURFACE_LABELS];
-            *dirty = DirtyState::Full { immediate: false };
+            mark_surface_dirty(dirty, surface, false);
             reply_surface_status(
                 message.handles,
                 message.handle_count,
@@ -190,7 +213,7 @@ fn handle_surface_request(
                 slot.color_rgb = message.words[5] as u32;
                 slot.visible = message.words[6] != 0;
                 slot.occupied = slot.visible;
-                *dirty = DirtyState::Full { immediate: false };
+                mark_surface_dirty(dirty, surface, false);
                 GraphicsStatus::Ok
             } else {
                 GraphicsStatus::CapacityExceeded
@@ -224,7 +247,7 @@ fn handle_surface_request(
                     slot.color_rgb = message.words[3] as u32;
                     slot.len = text_len;
                     slot.occupied = text_len != 0;
-                    *dirty = DirtyState::Full { immediate: false };
+                    mark_surface_dirty(dirty, surface, false);
                     GraphicsStatus::Ok
                 }
             } else {
@@ -283,7 +306,7 @@ fn handle_surface_request(
                 if surface.active_buffer_slot.is_none() {
                     surface.active_buffer_slot = Some(slot);
                 }
-                *dirty = DirtyState::Full { immediate: true };
+                mark_surface_dirty(dirty, surface, true);
                 GraphicsStatus::Ok
             };
             if status != GraphicsStatus::Ok {
@@ -310,7 +333,7 @@ fn handle_surface_request(
                     height: message.words[4] as u32,
                 };
                 if damage.width == 0 || damage.height == 0 || previous_slot != Some(slot) {
-                    *dirty = DirtyState::Full { immediate: true };
+                    mark_surface_dirty(dirty, surface, true);
                 } else if is_cursor_surface(surface) && !matches!(dirty, DirtyState::Full { .. }) {
                     *dirty = match *dirty {
                         DirtyState::CursorOnly(existing) => DirtyState::CursorOnly(existing.merge(damage)),
@@ -355,7 +378,7 @@ fn handle_surface_request(
                         .find(|(_, buffer)| buffer.attached())
                         .map(|(index, _)| index);
                 }
-                *dirty = DirtyState::Full { immediate: true };
+                mark_surface_dirty(dirty, surface, true);
                 GraphicsStatus::Ok
             };
             reply_surface_status(
@@ -366,8 +389,11 @@ fn handle_surface_request(
             );
         }
         x if x == SurfaceTag::CloseRequest as u32 => {
+            let old_rect = visible_surface_damage(surface);
             release_surface(surface);
-            *dirty = DirtyState::Full { immediate: true };
+            if old_rect.width != 0 && old_rect.height != 0 {
+                merge_region_dirty(dirty, old_rect, true);
+            }
         }
         _ => {}
     }

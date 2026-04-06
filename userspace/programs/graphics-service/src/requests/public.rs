@@ -6,6 +6,7 @@ use crate::{
     types::{
         DirtyState, MAX_PUBLIC_REQUESTS_PER_TURN, MAX_SURFACE_LABELS, MAX_SURFACE_RECTS,
         Surfaces, active_buffer, active_surface_count, attached_buffer_count, find_surface,
+        surface_bounds,
     },
 };
 
@@ -178,7 +179,9 @@ fn handle_public_request(
             slot.occupied = true;
             slot.rects = [crate::types::RectSlot::empty(); MAX_SURFACE_RECTS];
             slot.labels = [crate::types::LabelSlot::empty(); MAX_SURFACE_LABELS];
-            *dirty = DirtyState::Full { immediate: true };
+            if slot.visible {
+                super::common::merge_region_dirty(dirty, surface_bounds(slot), true);
+            }
 
             let mut reply = RawMessage::empty(GraphicsTag::SurfaceCreateReply as u32);
             reply.word_count = 2;

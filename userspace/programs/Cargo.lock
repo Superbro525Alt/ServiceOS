@@ -185,6 +185,7 @@ version = "0.1.0"
 dependencies = [
  "serviceos-abi",
  "serviceos-bundle",
+ "serviceos-desktop-ui",
  "serviceos-userspace-runtime",
 ]
 

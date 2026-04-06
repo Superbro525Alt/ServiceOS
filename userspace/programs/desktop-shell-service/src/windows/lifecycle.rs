@@ -1,5 +1,11 @@
 use super::*;
 
+fn clear_pending_resize(state: &mut DesktopState, app_id: DesktopAppId) {
+    if state.pending_resize.is_some_and(|pending| pending.app_id == app_id) {
+        state.pending_resize = None;
+    }
+}
+
 pub(crate) fn launch_or_focus_app(state: &mut DesktopState, app_id: DesktopAppId) -> rt::Result<u32> {
     let Some(index) = app_slot_index(&state.apps, app_id) else {
         return Err(rt::Error::NotFound);
@@ -74,7 +80,6 @@ pub(crate) fn launch_or_focus_app(state: &mut DesktopState, app_id: DesktopAppId
         restore_height: height,
     };
     state.apps[index].running = true;
-    let _ = rt::app_control_resize(control.first, width, height);
     let surface_id = focus_app_internal(state, app_id, true, false)?;
     let _ = emit_log(
         state.log_handle,
@@ -311,6 +316,7 @@ pub(crate) fn close_app(state: &mut DesktopState, app_id: DesktopAppId) -> rt::R
     if !state.apps[index].running {
         return Err(rt::Error::NotFound);
     }
+    clear_pending_resize(state, app_id);
     let control_handle = state.apps[index].window.control_handle;
     if control_handle != rt::INVALID_HANDLE {
         let _ = rt::app_control_close(control_handle);
@@ -325,28 +331,30 @@ pub(crate) fn close_app(state: &mut DesktopState, app_id: DesktopAppId) -> rt::R
 pub(crate) fn refresh_apps(state: &mut DesktopState) -> rt::Result<()> {
     let mut changed = false;
     let mut pending_fault_notice: Option<(DesktopAppId, FixedLogBuffer<MAX_NOTIFICATION_BYTES>)> = None;
-    for slot in &mut state.apps {
-        if !slot.running || slot.task_handle == rt::INVALID_HANDLE {
+    let mut exited_app_to_clear: Option<DesktopAppId> = None;
+    for index in 0..state.apps.len() {
+        if !state.apps[index].running || state.apps[index].task_handle == rt::INVALID_HANDLE {
             continue;
         }
-        let status = rt::task_status(slot.task_handle)?;
+        let status = rt::task_status(state.apps[index].task_handle)?;
         if !matches!(status.state, rt::TaskStateCode::Exited | rt::TaskStateCode::Faulted) {
             continue;
         }
-        let exited_app = slot.app_id;
+        let exited_app = state.apps[index].app_id;
         let exit_code = status.exit_code;
         let faulted = status.state == rt::TaskStateCode::Faulted;
-        if slot.window.surface_handle != rt::INVALID_HANDLE {
-            let _ = rt::surface_close(slot.window.surface_handle);
-            let _ = rt::handle_close(slot.window.surface_handle);
+        if state.apps[index].window.surface_handle != rt::INVALID_HANDLE {
+            let _ = rt::surface_close(state.apps[index].window.surface_handle);
+            let _ = rt::handle_close(state.apps[index].window.surface_handle);
         }
-        if slot.window.control_handle != rt::INVALID_HANDLE {
-            let _ = rt::handle_close(slot.window.control_handle);
+        if state.apps[index].window.control_handle != rt::INVALID_HANDLE {
+            let _ = rt::handle_close(state.apps[index].window.control_handle);
         }
-        let _ = rt::handle_close(slot.task_handle);
-        slot.task_handle = rt::INVALID_HANDLE;
-        slot.window = WindowState::empty();
-        slot.running = false;
+        let _ = rt::handle_close(state.apps[index].task_handle);
+        state.apps[index].task_handle = rt::INVALID_HANDLE;
+        state.apps[index].window = WindowState::empty();
+        state.apps[index].running = false;
+        exited_app_to_clear = Some(exited_app);
         if state.focused_app == Some(exited_app) {
             state.focused_app = None;
             let _ = rt::session_focus(state.session_handle, SESSION_ID, 0);
@@ -374,6 +382,9 @@ pub(crate) fn refresh_apps(state: &mut DesktopState) -> rt::Result<()> {
         }
         changed = true;
     }
+    if let Some(exited_app) = exited_app_to_clear {
+        clear_pending_resize(state, exited_app);
+    }
     if let Some((app_id, message)) = pending_fault_notice {
         post_notification(state, Some(app_id), true, message.as_bytes())?;
     }
@@ -382,6 +393,29 @@ pub(crate) fn refresh_apps(state: &mut DesktopState) -> rt::Result<()> {
         render_desktop(state)?;
     }
     Ok(())
+}
+
+pub(crate) fn flush_pending_resize(state: &mut DesktopState) -> rt::Result<()> {
+    let Some(pending) = state.pending_resize else {
+        return Ok(());
+    };
+    let Some(index) = app_slot_index(&state.apps, pending.app_id) else {
+        state.pending_resize = None;
+        return Ok(());
+    };
+    let control_handle = state.apps[index].window.control_handle;
+    if control_handle == rt::INVALID_HANDLE || !state.apps[index].running {
+        state.pending_resize = None;
+        return Ok(());
+    }
+    match rt::app_control_resize(control_handle, pending.width, pending.height) {
+        Ok(()) => {
+            state.pending_resize = None;
+            Ok(())
+        }
+        Err(rt::Error::CapacityExceeded | rt::Error::Busy) => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 pub(crate) fn switch_workspace(state: &mut DesktopState, workspace_id: u32) -> rt::Result<u32> {

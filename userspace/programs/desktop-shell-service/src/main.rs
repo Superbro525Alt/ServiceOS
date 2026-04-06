@@ -94,6 +94,7 @@ fn main() -> u64 {
         pointer_y: (output.height / 2) as i32,
         drag_state: None,
         content_capture: None,
+        pending_resize: None,
         notification: [0; MAX_NOTIFICATION_BYTES],
         notification_len: 0,
         notification_deadline: 0,
@@ -182,6 +183,10 @@ fn main() -> u64 {
             {
                 return 0xfe0e;
             }
+        }
+
+        if windows::flush_pending_resize(&mut state).is_err() {
+            return 0xfe16;
         }
 
         let now = match rt::monotonic_now() {

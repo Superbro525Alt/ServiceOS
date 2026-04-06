@@ -14,7 +14,7 @@ use crate::{
 };
 
 pub(crate) fn render_desktop(state: &mut DesktopState) -> rt::Result<()> {
-    let status_snapshot = sample_desktop_status(state);
+    let status_snapshot = snapshot_for_render(state);
     render_topbar(state, status_snapshot)?;
     render_launcher(state)?;
     render_status_surface(state, status_snapshot)?;
@@ -157,6 +157,17 @@ fn sample_desktop_status(state: &DesktopState) -> DesktopStatusSnapshot {
         ipv4_address,
         notification_count: state.notification_history_len as u32,
     }
+}
+
+fn snapshot_for_render(state: &DesktopState) -> DesktopStatusSnapshot {
+    let mut snapshot = state
+        .last_status_snapshot
+        .unwrap_or_else(|| sample_desktop_status(state));
+    snapshot.running_apps = running_app_count(&state.apps) as u32;
+    snapshot.focused_app = state.focused_app;
+    snapshot.active_workspace = state.active_workspace;
+    snapshot.notification_count = state.notification_history_len as u32;
+    snapshot
 }
 
 pub(crate) fn sync_cursor(state: &DesktopState) -> rt::Result<()> {

@@ -256,6 +256,13 @@ pub(crate) struct ContentCapture {
     pub(crate) button: u32,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PendingResize {
+    pub(crate) app_id: DesktopAppId,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+}
+
 pub(crate) struct DesktopState {
     pub(crate) bootstrap: rt::Handle,
     pub(crate) log_handle: rt::Handle,
@@ -278,6 +285,7 @@ pub(crate) struct DesktopState {
     pub(crate) pointer_y: i32,
     pub(crate) drag_state: Option<DragState>,
     pub(crate) content_capture: Option<ContentCapture>,
+    pub(crate) pending_resize: Option<PendingResize>,
     pub(crate) notification: [u8; MAX_NOTIFICATION_BYTES],
     pub(crate) notification_len: usize,
     pub(crate) notification_deadline: u64,

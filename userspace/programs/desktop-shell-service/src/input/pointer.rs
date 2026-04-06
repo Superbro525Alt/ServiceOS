@@ -125,6 +125,9 @@ pub(super) fn handle_pointer_up(state: &mut DesktopState, x: i32, y: i32) -> rt:
             0,
         )?;
     }
+    if let Some(DragState::Resize { .. }) = state.drag_state {
+        crate::windows::flush_pending_resize(state)?;
+    }
     Ok(focused_surface_id(state))
 }
 
@@ -260,11 +263,11 @@ fn resize_drag(
         state.apps[index].window.z_order,
     )?;
     if state.apps[index].window.control_handle != rt::INVALID_HANDLE {
-        let _ = rt::app_control_resize(
-            state.apps[index].window.control_handle,
-            state.apps[index].window.width,
-            state.apps[index].window.height,
-        );
+        state.pending_resize = Some(PendingResize {
+            app_id,
+            width: state.apps[index].window.width,
+            height: state.apps[index].window.height,
+        });
     }
     Ok(state.apps[index].window.surface_id)
 }

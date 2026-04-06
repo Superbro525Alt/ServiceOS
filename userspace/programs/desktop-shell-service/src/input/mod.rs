@@ -16,6 +16,7 @@ use crate::{
         post_notification, switch_workspace, visible_on_workspace,
     },
     ContentCapture, DesktopState, DragState, HitTarget, OverlayMode, PaletteAction,
+    PendingResize,
     ResizeEdges, WindowState, APP_COUNT, CLIPBOARD_HISTORY_LINES, KEY_1, KEY_2, KEY_3, KEY_4,
     KEY_5, KEY_BACKSPACE, KEY_DOWN, KEY_ENTER, KEY_ESC, KEY_F4, KEY_LEFT_ALT, KEY_N,
     KEY_RIGHT_ALT, KEY_SPACE, KEY_TAB, KEY_UP, KEY_V, MOD_ALT, MOD_CTRL, MOD_SHIFT,

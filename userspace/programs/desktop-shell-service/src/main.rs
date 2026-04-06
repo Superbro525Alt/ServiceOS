@@ -103,6 +103,7 @@ fn main() -> u64 {
         next_status_refresh: 0,
         last_status_snapshot: None,
         pending_shell_refresh: false,
+        pending_focus_refresh: false,
         pending_app_launch: None,
         next_z_order: 10,
         pointer_x: (output.width / 2) as i32,
@@ -220,6 +221,12 @@ fn main() -> u64 {
                     return 0xfe18;
                 }
                 state.pending_shell_refresh = false;
+                state.pending_focus_refresh = false;
+            } else if state.pending_focus_refresh {
+                if render::render_focus_chrome(&mut state).is_err() {
+                    return 0xfe18;
+                }
+                state.pending_focus_refresh = false;
             }
             if now >= state.next_app_refresh {
                 if windows::refresh_apps(&mut state).is_err() {

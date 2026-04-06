@@ -1,5 +1,5 @@
 use super::*;
-use crate::render::{render_desktop, render_focus_chrome};
+use crate::render::render_desktop;
 
 fn clear_pending_resize(state: &mut DesktopState, app_id: DesktopAppId) {
     if state.pending_resize.is_some_and(|pending| pending.app_id == app_id) {
@@ -166,7 +166,7 @@ fn focus_app_internal(
         surface_id as u64,
     );
     if rerender {
-        render_focus_chrome(state)?;
+        state.pending_focus_refresh = true;
     }
     Ok(surface_id)
 }

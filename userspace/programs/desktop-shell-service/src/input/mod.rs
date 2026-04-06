@@ -88,6 +88,9 @@ pub(crate) fn handle_input(
         || state.palette_query_len != palette_query_len_before;
     let shell_core_changed = state.active_workspace != active_workspace_before
         || state.focused_app != focused_app_before;
+    let focus_only_changed = state.focused_app != focused_app_before
+        && state.active_workspace == active_workspace_before
+        && !overlay_changed;
 
     match action {
         DesktopInputAction::PointerMove | DesktopInputAction::PointerScroll => {}
@@ -95,6 +98,8 @@ pub(crate) fn handle_input(
             if shell_changed {
                 if overlay_changed && !shell_core_changed {
                     render_overlays_only(state)?;
+                } else if focus_only_changed {
+                    state.pending_focus_refresh = true;
                 } else {
                     render_desktop(state)?;
                 }
@@ -104,6 +109,8 @@ pub(crate) fn handle_input(
             if shell_changed {
                 if overlay_changed && !shell_core_changed {
                     render_overlays_only(state)?;
+                } else if focus_only_changed {
+                    state.pending_focus_refresh = true;
                 } else {
                     render_desktop(state)?;
                 }

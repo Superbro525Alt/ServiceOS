@@ -102,6 +102,7 @@ fn main() -> u64 {
         next_app_refresh: 0,
         next_status_refresh: 0,
         last_status_snapshot: None,
+        pending_shell_refresh: false,
         next_z_order: 10,
         pointer_x: (output.width / 2) as i32,
         pointer_y: (output.height / 2) as i32,
@@ -207,6 +208,12 @@ fn main() -> u64 {
             Err(_) => return 0xfe11,
         };
         if !did_work {
+            if state.pending_shell_refresh {
+                if render::render_desktop(&mut state).is_err() {
+                    return 0xfe18;
+                }
+                state.pending_shell_refresh = false;
+            }
             if now >= state.next_app_refresh {
                 if windows::refresh_apps(&mut state).is_err() {
                     return 0xfe10;

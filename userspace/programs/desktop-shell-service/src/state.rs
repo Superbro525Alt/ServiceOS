@@ -285,6 +285,7 @@ pub(crate) struct DesktopState {
     pub(crate) next_app_refresh: u64,
     pub(crate) next_status_refresh: u64,
     pub(crate) last_status_snapshot: Option<DesktopStatusSnapshot>,
+    pub(crate) pending_shell_refresh: bool,
     pub(crate) next_z_order: u32,
     pub(crate) pointer_x: i32,
     pub(crate) pointer_y: i32,

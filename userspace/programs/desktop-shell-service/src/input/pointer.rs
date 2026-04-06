@@ -17,7 +17,11 @@ pub(super) fn handle_pointer_down(state: &mut DesktopState, x: i32, y: i32) -> r
         HitTarget::WindowContent(app_id) => {
             state.drag_state = None;
             state.content_capture = Some(ContentCapture { app_id, button: 1 });
-            let surface_id = focus_app(state, app_id)?;
+            let surface_id = if state.focused_app == Some(app_id) {
+                focused_surface_id(state)
+            } else {
+                focus_app(state, app_id)?
+            };
             let (local_x, local_y) = app_local_coords(state, app_id, x, y)?;
             dispatch_pointer_to_app(state, app_id, AppPointerAction::Down, local_x, local_y, 1, 0)?;
             Ok(surface_id)
@@ -28,7 +32,11 @@ pub(super) fn handle_pointer_down(state: &mut DesktopState, x: i32, y: i32) -> r
             grab_offset_y,
         } => {
             state.content_capture = None;
-            let surface_id = focus_app(state, app_id)?;
+            let surface_id = if state.focused_app == Some(app_id) {
+                focused_surface_id(state)
+            } else {
+                focus_app(state, app_id)?
+            };
             state.drag_state = Some(DragState::Move {
                 app_id,
                 grab_offset_x,
@@ -38,7 +46,11 @@ pub(super) fn handle_pointer_down(state: &mut DesktopState, x: i32, y: i32) -> r
         }
         HitTarget::WindowResize { app_id, edges } => {
             state.content_capture = None;
-            let surface_id = focus_app(state, app_id)?;
+            let surface_id = if state.focused_app == Some(app_id) {
+                focused_surface_id(state)
+            } else {
+                focus_app(state, app_id)?
+            };
             let index = app_slot_index(&state.apps, app_id).ok_or(rt::Error::NotFound)?;
             state.drag_state = Some(DragState::Resize {
                 app_id,

@@ -20,7 +20,7 @@ use crate::{
 
 pub(crate) use encode::{encode_window_page, pack_i32_pair};
 pub(crate) use layout::{
-    allocate_z_order, app_slot_index, app_title, apply_window_geometry, clamp_window_x,
+    allocate_z_order, app_slot_index, app_title, apply_window_geometry, apply_window_geometry_async, clamp_window_x,
     clamp_window_y, focused_surface_id, initial_window_layout, launcher_line, running_app_count,
     set_window_visibility, sync_workspace_visibility, visible_on_workspace,
 };

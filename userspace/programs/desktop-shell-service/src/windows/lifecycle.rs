@@ -1,4 +1,5 @@
 use super::*;
+use crate::render::{render_desktop, render_focus_chrome};
 
 fn clear_pending_resize(state: &mut DesktopState, app_id: DesktopAppId) {
     if state.pending_resize.is_some_and(|pending| pending.app_id == app_id) {
@@ -129,7 +130,7 @@ fn focus_app_internal(
 
     if update_z_order {
         state.apps[index].window.z_order = allocate_z_order(state);
-        apply_window_geometry(&state.apps[index])?;
+        apply_window_geometry_async(&state.apps[index])?;
     }
     let control_handle = state.apps[index].window.control_handle;
     if control_handle != rt::INVALID_HANDLE {
@@ -147,7 +148,7 @@ fn focus_app_internal(
         surface_id as u64,
     );
     if rerender {
-        render_desktop(state)?;
+        render_focus_chrome(state)?;
     }
     Ok(surface_id)
 }

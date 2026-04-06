@@ -15,10 +15,15 @@ use crate::{
 
 pub(crate) fn render_desktop(state: &mut DesktopState) -> rt::Result<()> {
     let status_snapshot = snapshot_for_render(state);
-    render_topbar(state, status_snapshot)?;
-    render_launcher(state)?;
-    render_status_surface(state, status_snapshot)?;
+    render_shell_chrome(state, status_snapshot, true)?;
     render_overlays(state)?;
+    state.last_status_snapshot = Some(status_snapshot);
+    Ok(())
+}
+
+pub(crate) fn render_focus_chrome(state: &mut DesktopState) -> rt::Result<()> {
+    let status_snapshot = snapshot_for_render(state);
+    render_shell_chrome(state, status_snapshot, false)?;
     state.last_status_snapshot = Some(status_snapshot);
     Ok(())
 }
@@ -72,6 +77,18 @@ fn render_topbar(state: &DesktopState, status_snapshot: DesktopStatusSnapshot) -
         "SERVICEOS DESKTOP",
         &[running_text, focus_text, space_text, notification_text],
     )
+}
+
+fn render_shell_chrome(
+    state: &DesktopState,
+    status_snapshot: DesktopStatusSnapshot,
+    include_launcher: bool,
+) -> rt::Result<()> {
+    render_topbar(state, status_snapshot)?;
+    if include_launcher {
+        render_launcher(state)?;
+    }
+    render_status_surface(state, status_snapshot)
 }
 
 fn render_launcher(state: &DesktopState) -> rt::Result<()> {

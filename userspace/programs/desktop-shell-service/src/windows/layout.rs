@@ -11,6 +11,17 @@ pub(crate) fn apply_window_geometry(slot: &AppSlot) -> rt::Result<()> {
     )
 }
 
+pub(crate) fn apply_window_geometry_async(slot: &AppSlot) -> rt::Result<()> {
+    rt::surface_set_geometry_async(
+        slot.window.surface_handle,
+        slot.window.x,
+        slot.window.y,
+        slot.window.width,
+        slot.window.height,
+        slot.window.z_order,
+    )
+}
+
 pub(crate) fn set_window_visibility(slot: &AppSlot, visible: bool) -> rt::Result<()> {
     rt::surface_set_visibility(slot.window.surface_handle, visible)
 }

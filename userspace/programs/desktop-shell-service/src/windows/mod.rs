@@ -27,6 +27,6 @@ pub(crate) use layout::{
 pub(crate) use lifecycle::{
     close_app, flush_pending_resize, focus_app, launch_or_focus_app, maximize_app, minimize_app, move_app,
     move_focused_to_workspace, open_path_in_files, refresh_apps, resize_app, restore_app,
-    switch_workspace,
+    schedule_launch_or_focus_app, switch_workspace,
 };
 pub(crate) use notifications::{post_notification, push_recent_focus};

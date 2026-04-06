@@ -103,6 +103,7 @@ fn main() -> u64 {
         next_status_refresh: 0,
         last_status_snapshot: None,
         pending_shell_refresh: false,
+        pending_app_launch: None,
         next_z_order: 10,
         pointer_x: (output.width / 2) as i32,
         pointer_y: (output.height / 2) as i32,
@@ -208,6 +209,12 @@ fn main() -> u64 {
             Err(_) => return 0xfe11,
         };
         if !did_work {
+            if let Some(app_id) = state.pending_app_launch.take() {
+                if windows::launch_or_focus_app(&mut state, app_id).is_err() {
+                    return 0xfe19;
+                }
+                continue;
+            }
             if state.pending_shell_refresh {
                 if render::render_desktop(&mut state).is_err() {
                     return 0xfe18;

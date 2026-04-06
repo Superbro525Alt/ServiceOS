@@ -13,7 +13,7 @@ pub(super) fn handle_pointer_down(state: &mut DesktopState, x: i32, y: i32) -> r
             state.content_capture = None;
             Ok(focused_surface_id(state))
         }
-        HitTarget::Launcher(app_id) => crate::windows::launch_or_focus_app(state, app_id),
+        HitTarget::Launcher(app_id) => crate::windows::schedule_launch_or_focus_app(state, app_id),
         HitTarget::WindowContent(app_id) => {
             state.drag_state = None;
             state.content_capture = Some(ContentCapture { app_id, button: 1 });

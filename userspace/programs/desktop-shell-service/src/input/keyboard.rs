@@ -93,7 +93,7 @@ pub(super) fn handle_key_input(
             _ => None,
         };
         if let Some(app_id) = direct {
-            return crate::windows::launch_or_focus_app(state, app_id);
+            return crate::windows::schedule_launch_or_focus_app(state, app_id);
         }
     }
 

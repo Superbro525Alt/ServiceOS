@@ -93,6 +93,23 @@ pub(crate) fn launch_or_focus_app(state: &mut DesktopState, app_id: DesktopAppId
     Ok(surface_id)
 }
 
+pub(crate) fn schedule_launch_or_focus_app(
+    state: &mut DesktopState,
+    app_id: DesktopAppId,
+) -> rt::Result<u32> {
+    let Some(index) = app_slot_index(&state.apps, app_id) else {
+        return Err(rt::Error::NotFound);
+    };
+    if state.apps[index].running {
+        if state.apps[index].window.minimized {
+            return restore_app(state, app_id);
+        }
+        return focus_app(state, app_id);
+    }
+    state.pending_app_launch = Some(app_id);
+    Ok(focused_surface_id(state))
+}
+
 pub(crate) fn focus_app(state: &mut DesktopState, app_id: DesktopAppId) -> rt::Result<u32> {
     focus_app_internal(state, app_id, true, true)
 }

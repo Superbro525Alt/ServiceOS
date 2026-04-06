@@ -127,7 +127,7 @@ pub(super) fn handle_clipboard_overlay_key(
 
 fn perform_palette_action(state: &mut DesktopState, action: PaletteAction) -> rt::Result<u32> {
     match action {
-        PaletteAction::Launch(app_id) => crate::windows::launch_or_focus_app(state, app_id),
+        PaletteAction::Launch(app_id) => crate::windows::schedule_launch_or_focus_app(state, app_id),
         PaletteAction::ShowNotifications => {
             state.overlay_mode = OverlayMode::Notifications;
             Ok(focused_surface_id(state))

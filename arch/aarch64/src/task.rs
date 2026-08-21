@@ -5,6 +5,6 @@ pub struct TaskBringupStatus {
 
 pub const fn bringup_status() -> TaskBringupStatus {
     TaskBringupStatus {
-        context_switch: false,
+        context_switch: true,
     }
 }

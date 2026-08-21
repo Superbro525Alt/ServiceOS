@@ -1,6 +1,7 @@
 #![no_std]
 
 pub mod cpu;
+pub mod kernel_context;
 pub mod mmu;
 pub mod syscall;
 pub mod task;

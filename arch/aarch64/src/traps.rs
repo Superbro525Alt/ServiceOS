@@ -33,7 +33,7 @@ serviceos_aarch64_vector_table:
     b serviceos_aarch64_fatal_vector
     .balign 0x80
     b serviceos_aarch64_lower_el_sync
-    b serviceos_aarch64_fatal_vector
+    b serviceos_aarch64_lower_el_irq
     b serviceos_aarch64_fatal_vector
     b serviceos_aarch64_fatal_vector
     .balign 0x80
@@ -41,6 +41,43 @@ serviceos_aarch64_vector_table:
     b serviceos_aarch64_fatal_vector
     b serviceos_aarch64_fatal_vector
     b serviceos_aarch64_fatal_vector
+
+.global serviceos_aarch64_lower_el_irq
+serviceos_aarch64_lower_el_irq:
+    stp x0, x1, [sp, #-16]!
+    stp x2, x3, [sp, #-16]!
+    stp x4, x5, [sp, #-16]!
+    stp x6, x7, [sp, #-16]!
+    stp x8, x9, [sp, #-16]!
+    stp x10, x11, [sp, #-16]!
+    stp x12, x13, [sp, #-16]!
+    stp x14, x15, [sp, #-16]!
+    stp x16, x17, [sp, #-16]!
+    stp x18, x19, [sp, #-16]!
+    stp x20, x21, [sp, #-16]!
+    stp x22, x23, [sp, #-16]!
+    stp x24, x25, [sp, #-16]!
+    stp x26, x27, [sp, #-16]!
+    stp x28, x29, [sp, #-16]!
+    stp x30, xzr, [sp, #-16]!
+    bl serviceos_aarch64_handle_irq
+    ldp x30, xzr, [sp], #16
+    ldp x28, x29, [sp], #16
+    ldp x26, x27, [sp], #16
+    ldp x24, x25, [sp], #16
+    ldp x22, x23, [sp], #16
+    ldp x20, x21, [sp], #16
+    ldp x18, x19, [sp], #16
+    ldp x16, x17, [sp], #16
+    ldp x14, x15, [sp], #16
+    ldp x12, x13, [sp], #16
+    ldp x10, x11, [sp], #16
+    ldp x8, x9, [sp], #16
+    ldp x6, x7, [sp], #16
+    ldp x4, x5, [sp], #16
+    ldp x2, x3, [sp], #16
+    ldp x0, x1, [sp], #16
+    eret
 
 .global serviceos_aarch64_fatal_vector
 serviceos_aarch64_fatal_vector:
@@ -75,6 +112,21 @@ serviceos_aarch64_fatal_vector:
     }
 
     #[unsafe(no_mangle)]
+    extern "C" fn serviceos_aarch64_handle_irq() {
+        serviceos_kernel_core::interrupts::note_timer_interrupt(
+            serviceos_kernel_core::interrupts::InterruptVector(27),
+        );
+        if let Some(tasks) = system() {
+            tasks.handle_tick();
+        }
+        if let Some(tasks) = system() {
+            if tasks.consume_preemption() {
+                let _ = tasks.scheduler().preempt_current_if_needed();
+            }
+        }
+    }
+
+    #[unsafe(no_mangle)]
     extern "C" fn serviceos_aarch64_handle_user_sync(context: &mut SavedUserContext) -> u64 {
         let ec = (context.esr_el1 >> ESR_EC_SHIFT) & ESR_EC_MASK;
         match ec {
@@ -84,8 +136,7 @@ serviceos_aarch64_fatal_vector:
                 0
             }
             ESR_EC_INSTRUCTION_ABORT_LOWER_EL | ESR_EC_DATA_ABORT_LOWER_EL => {
-                terminate_current_user_context(context);
-                1
+                handle_user_fault(context)
             }
             _ => {
                 let report = interrupts::handle_exception(
@@ -107,6 +158,25 @@ serviceos_aarch64_fatal_vector:
                     0
                 }
             }
+        }
+    }
+
+    fn handle_user_fault(context: &mut SavedUserContext) -> u64 {
+        let fault_type = serviceos_kernel_core::fault::fault_type_for_exception(
+            &ExceptionDetail::PageFault {
+                fault_address: context.far_el1,
+                error_code: context.esr_el1,
+            },
+        );
+        if let Some(_handler) = serviceos_kernel_core::fault::lookup_fault_handler(&fault_type) {
+            let endpoint = _handler.endpoint;
+            if let Some(tasks) = system() {
+                tasks.notify_object_ready(endpoint);
+            }
+            0
+        } else {
+            terminate_current_user_context(context);
+            1
         }
     }
 
@@ -154,6 +224,14 @@ serviceos_aarch64_fatal_vector:
             } => {
                 if let Some(tasks) = system() {
                     let _ = tasks.scheduler().block_current_on_input_receive(source);
+                }
+                1
+            }
+            serviceos_kernel_core::syscall::SyscallAction::BlockCurrentThreadOnObject {
+                object,
+            } => {
+                if let Some(tasks) = system() {
+                    let _ = tasks.scheduler().block_current_on_object(object);
                 }
                 1
             }

@@ -80,6 +80,11 @@ pub enum SyscallNumber {
     KernelEventQueryInfo = 39,
     KernelEventQueryRecord = 40,
     DisplayOutputPresentDamage = 41,
+    MemoryUnmap = 42,
+    MemoryProtect = 43,
+    MemoryQuery = 44,
+    FaultHandlerRegister = 45,
+    FaultHandlerUnregister = 46,
 }
 
 #[repr(u32)]

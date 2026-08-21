@@ -98,6 +98,14 @@ impl TaskSystem {
         self.scheduler.handle_time_wakeup(event)
     }
 
+    pub fn handle_tick(&self) {
+        self.scheduler.handle_tick();
+    }
+
+    pub fn consume_preemption(&self) -> bool {
+        self.scheduler.consume_preemption()
+    }
+
     pub fn notify_channel_ready(&self, endpoint: ObjectId) -> Option<ScheduleDecision> {
         self.scheduler.notify_channel_ready(endpoint)
     }

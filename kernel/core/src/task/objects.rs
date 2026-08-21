@@ -4,9 +4,9 @@ use spin::Mutex;
 use crate::{capability::CapabilitySpace, object::ObjectId, user::TaskExitStatus};
 
 use super::{
-    AddressSpaceId, ExecutionState, SchedulingContext, TaskDescriptor, TaskId, TaskRole,
-    TaskStateView, ThreadDescriptor, ThreadId, ThreadMode, ThreadStateView, ThreadWakeReason,
-    WaitTarget,
+    AddressSpaceId, ExecutionState, KernelContext, SchedulingContext, TaskDescriptor, TaskId,
+    TaskRole, TaskStateView, ThreadDescriptor, ThreadId, ThreadMode, ThreadStateView,
+    ThreadWakeReason, WaitTarget,
 };
 
 pub struct TaskObject {
@@ -94,6 +94,7 @@ struct ThreadState {
     last_wake_reason: Option<ThreadWakeReason>,
     entry_instruction_pointer: Option<u64>,
     stack_pointer: Option<u64>,
+    kernel_context: Option<KernelContext>,
 }
 
 impl ThreadObject {
@@ -109,6 +110,7 @@ impl ThreadObject {
                 last_wake_reason: None,
                 entry_instruction_pointer: descriptor.entry_instruction_pointer,
                 stack_pointer: descriptor.stack_pointer,
+                kernel_context: None,
             }),
         }
     }
@@ -143,5 +145,13 @@ impl ThreadObject {
         thread_state.execution_state = state;
         thread_state.wait_target = wait_target;
         thread_state.last_wake_reason = wake_reason;
+    }
+
+    pub fn kernel_context(&self) -> Option<KernelContext> {
+        self.state.lock().kernel_context
+    }
+
+    pub fn set_kernel_context(&self, context: KernelContext) {
+        self.state.lock().kernel_context = Some(context);
     }
 }

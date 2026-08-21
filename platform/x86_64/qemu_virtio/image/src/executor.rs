@@ -48,6 +48,11 @@ pub(crate) fn run_userspace_executor(
             return Ok(());
         }
 
+        if kernel.tasks().consume_preemption() || snapshot.preemption_pending {
+            let _ = scheduler.preempt_current_if_needed()?;
+            continue;
+        }
+
         let Some(thread_object) = kernel.objects().registry().lookup(ObjectId(thread_id.0)) else {
             return Err(BootstrapError::MissingRootThread);
         };

@@ -11,7 +11,15 @@ pub(super) extern "x86-interrupt" fn timer_interrupt_handler(_frame: InterruptSt
     if let Some(hook) = *TIMER_TICK_HOOK.lock() {
         hook();
     }
-    acknowledge_pic(TIMER_VECTOR);
+    
+    // Send EOI to LAPIC if available
+    unsafe {
+        if crate::lapic::timer().is_initialized() {
+            crate::lapic::send_eoi();
+        } else {
+            acknowledge_pic(TIMER_VECTOR);
+        }
+    }
 }
 
 pub(super) fn register_external_irq_handler(irq_line: u8, handler: fn(u8)) -> bool {

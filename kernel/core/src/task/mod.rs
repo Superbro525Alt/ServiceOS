@@ -1,8 +1,10 @@
+mod kernel_context;
 mod objects;
 mod scheduler;
 mod system;
 mod types;
 
+pub use kernel_context::{KernelContext, init_kernel_thread_context};
 pub use objects::{TaskObject, ThreadObject};
 pub use scheduler::Scheduler;
 pub use system::{

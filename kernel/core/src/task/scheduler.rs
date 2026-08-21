@@ -3,6 +3,7 @@ use spin::Mutex;
 
 use crate::{
     object::{KernelObjectRef, ObjectId},
+    task::KernelContext,
     time::{self, MonotonicInstant, TimerRequest, TimerService, WakeEvent, WakeToken},
 };
 
@@ -27,6 +28,8 @@ struct SchedulerState {
     waiting_objects: BTreeMap<ObjectId, VecDeque<ThreadId>>,
     next_wake_token: u64,
     context_switches: u64,
+    ticks_remaining: u32,
+    preemption_pending: bool,
 }
 
 pub struct Scheduler {
@@ -65,6 +68,8 @@ impl Scheduler {
                 waiting_objects: BTreeMap::new(),
                 next_wake_token: 1,
                 context_switches: 0,
+                ticks_remaining: 1,
+                preemption_pending: false,
             }),
         }
     }
@@ -83,6 +88,7 @@ impl Scheduler {
             input_receive_waits: state.waiting_inputs.values().map(VecDeque::len).sum(),
             object_waits: state.waiting_objects.values().map(VecDeque::len).sum(),
             context_switches: state.context_switches,
+            preemption_pending: state.preemption_pending,
         }
     }
 
@@ -160,6 +166,31 @@ impl Scheduler {
             state.current = None;
         }
 
+        schedule_next_locked(&mut state, ScheduleTrigger::Yield, previous)
+    }
+
+    pub fn preempt_current_if_needed(&self) -> Result<ScheduleDecision, SchedulerError> {
+        let mut state = self.state.lock();
+        if !state.preemption_pending {
+            return Ok(decision(
+                &state,
+                ScheduleTrigger::Explicit,
+                state.current,
+                state.current,
+            ));
+        }
+        let previous = state.current;
+        if let Some(current) = previous {
+            let thread = lookup_thread(&state, current)?;
+            thread.transition_to(
+                ExecutionState::Runnable,
+                None,
+                Some(ThreadWakeReason::Yield),
+            );
+            state.runnable.push_back(current);
+            state.current = None;
+        }
+        state.preemption_pending = false;
         schedule_next_locked(&mut state, ScheduleTrigger::Yield, previous)
     }
 
@@ -509,8 +540,50 @@ impl Scheduler {
         }
     }
 
+    pub fn handle_tick(&self) {
+        let mut state = self.state.lock();
+        if state.current.is_none() {
+            return;
+        }
+        if state.ticks_remaining > 0 {
+            state.ticks_remaining -= 1;
+        }
+        if state.ticks_remaining == 0 && state.runnable.len() > 0 {
+            state.preemption_pending = true;
+        }
+    }
+
+    pub fn consume_preemption(&self) -> bool {
+        let mut state = self.state.lock();
+        if state.preemption_pending {
+            state.preemption_pending = false;
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn current_thread(&self) -> Option<ThreadId> {
         self.state.lock().current
+    }
+
+    pub fn kernel_context_switch_info(&self) -> Option<(ThreadId, Option<KernelContext>, Option<KernelContext>)> {
+        let state = self.state.lock();
+        let previous = state.current?;
+        let next = state.runnable.front()?;
+        
+        if previous == *next {
+            return None;
+        }
+
+        let prev_context = lookup_thread_record(&state, previous)
+            .ok()
+            .and_then(|t| t.object.thread().and_then(|t| t.kernel_context()));
+        let next_context = lookup_thread_record(&state, *next)
+            .ok()
+            .and_then(|t| t.object.thread().and_then(|t| t.kernel_context()));
+
+        Some((previous, prev_context, next_context))
     }
 
     #[cfg(test)]
@@ -598,6 +671,8 @@ fn schedule_next_locked(
             Some(trigger_to_wake_reason(trigger)),
         );
         state.current = Some(thread_id);
+        state.ticks_remaining = 1;
+        state.preemption_pending = false;
         if previous != Some(thread_id) {
             state.context_switches = state.context_switches.saturating_add(1);
         }

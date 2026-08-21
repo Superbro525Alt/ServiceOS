@@ -134,6 +134,9 @@ pub fn note_external_interrupt(_vector: InterruptVector) {
 pub fn note_timer_interrupt(_vector: InterruptVector) -> Option<TickOutcome> {
     let state = state()?;
     state.timer_interrupts.fetch_add(1, Ordering::Relaxed);
+    if let Some(scheduler) = crate::task::system().map(|s| s.scheduler()) {
+        scheduler.handle_tick();
+    }
     time::manager().map(|manager| manager.handle_tick())
 }
 

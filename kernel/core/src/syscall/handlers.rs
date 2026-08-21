@@ -22,8 +22,9 @@ pub(crate) use ipc::{
     handle_handle_duplicate,
 };
 pub(crate) use memory::{
-    handle_memory_create, handle_memory_info, handle_memory_map, handle_memory_map_range,
-    handle_memory_read, handle_memory_write,
+    handle_fault_handler_register, handle_fault_handler_unregister, handle_memory_create,
+    handle_memory_info, handle_memory_map, handle_memory_map_range, handle_memory_protect,
+    handle_memory_query, handle_memory_read, handle_memory_unmap, handle_memory_write,
 };
 pub(crate) use object::{
     handle_event_create, handle_event_reset, handle_event_signal, handle_object_info,

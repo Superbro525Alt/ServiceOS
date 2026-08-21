@@ -7,6 +7,7 @@ pub mod block;
 pub mod bootstrap;
 pub mod capability;
 pub mod display;
+pub mod fault;
 pub mod input;
 pub mod interrupts;
 pub mod ipc;

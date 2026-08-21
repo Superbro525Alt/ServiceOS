@@ -1,16 +1,20 @@
 use crate::cpu;
 use serviceos_kernel_core::memory::{
-    EarlyFrameAllocator, Frame, MappingError, MappingFlags, PageMapper, PhysicalAddress,
+    EarlyFrameAllocator, Frame, MappingError, MappingFlags, PageMapper, PageSize, PhysicalAddress,
     VirtualAddress,
 };
 use x86_64::{
     PhysAddr, VirtAddr,
     registers::control::Cr3,
     structures::paging::{
-        Mapper, OffsetPageTable, Page, PageSize, PageTable, PageTableFlags, PhysFrame, Size4KiB,
-        Translate,
+        Mapper, OffsetPageTable, Page, PageSize as X86PageSize, PageTable, PageTableFlags,
+        PhysFrame, Size4KiB, Translate,
     },
 };
+
+/// Physical memory offset for the kernel's direct map
+/// This maps physical memory at virtual address 0xffff_8000_0000_0000
+const PHYSICAL_MEMORY_OFFSET: u64 = 0xffff_8000_0000_0000;
 
 pub struct ActivePageTable {
     root_frame: PhysicalAddress,
@@ -31,6 +35,24 @@ impl ActivePageTable {
         Self {
             root_frame: root_address,
             inner: unsafe { OffsetPageTable::new(level_4_table, VirtAddr::new(0)) },
+        }
+    }
+
+    /// Create a new active page table with the kernel's direct map
+    ///
+    /// # Safety
+    /// This function must be called with interrupts disabled and the
+    /// page table must be properly initialized.
+    pub unsafe fn new_with_direct_map() -> Self {
+        let (root_frame, _) = Cr3::read();
+        let root_address = PhysicalAddress::new(root_frame.start_address().as_u64());
+        let level_4_table = page_table_ptr(root_address);
+
+        Self {
+            root_frame: root_address,
+            inner: unsafe {
+                OffsetPageTable::new(level_4_table, VirtAddr::new(PHYSICAL_MEMORY_OFFSET))
+            },
         }
     }
 }
@@ -55,7 +77,32 @@ impl OwnedPageTable {
 
         Ok(Self {
             root_frame,
-            inner: unsafe { OffsetPageTable::new(root_table, VirtAddr::new(0)) },
+            inner: unsafe {
+                OffsetPageTable::new(root_table, VirtAddr::new(PHYSICAL_MEMORY_OFFSET))
+            },
+        })
+    }
+
+    /// Create a new kernel page table with the direct map
+    ///
+    /// # Safety
+    /// This function must be called with interrupts disabled and the
+    /// page table must be properly initialized.
+    pub unsafe fn new_kernel_space(
+        allocator: &mut EarlyFrameAllocator,
+    ) -> Result<Self, MappingError> {
+        let Some(root_frame) = allocator.allocate_4kib() else {
+            return Err(MappingError::FrameAllocationFailed);
+        };
+        let root_frame = root_frame.base;
+        let root_table = page_table_ptr(root_frame);
+        root_table.zero();
+
+        Ok(Self {
+            root_frame,
+            inner: unsafe {
+                OffsetPageTable::new(root_table, VirtAddr::new(PHYSICAL_MEMORY_OFFSET))
+            },
         })
     }
 
@@ -66,7 +113,39 @@ impl OwnedPageTable {
     pub unsafe fn from_root(root_frame: PhysicalAddress) -> Self {
         Self {
             root_frame,
-            inner: unsafe { OffsetPageTable::new(page_table_ptr(root_frame), VirtAddr::new(0)) },
+            inner: unsafe {
+                OffsetPageTable::new(
+                    page_table_ptr(root_frame),
+                    VirtAddr::new(PHYSICAL_MEMORY_OFFSET),
+                )
+            },
+        }
+    }
+
+    /// Map a physical page into the kernel's direct map
+    pub fn map_direct_map_page(
+        &mut self,
+        physical_address: PhysicalAddress,
+        flags: MappingFlags,
+        allocator: &mut EarlyFrameAllocator,
+    ) -> Result<VirtualAddress, MappingError> {
+        let virtual_address =
+            VirtualAddress::new(physical_address.as_u64() + PHYSICAL_MEMORY_OFFSET);
+        let frame = Frame {
+            base: physical_address,
+            size: PageSize::Size4KiB,
+        };
+        self.map_page(virtual_address, frame, flags, allocator)?;
+        Ok(virtual_address)
+    }
+
+    /// Translate a virtual address in the direct map to a physical address
+    pub fn translate_direct_map(&self, virtual_address: VirtualAddress) -> Option<PhysicalAddress> {
+        let va = virtual_address.as_u64();
+        if va >= PHYSICAL_MEMORY_OFFSET && va < 0xffff_c000_0000_0000 {
+            Some(PhysicalAddress::new(va - PHYSICAL_MEMORY_OFFSET))
+        } else {
+            None
         }
     }
 }

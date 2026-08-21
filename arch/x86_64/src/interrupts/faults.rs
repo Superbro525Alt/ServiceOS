@@ -22,7 +22,24 @@ fn handle_exception(report: ExceptionReport) -> ! {
         report.disposition,
         serviceos_kernel_core::interrupts::FaultDisposition::TerminateTask
     ) {
-        terminate_faulting_user_task(report);
+        let fault_type = serviceos_kernel_core::fault::fault_type_for_exception(&report.detail);
+        if let Some(handler) = serviceos_kernel_core::fault::lookup_fault_handler(&fault_type) {
+            let endpoint = handler.endpoint;
+            let fault_code = user_fault_exit_code(report);
+            
+            serial::write_args(format_args!(
+                "serviceos: fault handler found for type={:?}, notifying endpoint\n",
+                fault_type
+            ));
+            
+            if let Some(tasks) = task::system() {
+                tasks.notify_object_ready(endpoint);
+            }
+            
+            crate::user::return_to_kernel();
+        } else {
+            terminate_faulting_user_task(report);
+        }
     }
 
     cpu::halt_loop()

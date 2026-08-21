@@ -10,14 +10,14 @@
 | &#x2705; | Kernel foundation | Kernel object model, capabilities, and IPC |
 | &#x2705; | Kernel foundation | Scheduler, task model, and userspace entry |
 | &#x2705; | Kernel foundation | Hardening, tests, and architecture cleanup |
-| &#x2B1C; | Scheduling / memory / faults | Complete real CPU register context switching between unrelated kernel threads instead of the current bootstrap-oriented path |
-| &#x2B1C; | Scheduling / memory / faults | Switch from the current boot-derived paging path to fully kernel-owned page tables and a fuller physical direct map |
-| &#x2B1C; | Scheduling / memory / faults | Extend the new memory-object info and range-based mapping syscalls into fuller VM control, including unmap, protection changes, virtual-memory queries, and less runtime-managed shared-range allocation |
-| &#x2B1C; | Scheduling / memory / faults | Extend the new generic object inspection, event, and object-wait substrate into broader shared-memory IPC transport, timer/object coverage, and wider userspace adoption beyond the current task/event/channel/input/packet readiness set |
-| &#x2B1C; | Scheduling / memory / faults | Add fast `SYSCALL/SYSRET` on x86_64 alongside the current interrupt-gate syscall path |
-| &#x2B1C; | Scheduling / memory / faults | Add preemptive time-slice enforcement, CPU-local run queues, and SMP scheduling and interrupt routing |
-| &#x2B1C; | Scheduling / memory / faults | Add alternate x86 timer and interrupt sources such as LAPIC and HPET where they improve wake behavior and scheduling fidelity |
-| &#x2B1C; | Scheduling / memory / faults | Extend the current fault-state propagation, manager supervision, and desktop fault surfacing into richer user-fault upcalls and recovery policy |
+| &#x2705; | Scheduling / memory / faults | Complete real CPU register context switching between unrelated kernel threads instead of the current bootstrap-oriented path |
+| &#x2705; | Scheduling / memory / faults | Switch from the current boot-derived paging path to fully kernel-owned page tables and a fuller physical direct map |
+| &#x2705; | Scheduling / memory / faults | Extend the new memory-object info and range-based mapping syscalls into fuller VM control, including unmap, protection changes, virtual-memory queries, and less runtime-managed shared-range allocation |
+| &#x2705; | Scheduling / memory / faults | Extend the new generic object inspection, event, and object-wait substrate into broader shared-memory IPC transport, timer/object coverage, and wider userspace adoption beyond the current task/event/channel/input/packet readiness set |
+| &#x2705; | Scheduling / memory / faults | Add fast `SYSCALL/SYSRET` on x86_64 alongside the current interrupt-gate syscall path |
+| &#x2705; | Scheduling / memory / faults | Add preemptive time-slice enforcement, CPU-local run queues, and SMP scheduling and interrupt routing |
+| &#x2705; | Scheduling / memory / faults | Add alternate x86 timer and interrupt sources such as LAPIC and HPET where they improve wake behavior and scheduling fidelity |
+| &#x2705; | Scheduling / memory / faults | Extend the current fault-state propagation, manager supervision, and desktop fault surfacing into richer user-fault upcalls and recovery policy |
 
 ## 2. Root Bootstrap and Core Service Management
 

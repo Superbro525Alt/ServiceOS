@@ -10,7 +10,14 @@ use super::{
     },
     common::map_capability_error,
 };
-use crate::{capability::CapabilityRights, memory::PAGE_SIZE_BYTES, user};
+use crate::{
+    capability::CapabilityRights,
+    fault::{self, FaultType},
+    memory::PAGE_SIZE_BYTES,
+    object::ObjectId,
+    task::ThreadId,
+    user,
+};
 
 pub(crate) fn handle_memory_read(context: &SyscallContext) -> SyscallReturn {
     let Ok(current_task) = current_task() else {
@@ -154,6 +161,170 @@ pub(crate) fn handle_memory_map_range(context: &SyscallContext) -> SyscallReturn
         return SyscallReturn::error(SyscallError::InvalidArgument);
     };
     map_memory_object(context, context.arguments[0] as Handle, *request)
+}
+
+pub(crate) fn handle_memory_unmap(context: &SyscallContext) -> SyscallReturn {
+    let Ok(current_task) = current_task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let object = match resolve_object(
+        &current_task,
+        context.arguments[0] as Handle,
+        CapabilityRights::READ.union(CapabilityRights::MAP),
+    ) {
+        Ok(view) => view.object,
+        Err(error) => return SyscallReturn::error(error),
+    };
+    let _memory = match object.memory_object() {
+        Some(memory) => memory,
+        None => return SyscallReturn::error(SyscallError::InvalidArgument),
+    };
+    
+    let Ok(_address) = usize::try_from(context.arguments[1]) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Ok(_length) = usize::try_from(context.arguments[2]) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+
+    // TODO: Implement actual page table manipulation for unmap
+    // For now, return success as a placeholder
+    SyscallReturn::success(0)
+}
+
+pub(crate) fn handle_memory_protect(context: &SyscallContext) -> SyscallReturn {
+    let Ok(current_task) = current_task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let object = match resolve_object(
+        &current_task,
+        context.arguments[0] as Handle,
+        CapabilityRights::READ.union(CapabilityRights::MAP),
+    ) {
+        Ok(view) => view.object,
+        Err(error) => return SyscallReturn::error(error),
+    };
+    let _memory = match object.memory_object() {
+        Some(memory) => memory,
+        None => return SyscallReturn::error(SyscallError::InvalidArgument),
+    };
+    
+    let Ok(_address) = usize::try_from(context.arguments[1]) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Ok(_length) = usize::try_from(context.arguments[2]) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let _protect_flags = context.arguments[3];
+
+    // TODO: Implement actual page table manipulation for protection changes
+    // For now, return success as a placeholder
+    SyscallReturn::success(0)
+}
+
+pub(crate) fn handle_memory_query(context: &SyscallContext) -> SyscallReturn {
+    let Ok(current_task) = current_task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let _object = match resolve_object(
+        &current_task,
+        context.arguments[0] as Handle,
+        CapabilityRights::READ,
+    ) {
+        Ok(view) => view.object,
+        Err(error) => return SyscallReturn::error(error),
+    };
+    
+    let Ok(_address) = usize::try_from(context.arguments[1]) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+
+    // TODO: Implement actual VM query
+    // For now, return success with zeroed info as a placeholder
+    let Ok(info_out) = (unsafe { user_mut::<MemoryMapRequest>(context.arguments[2]) }) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+
+    *info_out = MemoryMapRequest {
+        offset_bytes: 0,
+        length_bytes: 0,
+        address_hint: 0,
+        flags: 0,
+        reserved: 0,
+    };
+    SyscallReturn::success(0)
+}
+
+pub(crate) fn handle_fault_handler_register(context: &SyscallContext) -> SyscallReturn {
+    let Ok(current_task) = current_task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(task) = current_task.task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(scheduler) = crate::task::system().map(|s| s.scheduler()) else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let thread_id = match scheduler.current_thread() {
+        Some(id) => id,
+        None => return SyscallReturn::error(SyscallError::NotInitialized),
+    };
+
+    let fault_type_value = context.arguments[0];
+    let endpoint_handle = context.arguments[1] as Handle;
+
+    let fault_type = match fault_type_value {
+        0 => FaultType::InvalidOpcode,
+        1 => FaultType::PageFault,
+        2 => FaultType::GeneralProtection,
+        3 => FaultType::Breakpoint,
+        n => FaultType::Other(n as u8),
+    };
+
+    let view = match resolve_object(
+        &current_task,
+        endpoint_handle,
+        CapabilityRights::SEND,
+    ) {
+        Ok(view) => view,
+        Err(error) => return SyscallReturn::error(error),
+    };
+
+    match fault::register_fault_handler(
+        fault_type,
+        thread_id,
+        view.object.id(),
+    ) {
+        Ok(()) => SyscallReturn::success(0),
+        Err(fault::FaultRegistrationError::AlreadyRegistered) => {
+            SyscallReturn::error(SyscallError::Busy)
+        }
+        Err(fault::FaultRegistrationError::NotRegistered) => {
+            SyscallReturn::error(SyscallError::NotFound)
+        }
+    }
+}
+
+pub(crate) fn handle_fault_handler_unregister(context: &SyscallContext) -> SyscallReturn {
+    let fault_type_value = context.arguments[0];
+
+    let fault_type = match fault_type_value {
+        0 => FaultType::InvalidOpcode,
+        1 => FaultType::PageFault,
+        2 => FaultType::GeneralProtection,
+        3 => FaultType::Breakpoint,
+        n => FaultType::Other(n as u8),
+    };
+
+    match fault::unregister_fault_handler(&fault_type) {
+        Ok(()) => SyscallReturn::success(0),
+        Err(fault::FaultRegistrationError::AlreadyRegistered) => {
+            SyscallReturn::error(SyscallError::Busy)
+        }
+        Err(fault::FaultRegistrationError::NotRegistered) => {
+            SyscallReturn::error(SyscallError::NotFound)
+        }
+    }
 }
 
 fn map_memory_object(

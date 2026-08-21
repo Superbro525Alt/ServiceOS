@@ -164,6 +164,7 @@ pub struct SchedulerSnapshot {
     pub input_receive_waits: usize,
     pub object_waits: usize,
     pub context_switches: u64,
+    pub preemption_pending: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

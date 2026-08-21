@@ -2,6 +2,7 @@ mod faults;
 mod irq;
 mod pic;
 mod syscall;
+mod syscall_fast;
 
 use core::arch::global_asm;
 
@@ -20,9 +21,10 @@ use x86_64::{
     },
 };
 
-use crate::cpu;
+use crate::{cpu, lapic, msr};
 
 global_asm!(include_str!("syscall_entry.S"));
+global_asm!(include_str!("syscall_fast_entry.S"));
 
 const DOUBLE_FAULT_IST_INDEX: u16 = 0;
 const DOUBLE_FAULT_STACK_SIZE: usize = 16 * 1024;
@@ -65,6 +67,7 @@ impl DescriptorState {
 #[repr(C, align(16))]
 struct InterruptStack<const N: usize>([u8; N]);
 
+#[derive(Clone, Copy)]
 struct SegmentSelectors {
     kernel_code: SegmentSelector,
     kernel_data: SegmentSelector,
@@ -99,6 +102,8 @@ pub fn initialize() -> DescriptorState {
     install_interrupt_table();
     pic::initialize_pic();
     pic::initialize_pit(TIMER_TICK_HZ);
+    initialize_syscall_sysret();
+    initialize_lapic();
 
     DescriptorState {
         gdt_loaded: true,
@@ -108,6 +113,34 @@ pub fn initialize() -> DescriptorState {
         pit_programmed: true,
         timer_hz: TIMER_TICK_HZ,
         syscall_vector: InterruptVector(SYSCALL_VECTOR as u16),
+    }
+}
+
+fn initialize_lapic() {
+    // Try to initialize LAPIC timer with a hint of 1GHz
+    // In a real system, this would be calibrated against the PIT
+    unsafe {
+        lapic::initialize(1_000_000_000);
+    }
+}
+
+fn initialize_syscall_sysret() {
+    unsafe extern "C" {
+        fn serviceos_x86_64_syscall_fast_entry();
+    }
+
+    let selectors = DESCRIPTOR_TABLES
+        .get()
+        .expect("descriptor tables initialized")
+        .selectors;
+
+    unsafe {
+        msr::enable_syscall_sysret(
+            serviceos_x86_64_syscall_fast_entry as *const () as u64,
+            selectors.kernel_code.0,
+            selectors.user_code.0,
+            selectors.user_data.0,
+        );
     }
 }
 

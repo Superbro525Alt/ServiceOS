@@ -273,6 +273,9 @@ pub fn initialize() {
         register_address_space,
         release_address_space,
         map_memory_object,
+        unmap_memory_range,
+        update_memory_protection,
+        translate_address,
     });
 }
 
@@ -322,12 +325,67 @@ pub fn release_address_space(address_space_id: AddressSpaceId) {
     ADDRESS_SPACES.lock().release(address_space_id);
 }
 
-pub fn map_memory_object(
-    address_space_id: AddressSpaceId,
-    virtual_start: VirtualAddress,
-    frames: &[PhysicalAddress],
-    writable: bool,
-) -> Result<(), MappingError> {
+    pub fn unmap_memory_range(
+        address_space_id: AddressSpaceId,
+        virtual_start: VirtualAddress,
+        page_count: usize,
+    ) -> Result<(), MappingError> {
+        let Some(root_frame) = ADDRESS_SPACES.lock().root(address_space_id) else {
+            return Err(MappingError::Unsupported);
+        };
+        let Some(_memory) = memory::manager() else {
+            return Err(MappingError::FrameAllocationFailed);
+        };
+        let mut mapper = unsafe { OwnedPageTable::from_root(root_frame) };
+        for i in 0..page_count {
+            let page_addr = virtual_start.offset((i as u64) * 4096);
+            mapper.unmap_page(page_addr)?;
+        }
+        Ok(())
+    }
+
+    pub fn update_memory_protection(
+        address_space_id: AddressSpaceId,
+        virtual_start: VirtualAddress,
+        page_count: usize,
+        flags: MappingFlags,
+    ) -> Result<(), MappingError> {
+        let Some(root_frame) = ADDRESS_SPACES.lock().root(address_space_id) else {
+            return Err(MappingError::Unsupported);
+        };
+        let Some(_memory) = memory::manager() else {
+            return Err(MappingError::FrameAllocationFailed);
+        };
+        let mut mapper = unsafe { OwnedPageTable::from_root(root_frame) };
+        let mut page_flags = MappingFlags::USER_ACCESSIBLE;
+        if flags.contains(MappingFlags::WRITABLE) {
+            page_flags |= MappingFlags::WRITABLE;
+        }
+        if flags.contains(MappingFlags::EXECUTABLE) {
+            page_flags |= MappingFlags::EXECUTABLE;
+        }
+        for i in 0..page_count {
+            let page_addr = virtual_start.offset((i as u64) * 4096);
+            mapper.update_protection(page_addr, page_flags)?;
+        }
+        Ok(())
+    }
+
+    pub fn translate_address(
+        address_space_id: AddressSpaceId,
+        virtual_address: VirtualAddress,
+    ) -> Option<PhysicalAddress> {
+        let root_frame = ADDRESS_SPACES.lock().root(address_space_id)?;
+        let mapper = unsafe { OwnedPageTable::from_root(root_frame) };
+        mapper.translate(virtual_address)
+    }
+
+    pub fn map_memory_object(
+        address_space_id: AddressSpaceId,
+        virtual_start: VirtualAddress,
+        frames: &[PhysicalAddress],
+        writable: bool,
+    ) -> Result<(), MappingError> {
     let Some(root_frame) = ADDRESS_SPACES.lock().root(address_space_id) else {
         return Err(MappingError::Unsupported);
     };

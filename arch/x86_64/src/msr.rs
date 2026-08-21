@@ -1,10 +1,10 @@
 use core::arch::asm;
 
 /// Model-Specific Register addresses for SYSCALL/SYSRET
-pub const MSR_STAR: u32 = 0xC000_0080;
-pub const MSR_LSTAR: u32 = 0xC000_0081;
-pub const MSR_FMASK: u32 = 0xC000_0084;
 pub const MSR_EFER: u32 = 0xC000_0080;
+pub const MSR_STAR: u32 = 0xC000_0081;
+pub const MSR_LSTAR: u32 = 0xC000_0082;
+pub const MSR_FMASK: u32 = 0xC000_0084;
 
 /// EFER bits
 pub const EFER_SCE: u64 = 1 << 0;

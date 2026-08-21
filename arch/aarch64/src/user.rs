@@ -371,6 +371,9 @@ serviceos_aarch64_lower_el_sync:
             register_address_space,
             release_address_space,
             map_memory_object,
+            unmap_memory_range,
+            update_memory_protection,
+            translate_address,
         });
     }
 
@@ -421,6 +424,61 @@ serviceos_aarch64_lower_el_sync:
 
     pub fn release_address_space(address_space_id: AddressSpaceId) {
         ADDRESS_SPACES.lock().release(address_space_id);
+    }
+
+    pub fn unmap_memory_range(
+        address_space_id: AddressSpaceId,
+        virtual_start: VirtualAddress,
+        page_count: usize,
+    ) -> Result<(), MappingError> {
+        let Some(root_frame) = ADDRESS_SPACES.lock().root(address_space_id) else {
+            return Err(MappingError::Unsupported);
+        };
+        let Some(_memory) = memory::manager() else {
+            return Err(MappingError::FrameAllocationFailed);
+        };
+        let mut mapper = unsafe { OwnedPageTable::from_root(root_frame) };
+        for i in 0..page_count {
+            let page_addr = virtual_start.offset((i as u64) * 4096);
+            mapper.unmap_page(page_addr)?;
+        }
+        Ok(())
+    }
+
+    pub fn update_memory_protection(
+        address_space_id: AddressSpaceId,
+        virtual_start: VirtualAddress,
+        page_count: usize,
+        flags: MappingFlags,
+    ) -> Result<(), MappingError> {
+        let Some(root_frame) = ADDRESS_SPACES.lock().root(address_space_id) else {
+            return Err(MappingError::Unsupported);
+        };
+        let Some(_memory) = memory::manager() else {
+            return Err(MappingError::FrameAllocationFailed);
+        };
+        let mut mapper = unsafe { OwnedPageTable::from_root(root_frame) };
+        let mut page_flags = MappingFlags::USER_ACCESSIBLE;
+        if flags.contains(MappingFlags::WRITABLE) {
+            page_flags |= MappingFlags::WRITABLE;
+        }
+        if flags.contains(MappingFlags::EXECUTABLE) {
+            page_flags |= MappingFlags::EXECUTABLE;
+        }
+        for i in 0..page_count {
+            let page_addr = virtual_start.offset((i as u64) * 4096);
+            mapper.update_protection(page_addr, page_flags)?;
+        }
+        Ok(())
+    }
+
+    pub fn translate_address(
+        address_space_id: AddressSpaceId,
+        virtual_address: VirtualAddress,
+    ) -> Option<PhysicalAddress> {
+        let root_frame = ADDRESS_SPACES.lock().root(address_space_id)?;
+        let mapper = unsafe { OwnedPageTable::from_root(root_frame) };
+        mapper.translate(virtual_address)
     }
 
     pub fn map_memory_object(
@@ -480,7 +538,7 @@ serviceos_aarch64_lower_el_sync:
 #[cfg(not(target_arch = "aarch64"))]
 mod imp {
     use serviceos_kernel_core::{
-        memory::{MappingError, PhysicalAddress, VirtualAddress},
+        memory::{MappingError, MappingFlags, PhysicalAddress, VirtualAddress},
         task::{AddressSpaceId, ThreadId},
         user::{
             self, AddressSpacePreparationError, PreparedUserAddressSpace, UserArchHooks,
@@ -505,6 +563,9 @@ mod imp {
             register_address_space,
             release_address_space,
             map_memory_object,
+            unmap_memory_range,
+            update_memory_protection,
+            translate_address,
         });
     }
 
@@ -535,6 +596,30 @@ mod imp {
         Err(MappingError::Unsupported)
     }
 
+    pub fn unmap_memory_range(
+        _address_space_id: AddressSpaceId,
+        _virtual_start: VirtualAddress,
+        _page_count: usize,
+    ) -> Result<(), MappingError> {
+        Err(MappingError::Unsupported)
+    }
+
+    pub fn update_memory_protection(
+        _address_space_id: AddressSpaceId,
+        _virtual_start: VirtualAddress,
+        _page_count: usize,
+        _flags: MappingFlags,
+    ) -> Result<(), MappingError> {
+        Err(MappingError::Unsupported)
+    }
+
+    pub fn translate_address(
+        _address_space_id: AddressSpaceId,
+        _virtual_address: VirtualAddress,
+    ) -> Option<PhysicalAddress> {
+        None
+    }
+
     pub fn run_thread(_thread_id: ThreadId) -> Result<(), UserLaunchError> {
         Err(UserLaunchError::Unsupported)
     }
@@ -543,5 +628,5 @@ mod imp {
 pub use imp::{
     SavedUserContext, UserLaunchError, initialize, map_memory_object, prepare_address_space,
     register_address_space, register_thread_launch, release_address_space, release_thread_runtime,
-    run_thread,
+    run_thread, translate_address, unmap_memory_range, update_memory_protection,
 };

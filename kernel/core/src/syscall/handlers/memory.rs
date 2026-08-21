@@ -13,9 +13,7 @@ use super::{
 use crate::{
     capability::CapabilityRights,
     fault::{self, FaultType},
-    memory::PAGE_SIZE_BYTES,
-    object::ObjectId,
-    task::ThreadId,
+    memory::{MappingFlags, PAGE_SIZE_BYTES},
     user,
 };
 
@@ -179,17 +177,40 @@ pub(crate) fn handle_memory_unmap(context: &SyscallContext) -> SyscallReturn {
         Some(memory) => memory,
         None => return SyscallReturn::error(SyscallError::InvalidArgument),
     };
-    
-    let Ok(_address) = usize::try_from(context.arguments[1]) else {
+
+    let Ok(address) = usize::try_from(context.arguments[1]) else {
         return SyscallReturn::error(SyscallError::InvalidArgument);
     };
-    let Ok(_length) = usize::try_from(context.arguments[2]) else {
+    let Ok(length) = usize::try_from(context.arguments[2]) else {
         return SyscallReturn::error(SyscallError::InvalidArgument);
     };
 
-    // TODO: Implement actual page table manipulation for unmap
-    // For now, return success as a placeholder
-    SyscallReturn::success(0)
+    let Some(task) = current_task.task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(address_space_id) = task.address_space() else {
+        return SyscallReturn::error(SyscallError::Unsupported);
+    };
+    let Some(hooks) = user::arch_hooks() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+
+    let page_size = PAGE_SIZE_BYTES as usize;
+    let page_count = length.div_ceil(page_size);
+
+    match (hooks.unmap_memory_range)(address_space_id, crate::memory::VirtualAddress::new(address as u64), page_count) {
+        Ok(()) => SyscallReturn::success(0),
+        Err(crate::memory::MappingError::AddressAlignment) => {
+            SyscallReturn::error(SyscallError::InvalidArgument)
+        }
+        Err(crate::memory::MappingError::AlreadyMapped) => SyscallReturn::error(SyscallError::Busy),
+        Err(crate::memory::MappingError::FrameAllocationFailed) => {
+            SyscallReturn::error(SyscallError::Busy)
+        }
+        Err(crate::memory::MappingError::Unsupported) => {
+            SyscallReturn::error(SyscallError::Unsupported)
+        }
+    }
 }
 
 pub(crate) fn handle_memory_protect(context: &SyscallContext) -> SyscallReturn {
@@ -208,25 +229,59 @@ pub(crate) fn handle_memory_protect(context: &SyscallContext) -> SyscallReturn {
         Some(memory) => memory,
         None => return SyscallReturn::error(SyscallError::InvalidArgument),
     };
-    
-    let Ok(_address) = usize::try_from(context.arguments[1]) else {
-        return SyscallReturn::error(SyscallError::InvalidArgument);
-    };
-    let Ok(_length) = usize::try_from(context.arguments[2]) else {
-        return SyscallReturn::error(SyscallError::InvalidArgument);
-    };
-    let _protect_flags = context.arguments[3];
 
-    // TODO: Implement actual page table manipulation for protection changes
-    // For now, return success as a placeholder
-    SyscallReturn::success(0)
+    let Ok(address) = usize::try_from(context.arguments[1]) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Ok(length) = usize::try_from(context.arguments[2]) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let protect_flags = context.arguments[3];
+
+    let Some(task) = current_task.task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(address_space_id) = task.address_space() else {
+        return SyscallReturn::error(SyscallError::Unsupported);
+    };
+    let Some(hooks) = user::arch_hooks() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+
+    let page_size = PAGE_SIZE_BYTES as usize;
+    let page_count = length.div_ceil(page_size);
+
+    let mut flags = MappingFlags::empty();
+    if protect_flags & 1 != 0 {
+        flags |= MappingFlags::WRITABLE;
+    }
+    if protect_flags & 2 != 0 {
+        flags |= MappingFlags::EXECUTABLE;
+    }
+    if protect_flags & 4 != 0 {
+        flags |= MappingFlags::USER_ACCESSIBLE;
+    }
+
+    match (hooks.update_memory_protection)(address_space_id, crate::memory::VirtualAddress::new(address as u64), page_count, flags) {
+        Ok(()) => SyscallReturn::success(0),
+        Err(crate::memory::MappingError::AddressAlignment) => {
+            SyscallReturn::error(SyscallError::InvalidArgument)
+        }
+        Err(crate::memory::MappingError::AlreadyMapped) => SyscallReturn::error(SyscallError::Busy),
+        Err(crate::memory::MappingError::FrameAllocationFailed) => {
+            SyscallReturn::error(SyscallError::Busy)
+        }
+        Err(crate::memory::MappingError::Unsupported) => {
+            SyscallReturn::error(SyscallError::Unsupported)
+        }
+    }
 }
 
 pub(crate) fn handle_memory_query(context: &SyscallContext) -> SyscallReturn {
     let Ok(current_task) = current_task() else {
         return SyscallReturn::error(SyscallError::NotInitialized);
     };
-    let _object = match resolve_object(
+    let object = match resolve_object(
         &current_task,
         context.arguments[0] as Handle,
         CapabilityRights::READ,
@@ -234,21 +289,43 @@ pub(crate) fn handle_memory_query(context: &SyscallContext) -> SyscallReturn {
         Ok(view) => view.object,
         Err(error) => return SyscallReturn::error(error),
     };
-    
-    let Ok(_address) = usize::try_from(context.arguments[1]) else {
+
+    let Ok(address) = usize::try_from(context.arguments[1]) else {
         return SyscallReturn::error(SyscallError::InvalidArgument);
     };
 
-    // TODO: Implement actual VM query
-    // For now, return success with zeroed info as a placeholder
+    let Some(task) = current_task.task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(address_space_id) = task.address_space() else {
+        return SyscallReturn::error(SyscallError::Unsupported);
+    };
+    let Some(hooks) = user::arch_hooks() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+
+    let virt_addr = crate::memory::VirtualAddress::new(address as u64);
+    let Some(_memory) = object.memory_object() else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+
+    let page_size = PAGE_SIZE_BYTES as usize;
+
+    let Some(phys_addr) = (hooks.translate_address)(address_space_id, virt_addr) else {
+        return SyscallReturn::error(SyscallError::NotFound);
+    };
+
     let Ok(info_out) = (unsafe { user_mut::<MemoryMapRequest>(context.arguments[2]) }) else {
         return SyscallReturn::error(SyscallError::InvalidArgument);
     };
 
+    let page_index = address / page_size;
+    let offset = page_index * page_size;
+
     *info_out = MemoryMapRequest {
-        offset_bytes: 0,
-        length_bytes: 0,
-        address_hint: 0,
+        offset_bytes: offset,
+        length_bytes: page_size,
+        address_hint: phys_addr.as_u64(),
         flags: 0,
         reserved: 0,
     };
@@ -257,9 +334,6 @@ pub(crate) fn handle_memory_query(context: &SyscallContext) -> SyscallReturn {
 
 pub(crate) fn handle_fault_handler_register(context: &SyscallContext) -> SyscallReturn {
     let Ok(current_task) = current_task() else {
-        return SyscallReturn::error(SyscallError::NotInitialized);
-    };
-    let Some(task) = current_task.task() else {
         return SyscallReturn::error(SyscallError::NotInitialized);
     };
     let Some(scheduler) = crate::task::system().map(|s| s.scheduler()) else {

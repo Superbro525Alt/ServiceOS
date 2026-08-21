@@ -165,6 +165,22 @@ pub trait PageMapper {
         allocator: &mut super::EarlyFrameAllocator,
     ) -> Result<(), MappingError>;
     fn translate(&self, address: VirtualAddress) -> Option<PhysicalAddress>;
+    fn unmap_page(
+        &mut self,
+        page_start: VirtualAddress,
+    ) -> Result<(), MappingError> {
+        let _ = page_start;
+        Err(MappingError::Unsupported)
+    }
+    fn update_protection(
+        &mut self,
+        page_start: VirtualAddress,
+        flags: MappingFlags,
+    ) -> Result<(), MappingError> {
+        let _ = page_start;
+        let _ = flags;
+        Err(MappingError::Unsupported)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

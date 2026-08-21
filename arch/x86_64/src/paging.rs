@@ -9,12 +9,13 @@ use x86_64::{
     structures::paging::{
         Mapper, OffsetPageTable, Page, PageSize as X86PageSize, PageTable, PageTableFlags,
         PhysFrame, Size4KiB, Translate,
+        mapper::{FlagUpdateError, UnmapError},
     },
 };
 
 /// Physical memory offset for the kernel's direct map
-/// This maps physical memory at virtual address 0xffff_8000_0000_0000
-const PHYSICAL_MEMORY_OFFSET: u64 = 0xffff_8000_0000_0000;
+/// Currently identity-mapped (offset 0) for boot compatibility.
+const PHYSICAL_MEMORY_OFFSET: u64 = 0x0000_0000_0000_0000;
 
 pub struct ActivePageTable {
     root_frame: PhysicalAddress,
@@ -196,6 +197,47 @@ impl PageMapper for ActivePageTable {
             .translate_addr(VirtAddr::new(address.as_u64()))
             .map(|address| PhysicalAddress::new(address.as_u64()))
     }
+
+    fn unmap_page(&mut self, page_start: VirtualAddress) -> Result<(), MappingError> {
+        if page_start.as_u64() % Size4KiB::SIZE != 0 {
+            return Err(MappingError::AddressAlignment);
+        }
+        let page: Page<Size4KiB> = Page::from_start_address(VirtAddr::new(page_start.as_u64()))
+            .map_err(|_| MappingError::AddressAlignment)?;
+        cpu::with_write_protect_disabled(|| unsafe {
+            match self.inner.unmap(page) {
+                Ok((_frame, flush)) => {
+                    flush.flush();
+                    Ok(())
+                }
+                Err(UnmapError::PageNotMapped) => Ok(()),
+                Err(_) => Err(MappingError::Unsupported),
+            }
+        })
+    }
+
+    fn update_protection(
+        &mut self,
+        page_start: VirtualAddress,
+        flags: MappingFlags,
+    ) -> Result<(), MappingError> {
+        if page_start.as_u64() % Size4KiB::SIZE != 0 {
+            return Err(MappingError::AddressAlignment);
+        }
+        let page: Page<Size4KiB> = Page::from_start_address(VirtAddr::new(page_start.as_u64()))
+            .map_err(|_| MappingError::AddressAlignment)?;
+        let new_flags = to_page_table_flags(flags);
+        cpu::with_write_protect_disabled(|| unsafe {
+            match self.inner.update_flags(page, new_flags) {
+                Ok(flush) => {
+                    flush.flush();
+                    Ok(())
+                }
+                Err(FlagUpdateError::PageNotMapped) => Err(MappingError::Unsupported),
+                Err(_) => Err(MappingError::Unsupported),
+            }
+        })
+    }
 }
 
 impl PageMapper for OwnedPageTable {
@@ -243,6 +285,47 @@ impl PageMapper for OwnedPageTable {
         self.inner
             .translate_addr(VirtAddr::new(address.as_u64()))
             .map(|address| PhysicalAddress::new(address.as_u64()))
+    }
+
+    fn unmap_page(&mut self, page_start: VirtualAddress) -> Result<(), MappingError> {
+        if page_start.as_u64() % Size4KiB::SIZE != 0 {
+            return Err(MappingError::AddressAlignment);
+        }
+        let page: Page<Size4KiB> = Page::from_start_address(VirtAddr::new(page_start.as_u64()))
+            .map_err(|_| MappingError::AddressAlignment)?;
+        cpu::with_write_protect_disabled(|| unsafe {
+            match self.inner.unmap(page) {
+                Ok((_frame, flush)) => {
+                    flush.flush();
+                    Ok(())
+                }
+                Err(UnmapError::PageNotMapped) => Ok(()),
+                Err(_) => Err(MappingError::Unsupported),
+            }
+        })
+    }
+
+    fn update_protection(
+        &mut self,
+        page_start: VirtualAddress,
+        flags: MappingFlags,
+    ) -> Result<(), MappingError> {
+        if page_start.as_u64() % Size4KiB::SIZE != 0 {
+            return Err(MappingError::AddressAlignment);
+        }
+        let page: Page<Size4KiB> = Page::from_start_address(VirtAddr::new(page_start.as_u64()))
+            .map_err(|_| MappingError::AddressAlignment)?;
+        let new_flags = to_page_table_flags(flags);
+        cpu::with_write_protect_disabled(|| unsafe {
+            match self.inner.update_flags(page, new_flags) {
+                Ok(flush) => {
+                    flush.flush();
+                    Ok(())
+                }
+                Err(FlagUpdateError::PageNotMapped) => Err(MappingError::Unsupported),
+                Err(_) => Err(MappingError::Unsupported),
+            }
+        })
     }
 }
 

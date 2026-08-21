@@ -165,6 +165,18 @@ mod imp {
         fn translate(&self, address: VirtualAddress) -> Option<PhysicalAddress> {
             translate_address(self.root_frame, address)
         }
+
+        fn unmap_page(&mut self, page_start: VirtualAddress) -> Result<(), MappingError> {
+            unmap_page_from(self.root_frame, page_start)
+        }
+
+        fn update_protection(
+            &mut self,
+            page_start: VirtualAddress,
+            flags: MappingFlags,
+        ) -> Result<(), MappingError> {
+            update_page_protection(self.root_frame, page_start, flags)
+        }
     }
 
     impl PageMapper for OwnedPageTable {
@@ -184,6 +196,18 @@ mod imp {
 
         fn translate(&self, address: VirtualAddress) -> Option<PhysicalAddress> {
             translate_address(self.root_frame, address)
+        }
+
+        fn unmap_page(&mut self, page_start: VirtualAddress) -> Result<(), MappingError> {
+            unmap_page_from(self.root_frame, page_start)
+        }
+
+        fn update_protection(
+            &mut self,
+            page_start: VirtualAddress,
+            flags: MappingFlags,
+        ) -> Result<(), MappingError> {
+            update_page_protection(self.root_frame, page_start, flags)
         }
     }
 
@@ -440,6 +464,104 @@ mod imp {
         unsafe {
             ptr::write_bytes(table as *mut PageTable, 0, 1);
         }
+    }
+
+    fn unmap_page_from(root_frame: PhysicalAddress, page_start: VirtualAddress) -> Result<(), MappingError> {
+        if page_start.as_u64() % PAGE_BYTES != 0 {
+            return Err(MappingError::AddressAlignment);
+        }
+
+        let root = table_ptr(root_frame);
+        let l0_entry = root.entries[l0_index(page_start)];
+        if l0_entry & DESC_VALID == 0 {
+            return Ok(());
+        }
+        if l0_entry & DESC_TABLE_OR_PAGE == 0 {
+            return Ok(());
+        }
+
+        let l1 = table_ptr(PhysicalAddress::new(l0_entry & TABLE_ADDRESS_MASK));
+        let l1_entry = l1.entries[l1_index(page_start)];
+        if l1_entry & DESC_VALID == 0 {
+            return Ok(());
+        }
+        if l1_entry & DESC_TABLE_OR_PAGE == 0 {
+            return Ok(());
+        }
+
+        let l2 = table_ptr(PhysicalAddress::new(l1_entry & TABLE_ADDRESS_MASK));
+        let l2_entry = l2.entries[l2_index(page_start)];
+        if l2_entry & DESC_VALID == 0 {
+            return Ok(());
+        }
+        if l2_entry & DESC_TABLE_OR_PAGE == 0 {
+            return Ok(());
+        }
+
+        let l3 = table_ptr(PhysicalAddress::new(l2_entry & TABLE_ADDRESS_MASK));
+        let index = l3_index(page_start);
+        if l3.entries[index] & DESC_VALID == 0 {
+            return Ok(());
+        }
+        if l3.entries[index] & DESC_TABLE_OR_PAGE == 0 {
+            return Ok(());
+        }
+
+        l3.entries[index] = 0;
+        flush_tlb();
+        Ok(())
+    }
+
+    fn update_page_protection(
+        root_frame: PhysicalAddress,
+        page_start: VirtualAddress,
+        flags: MappingFlags,
+    ) -> Result<(), MappingError> {
+        if page_start.as_u64() % PAGE_BYTES != 0 {
+            return Err(MappingError::AddressAlignment);
+        }
+
+        let root = table_ptr(root_frame);
+        let l0_entry = root.entries[l0_index(page_start)];
+        if l0_entry & DESC_VALID == 0 {
+            return Err(MappingError::Unsupported);
+        }
+        if l0_entry & DESC_TABLE_OR_PAGE == 0 {
+            return Err(MappingError::Unsupported);
+        }
+
+        let l1 = table_ptr(PhysicalAddress::new(l0_entry & TABLE_ADDRESS_MASK));
+        let l1_entry = l1.entries[l1_index(page_start)];
+        if l1_entry & DESC_VALID == 0 {
+            return Err(MappingError::Unsupported);
+        }
+        if l1_entry & DESC_TABLE_OR_PAGE == 0 {
+            return Err(MappingError::Unsupported);
+        }
+
+        let l2 = table_ptr(PhysicalAddress::new(l1_entry & TABLE_ADDRESS_MASK));
+        let l2_entry = l2.entries[l2_index(page_start)];
+        if l2_entry & DESC_VALID == 0 {
+            return Err(MappingError::Unsupported);
+        }
+        if l2_entry & DESC_TABLE_OR_PAGE == 0 {
+            return Err(MappingError::Unsupported);
+        }
+
+        let l3 = table_ptr(PhysicalAddress::new(l2_entry & TABLE_ADDRESS_MASK));
+        let index = l3_index(page_start);
+        let entry = l3.entries[index];
+        if entry & DESC_VALID == 0 {
+            return Err(MappingError::Unsupported);
+        }
+        if entry & DESC_TABLE_OR_PAGE == 0 {
+            return Err(MappingError::Unsupported);
+        }
+
+        let phys = entry & TABLE_ADDRESS_MASK;
+        l3.entries[index] = page_descriptor(phys, flags);
+        flush_tlb();
+        Ok(())
     }
 
     fn flush_tlb() {

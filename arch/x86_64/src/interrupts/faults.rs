@@ -25,7 +25,6 @@ fn handle_exception(report: ExceptionReport) -> ! {
         let fault_type = serviceos_kernel_core::fault::fault_type_for_exception(&report.detail);
         if let Some(handler) = serviceos_kernel_core::fault::lookup_fault_handler(&fault_type) {
             let endpoint = handler.endpoint;
-            let fault_code = user_fault_exit_code(report);
             
             serial::write_args(format_args!(
                 "serviceos: fault handler found for type={:?}, notifying endpoint\n",

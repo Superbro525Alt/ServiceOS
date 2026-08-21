@@ -1,13 +1,13 @@
 use crate::{
     capability::CapabilityError,
-    memory::{MappingError, PhysicalAddress, VirtualAddress},
+    memory::{MappingError, MappingFlags, PhysicalAddress, VirtualAddress},
     object::KernelObjectRef,
     task::{self, AddressSpaceId, ThreadId},
 };
 
 const FLAT_IMAGE_MAGIC: [u8; 8] = *b"SOSUIMG\0";
 pub(super) const FLAT_IMAGE_HEADER_LEN: usize = 72;
-pub(super) const USER_STACK_PAGES: usize = 16;
+pub(super) const USER_STACK_PAGES: usize = 256;
 pub(super) const USER_ENTRY_STACK_BIAS: u64 = 8;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -41,6 +41,12 @@ pub struct UserArchHooks {
     pub release_address_space: fn(AddressSpaceId),
     pub map_memory_object:
         fn(AddressSpaceId, VirtualAddress, &[PhysicalAddress], bool) -> Result<(), MappingError>,
+    pub unmap_memory_range:
+        fn(AddressSpaceId, VirtualAddress, usize) -> Result<(), MappingError>,
+    pub update_memory_protection:
+        fn(AddressSpaceId, VirtualAddress, usize, MappingFlags) -> Result<(), MappingError>,
+    pub translate_address:
+        fn(AddressSpaceId, VirtualAddress) -> Option<PhysicalAddress>,
 }
 
 #[derive(Clone)]

@@ -1,5 +1,3 @@
-use core::arch::asm;
-
 /// Kernel thread context saved during context switch
 ///
 /// This structure holds the callee-saved registers that must be preserved
@@ -48,41 +46,6 @@ impl KernelContext {
         }
 
         ctx
-    }
-}
-
-/// Switch from one kernel thread context to another
-///
-/// # Safety
-/// This function must be called with interrupts disabled and the
-/// scheduler lock held. The caller must ensure proper synchronization.
-pub unsafe fn kernel_context_switch(from: &mut KernelContext, to: &KernelContext) {
-    unsafe {
-        asm!(
-            // Save current context
-            "mov {from}.rsp, rsp",
-            "mov {from}.rbx, rbx",
-            "mov {from}.rbp, rbp",
-            "mov {from}.r12, r12",
-            "mov {from}.r13, r13",
-            "mov {from}.r14, r14",
-            "mov {from}.r15, r15",
-            
-            // Restore next context
-            "mov rsp, {to}.rsp",
-            "mov rbx, {to}.rbx",
-            "mov rbp, {to}.rbp",
-            "mov r12, {to}.r12",
-            "mov r13, {to}.r13",
-            "mov r14, {to}.r14",
-            "mov r15, {to}.r15",
-            
-            // The return address is on the stack, so ret will jump to it
-            "ret",
-            
-            from = in(reg) from as *mut KernelContext,
-            to = in(reg) to as *const KernelContext,
-        );
     }
 }
 

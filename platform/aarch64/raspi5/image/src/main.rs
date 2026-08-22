@@ -29,6 +29,47 @@ const TIMER_TICK_HZ: u64 = 100;
 #[unsafe(link_section = ".boot_stack")]
 static mut BOOT_STACK: [u8; 64 * 1024] = [0; 64 * 1024];
 
+core::arch::global_asm!(
+    ".section .text._start, \"ax\"",
+    ".globl _start",
+    ".type _start, %function",
+    "_start:",
+    "mrs x2, mpidr_el1",
+    "tst x2, #0xff",
+    "b.ne 1f",
+    "mrs x2, CurrentEL",
+    "lsr x2, x2, #2",
+    "cmp x2, #1",
+    "b.eq 4f",
+    "cmp x2, #2",
+    "b.ne 1f",
+    "mov x4, #0x80000000",
+    "msr hcr_el2, x4",
+    "mrs x4, cnthctl_el2",
+    "orr x4, x4, #0x3",
+    "msr cnthctl_el2, x4",
+    "dsb sy",
+    "isb",
+    "mov x4, #0x3c5",
+    "msr spsr_el2, x4",
+    "adr x4, 4f",
+    "msr elr_el2, x4",
+    "eret",
+    "4:",
+    "adrp x1, {stack}",
+    "add x1, x1, :lo12:{stack}",
+    "mov x3, {size}",
+    "add x1, x1, x3",
+    "mov sp, x1",
+    "b {entry}",
+    "1:",
+    "wfe",
+    "b 1b",
+    size = const 64 * 1024,
+    stack = sym BOOT_STACK,
+    entry = sym serviceos_raspi5_entry,
+);
+
 unsafe extern "C" {
     static __image_start: u8;
     static __image_end: u8;

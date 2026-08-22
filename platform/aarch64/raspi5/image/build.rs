@@ -5,6 +5,5 @@ fn main() {
     let link_script = manifest_dir.join("link.ld");
 
     println!("cargo:rerun-if-changed={}", link_script.display());
-    println!("cargo:rerun-if-changed=src/start.S");
     println!("cargo:rustc-link-arg=-T{}", link_script.display());
 }

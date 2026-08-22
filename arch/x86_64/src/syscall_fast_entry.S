@@ -38,7 +38,7 @@
 serviceos_x86_64_syscall_fast_entry:
     # Save user stack pointer and load kernel stack
     swapgs
-    mov gs:[0x10], rsp          # Save user RSP in per-CPU data
+    mov gs:[0x08], rsp          # Save user RSP in per-CPU data (user_rsp)
     mov rsp, gs:[0x00]          # Load kernel RSP from per-CPU data
     
     # Save user context

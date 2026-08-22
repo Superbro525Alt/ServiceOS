@@ -194,9 +194,12 @@ fn install_descriptor_tables() {
     let descriptor_tables = DESCRIPTOR_TABLES.call_once(|| {
         let mut gdt = GlobalDescriptorTable::new();
         let kernel_code = gdt.append(Descriptor::kernel_code_segment());
+        // SYSCALL loads SS as (kernel CS) + 8 and SYSRET derives SS as
+        // (user CS | 3) + 8, so each data segment must directly follow its
+        // matching code segment.
         let kernel_data = gdt.append(Descriptor::kernel_data_segment());
-        let user_data = gdt.append(Descriptor::user_data_segment());
         let user_code = gdt.append(Descriptor::user_code_segment());
+        let user_data = gdt.append(Descriptor::user_data_segment());
         let tss = gdt.append(Descriptor::tss_segment(tss()));
 
         DescriptorTables {

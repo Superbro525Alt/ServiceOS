@@ -47,16 +47,16 @@ pub unsafe fn enable_syscall_sysret(
     kernel_entry: u64,
     kernel_cs: u16,
     user_cs: u16,
-    user_ss: u16,
+    _user_ss: u16,
 ) {
-    // STAR MSR layout:
-    // - Bits [47:32]: CS for SYSCALL (kernel CS = kernel_cs)
-    // - Bits [31:16]: CS for SYSRET (user CS = user_cs)
-    // - Bits [15:0]:  SS for SYSRET (user SS = user_ss)
-    let star_value = ((kernel_cs as u64) << 48)
-        | ((user_cs as u64) << 32)
-        | ((user_cs as u64) << 16)
-        | (user_ss as u64);
+    // IA32_STAR layout (SDM Vol 3, 5.8.7):
+    // - Bits [63:48]: base selector SYSRET uses for the user code segment
+    //   (SS is derived as +8, so the GDT must place user data directly after
+    //   user code).
+    // - Bits [47:32]: selector SYSCALL loads into CS; SS = this + 8, so the
+    //   kernel data segment must follow the kernel code segment.
+    // - Bits [31:0]: reserved, must be zero.
+    let star_value = ((user_cs as u64) << 48) | ((kernel_cs as u64) << 32);
 
     unsafe {
         write_msr(MSR_STAR, star_value);

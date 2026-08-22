@@ -1,6 +1,6 @@
 use crate::memory::{
     EarlyFrameAllocator, Frame, MappingFlags, PAGE_SIZE_BYTES, PageMapper, PhysicalAddress,
-    VirtualAddress,
+    VirtualAddress, USER_SPACE_END,
 };
 
 use super::{
@@ -19,6 +19,21 @@ const ELF_PROGRAM_HEADER_LEN: usize = 56;
 const ELF_SEGMENT_LOAD: u32 = 1;
 const ELF_FLAG_EXECUTE: u32 = 1;
 const ELF_FLAG_WRITE: u32 = 2;
+
+/// Every userspace image must map entirely inside this window. The image
+/// builder places images at the window start with stacks just below
+/// [`USER_SPACE_END`]; anything outside cannot belong to a user address space
+/// and would alias kernel mappings (the higher-half heap or page-table frames
+/// reachable through the identity map) inside shared parent tables.
+const USER_IMAGE_WINDOW_START: u64 = 0x0000_4000_0000_0000;
+
+fn image_window_contains(start: u64, length: u64) -> bool {
+    start >= USER_IMAGE_WINDOW_START
+        && start < USER_SPACE_END.as_u64()
+        && start
+            .checked_add(length)
+            .is_some_and(|end| end <= USER_SPACE_END.as_u64())
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ElfMachine {
@@ -64,6 +79,16 @@ pub fn parse_flat_image(image: &[u8]) -> Result<FlatImageHeader, LoadError> {
     if image_base.as_u64() % PAGE_SIZE_BYTES != 0 || user_stack_top.as_u64() % PAGE_SIZE_BYTES != 0
     {
         return Err(LoadError::AddressAlignment);
+    }
+    if !image_window_contains(image_base.as_u64(), memory_size as u64)
+        || !image_window_contains(
+            user_stack_top
+                .as_u64()
+                .saturating_sub((USER_STACK_PAGES as u64) * PAGE_SIZE_BYTES),
+            (USER_STACK_PAGES as u64) * PAGE_SIZE_BYTES,
+        )
+    {
+        return Err(LoadError::UnsupportedHeader);
     }
     if image.len() < header_len + file_size {
         return Err(LoadError::Truncated);
@@ -204,6 +229,14 @@ fn load_elf64_image(
     if phentsize != ELF_PROGRAM_HEADER_LEN || phnum == 0 {
         return Err(LoadError::UnsupportedHeader);
     }
+    if !image_window_contains(
+        user_stack_top
+            .as_u64()
+            .saturating_sub((USER_STACK_PAGES as u64) * PAGE_SIZE_BYTES),
+        (USER_STACK_PAGES as u64) * PAGE_SIZE_BYTES,
+    ) {
+        return Err(LoadError::UnsupportedHeader);
+    }
 
     let mut image_base = u64::MAX;
     let mut image_end = 0u64;
@@ -227,6 +260,9 @@ fn load_elf64_image(
         let memory_size = read_u64_le(program, 40)? as usize;
         if virtual_address % PAGE_SIZE_BYTES != 0 || file_size > memory_size {
             return Err(LoadError::AddressAlignment);
+        }
+        if !image_window_contains(virtual_address, memory_size as u64) {
+            return Err(LoadError::UnsupportedHeader);
         }
         let payload = image
             .get(file_offset..file_offset + file_size)

@@ -7,7 +7,7 @@ mod types;
 
 pub use address_space::{AddressSpaceRoot, FutureUserAddressSpaceLayout, KernelAddressSpace};
 pub use heap::HeapInfo;
-pub use layout::KernelVirtualLayout;
+pub use layout::{KernelVirtualLayout, USER_SPACE_END};
 pub use manager::{InitializationError, MemoryManager, MemoryStats, initialize, manager};
 pub use phys::{EarlyFrameAllocator, FrameAllocatorStats};
 pub use types::{

@@ -31,6 +31,27 @@ pub struct MemoryRange {
     pub end: PhysicalAddress,
 }
 
+impl MemoryRange {
+    pub const fn span_bytes(&self) -> u64 {
+        self.end.as_u64().saturating_sub(self.start.as_u64())
+    }
+}
+
+const REDISTRIBUTOR_MIN_SPAN_BYTES: u64 = 2 * 64 * 1024;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InterruptControllerRegions {
+    pub distributor: MemoryRange,
+    pub redistributors: MemoryRange,
+}
+
+impl InterruptControllerRegions {
+    pub const fn is_usable(&self) -> bool {
+        self.distributor.span_bytes() > 0
+            && self.redistributors.span_bytes() >= REDISTRIBUTOR_MIN_SPAN_BYTES
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct DeviceTreeBootInfo<'boot> {
     pub model: &'boot str,
@@ -42,6 +63,7 @@ pub struct DeviceTreeBootInfo<'boot> {
     pub memory_range_count: usize,
     pub memory_map_truncated: bool,
     pub stdout_uart: Option<UartDescriptor<'boot>>,
+    pub interrupt_controller: Option<InterruptControllerRegions>,
 }
 
 pub const fn status() -> DeviceTreeStatus {
@@ -158,6 +180,45 @@ pub fn parse(dtb_ptr: *const u8) -> Result<DeviceTreeBootInfo<'static>, DeviceTr
         None
     };
 
+    let interrupt_controller = (|| {
+        for (_, node) in root.all_nodes() {
+            let Some(compatible) = node.property::<Compatible>() else {
+                continue;
+            };
+            if !compatible.compatible_with("arm,gic-v3") {
+                continue;
+            }
+            let reg = node.property::<Reg>()?;
+            let mut entries = reg.iter::<u64, u64>();
+            let Some(Ok(distributor)) = entries.next() else {
+                return None;
+            };
+            let Some(Ok(redistributors)) = entries.next() else {
+                return None;
+            };
+            let regions = InterruptControllerRegions {
+                distributor: MemoryRange {
+                    start: PhysicalAddress::new(distributor.address),
+                    end: PhysicalAddress::new(
+                        distributor.address.saturating_add(distributor.len),
+                    ),
+                },
+                redistributors: MemoryRange {
+                    start: PhysicalAddress::new(redistributors.address),
+                    end: PhysicalAddress::new(
+                        redistributors.address.saturating_add(redistributors.len),
+                    ),
+                },
+            };
+            return if regions.is_usable() {
+                Some(regions)
+            } else {
+                None
+            };
+        }
+        None
+    })();
+
     Ok(DeviceTreeBootInfo {
         model: root.model(),
         compatible: Some(root.compatible().first()),
@@ -168,6 +229,7 @@ pub fn parse(dtb_ptr: *const u8) -> Result<DeviceTreeBootInfo<'static>, DeviceTr
         memory_range_count,
         memory_map_truncated,
         stdout_uart,
+        interrupt_controller,
     })
 }
 

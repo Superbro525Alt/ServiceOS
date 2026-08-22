@@ -58,6 +58,20 @@ impl MessageQueue {
         self.len -= 1;
         envelope
     }
+
+    /// Return a message to the front of the queue so a receive that fails
+    /// mid-transfer does not drop it. Only guaranteed to succeed immediately
+    /// after a `pop_front` (there is always at least one free slot then).
+    pub fn push_front(&mut self, envelope: MessageEnvelope) -> Result<(), MessageEnvelope> {
+        if self.len == self.slots.len() {
+            return Err(envelope);
+        }
+
+        self.head = (self.head + self.slots.len() - 1) % self.slots.len();
+        self.slots[self.head] = Some(envelope);
+        self.len += 1;
+        Ok(())
+    }
 }
 
 impl ChannelEndpointObject {

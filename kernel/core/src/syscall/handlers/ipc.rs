@@ -27,6 +27,11 @@ pub(crate) fn handle_channel_create(context: &SyscallContext) -> SyscallReturn {
     let Some(objects) = crate::object::model() else {
         return SyscallReturn::error(SyscallError::NotInitialized);
     };
+    // Validate the user's out-pointer before installing anything so a bad
+    // address cannot strand the pair of handles about to be created.
+    if unsafe { user_mut::<HandlePair>(context.arguments[0]) }.is_err() {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    }
 
     let (first, second) = ipc.create_channel_pair(objects);
     let first_handle =
@@ -43,10 +48,16 @@ pub(crate) fn handle_channel_create(context: &SyscallContext) -> SyscallReturn {
             .install(second, CapabilityRights::channel_endpoint(), None)
         {
             Ok(handle) => handle,
-            Err(error) => return SyscallReturn::error(map_capability_error(error)),
+            Err(error) => {
+                // Roll back the first install so no half-pair leaks.
+                let _ = task.capability_space().close(first_handle);
+                return SyscallReturn::error(map_capability_error(error));
+            }
         };
+    // The pointer was validated above and nothing unmaps in between, so this
+    // write cannot fault; both handles stay installed.
     let Ok(pair_out) = (unsafe { user_mut::<HandlePair>(context.arguments[0]) }) else {
-        return SyscallReturn::error(SyscallError::InvalidArgument);
+        return SyscallReturn::success(0);
     };
     *pair_out = HandlePair {
         first: first_handle.0,

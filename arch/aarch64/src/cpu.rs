@@ -8,6 +8,24 @@ mod imp {
         }
     }
 
+    pub fn enable_irqs() {
+        unsafe {
+            asm!("msr daifclr, #2", options(nomem, nostack, preserves_flags));
+        }
+    }
+
+    pub fn disable_irqs() {
+        unsafe {
+            asm!("msr daifset, #2", options(nomem, nostack, preserves_flags));
+        }
+    }
+
+    pub fn wait_for_interrupt() {
+        unsafe {
+            asm!("wfi", options(nomem, nostack));
+        }
+    }
+
     pub fn enable_interrupts() {
         unsafe {
             asm!("msr daifclr, #15", options(nomem, nostack, preserves_flags));
@@ -63,6 +81,14 @@ mod imp {
 mod imp {
     pub fn disable_interrupts() {}
 
+    pub fn enable_irqs() {}
+
+    pub fn disable_irqs() {}
+
+    pub fn wait_for_interrupt() {
+        core::hint::spin_loop();
+    }
+
     pub fn enable_interrupts() {}
 
     pub fn current_el() -> u8 {
@@ -98,8 +124,9 @@ pub const fn bringup_status() -> CpuBringupStatus {
 }
 
 pub use imp::{
-    core_id, current_el, data_synchronization_barrier, disable_interrupts, enable_interrupts,
-    instruction_synchronization_barrier, wait_for_event,
+    core_id, current_el, data_synchronization_barrier, disable_interrupts, disable_irqs,
+    enable_interrupts, enable_irqs, instruction_synchronization_barrier, wait_for_event,
+    wait_for_interrupt,
 };
 
 pub fn wait_forever() -> ! {

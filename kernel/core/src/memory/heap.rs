@@ -84,6 +84,13 @@ struct FreeListAllocator {
     regions: [FreeRegion; MAX_FREE_REGIONS],
     len: usize,
     initialized: bool,
+    /// Bytes given up because the region table was full at free time.
+    dropped_free_bytes: u64,
+    /// Number of frees that could not be tracked (table full after
+    /// coalescing). The affected bytes are permanently lost to the heap for
+    /// its lifetime; counting them keeps the loss observable without
+    /// panicking or growing the table.
+    dropped_free_events: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -108,6 +115,8 @@ impl FreeListAllocator {
             regions: [FreeRegion::empty(); MAX_FREE_REGIONS],
             len: 0,
             initialized: false,
+            dropped_free_bytes: 0,
+            dropped_free_events: 0,
         }
     }
 
@@ -240,9 +249,25 @@ impl FreeListAllocator {
         }
 
         if self.len == self.regions.len() {
+            // Region table exhausted even after coalescing with every
+            // neighbour. Never lose memory silently: account the bytes so the
+            // leak is observable, keep the allocator running, and let
+            // drop_stats() surface it.
+            self.dropped_free_bytes =
+                self.dropped_free_bytes.saturating_add(region.size as u64);
+            self.dropped_free_events = self.dropped_free_events.saturating_add(1);
             return;
         }
         self.insert_region(index, region);
+    }
+
+    /// (events, bytes) of frees that the fixed region table could not track.
+    /// Non-zero values mean the heap permanently lost those bytes because the
+    /// 4096-slot table stayed full after coalescing; the alternative would be
+    /// an unbounded table or a panic, both worse for a kernel heap.
+    #[cfg(test)]
+    pub fn drop_stats(&self) -> (u64, u64) {
+        (self.dropped_free_events, self.dropped_free_bytes)
     }
 }
 
@@ -300,6 +325,32 @@ mod tests {
         let aligned = allocator.allocate(layout(160, 64));
         assert!(!aligned.is_null());
         assert_eq!((aligned as usize) % 64, 0);
+    }
+    #[test]
+    fn full_region_table_counts_lost_bytes_instead_of_dropping_silently() {
+        let mut allocator = FreeListAllocator::empty();
+        allocator.initialize(0x1000_0000, 0x4000_0000).unwrap();
+
+        // Saturate the region table with disjoint far-apart regions; the
+        // first one is large enough to keep serving allocations.
+        for index in 0..MAX_FREE_REGIONS {
+            allocator.regions[index] = FreeRegion {
+                start: 0x1000 + index * 0x10_0000,
+                size: if index == 0 { 0x1000 } else { 16 },
+            };
+        }
+        allocator.len = MAX_FREE_REGIONS;
+
+        // One more non-adjacent free cannot be tracked: it must be counted,
+        // not silently discarded.
+        assert_eq!(allocator.drop_stats(), (0, 0));
+        allocator.deallocate((0x8000_0000 as usize) as *mut u8, layout(16, 16));
+        assert_eq!(allocator.drop_stats(), (1, 16));
+        assert_eq!(allocator.len, MAX_FREE_REGIONS);
+
+        // The heap keeps working afterwards.
+        let retry = allocator.allocate(layout(32, 8));
+        assert!(!retry.is_null());
     }
 
     #[test]

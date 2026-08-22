@@ -19,6 +19,14 @@ pub(crate) fn encode_bootstore(entries: &[BootStoreEntry]) -> Result<Vec<u8>, Bo
     let table_offset = header_len;
     let data_offset = table_offset + entry_len * entries.len();
     let total_len = data_offset + entries.iter().map(|entry| entry.bytes.len()).sum::<usize>();
+    if total_len > serviceos_bundle::BOOT_STORE_MAX_BYTES {
+        return Err(format!(
+            "boot store image is {} bytes, exceeding the {}-byte limit; shrink or split the userspace bundle",
+            total_len,
+            serviceos_bundle::BOOT_STORE_MAX_BYTES
+        )
+        .into());
+    }
     let mut image = vec![0u8; total_len];
 
     image[..8].copy_from_slice(&BOOT_STORE_MAGIC);

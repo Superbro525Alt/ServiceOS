@@ -563,6 +563,12 @@ impl Scheduler {
         }
     }
 
+    /// Non-consuming check used by interrupt context to decide whether the
+    /// interrupted user thread must be preempted immediately.
+    pub fn preemption_pending(&self) -> bool {
+        self.state.lock().preemption_pending
+    }
+
     pub fn current_thread(&self) -> Option<ThreadId> {
         self.state.lock().current
     }

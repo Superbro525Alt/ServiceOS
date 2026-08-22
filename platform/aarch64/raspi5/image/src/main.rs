@@ -1,13 +1,21 @@
 #![no_main]
 #![no_std]
 
-use core::{fmt, fmt::Write, panic::PanicInfo, str};
+use core::{
+    fmt,
+    fmt::Write,
+    panic::PanicInfo,
+    str,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use serviceos_abi::{BootstrapPlatform, ControlTag, ServiceImageId};
 use serviceos_bundle::BootStore;
 use serviceos_kernel_arch_aarch64::{
     cpu,
+    gic::{self, GicConfig, GicInitError},
     mmu::{ActivePageTable, MmioRegion},
+    timer as kernel_timer,
     traps, user,
 };
 use serviceos_kernel_core::{
@@ -19,11 +27,18 @@ use serviceos_kernel_core::{
     task::{ExecutionState, SchedulerError, TaskRole, ThreadId, ThreadMode},
     user::{self as kernel_user, SpawnError, TaskExitStatus},
 };
-use serviceos_platform_raspi5::{boot, timer, uart};
+use serviceos_platform_raspi5::{
+    boot,
+    dtb::InterruptControllerRegions,
+    timer,
+    uart,
+};
 use serviceos_userspace_catalog::BOOT_STORE_IMAGE;
 use spin::Once;
 
 const TIMER_TICK_HZ: u64 = 100;
+
+static HARDWARE_TICKS: AtomicBool = AtomicBool::new(false);
 
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".boot_stack")]
@@ -187,22 +202,30 @@ extern "C" fn serviceos_raspi5_entry(dtb_ptr: usize) -> ! {
         );
     }
 
-    let mut mapper = match ActivePageTable::initialize(
-        &boot_state.boot_info,
-        &boot_state
-            .summary
-            .uart
-            .map(|descriptor| {
-                [MmioRegion {
-                    base: descriptor.base,
-                    size: descriptor.span,
-                }]
-            })
-            .unwrap_or([MmioRegion {
-                base: PhysicalAddress::new(0),
-                size: 0,
-            }]),
-    ) {
+    let mut mmio_regions = [MmioRegion {
+        base: PhysicalAddress::new(0),
+        size: 0,
+    }; 3];
+    let mut mmio_region_count = 0usize;
+    if let Some(descriptor) = boot_state.summary.uart {
+        mmio_regions[mmio_region_count] = MmioRegion {
+            base: descriptor.base,
+            size: descriptor.span,
+        };
+        mmio_region_count += 1;
+    }
+    if let Some(controller) = boot_state.summary.interrupt_controller {
+        for range in [controller.distributor, controller.redistributors] {
+            mmio_regions[mmio_region_count] = MmioRegion {
+                base: range.start,
+                size: range.span_bytes() as usize,
+            };
+            mmio_region_count += 1;
+        }
+    }
+
+    let mut mapper = match ActivePageTable::initialize(&boot_state.boot_info, &mmio_regions[..mmio_region_count])
+    {
         Ok(mapper) => mapper,
         Err(error) => panic_with_error("memory", error),
     };
@@ -229,6 +252,26 @@ extern "C" fn serviceos_raspi5_entry(dtb_ptr: usize) -> ! {
             TIMER_TICK_HZ,
         ),
     );
+    match bring_up_interrupts(boot_state.summary.interrupt_controller) {
+        Ok(interval_cycles) => {
+            HARDWARE_TICKS.store(true, Ordering::Relaxed);
+            log(
+                "interrupts",
+                format_args!(
+                    "backend=gic-v3 timer=el1-physical ppi={} tick-hz={} interval-cycles={}",
+                    gic::TIMER_PPI_INTID,
+                    TIMER_TICK_HZ,
+                    interval_cycles,
+                ),
+            );
+        }
+        Err(reason) => {
+            log(
+                "interrupts",
+                format_args!("backend=polling reason={reason}"),
+            );
+        }
+    }
     log_line("bootstrap", "starting serial-first userspace graph");
 
     let summary = match launch_root_manager(&kernel) {
@@ -394,13 +437,41 @@ fn launch_root_manager(kernel: &Kernel<'_>) -> Result<RootBootstrapSummary, Boot
     })
 }
 
+fn bring_up_interrupts(
+    controller: Option<InterruptControllerRegions>,
+) -> Result<u64, &'static str> {
+    let Some(controller) = controller else {
+        return Err("device-tree-gic-missing");
+    };
+    let config = GicConfig {
+        distributor_base: controller.distributor.start,
+        redistributor_base: controller.redistributors.start,
+    };
+    gic::initialize(config).map_err(|error| match error {
+        GicInitError::Unavailable => "gic-unavailable",
+        GicInitError::MisalignedRegion => "gic-region-alignment",
+        GicInitError::RedistributorWakeTimeout => "gic-redistributor-wake-timeout",
+        GicInitError::DistributorWriteTimeout => "gic-distributor-write-timeout",
+        GicInitError::SystemRegisterUnsupported => "gic-system-register-unsupported",
+    })?;
+    kernel_timer::arm_periodic_tick(TIMER_TICK_HZ)
+        .map_err(|_| "timer-counter-frequency-unavailable")
+}
+
 fn run_userspace_executor(
     kernel: &Kernel<'_>,
     root_task: serviceos_kernel_core::task::TaskId,
 ) -> Result<(), BootstrapError> {
+    let hardware_ticks = HARDWARE_TICKS.load(Ordering::Relaxed);
     let mut timer_state = initialize_timer_poll_state();
     loop {
-        poll_timer_wakeups(kernel, &mut timer_state);
+        if hardware_ticks {
+            while let Some(event) = kernel.time().take_wakeup() {
+                let _ = kernel.tasks().handle_time_wakeup(event);
+            }
+        } else {
+            poll_timer_wakeups(kernel, &mut timer_state);
+        }
 
         let scheduler = kernel.tasks().scheduler();
         let snapshot = scheduler.snapshot();
@@ -414,6 +485,12 @@ fn run_userspace_executor(
         }
 
         let Some(thread_id) = current else {
+            if hardware_ticks && snapshot.blocked_threads > 0 {
+                cpu::enable_irqs();
+                cpu::wait_for_interrupt();
+                cpu::disable_irqs();
+                continue;
+            }
             return Ok(());
         };
 
@@ -430,6 +507,13 @@ fn run_userspace_executor(
                 return Ok(());
             }
             return Ok(());
+        }
+
+        if hardware_ticks
+            && (kernel.tasks().consume_preemption() || snapshot.preemption_pending)
+        {
+            let _ = scheduler.preempt_current_if_needed()?;
+            continue;
         }
 
         let Some(thread_object) = kernel.objects().registry().lookup(ObjectId(thread_id.0)) else {

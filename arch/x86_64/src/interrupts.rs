@@ -23,6 +23,7 @@ use x86_64::{
 
 use crate::{cpu, lapic, msr};
 
+global_asm!(include_str!("timer_irq_entry.S"));
 global_asm!(include_str!("syscall_entry.S"));
 global_asm!(include_str!("syscall_fast_entry.S"));
 
@@ -94,6 +95,7 @@ static EXTERNAL_IRQ_HANDLERS: spin::Mutex<
 
 unsafe extern "C" {
     fn serviceos_x86_64_syscall_entry();
+    fn serviceos_x86_64_timer_irq_entry();
 }
 
 pub fn initialize() -> DescriptorState {
@@ -103,6 +105,7 @@ pub fn initialize() -> DescriptorState {
     pic::initialize_pic();
     pic::initialize_pit(TIMER_TICK_HZ);
     initialize_syscall_sysret();
+    initialize_per_cpu();
 
     DescriptorState {
         gdt_loaded: true,
@@ -142,6 +145,19 @@ fn initialize_syscall_sysret() {
             selectors.user_code.0,
             selectors.user_data.0,
         );
+    }
+}
+
+fn initialize_per_cpu() {
+    // Point GS base at CPU 0's PerCpuData with the privilege (kernel) stack
+    // top as the fast-syscall kernel RSP. The fast path stub reads/writes
+    // gs:[0x00] (kernel_rsp) and gs:[0x08] (user_rsp), matching the
+    // PerCpuData field layout, and never swaps GS, so the base must be valid
+    // from this point on in every context.
+    let privilege_stack_top = VirtAddr::from_ptr(&PRIVILEGE_STACK.0).as_u64()
+        + PRIVILEGE_STACK_SIZE as u64;
+    unsafe {
+        crate::per_cpu::initialize_per_cpu_data(0, privilege_stack_top);
     }
 }
 
@@ -274,7 +290,10 @@ fn install_interrupt_table() {
         idt.security_exception
             .set_handler_fn(faults::security_exception_handler);
         unsafe {
-            idt[TIMER_VECTOR].set_handler_fn(irq::timer_interrupt_handler);
+            idt[TIMER_VECTOR]
+                .set_handler_addr(VirtAddr::from_ptr(
+                    serviceos_x86_64_timer_irq_entry as *const (),
+                ));
             idt[lapic::LAPIC_SPURIOUS_VECTOR].set_handler_fn(irq::lapic_spurious_interrupt_handler);
             idt[PIC_PRIMARY_OFFSET + 1].set_handler_fn(irq::external_irq1_handler);
             idt[PIC_PRIMARY_OFFSET + 2].set_handler_fn(irq::external_irq2_handler);

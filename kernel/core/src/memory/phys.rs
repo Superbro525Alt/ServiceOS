@@ -2,6 +2,11 @@ use super::{Frame, InitializationError, PAGE_SIZE_BYTES, PageSize};
 use crate::bootstrap::{BootContext, BootMemoryRegionKind};
 
 const MAX_ALLOCATABLE_REGIONS: usize = 128;
+/// Bounded pool for frames handed back by address-space teardown. Regions are
+/// coalesced on insert so contiguous frees collapse into one slot; once the
+/// pool is full, further frees are counted in `dropped_free_frames` instead
+/// of being silently lost (they are gone for the allocator's lifetime).
+const MAX_RECLAIMED_REGIONS: usize = 256;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct FrameRegionCursor {
@@ -16,6 +21,8 @@ pub struct FrameAllocatorStats {
     pub allocated_frames: u64,
     pub remaining_frames: u64,
     pub reclaimed_boot_service_frames: u64,
+    pub freed_frames_recorded: u64,
+    pub dropped_free_frames: u64,
 }
 
 #[derive(Debug)]
@@ -25,6 +32,10 @@ pub struct EarlyFrameAllocator {
     active_region: usize,
     allocated_frames: u64,
     reclaimed_boot_service_frames: u64,
+    reclaimed: [FrameRegionCursor; MAX_RECLAIMED_REGIONS],
+    reclaimed_count: usize,
+    freed_frames_recorded: u64,
+    dropped_free_frames: u64,
 }
 
 impl EarlyFrameAllocator {
@@ -56,6 +67,14 @@ impl EarlyFrameAllocator {
             active_region: 0,
             allocated_frames: 0,
             reclaimed_boot_service_frames: 0,
+            reclaimed: [FrameRegionCursor {
+                start_frame: 0,
+                end_frame_exclusive: 0,
+                next_frame: 0,
+            }; MAX_RECLAIMED_REGIONS],
+            reclaimed_count: 0,
+            freed_frames_recorded: 0,
+            dropped_free_frames: 0,
         })
     }
 
@@ -87,6 +106,21 @@ impl EarlyFrameAllocator {
     }
 
     pub fn allocate_4kib(&mut self) -> Option<Frame> {
+        // Serve reclaimed frames first so freed address-space memory is
+        // actually reused instead of being stranded in the free pool.
+        for index in 0..self.reclaimed_count {
+            let region = &mut self.reclaimed[index];
+            if region.next_frame < region.end_frame_exclusive {
+                let frame_number = region.next_frame;
+                region.next_frame += 1;
+                self.allocated_frames += 1;
+                return Some(Frame {
+                    base: super::PhysicalAddress::new(frame_number * PAGE_SIZE_BYTES),
+                    size: PageSize::Size4KiB,
+                });
+            }
+        }
+
         while self.active_region < self.region_count {
             let region = &mut self.regions[self.active_region];
             if region.next_frame < region.end_frame_exclusive {
@@ -106,6 +140,86 @@ impl EarlyFrameAllocator {
         None
     }
 
+    /// Hand a 4 KiB frame back for reallocation. Returns `true` when the
+    /// frame was recorded. Frames freed from address-space teardown are
+    /// served before fresh regions so exited tasks stop leaking memory.
+    pub fn free_4kib(&mut self, base: super::PhysicalAddress) -> bool {
+        if base.as_u64() % PAGE_SIZE_BYTES != 0 {
+            return false;
+        }
+        let frame_number = base.as_u64() / PAGE_SIZE_BYTES;
+
+        // Merge with a neighbouring reclaimed region if one exists.
+        let mut insert_at = self.reclaimed_count;
+        for index in 0..self.reclaimed_count {
+            let region = self.reclaimed[index];
+            if region.end_frame_exclusive == frame_number {
+                self.reclaimed[index].end_frame_exclusive += 1;
+                self.absorb_right(index);
+                self.freed_frames_recorded += 1;
+                return true;
+            }
+            if region.start_frame == frame_number + 1 && region.next_frame == region.start_frame {
+                // Prepend only when the region has not handed out any of its
+                // frames yet; otherwise a separate slot keeps serving order
+                // correct.
+                self.reclaimed[index].start_frame = frame_number;
+                self.reclaimed[index].next_frame = frame_number;
+                self.absorb_left(index);
+                self.freed_frames_recorded += 1;
+                return true;
+            }
+            if region.start_frame > frame_number && insert_at == self.reclaimed_count {
+                insert_at = index;
+            }
+        }
+
+        if self.reclaimed_count == MAX_RECLAIMED_REGIONS {
+            // Pool exhausted: the frame cannot be tracked, so count it as
+            // permanently dropped rather than losing it silently.
+            self.dropped_free_frames += 1;
+            return false;
+        }
+
+        for index in (insert_at..self.reclaimed_count).rev() {
+            self.reclaimed[index + 1] = self.reclaimed[index];
+        }
+        self.reclaimed[insert_at] = FrameRegionCursor {
+            start_frame: frame_number,
+            end_frame_exclusive: frame_number + 1,
+            next_frame: frame_number,
+        };
+        self.reclaimed_count += 1;
+        self.freed_frames_recorded += 1;
+        true
+    }
+
+    /// Fold the region at `index` into its right neighbour when contiguous.
+    fn absorb_right(&mut self, index: usize) {
+        if index + 1 < self.reclaimed_count
+            && self.reclaimed[index].end_frame_exclusive == self.reclaimed[index + 1].start_frame
+        {
+            self.reclaimed[index].end_frame_exclusive = self.reclaimed[index + 1].end_frame_exclusive;
+            self.remove_reclaimed(index + 1);
+        }
+    }
+
+    /// Fold the region at `index` into its left neighbour when contiguous.
+    fn absorb_left(&mut self, index: usize) {
+        if index > 0 && self.reclaimed[index - 1].end_frame_exclusive == self.reclaimed[index].start_frame
+        {
+            self.reclaimed[index - 1].end_frame_exclusive = self.reclaimed[index].end_frame_exclusive;
+            self.remove_reclaimed(index);
+        }
+    }
+
+    fn remove_reclaimed(&mut self, index: usize) {
+        for cursor in index..self.reclaimed_count.saturating_sub(1) {
+            self.reclaimed[cursor] = self.reclaimed[cursor + 1];
+        }
+        self.reclaimed_count -= 1;
+    }
+
     pub fn remaining_frames(&self) -> u64 {
         self.regions[..self.region_count]
             .iter()
@@ -119,6 +233,8 @@ impl EarlyFrameAllocator {
             allocated_frames: self.allocated_frames,
             remaining_frames: self.remaining_frames(),
             reclaimed_boot_service_frames: self.reclaimed_boot_service_frames,
+            freed_frames_recorded: self.freed_frames_recorded,
+            dropped_free_frames: self.dropped_free_frames,
         }
     }
 }
@@ -204,8 +320,64 @@ mod tests {
                 allocated_frames: 3,
                 remaining_frames: 0,
                 reclaimed_boot_service_frames: 0,
+                freed_frames_recorded: 0,
+                dropped_free_frames: 0,
             }
         );
+    }
+
+    #[test]
+    fn freed_frames_are_reused_before_fresh_regions() {
+        let mut allocator =
+            EarlyFrameAllocator::from_boot_context(&boot_context(&[BootMemoryRegion {
+                start: PhysicalAddress::new(0x1000),
+                end: PhysicalAddress::new(0x8000),
+                kind: BootMemoryRegionKind::Usable,
+            }]))
+            .expect("allocator");
+
+        let first = allocator.allocate_4kib().expect("frame").base;
+        let second = allocator.allocate_4kib().expect("frame").base;
+        let third = allocator.allocate_4kib().expect("frame").base;
+
+        assert!(allocator.free_4kib(second));
+        // Prepending `first` merges into the freed run so frames come back in
+        // ascending order before any fresh region is touched.
+        assert!(allocator.free_4kib(first));
+        assert_eq!(allocator.stats().freed_frames_recorded, 2);
+
+        assert_eq!(allocator.allocate_4kib().expect("frame").base, first);
+        assert_eq!(allocator.allocate_4kib().expect("frame").base, second);
+        // Pool drained: fresh frames come from the walk region.
+        let fresh = allocator.allocate_4kib().expect("frame").base;
+        assert_eq!(fresh, PhysicalAddress::new(0x4000));
+        assert!(allocator.free_4kib(third));
+        assert_eq!(
+            allocator.allocate_4kib().expect("frame").base,
+            third,
+            "reclaimed pool must be served before fresh regions"
+        );
+    }
+
+    #[test]
+    fn misaligned_and_pool_overflow_frees_are_counted() {
+        let mut allocator = EarlyFrameAllocator::from_boot_context(&boot_context(&[
+            BootMemoryRegion {
+                start: PhysicalAddress::new(0x1000),
+                end: PhysicalAddress::new(0x2000),
+                kind: BootMemoryRegionKind::Usable,
+            },
+        ]))
+        .expect("allocator");
+
+        assert!(!allocator.free_4kib(PhysicalAddress::new(0x1801)));
+
+        for index in 0..MAX_RECLAIMED_REGIONS + 8 {
+            let base = PhysicalAddress::new(0x10_0000 + (index as u64) * PAGE_SIZE_BYTES * 2);
+            let recorded = allocator.free_4kib(base);
+            assert_eq!(recorded, index < MAX_RECLAIMED_REGIONS);
+        }
+        assert_eq!(allocator.stats().dropped_free_frames, 8);
     }
 
     #[test]

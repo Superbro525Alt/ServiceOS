@@ -36,8 +36,9 @@
 
 .global serviceos_x86_64_syscall_fast_entry
 serviceos_x86_64_syscall_fast_entry:
-    # Save user stack pointer and load kernel stack
-    swapgs
+    # GS base permanently holds this CPU's PerCpuData: initialize_per_cpu_data
+    # programs it once at boot and nothing swaps it, so no swapgs is needed on
+    # entry or exit. Both directions below stay balanced (zero swaps).
     mov gs:[0x08], rsp          # Save user RSP in per-CPU data (user_rsp)
     mov rsp, gs:[0x00]          # Load kernel RSP from per-CPU data
     
@@ -60,7 +61,6 @@ serviceos_x86_64_syscall_fast_entry:
     # Return to user via SYSRET
     mov rsp, [rsp + 32]
     POP_GENERAL_REGS_SYSCALL
-    swapgs
     sysretq
 
 serviceos_x86_64_syscall_fast_exit_to_kernel:

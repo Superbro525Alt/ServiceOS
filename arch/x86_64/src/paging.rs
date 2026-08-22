@@ -111,6 +111,33 @@ impl OwnedPageTable {
         self.root_frame
     }
 
+    /// Free every frame reachable through the user half of this address space
+    /// (PML4 entries 128..256, i.e. the 0x4000_0000_0000..0x8000_0000_0000
+    /// window every userspace image and shared mapping is confined to).
+    ///
+    /// Leaf data frames, page-directory/page-table frames, and — when the
+    /// caller frees it separately — the root frame are all handed back to
+    /// `allocator`. Higher-half entries are shared kernel mappings copied
+    /// from the kernel root at `new_user_space` time and are never touched.
+    ///
+    /// # Safety
+    /// The address space must no longer be in use: no CPU may run on this
+    /// root and nothing may still reference pages inside it.
+    pub unsafe fn reclaim_user_frames(&mut self, allocator: &mut EarlyFrameAllocator) -> u64 {
+        let mut freed = 0u64;
+        let root = page_table_ptr(self.root_frame);
+        for index in USER_PML4_START..USER_PML4_END {
+            let entry = &root[index];
+            if !entry.flags().contains(PageTableFlags::PRESENT) {
+                continue;
+            }
+            let table_base = entry.addr().as_u64();
+            // Two child levels below a PML4 entry: PDPT -> PD -> PT leaves.
+            freed += unsafe { reclaim_table(table_base, 2, allocator) };
+        }
+        freed
+    }
+
     pub unsafe fn from_root(root_frame: PhysicalAddress) -> Self {
         Self {
             root_frame,
@@ -374,4 +401,35 @@ fn to_parent_table_flags(flags: MappingFlags) -> PageTableFlags {
 
 fn page_table_ptr(root_frame: PhysicalAddress) -> &'static mut PageTable {
     unsafe { &mut *(root_frame.as_u64() as *mut PageTable) }
+}
+
+/// Userspace mappings live in PML4 entries 128..256: the loader window starts
+/// at 0x4000_0000_0000 (entry 128) and ends at USER_SPACE_END
+/// 0x8000_0000_0000 (entry 256, exclusive).
+const USER_PML4_START: usize = 128;
+const USER_PML4_END: usize = 256;
+
+/// Recursively free `table_base`'s subtree. `child_levels` counts levels of
+/// page directories below this table (2 for a PDPT, 1 for a PD, 0 for a PT
+/// whose entries are leaf frames). Huge-page entries at any level are treated
+/// as leaves.
+unsafe fn reclaim_table(
+    table_base: u64,
+    child_levels: u32,
+    allocator: &mut EarlyFrameAllocator,
+) -> u64 {
+    let mut freed = 0u64;
+    let table = page_table_ptr(PhysicalAddress::new(table_base));
+    for entry in table.iter() {
+        if !entry.flags().contains(PageTableFlags::PRESENT) {
+            continue;
+        }
+        let frame_base = entry.addr().as_u64();
+        if child_levels > 0 && !entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+            freed += unsafe { reclaim_table(frame_base, child_levels - 1, allocator) };
+        }
+        allocator.free_4kib(PhysicalAddress::new(frame_base));
+        freed += 1;
+    }
+    freed
 }

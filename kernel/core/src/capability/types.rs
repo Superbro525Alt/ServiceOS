@@ -159,6 +159,12 @@ pub struct PreparedTransfer {
     pub(super) object: KernelObjectRef,
     pub(super) rights: CapabilityRights,
     pub(super) badge: Option<u64>,
+    /// Set for `TransferMode::Move`: the source handle that was removed from
+    /// the sender's space when the transfer was prepared, with the rights it
+    /// carried, so failure paths can restore it exactly.
+    pub(super) moved_source: Option<CapabilityHandle>,
+    pub(super) moved_source_rights: Option<CapabilityRights>,
+    pub(super) moved_source_badge: Option<Option<u64>>,
 }
 
 impl PreparedTransfer {
@@ -173,6 +179,12 @@ impl PreparedTransfer {
 
     pub fn object(&self) -> &KernelObjectRef {
         &self.object
+    }
+
+    /// Source handle removed from the sender's space, if this transfer was
+    /// prepared with `TransferMode::Move`.
+    pub fn moved_source(&self) -> Option<CapabilityHandle> {
+        self.moved_source
     }
 }
 

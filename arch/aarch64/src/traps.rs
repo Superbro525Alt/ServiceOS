@@ -9,6 +9,8 @@ mod imp {
         user,
     };
 
+    use crate::gic;
+    use crate::timer;
     use crate::user::SavedUserContext;
 
     const ESR_EC_SHIFT: u64 = 26;
@@ -28,7 +30,7 @@ serviceos_aarch64_vector_table:
     b serviceos_aarch64_fatal_vector
     .balign 0x80
     b serviceos_aarch64_fatal_vector
-    b serviceos_aarch64_fatal_vector
+    b serviceos_aarch64_lower_el_irq
     b serviceos_aarch64_fatal_vector
     b serviceos_aarch64_fatal_vector
     .balign 0x80
@@ -113,17 +115,16 @@ serviceos_aarch64_fatal_vector:
 
     #[unsafe(no_mangle)]
     extern "C" fn serviceos_aarch64_handle_irq() {
-        serviceos_kernel_core::interrupts::note_timer_interrupt(
-            serviceos_kernel_core::interrupts::InterruptVector(27),
-        );
-        if let Some(tasks) = system() {
-            tasks.handle_tick();
+        let Some(irq) = gic::acknowledge() else {
+            return;
+        };
+        if irq.intid == gic::TIMER_PPI_INTID {
+            timer::rearm_periodic_tick();
+            interrupts::note_timer_interrupt(interrupts::InterruptVector(irq.intid));
+        } else {
+            interrupts::note_external_interrupt(interrupts::InterruptVector(irq.intid));
         }
-        if let Some(tasks) = system() {
-            if tasks.consume_preemption() {
-                let _ = tasks.scheduler().preempt_current_if_needed();
-            }
-        }
+        gic::end_of_interrupt(irq);
     }
 
     #[unsafe(no_mangle)]

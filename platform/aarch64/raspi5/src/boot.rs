@@ -6,7 +6,7 @@ use serviceos_kernel_core::{
 };
 
 use crate::{
-    dtb::{self, DeviceTreeBootInfo, DeviceTreeError},
+    dtb::{self, DeviceTreeBootInfo, DeviceTreeError, InterruptControllerRegions},
     uart::UartDescriptor,
 };
 
@@ -47,6 +47,7 @@ pub struct BootSummary<'boot> {
     pub dtb_base: PhysicalAddress,
     pub dtb_size: usize,
     pub uart: Option<UartDescriptor<'boot>>,
+    pub interrupt_controller: Option<InterruptControllerRegions>,
 }
 
 pub struct CapturedBootState<'boot> {
@@ -88,6 +89,7 @@ pub fn capture_boot_info(
             dtb_base: dtb.dtb_base,
             dtb_size: dtb.dtb_size,
             uart: dtb.stdout_uart,
+            interrupt_controller: dtb.interrupt_controller,
         },
     })
 }

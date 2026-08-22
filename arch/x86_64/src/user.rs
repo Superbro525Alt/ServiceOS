@@ -322,7 +322,37 @@ pub fn register_address_space(address_space_id: AddressSpaceId, page_table_root:
 }
 
 pub fn release_address_space(address_space_id: AddressSpaceId) {
+    let root = ADDRESS_SPACES.lock().root(address_space_id);
     ADDRESS_SPACES.lock().release(address_space_id);
+    let Some(root) = root else {
+        return;
+    };
+    let Some(memory) = memory::manager() else {
+        return;
+    };
+    // Never tear down (or switch away from) the kernel's own root.
+    if root == memory.kernel_address_space().root.level_4_frame {
+        return;
+    }
+    // If the dying address space is still active, leave it before freeing its
+    // tables so no subsequent page walk references freed frames.
+    if cpu::current_page_table_root() == root {
+        unsafe { cpu::load_page_table_root(memory.kernel_address_space().root.level_4_frame) };
+    }
+
+    let mut allocator = memory.frame_allocator().lock();
+    let mut mapper = unsafe { OwnedPageTable::from_root(root) };
+    let mut freed_frames = unsafe { mapper.reclaim_user_frames(&mut allocator) };
+    // The root frame itself came from new_user_space().
+    allocator.free_4kib(root);
+    freed_frames += 1;
+    drop(allocator);
+
+    crate::serial::write_args(format_args!(
+        "serviceos: memory: address-space released root={:#x} frames-reclaimed={}\n",
+        root.as_u64(),
+        freed_frames
+    ));
 }
 
     pub fn unmap_memory_range(

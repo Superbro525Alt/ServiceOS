@@ -139,7 +139,50 @@ impl CapabilitySpace {
             object: entry.object,
             rights: requested,
             badge: entry.badge,
+            moved_source: if mode == TransferMode::Move {
+                Some(handle)
+            } else {
+                None
+            },
+            moved_source_rights: if mode == TransferMode::Move {
+                Some(entry.rights)
+            } else {
+                None
+            },
+            moved_source_badge: if mode == TransferMode::Move {
+                Some(entry.badge)
+            } else {
+                None
+            },
         })
+    }
+
+    /// Restore the sender-side handle removed by a `TransferMode::Move`
+    /// prepare when the surrounding operation failed before the transfer
+    /// completed. Returns `true` when a moved source was restored.
+    ///
+    /// The restore only fills an absent slot so it can never clobber a
+    /// handle allocated to something else in the meantime.
+    pub fn rollback_moved(&self, transfer: &PreparedTransfer) -> bool {
+        let Some(source) = transfer.moved_source else {
+            return false;
+        };
+        let Some(rights) = transfer.moved_source_rights else {
+            return false;
+        };
+        let mut state = self.state.lock();
+        if state.entries.contains_key(&source) {
+            return false;
+        }
+        state.entries.insert(
+            source,
+            CapabilityEntry {
+                object: Arc::clone(&transfer.object),
+                rights,
+                badge: transfer.moved_source_badge.unwrap_or(transfer.badge),
+            },
+        );
+        true
     }
 
     pub fn accept_transfer(

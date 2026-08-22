@@ -85,6 +85,14 @@ pub struct BootStore<'a> {
 
 impl<'a> BootStore<'a> {
     pub fn parse(bytes: &'a [u8]) -> Result<Self, BootStoreError> {
+        // Distinct early error: an oversized image can never be valid and is
+        // rejected before any header field is trusted.
+        if bytes.len() > crate::BOOT_STORE_MAX_BYTES {
+            return Err(BootStoreError::Oversize {
+                size: bytes.len(),
+                max: crate::BOOT_STORE_MAX_BYTES,
+            });
+        }
         let header = decode_header(bytes)?;
         if header.magic != BOOT_STORE_MAGIC {
             return Err(BootStoreError::InvalidMagic);
@@ -209,4 +217,41 @@ fn decode_entry(bytes: &[u8]) -> Result<BootStoreEntryRecord, BootStoreError> {
         reserved: read_u16(bytes, 26)?,
         path,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate alloc;
+
+    use alloc::vec;
+
+    use super::*;
+
+    #[test]
+    fn parse_rejects_oversized_images_before_reading_header() {
+        let ceiling = crate::BOOT_STORE_MAX_BYTES;
+        // Build the smallest allocation that trips the guard without
+        // committing 16 MiB to the test binary.
+        assert!(ceiling > BootStoreHeader::encoded_len());
+        let bytes = vec![0u8; ceiling + 1];
+        match BootStore::parse(&bytes) {
+            Err(BootStoreError::Oversize { size, max }) => {
+                assert_eq!(size, ceiling + 1);
+                assert_eq!(max, ceiling);
+            }
+            _ => panic!("oversized image must be rejected with Oversize"),
+        }
+    }
+
+    #[test]
+    fn parse_accepts_images_at_the_size_limit() {
+        let mut bytes = vec![0u8; crate::BOOT_STORE_MAX_BYTES];
+        bytes[..BOOT_STORE_MAGIC.len()].copy_from_slice(&BOOT_STORE_MAGIC);
+        bytes[8..12].copy_from_slice(&BOOT_STORE_VERSION.to_le_bytes());
+        // Zero entries: a valid header at exactly the ceiling parses fine.
+        bytes[12..16].copy_from_slice(&0u32.to_le_bytes());
+        bytes[16..20].copy_from_slice(&(BootStoreHeader::encoded_len() as u32).to_le_bytes());
+        bytes[20..24].copy_from_slice(&(BootStoreEntryRecord::encoded_len() as u32).to_le_bytes());
+        assert!(BootStore::parse(&bytes).is_ok());
+    }
 }

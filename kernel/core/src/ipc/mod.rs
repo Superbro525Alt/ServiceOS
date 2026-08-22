@@ -16,7 +16,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        capability::{CapabilityHandle, CapabilityRights, CapabilitySpace, TransferMode},
+        capability::{CapabilityError, CapabilityHandle, CapabilityRights, CapabilitySpace, TransferMode},
         object::{KernelObjectRef, ObjectRegistry},
     };
 
@@ -158,5 +158,118 @@ mod tests {
         let _ = kernel
             .receive(&receiver_space, right_handle)
             .expect("receive should still work");
+    }
+
+    #[test]
+    fn failed_move_send_restores_sender_handles() {
+        let kernel = IpcKernel::new();
+        let registry = ObjectRegistry::new();
+        let (left, right) = registry.create_channel_pair();
+        let payload = registry.create_memory_object(4096, true);
+        let sender_space = CapabilitySpace::new();
+        let receiver_space = CapabilitySpace::new();
+
+        let left_handle =
+            install_endpoint(&sender_space, &left, CapabilityRights::channel_endpoint());
+        let _right_handle = install_endpoint(
+            &receiver_space,
+            &right,
+            CapabilityRights::channel_endpoint(),
+        );
+        let moved_handle = sender_space
+            .install(payload, CapabilityRights::memory_object(), Some(9))
+            .expect("moved capability should install");
+
+        // Fill the peer queue so the next send fails after preparation.
+        for index in 0..MAX_QUEUED_MESSAGES_PER_ENDPOINT {
+            let message =
+                OutgoingMessage::new(MessageTag(index as u32), &[index as u64]).expect("fits");
+            kernel
+                .send(&sender_space, left_handle, message)
+                .expect("queue should accept bounded message");
+        }
+
+        let transfer = sender_space
+            .prepare_transfer(moved_handle, CapabilityRights::READ, TransferMode::Move)
+            .expect("move prepare should remove the source handle");
+        let message = OutgoingMessage::new(MessageTag(5), &[5])
+            .expect("fits")
+            .add_transfer(transfer)
+            .expect("transfer should fit");
+
+        assert!(matches!(
+            kernel.send(&sender_space, left_handle, message),
+            Err(IpcError::QueueFull { .. })
+        ));
+
+        // The failed send must hand the moved handle back to the sender.
+        sender_space
+            .resolve(moved_handle, CapabilityRights::WRITE)
+            .expect("moved handle should be restored after failed send");
+    }
+
+    #[test]
+    fn failed_receive_keeps_message_and_closes_partial_handles() {
+        let kernel = IpcKernel::new();
+        let registry = ObjectRegistry::new();
+        let (left, right) = registry.create_channel_pair();
+        let first_payload = registry.create_memory_object(4096, true);
+        let second_payload = registry.create_memory_object(4096, true);
+        let sender_space = CapabilitySpace::new();
+        let receiver_space = CapabilitySpace::new();
+
+        let left_handle =
+            install_endpoint(&sender_space, &left, CapabilityRights::channel_endpoint());
+        let right_handle = install_endpoint(
+            &receiver_space,
+            &right,
+            CapabilityRights::channel_endpoint(),
+        );
+
+        let first_handle = sender_space
+            .install(first_payload, CapabilityRights::memory_object(), None)
+            .expect("first payload capability should install");
+        let second_handle = sender_space
+            .install(second_payload, CapabilityRights::memory_object(), None)
+            .expect("second payload capability should install");
+
+        let message = OutgoingMessage::new(MessageTag(11), &[11])
+            .expect("fits")
+            .add_transfer(
+                sender_space
+                    .prepare_transfer(first_handle, CapabilityRights::READ, TransferMode::Copy)
+                    .expect("first transfer prepares"),
+            )
+            .expect("first transfer fits")
+            .add_transfer(
+                sender_space
+                    .prepare_transfer(second_handle, CapabilityRights::READ, TransferMode::Copy)
+                    .expect("second transfer prepares"),
+            )
+            .expect("second transfer fits");
+        kernel
+            .send(&sender_space, left_handle, message)
+            .expect("send should succeed");
+
+        // Exhaust the receiver's handle space after exactly one more install
+        // so the second capability accept fails mid-message.
+        receiver_space.set_next_handle_for_test(u32::MAX - 1);
+        assert!(matches!(
+            kernel.receive(&receiver_space, right_handle),
+            Err(IpcError::Capability(CapabilityError::HandleSpaceExhausted))
+        ));
+        assert_eq!(
+            receiver_space.handle_count(),
+            1,
+            "partially installed handles must be closed"
+        );
+
+        // The popped message must be back at the queue front and intact.
+        receiver_space.set_next_handle_for_test(50);
+        let received = kernel
+            .receive(&receiver_space, right_handle)
+            .expect("message should survive the failed receive");
+        assert_eq!(received.tag, MessageTag(11));
+        assert_eq!(received.transferred_capabilities().len(), 2);
     }
 }

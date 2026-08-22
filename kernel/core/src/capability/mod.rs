@@ -40,8 +40,40 @@ mod tests {
     }
 
     #[test]
-    fn move_transfer_closes_source_and_reinstalls_in_receiver() {
+    fn rollback_moved_restores_source_handle_exactly() {
         let registry = ObjectRegistry::new();
+        let object = registry.create_memory_object(4096, true);
+        let space = CapabilitySpace::new();
+
+        let source = space
+            .install(object, CapabilityRights::memory_object(), Some(0xab))
+            .expect("source capability should install");
+        let transfer = space
+            .prepare_transfer(
+                source,
+                CapabilityRights::READ,
+                TransferMode::Move,
+            )
+            .expect("move transfer should succeed");
+        assert!(matches!(
+            space.resolve(source, CapabilityRights::READ),
+            Err(CapabilityError::InvalidHandle)
+        ));
+
+        // The operation that carried the transfer failed: restore the moved
+        // handle with its original rights and badge.
+        assert!(space.rollback_moved(&transfer));
+        let restored = space
+            .resolve(source, CapabilityRights::WRITE)
+            .expect("rolled-back source should resolve with original rights");
+        assert_eq!(restored.badge, Some(0xab));
+
+        // Rolling back again must not duplicate or clobber anything.
+        assert!(!space.rollback_moved(&transfer));
+    }
+
+    #[test]
+    fn move_transfer_closes_source_and_reinstalls_in_receiver() {        let registry = ObjectRegistry::new();
         let object = registry.create_memory_object(8192, true);
         let sender = CapabilitySpace::new();
         let receiver = CapabilitySpace::new();

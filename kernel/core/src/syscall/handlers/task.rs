@@ -52,10 +52,17 @@ pub(crate) fn handle_service_spawn(context: &SyscallContext) -> SyscallReturn {
     let spawned = match user::spawn_builtin_task(
         context.arguments[0] as u32,
         TaskRole::SystemService,
-        bootstrap_transfer,
+        bootstrap_transfer.clone(),
     ) {
         Ok(spawned) => spawned,
-        Err(error) => return SyscallReturn::error(map_spawn_error(error)),
+        Err(error) => {
+            // The Move already removed the source handle; give it back so a
+            // failed spawn does not consume the caller's capability.
+            if let Some(transfer) = &bootstrap_transfer {
+                task.capability_space().rollback_moved(transfer);
+            }
+            return SyscallReturn::error(map_spawn_error(error));
+        }
     };
 
     match task

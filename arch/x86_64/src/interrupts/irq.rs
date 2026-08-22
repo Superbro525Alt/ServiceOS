@@ -2,24 +2,33 @@ use serviceos_kernel_core::interrupts::{self, InterruptVector};
 use x86_64::structures::idt::InterruptStackFrame;
 
 use super::{
-    EXTERNAL_IRQ_HANDLERS, EXTERNAL_IRQ_LINES, PIC_PRIMARY_OFFSET, TIMER_TICK_HOOK, TIMER_VECTOR,
+    EXTERNAL_IRQ_HANDLERS, EXTERNAL_IRQ_LINES, PIC_PRIMARY_OFFSET, TIMER_VECTOR,
     pic::{acknowledge_pic, unmask_pic_irq_line},
 };
 
 pub(super) extern "x86-interrupt" fn timer_interrupt_handler(_frame: InterruptStackFrame) {
     let _ = interrupts::note_timer_interrupt(InterruptVector(TIMER_VECTOR as u16));
-    if let Some(hook) = *TIMER_TICK_HOOK.lock() {
-        hook();
-    }
-    
-    // Send EOI to LAPIC if available
+
+    // The system timer is the PIT routed through the 8259 PIC, so the PIC
+    // must always be acknowledged or it will not deliver further timer
+    // interrupts. The LAPIC is enabled as an interrupt controller in
+    // virtual-wire mode and additionally requires an EOI for deliveries
+    // that pass through it.
     unsafe {
+        acknowledge_pic(TIMER_VECTOR);
         if crate::lapic::timer().is_initialized() {
             crate::lapic::send_eoi();
-        } else {
-            acknowledge_pic(TIMER_VECTOR);
         }
     }
+}
+
+pub(super) extern "x86-interrupt" fn lapic_spurious_interrupt_handler(
+    _frame: InterruptStackFrame,
+) {
+    // Spurious LAPIC interrupts must not receive an EOI (SDM 10.9).
+    let _ = interrupts::note_external_interrupt(InterruptVector(
+        crate::lapic::LAPIC_SPURIOUS_VECTOR as u16,
+    ));
 }
 
 pub(super) fn register_external_irq_handler(irq_line: u8, handler: fn(u8)) -> bool {
@@ -52,7 +61,14 @@ fn dispatch_external_irq(irq_line: u8) {
     for handler in handlers[irq_line as usize].iter().flatten().copied() {
         handler(irq_line);
     }
-    acknowledge_pic(vector);
+    // The LAPIC is enabled in virtual-wire mode, so external PIC deliveries
+    // may pass through it; acknowledge both controllers like the timer path.
+    unsafe {
+        acknowledge_pic(vector);
+        if crate::lapic::timer().is_initialized() {
+            crate::lapic::send_eoi();
+        }
+    }
 }
 
 macro_rules! external_irq_handler {

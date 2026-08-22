@@ -91,7 +91,6 @@ static IDT: Once<InterruptDescriptorTable> = Once::new();
 static EXTERNAL_IRQ_HANDLERS: spin::Mutex<
     [[Option<fn(u8)>; MAX_EXTERNAL_IRQ_HANDLERS_PER_LINE]; EXTERNAL_IRQ_LINES],
 > = spin::Mutex::new([[None; MAX_EXTERNAL_IRQ_HANDLERS_PER_LINE]; EXTERNAL_IRQ_LINES]);
-static TIMER_TICK_HOOK: spin::Mutex<Option<fn()>> = spin::Mutex::new(None);
 
 unsafe extern "C" {
     fn serviceos_x86_64_syscall_entry();
@@ -100,10 +99,10 @@ unsafe extern "C" {
 pub fn initialize() -> DescriptorState {
     install_descriptor_tables();
     install_interrupt_table();
+    initialize_lapic();
     pic::initialize_pic();
     pic::initialize_pit(TIMER_TICK_HZ);
     initialize_syscall_sysret();
-    initialize_lapic();
 
     DescriptorState {
         gdt_loaded: true,
@@ -117,10 +116,12 @@ pub fn initialize() -> DescriptorState {
 }
 
 fn initialize_lapic() {
-    // Try to initialize LAPIC timer with a hint of 1GHz
-    // In a real system, this would be calibrated against the PIT
+    // Enable the local APIC as an interrupt controller in virtual-wire mode
+    // so the PIC keeps delivering and LAPIC EOIs are meaningful. The PIT/PIC
+    // remains the system tick source; the LAPIC timer entry stays masked on
+    // its own vector until it is calibrated against the PIT.
     unsafe {
-        lapic::initialize(1_000_000_000);
+        lapic::initialize();
     }
 }
 
@@ -157,10 +158,6 @@ pub fn arm_demo_wakeup(deadline_ticks_from_now: u64) {
             serviceos_kernel_core::time::TimerRequest::one_shot(deadline),
         );
     });
-}
-
-pub fn register_timer_tick_hook(hook: fn()) {
-    *TIMER_TICK_HOOK.lock() = Some(hook);
 }
 
 pub fn poll_wakeup() -> Option<serviceos_kernel_core::time::WakeEvent> {
@@ -275,6 +272,7 @@ fn install_interrupt_table() {
             .set_handler_fn(faults::security_exception_handler);
         unsafe {
             idt[TIMER_VECTOR].set_handler_fn(irq::timer_interrupt_handler);
+            idt[lapic::LAPIC_SPURIOUS_VECTOR].set_handler_fn(irq::lapic_spurious_interrupt_handler);
             idt[PIC_PRIMARY_OFFSET + 1].set_handler_fn(irq::external_irq1_handler);
             idt[PIC_PRIMARY_OFFSET + 2].set_handler_fn(irq::external_irq2_handler);
             idt[PIC_PRIMARY_OFFSET + 3].set_handler_fn(irq::external_irq3_handler);

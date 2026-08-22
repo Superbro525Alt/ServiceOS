@@ -360,10 +360,30 @@ serviceos_aarch64_lower_el_sync:
     #[unsafe(no_mangle)]
     static mut serviceos_aarch64_kernel_return_sp: u64 = 0;
 
+    /// Exception stack storage; only its address is consumed by SP_EL1 setup.
+    #[allow(dead_code)]
+    #[repr(align(16))]
+    struct ExceptionStack([u8; 16 * 1024]);
+
+    static EXCEPTION_STACK: ExceptionStack = ExceptionStack([0; 16 * 1024]);
+
     static USER_THREADS: Mutex<UserThreadRuntime> = Mutex::new(UserThreadRuntime::new());
     static ADDRESS_SPACES: Mutex<AddressSpaceRuntime> = Mutex::new(AddressSpaceRuntime::new());
 
     pub fn initialize() {
+        unsafe {
+            core::arch::asm!(
+                "adrp x9, {stack}",
+                "add x9, x9, :lo12:{stack}",
+                "mov x10, {size}",
+                "add x9, x9, x10",
+                "msr sp_el1, x9",
+                "isb",
+                stack = sym EXCEPTION_STACK,
+                size = const 16 * 1024,
+                options(nomem, nostack),
+            );
+        }
         user::register_arch_hooks(UserArchHooks {
             prepare_address_space,
             register_thread_launch,

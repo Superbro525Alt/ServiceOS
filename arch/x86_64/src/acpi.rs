@@ -5,6 +5,27 @@ const RSDP_SIGNATURE: &[u8; 8] = b"RSD PTR ";
 const MADT_SIGNATURE: &[u8; 4] = b"APIC";
 const XSDT_SIGNATURE: &[u8; 4] = b"XSDT";
 const RSDT_SIGNATURE: &[u8; 4] = b"RSDT";
+const HPET_SIGNATURE: &[u8; 4] = b"HPET";
+
+/// ACPI HPET Description Table field offsets (after the 36-byte SDT header
+/// the table carries a full Generic Address Structure, not a bare pointer):
+///
+/// ```text
+/// 36: event timer block id      u32
+/// 40: GAS space id              u8   (0 == system memory)
+/// 41: GAS bit width             u8
+/// 42: GAS bit offset            u8
+/// 43: GAS access size           u8
+/// 44: GAS address               u64  <-- event timer block MMIO base
+/// 52: HPET number               u8
+/// 54: minimum main-counter tick u16
+/// 56: page protection           u8
+/// ```
+const HPET_GAS_SPACE_ID_OFFSET: u32 = 36 + 4;
+const HPET_GAS_ADDRESS_OFFSET: u32 = HPET_GAS_SPACE_ID_OFFSET + 4;
+const HPET_MIN_TABLE_LENGTH: u32 = 52;
+/// GAS address space id for system memory
+const GAS_SPACE_ID_SYSTEM_MEMORY: u8 = 0;
 
 const MADT_ENTRY_TYPE_LOCAL_APIC: u8 = 0;
 const LOCAL_APIC_FLAG_ENABLED: u32 = 1;
@@ -106,13 +127,13 @@ unsafe fn child_tables<'a>(
         })
 }
 
-/// Walk RSDP → XSDT/RSDT looking for the Multiple APIC Description Table.
+/// Walk RSDP → XSDT/RSDT and return the root table header.
 ///
-/// Returns `None` silently whenever any step fails (missing RSDP, missing
-/// MADT), letting callers stay single-core without log noise.
-pub(crate) fn madt_header(rsdp_address: Option<PhysicalAddress>) -> Option<&'static SystemDescriptionTableHeader> {
-    let Some(addr) = rsdp_address else { return None; };
-    let Some(rsdp) = (unsafe { rsdp_at(addr) }) else { return None; };
+/// Returns `None` silently when the RSDP is missing or its root table does
+/// not validate, letting callers stay quiet on degraded firmware.
+fn root_table_header(rsdp_address: Option<PhysicalAddress>) -> Option<&'static SystemDescriptionTableHeader> {
+    let addr = rsdp_address?;
+    let rsdp = unsafe { rsdp_at(addr) }?;
 
     let root_physical = if rsdp.revision >= 2 && rsdp.xsdt_address != 0 {
         rsdp.xsdt_address
@@ -123,15 +144,49 @@ pub(crate) fn madt_header(rsdp_address: Option<PhysicalAddress>) -> Option<&'sta
         return None;
     }
 
-    let Some(root) = (unsafe { table_at(root_physical) }) else { return None; };
+    let root = unsafe { table_at(root_physical) }?;
     if root.signature != *XSDT_SIGNATURE && root.signature != *RSDT_SIGNATURE {
         return None;
     }
+    Some(root)
+}
+
+/// Walk RSDP → XSDT/RSDT looking for the Multiple APIC Description Table.
+///
+/// Returns `None` silently whenever any step fails (missing RSDP, missing
+/// MADT), letting callers stay single-core without log noise.
+pub(crate) fn madt_header(rsdp_address: Option<PhysicalAddress>) -> Option<&'static SystemDescriptionTableHeader> {
+    let root = root_table_header(rsdp_address)?;
 
     unsafe {
         child_tables(root).find_map(|table| {
             let header = table_at(table)?;
             (header.signature == *MADT_SIGNATURE).then_some(header)
+        })
+    }
+}
+
+/// Physical MMIO base of the High Precision Event Timer from the ACPI HPET
+/// Description Table, or `None` when firmware exposes no HPET block.
+pub(crate) fn hpet_base_address(
+    rsdp_address: Option<PhysicalAddress>,
+) -> Option<u64> {
+    let root = root_table_header(rsdp_address)?;
+
+    unsafe {
+        child_tables(root).find_map(|table| {
+            let header = table_at(table)?;
+            if header.signature != *HPET_SIGNATURE || header.length < HPET_MIN_TABLE_LENGTH {
+                return None;
+            }
+            let base = table as *const u8;
+            let space_id = core::ptr::read_unaligned(base.add(HPET_GAS_SPACE_ID_OFFSET as usize));
+            if space_id != GAS_SPACE_ID_SYSTEM_MEMORY {
+                return None;
+            }
+            let address =
+                core::ptr::read_unaligned(base.add(HPET_GAS_ADDRESS_OFFSET as usize) as *const u64);
+            (address != 0).then_some(address)
         })
     }
 }

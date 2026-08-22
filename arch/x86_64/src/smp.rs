@@ -144,6 +144,11 @@ unsafe extern "C" {
 /// the BSP is present, so a `-smp 1` machine boots with byte-identical
 /// output to before. A detected-but-failed bring-up logs exactly one line.
 pub fn bring_up_application_processors(rsdp_address: Option<PhysicalAddress>) {
+    // The RSDP address reaches arch code first through this call, so HPET
+    // discovery piggybacks here rather than needing a new platform-side
+    // wiring point. Emits exactly one `hpet:` line either way.
+    crate::hpet::initialize(rsdp_address);
+
     // TEMP(SMP-evidence): one line tracing the discovery inputs.
     crate::serial::write_args(format_args!(
         "serviceos: smp: PROBE rsdp={:?} ids={:?} bsp={}\n",

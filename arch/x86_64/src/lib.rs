@@ -6,6 +6,8 @@ extern crate alloc;
 pub mod cpu;
 pub mod interrupts;
 pub mod acpi;
+pub mod hpet;
+mod hpet_math;
 pub mod kernel_context;
 pub mod kthread;
 pub mod lapic;

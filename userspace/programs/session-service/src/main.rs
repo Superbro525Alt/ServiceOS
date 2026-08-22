@@ -112,7 +112,8 @@ fn main() -> u64 {
             }
         }
 
-        match poll_input(bootstrap, &mut state) {
+        let allow_input_wait = !did_work && state.input_source == SessionInputSource::Hardware;
+        match poll_input(bootstrap, &mut state, allow_input_wait) {
             Ok(processed_input) => did_work |= processed_input,
             Err(_) => return 0xfd0b,
         }
@@ -216,10 +217,33 @@ fn handle_request(
     Ok(())
 }
 
-fn poll_input(bootstrap: rt::Handle, state: &mut SessionState) -> rt::Result<bool> {
+/// Wakeup-driven receive: parks the thread in the kernel until the device IRQ
+/// path signals the input source (`notify_input_ready`), then applies a
+/// one-shot nonblocking drain fallback so a consumed wakeup never strands
+/// coalesced or late arrivals behind a missed edge.
+fn await_input_wakeup(state: &mut SessionState) -> rt::Result<Option<rt::InputEventInfo>> {
+    match rt::input_source_receive(state.input_handle) {
+        Ok(event) => Ok(Some(event)),
+        Err(rt::Error::QueueEmpty) => {
+            match rt::input_source_receive_nonblocking(state.input_handle) {
+                Ok(event) => Ok(Some(event)),
+                Err(rt::Error::QueueEmpty) => Ok(None),
+                Err(error) => Err(error),
+            }
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn poll_input(
+    bootstrap: rt::Handle,
+    state: &mut SessionState,
+    allow_wait: bool,
+) -> rt::Result<bool> {
     let mut processed = false;
     let mut pending_pointer_move = false;
     let mut remaining = MAX_INPUT_EVENTS_PER_TURN;
+    let mut wakeup_wait_used = false;
     loop {
         let event = match rt::input_source_receive_nonblocking(state.input_handle) {
             Ok(event) => {
@@ -227,10 +251,26 @@ fn poll_input(bootstrap: rt::Handle, state: &mut SessionState) -> rt::Result<boo
                 event
             }
             Err(rt::Error::QueueEmpty) => {
-                if pending_pointer_move {
-                    flush_pointer_move(bootstrap, state)?;
+                if allow_wait && !wakeup_wait_used {
+                    wakeup_wait_used = true;
+                    match await_input_wakeup(state)? {
+                        Some(event) => {
+                            processed = true;
+                            event
+                        }
+                        None => {
+                            if pending_pointer_move {
+                                flush_pointer_move(bootstrap, state)?;
+                            }
+                            return Ok(processed);
+                        }
+                    }
+                } else {
+                    if pending_pointer_move {
+                        flush_pointer_move(bootstrap, state)?;
+                    }
+                    return Ok(processed);
                 }
-                return Ok(processed);
             }
             Err(error) => return Err(error),
         };

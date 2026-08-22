@@ -47,11 +47,10 @@ fn main() -> u64 {
         kind: ConfigValueKind::Unsigned,
         value: 0,
     }; 14];
-    let entry_count = match parse_config_entries(&config_bytes[..loaded], &mut entries) {
+    let mut entry_count = match parse_config_entries(&config_bytes[..loaded], &mut entries) {
         Ok(count) => count,
         Err(_) => return 0xf204,
     };
-    let mut entry_count = entry_count;
 
     let public = match rt::channel_create() {
         Ok(pair) => pair,

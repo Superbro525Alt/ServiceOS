@@ -191,12 +191,21 @@ pub(crate) fn handle_memory_unmap(context: &SyscallContext) -> SyscallReturn {
     let Some(address_space_id) = task.address_space() else {
         return SyscallReturn::error(SyscallError::Unsupported);
     };
+    let Some(runtime) = user::runtime() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
     let Some(hooks) = user::arch_hooks() else {
         return SyscallReturn::error(SyscallError::NotInitialized);
     };
 
     let page_size = PAGE_SIZE_BYTES as usize;
     let page_count = length.div_ceil(page_size);
+    let Some(span_bytes) = (page_count as u64).checked_mul(PAGE_SIZE_BYTES) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    if !runtime.contains_reserved_mapping_range(address_space_id, address as u64, span_bytes) {
+        return SyscallReturn::error(SyscallError::PermissionDenied);
+    }
 
     match (hooks.unmap_memory_range)(address_space_id, crate::memory::VirtualAddress::new(address as u64), page_count) {
         Ok(()) => SyscallReturn::success(0),
@@ -244,12 +253,21 @@ pub(crate) fn handle_memory_protect(context: &SyscallContext) -> SyscallReturn {
     let Some(address_space_id) = task.address_space() else {
         return SyscallReturn::error(SyscallError::Unsupported);
     };
+    let Some(runtime) = user::runtime() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
     let Some(hooks) = user::arch_hooks() else {
         return SyscallReturn::error(SyscallError::NotInitialized);
     };
 
     let page_size = PAGE_SIZE_BYTES as usize;
     let page_count = length.div_ceil(page_size);
+    let Some(span_bytes) = (page_count as u64).checked_mul(PAGE_SIZE_BYTES) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    if !runtime.contains_reserved_mapping_range(address_space_id, address as u64, span_bytes) {
+        return SyscallReturn::error(SyscallError::PermissionDenied);
+    }
 
     let mut flags = MappingFlags::empty();
     if protect_flags & 1 != 0 {

@@ -84,6 +84,31 @@ impl UserRuntime {
         Some(base)
     }
 
+    /// True when `[start, start + size_bytes)` lies entirely inside the
+    /// shared-mapping band this runtime handed out for the address space.
+    ///
+    /// Image and stack regions live below `FIRST_SHARED_MAPPING_BASE` and all
+    /// kernel ranges live above `USER_SPACE_END`, so ranges accepted here can
+    /// never name kernel mappings or loader-owned user regions. This is what
+    /// lets `memory_unmap`/`memory_protect` refuse to mutate pages the task
+    /// never mapped through `memory_map`.
+    pub fn contains_reserved_mapping_range(
+        &self,
+        address_space_id: AddressSpaceId,
+        start: u64,
+        size_bytes: u64,
+    ) -> bool {
+        let state = self.state.lock();
+        let Some(entry) = state.address_spaces.get(&address_space_id) else {
+            return false;
+        };
+        let band_end = entry.next_mapping_base.as_u64();
+        let Some(end) = start.checked_add(size_bytes) else {
+            return false;
+        };
+        start >= FIRST_SHARED_MAPPING_BASE && end <= band_end
+    }
+
     pub fn task_exit_status(&self, task_id: TaskId) -> Option<TaskExitStatus> {
         self.state.lock().tasks.get(&task_id).copied()
     }

@@ -1,4 +1,4 @@
-use serviceos_kernel_arch_x86_64::{interrupts, user};
+use serviceos_kernel_arch_x86_64::{interrupts, kthread, user};
 use serviceos_kernel_core::{
     Kernel,
     object::ObjectId,
@@ -20,6 +20,14 @@ pub(crate) fn run_userspace_executor(
 
         let scheduler = kernel.tasks().scheduler();
         let snapshot = scheduler.snapshot();
+
+        // With no runnable user thread, park the executor into queued kernel
+        // threads (register-level context switches) until they drain.
+        if snapshot.runnable_threads == 0 && kthread::pending_count() > 0 {
+            kthread::pump_pending();
+            continue;
+        }
+
         let current = snapshot.current;
         let root_status = kernel_user::runtime()
             .and_then(|runtime| runtime.task_exit_status(root_task))

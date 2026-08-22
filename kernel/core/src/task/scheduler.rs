@@ -12,6 +12,25 @@ use super::{
     ThreadObject, ThreadWakeReason, WaitTarget,
 };
 
+/// Number of per-CPU runnable queues. CPUs beyond this cap share the last
+/// queue; steal-on-empty keeps every queue drainable from any CPU.
+const RUNNABLE_QUEUE_CPUS: usize = 8;
+
+/// Optional hook supplying the calling CPU's index (wired from the arch
+/// layer's GS-based per-CPU data). Defaults to CPU 0, which keeps scheduler
+/// behavior identical to the single global queue on single-core machines.
+static CURRENT_CPU_HOOK: Mutex<Option<fn() -> usize>> = Mutex::new(None);
+
+/// Register the hook used to attribute runnable threads to per-CPU queues.
+pub fn register_current_cpu_hook(hook: fn() -> usize) {
+    *CURRENT_CPU_HOOK.lock() = Some(hook);
+}
+
+fn current_cpu_index() -> usize {
+    let hook = CURRENT_CPU_HOOK.lock();
+    hook.map_or(0, |hook| (hook)() % RUNNABLE_QUEUE_CPUS)
+}
+
 #[derive(Clone)]
 struct ThreadRecord {
     object: KernelObjectRef,
@@ -19,7 +38,7 @@ struct ThreadRecord {
 
 struct SchedulerState {
     current: Option<ThreadId>,
-    runnable: VecDeque<ThreadId>,
+    runnable_queues: [VecDeque<ThreadId>; RUNNABLE_QUEUE_CPUS],
     threads: BTreeMap<ThreadId, ThreadRecord>,
     waiting_timers: BTreeMap<WakeToken, ThreadId>,
     waiting_receivers: BTreeMap<ObjectId, VecDeque<ThreadId>>,
@@ -59,7 +78,7 @@ impl Scheduler {
         Self {
             state: Mutex::new(SchedulerState {
                 current: Some(bootstrap_id),
-                runnable: VecDeque::new(),
+                runnable_queues: [const { VecDeque::new() }; RUNNABLE_QUEUE_CPUS],
                 threads,
                 waiting_timers: BTreeMap::new(),
                 waiting_receivers: BTreeMap::new(),
@@ -80,7 +99,7 @@ impl Scheduler {
         SchedulerSnapshot {
             current: state.current,
             tracked_threads: state.threads.len(),
-            runnable_threads: state.runnable.len(),
+            runnable_threads: state.runnable_len(),
             blocked_threads: blocked_thread_count(&state),
             timer_waits: state.waiting_timers.len(),
             channel_receive_waits: state.waiting_receivers.values().map(VecDeque::len).sum(),
@@ -131,9 +150,7 @@ impl Scheduler {
         }
 
         remove_from_wait_queues(&mut state, thread_id);
-        if !state.runnable.contains(&thread_id) {
-            state.runnable.push_back(thread_id);
-        }
+        state.push_runnable_if_absent(thread_id);
         thread
             .object
             .thread()
@@ -162,7 +179,7 @@ impl Scheduler {
                 None,
                 Some(ThreadWakeReason::Yield),
             );
-            state.runnable.push_back(current);
+            state.push_runnable_on_current_cpu(current);
             state.current = None;
         }
 
@@ -187,7 +204,7 @@ impl Scheduler {
                 None,
                 Some(ThreadWakeReason::Yield),
             );
-            state.runnable.push_back(current);
+            state.push_runnable_on_current_cpu(current);
             state.current = None;
         }
         state.preemption_pending = false;
@@ -336,7 +353,7 @@ impl Scheduler {
             Some(ThreadWakeReason::Explicit),
         );
         remove_from_wait_queues(&mut state, current);
-        state.runnable.retain(|thread_id| *thread_id != current);
+        state.remove_runnable(current);
         state.current = None;
         state.threads.remove(&current);
 
@@ -348,9 +365,7 @@ impl Scheduler {
         let previous = state.current;
         let thread_id = state.waiting_timers.remove(&event.token)?;
         let thread = lookup_thread_record(&state, thread_id).ok()?;
-        if !state.runnable.contains(&thread_id) {
-            state.runnable.push_back(thread_id);
-        }
+        state.push_runnable_if_absent(thread_id);
         thread
             .object
             .thread()
@@ -383,9 +398,7 @@ impl Scheduler {
                 remove_waiters = waiters.is_empty();
 
                 let thread = lookup_thread_record(&state, thread_id).ok()?;
-                if !state.runnable.contains(&thread_id) {
-                    state.runnable.push_back(thread_id);
-                }
+                state.push_runnable_if_absent(thread_id);
                 thread
                     .object
                     .thread()
@@ -428,9 +441,7 @@ impl Scheduler {
                 remove_waiters = waiters.is_empty();
 
                 let thread = lookup_thread_record(&state, thread_id).ok()?;
-                if !state.runnable.contains(&thread_id) {
-                    state.runnable.push_back(thread_id);
-                }
+                state.push_runnable_if_absent(thread_id);
                 thread
                     .object
                     .thread()
@@ -473,9 +484,7 @@ impl Scheduler {
                 remove_waiters = waiters.is_empty();
 
                 let thread = lookup_thread_record(&state, thread_id).ok()?;
-                if !state.runnable.contains(&thread_id) {
-                    state.runnable.push_back(thread_id);
-                }
+                state.push_runnable_if_absent(thread_id);
                 thread
                     .object
                     .thread()
@@ -514,9 +523,7 @@ impl Scheduler {
         let waiters = state.waiting_objects.remove(&object)?;
         for thread_id in waiters {
             let thread = lookup_thread_record(&state, thread_id).ok()?;
-            if !state.runnable.contains(&thread_id) {
-                state.runnable.push_back(thread_id);
-            }
+            state.push_runnable_if_absent(thread_id);
             thread
                 .object
                 .thread()
@@ -548,7 +555,7 @@ impl Scheduler {
         if state.ticks_remaining > 0 {
             state.ticks_remaining -= 1;
         }
-        if state.ticks_remaining == 0 && state.runnable.len() > 0 {
+        if state.ticks_remaining == 0 && state.runnable_len() > 0 {
             state.preemption_pending = true;
         }
     }
@@ -576,7 +583,7 @@ impl Scheduler {
     pub fn kernel_context_switch_info(&self) -> Option<(ThreadId, Option<KernelContext>, Option<KernelContext>)> {
         let state = self.state.lock();
         let previous = state.current?;
-        let next = state.runnable.front()?;
+        let next = state.runnable_front()?;
         
         if previous == *next {
             return None;
@@ -636,7 +643,7 @@ fn decision(
         trigger,
         previous,
         next,
-        runnable_threads: state.runnable.len(),
+        runnable_threads: state.runnable_len(),
         blocked_threads: blocked_thread_count(state),
     }
 }
@@ -650,6 +657,53 @@ fn lookup_thread(
         .get(&thread_id)
         .and_then(|record| record.object.thread())
         .ok_or(SchedulerError::InvalidThread)
+}
+
+impl SchedulerState {
+    fn runnable_len(&self) -> usize {
+        self.runnable_queues.iter().map(VecDeque::len).sum()
+    }
+
+    fn push_runnable_on_current_cpu(&mut self, thread_id: ThreadId) {
+        let cpu = current_cpu_index();
+        self.runnable_queues[cpu].push_back(thread_id);
+    }
+
+    fn push_runnable_if_absent(&mut self, thread_id: ThreadId) {
+        if !self.runnable_contains(thread_id) {
+            self.push_runnable_on_current_cpu(thread_id);
+        }
+    }
+
+    fn runnable_contains(&self, thread_id: ThreadId) -> bool {
+        self.runnable_queues
+            .iter()
+            .any(|queue| queue.contains(&thread_id))
+    }
+
+    /// Pop the next thread from the calling CPU's queue first, stealing
+    /// from the other queues (lowest index first) when it is empty.
+    fn pop_runnable_next(&mut self) -> Option<ThreadId> {
+        let cpu = current_cpu_index();
+        if let Some(thread_id) = self.runnable_queues[cpu].pop_front() {
+            return Some(thread_id);
+        }
+        self.runnable_queues.iter_mut().find_map(VecDeque::pop_front)
+    }
+
+    fn runnable_front(&self) -> Option<&ThreadId> {
+        let cpu = current_cpu_index();
+        if let Some(thread_id) = self.runnable_queues[cpu].front() {
+            return Some(thread_id);
+        }
+        self.runnable_queues.iter().find_map(|queue| queue.front())
+    }
+
+    fn remove_runnable(&mut self, thread_id: ThreadId) {
+        for queue in &mut self.runnable_queues {
+            queue.retain(|queued| *queued != thread_id);
+        }
+    }
 }
 
 fn lookup_thread_record(
@@ -668,7 +722,7 @@ fn schedule_next_locked(
     trigger: ScheduleTrigger,
     previous: Option<ThreadId>,
 ) -> Result<ScheduleDecision, SchedulerError> {
-    let next = state.runnable.pop_front();
+    let next = state.pop_runnable_next();
     if let Some(thread_id) = next {
         let thread = lookup_thread(state, thread_id)?;
         thread.transition_to(
@@ -693,9 +747,7 @@ fn wake_object_waiters_locked(state: &mut SchedulerState, object: ObjectId) -> O
     };
     for thread_id in waiters {
         let thread = lookup_thread_record(state, thread_id).ok()?;
-        if !state.runnable.contains(&thread_id) {
-            state.runnable.push_back(thread_id);
-        }
+        state.push_runnable_if_absent(thread_id);
         thread
             .object
             .thread()

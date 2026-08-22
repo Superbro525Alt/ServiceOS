@@ -13,11 +13,11 @@ pub fn stage_platform_bundle(
 ) -> Result<StagedPlatformLayout, Box<dyn Error>> {
     let root_dir = match artifacts.spec.boot_kind {
         BootKind::Uefi => artifacts.image_root.join("esp"),
-        BootKind::RaspberryPiFirmware => artifacts.image_root.join("boot"),
+        BootKind::RaspberryPiFirmware | BootKind::QemuKernel => artifacts.image_root.join("boot"),
     };
     let boot_dir = match artifacts.spec.boot_kind {
         BootKind::Uefi => root_dir.join("EFI").join("BOOT"),
-        BootKind::RaspberryPiFirmware => root_dir.clone(),
+        BootKind::RaspberryPiFirmware | BootKind::QemuKernel => root_dir.clone(),
     };
     let serviceos_dir = root_dir.join("serviceos");
 
@@ -31,7 +31,9 @@ pub fn stage_platform_bundle(
     if let Some(kernel_binary) = &artifacts.kernel_binary {
         let destination = match artifacts.spec.boot_kind {
             BootKind::Uefi => boot_dir.join("BOOTX64.EFI"),
-            BootKind::RaspberryPiFirmware => serviceos_dir.join("serviceos-kernel.elf"),
+            BootKind::RaspberryPiFirmware | BootKind::QemuKernel => {
+                serviceos_dir.join("serviceos-kernel.elf")
+            }
         };
         fs::copy(kernel_binary, destination)?;
     }

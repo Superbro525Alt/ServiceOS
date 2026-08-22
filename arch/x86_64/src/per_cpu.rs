@@ -69,11 +69,15 @@ unsafe fn write_msr(msr: u32, value: u64) {
 /// # Safety
 /// This function assumes GS base is properly initialized for the current CPU.
 pub unsafe fn current_cpu_data() -> &'static mut PerCpuData {
-    let gs_base: u64;
-    unsafe {
-        asm!("mov {}, gs:0x00", out(reg) gs_base);
-        &mut *(gs_base as *mut PerCpuData)
-    }
+    // The GS BASE register itself points at this CPU's PerCpuData. Reading
+    // `gs:0x00` would load the kernel_rsp FIELD VALUE (a stack pointer), not
+    // the base, so go through IA32_GS_BASE instead. SwapGS is never used on
+    // this kernel, so GS_BASE always holds the kernel per-CPU base.
+    // SAFETY: reading IA32_GS_BASE has no side effects; GS base is
+    // programmed per CPU during init and never swapped, and the resulting
+    // pointer refers to this CPU's live PerCpuData.
+    let gs_base = unsafe { crate::msr::read_msr(0xC000_0101) }; // IA32_GS_BASE
+    unsafe { &mut *(gs_base as *mut PerCpuData) }
 }
 
 /// Update the kernel stack pointer for the current CPU

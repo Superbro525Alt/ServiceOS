@@ -12,7 +12,9 @@ use logging::{debug_log_writer, log, log_line};
 use serviceos_kernel_arch_x86_64::{
     cpu,
     interrupts::{self, TIMER_TICK_HZ},
+    kthread,
     paging::ActivePageTable,
+    smp,
     user,
 };
 use serviceos_kernel_core::{Kernel, syscall, user as kernel_user};
@@ -42,6 +44,9 @@ fn kernel_main() -> Status {
         }
     };
     let descriptor_state = interrupts::initialize();
+    smp::bring_up_application_processors(boot_info.rsdp_address);
+    // Second kernel-thread wave for the APs to steal.
+    kthread::spawn_pingpong_demo();
     user::initialize();
     kernel_user::initialize_runtime();
     let _ = BOOT_STORE_IMAGE_SOURCE.call_once(|| boot_store);

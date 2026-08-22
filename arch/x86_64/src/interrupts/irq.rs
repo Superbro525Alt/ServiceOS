@@ -30,20 +30,30 @@ extern "C" fn serviceos_x86_64_handle_timer_irq(frame: *mut TimerIrqFrame) -> u6
     // TimerIrqFrame and the frame outlives this call.
     let frame = unsafe { &mut *frame };
 
-    let _ = interrupts::note_timer_interrupt(InterruptVector(TIMER_VECTOR as u16));
-
-    // The system timer is the PIT routed through the 8259 PIC, so the PIC
-    // must always be acknowledged or it will not deliver further timer
-    // interrupts. The LAPIC is enabled as an interrupt controller in
-    // virtual-wire mode and additionally requires an EOI for deliveries
-    // that pass through it. This happens on both the resume and the
-    // preemption path.
-    unsafe {
-        acknowledge_pic(TIMER_VECTOR);
-        if crate::lapic::timer().is_initialized() {
+    // The system tick is delivered either by the LAPIC timer on its own
+    // vector (once calibrated and armed) or by the PIT routed through the
+    // 8259 PIC. Only the active source is acknowledged: the LAPIC always
+    // requires an EOI for deliveries that pass through it, while the PIC
+    // must be acknowledged or it will not deliver further timer interrupts.
+    if crate::lapic::timer().is_armed() {
+        unsafe {
             crate::lapic::send_eoi();
         }
+    } else {
+        unsafe {
+            acknowledge_pic(TIMER_VECTOR);
+            if crate::lapic::timer().is_initialized() {
+                crate::lapic::send_eoi();
+            }
+        }
     }
+
+    let tick_vector = if crate::lapic::timer().is_armed() {
+        InterruptVector(crate::lapic::LAPIC_TIMER_VECTOR as u16)
+    } else {
+        InterruptVector(TIMER_VECTOR as u16)
+    };
+    let _ = interrupts::note_timer_interrupt(tick_vector);
 
     if frame.context.code_segment & 0b11 != 0b11 {
         return 0;

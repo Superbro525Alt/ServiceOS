@@ -17,7 +17,59 @@ pub fn create_platform_image(artifacts: &BuildArtifacts) -> Result<PathBuf, Box<
     match artifacts.spec.image_kind {
         ImageKind::RawDisk => create_qemu_disk_image(&layout.root_dir),
         ImageKind::RaspberryPiBundle => create_raspi_bundle(artifacts, &layout),
+        ImageKind::QemuKernel => create_virt_kernel_bundle(artifacts, &layout),
     }
+}
+
+pub fn ensure_virt_kernel_image(artifacts: &BuildArtifacts) -> Result<PathBuf, Box<dyn Error>> {
+    let kernel_elf = artifacts
+        .kernel_binary
+        .as_ref()
+        .ok_or_else(|| "virt platform requires a kernel ELF binary".to_string())?;
+    if !kernel_elf.exists() {
+        return Err(format!(
+            "virt kernel ELF is missing: {}",
+            kernel_elf.display()
+        )
+        .into());
+    }
+    let image_path = artifacts
+        .image_root
+        .join("serviceos-kernel.img");
+    convert_elf_to_binary(kernel_elf, &image_path)?;
+    Ok(image_path)
+}
+
+fn create_virt_kernel_bundle(
+    artifacts: &BuildArtifacts,
+    layout: &crate::bundle::StagedPlatformLayout,
+) -> Result<PathBuf, Box<dyn Error>> {
+    let boot_dir = &layout.boot_dir;
+    fs::create_dir_all(boot_dir)?;
+    let readme = boot_dir.join("README.txt");
+    let release_mode = if artifacts.release {
+        "release"
+    } else {
+        "debug"
+    };
+    let kernel_image = ensure_virt_kernel_image(artifacts)?;
+    println!(
+        "Created arm64 Image-format kernel at: {}",
+        kernel_image.display()
+    );
+
+    fs::write(
+        &readme,
+        format!(
+            "ServiceOS QEMU virt (aarch64) kernel bundle\n\nProfile: {release_mode}\nPlatform: virt\n\nStaged files:\n- serviceos/serviceos-kernel.elf\n- serviceos-kernel.img (arm64 Image format, produced from the ELF)\n- serviceos/bootstore.bin\n\nRun:\n1. cargo xtask run --platform virt\n2. Or directly: qemu-system-aarch64 -machine virt,gic-version=3 -cpu cortex-a76 -m 1024 -smp 2 -accel tcg,thread=multi -nographic -kernel <image_root>/serviceos-kernel.img\n\nCurrent state:\n- the arm64 Image header routes QEMU through its Linux boot stub, which passes the DTB pointer in x0\n- DTB parsing discovers memory, the PL011 debug UART, and GIC-v3 regions\n- the embedded boot-store drives a serial-first userspace graph on the PL011 UART\n- graphics, pointer/keyboard, networking, and writable storage backends remain deferred\n"
+        ),
+    )?;
+
+    println!(
+        "Created QEMU virt kernel bundle at: {}",
+        boot_dir.display()
+    );
+    Ok(boot_dir.to_path_buf())
 }
 
 fn create_qemu_disk_image(esp_dir: &Path) -> Result<PathBuf, Box<dyn Error>> {

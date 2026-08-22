@@ -125,6 +125,8 @@ broader compatibility runtimes, or a mature app ecosystem.
 |-- platform/
 |   |-- aarch64/raspi5/
 |   |   `-- image/
+|   |-- aarch64/virt/
+|   |   `-- image/
 |   `-- x86_64/qemu_virtio/
 |       `-- image/
 |-- shared/
@@ -150,6 +152,10 @@ Important directories:
 - `platform/aarch64/raspi5`: Raspberry Pi 5 firmware, DTB, and UART bring-up
   code
 - `platform/aarch64/raspi5/image`: native Raspberry Pi 5 `kernel8.img` crate
+- `platform/aarch64/virt`: QEMU `virt` machine (aarch64) DTB, PL011 UART, and
+  serial-first bring-up code
+- `platform/aarch64/virt/image`: bootable arm64 Image-format kernel crate for
+  the QEMU `virt` machine
 - `shared/abi`: syscall, IPC, service, graphics, network, and package ABI
 - `shared/bundle`: service/package/boot-store bundle format support
 - `support/xtask`: platform-aware build, image, and run orchestration
@@ -173,6 +179,7 @@ cargo test --workspace
 cargo xtask build --platform qemu-virtio
 cargo xtask run --platform qemu-virtio
 cargo xtask image --platform raspi5
+cargo xtask run --platform virt
 ```
 
 Useful variants:
@@ -180,6 +187,9 @@ Useful variants:
 ```bash
 # Headless serial-only run
 QEMU_HEADLESS=1 cargo xtask run --platform qemu-virtio
+
+# Headless aarch64 virt run (serial only; also the recommended variant)
+QEMU_HEADLESS=1 timeout 60 cargo xtask run --platform virt
 
 # Smoke run with timeout
 timeout 25 cargo xtask run --platform qemu-virtio
@@ -208,6 +218,28 @@ Current `raspi5` image behavior:
   Pi 5 debug UART
 - does not yet provide Raspberry Pi-native graphics, pointer/keyboard, network,
   or writable storage backends
+
+Current `virt` (QEMU aarch64) behavior:
+
+- builds the `aarch64` arch crate, `platform/aarch64/virt`, and the native
+  kernel image crate for `aarch64-unknown-none-softfloat`
+- emits an arm64 Image-format `serviceos-kernel.img` plus
+  `serviceos/serviceos-kernel.elf` under `target/images/<profile>/virt/`
+- stages and embeds the same userspace boot-store used by the other targets
+- runs with `qemu-system-aarch64 -machine virt,gic-version=3 -cpu cortex-a76
+  -m 1024 -smp 2`; QEMU's Linux boot stub passes the generated DTB in `x0`
+- parses the virt DTB to discover memory, the PL011 debug UART at
+  `0x09000000`, and GIC-v3 distributor/redistributor regions
+- brings up the `aarch64` MMU (identity map plus higher-half kernel ranges),
+  EL1 trap/syscall path, and EL0 user-thread execution
+- initializes the GICv3 driver and arms the EL1 physical timer tick on the
+  emulated machine (`interrupts: backend=gic-v3` on serial)
+- launches the embedded-boot-store userspace graph; kernel entry, serial
+  bring-up, interrupts, and the first user-mode syscalls are exercised, while
+  full service-graph startup is still blocked in the shared task/IPC layer
+  (`bootstrap: bring-up failed: MissingRootThread`) and is under investigation
+- provides no framebuffer, pointer/keyboard, network, or writable storage
+  backends
 
 ## What The System Can Do Right Now
 

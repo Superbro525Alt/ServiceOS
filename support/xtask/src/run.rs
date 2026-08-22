@@ -7,12 +7,14 @@ use std::{
 
 use crate::{
     build::{BuildArtifacts, ensure_success},
+    image::ensure_virt_kernel_image,
     platform::RunKind,
 };
 
 pub fn run_platform(artifacts: &BuildArtifacts, image: &Path) -> Result<(), Box<dyn Error>> {
     match artifacts.spec.run_kind {
         RunKind::QemuVirtio => run_qemu(image),
+        RunKind::QemuArmVirt => run_qemu_virt(artifacts),
         RunKind::ManualDeploy => {
             println!(
                 "Platform '{}' does not have emulator run support yet.",
@@ -25,6 +27,75 @@ pub fn run_platform(artifacts: &BuildArtifacts, image: &Path) -> Result<(), Box<
             Ok(())
         }
     }
+}
+
+fn run_qemu_virt(artifacts: &BuildArtifacts) -> Result<(), Box<dyn Error>> {
+    let kernel_image = ensure_virt_kernel_image(artifacts)?;
+    let qemu_binary = find_qemu_aarch64_binary().ok_or_else(|| {
+        "qemu-system-aarch64 not found; install QEMU or set QEMU_SYSTEM_AARCH64 to an absolute path"
+    })?;
+
+    let headless = qemu_headless();
+    println!("Launching QEMU with:");
+    println!("  binary: {}", qemu_binary.display());
+    println!("  machine: virt,gic-version=3");
+    println!("  cpu: cortex-a76");
+    println!("  kernel: {}", kernel_image.display());
+    println!(
+        "  display mode: {}",
+        if headless { "headless" } else { "nographic" }
+    );
+
+    let mut command = Command::new(&qemu_binary);
+    command.args(["-machine", "virt,gic-version=3"]);
+    command.args(["-cpu", "cortex-a76"]);
+    command.args(["-m", "1024"]);
+    command.args(["-smp", "2"]);
+    command.args(["-accel", "tcg,thread=multi"]);
+    command.args(["-kernel", &kernel_image.to_string_lossy()]);
+    if headless {
+        command.args(["-display", "none"]);
+        command.args(["-serial", "stdio"]);
+    } else {
+        command.args(["-nographic"]);
+    }
+    if let Some(extra_args) = env::var_os("QEMU_EXTRA_ARGS") {
+        for arg in extra_args.to_string_lossy().split_whitespace() {
+            command.arg(arg);
+        }
+    }
+
+    let status = command.status().map_err(|error| {
+        format!(
+            "failed to launch QEMU binary {} with kernel {}: {}",
+            qemu_binary.display(),
+            kernel_image.display(),
+            error
+        )
+    })?;
+    ensure_success(status, "QEMU virt run failed")
+}
+
+fn find_qemu_aarch64_binary() -> Option<PathBuf> {
+    env::var_os("QEMU_SYSTEM_AARCH64")
+        .map(PathBuf::from)
+        .filter(|path| path.exists())
+        .or_else(|| {
+            env::var_os("PATH").and_then(|path| {
+                env::split_paths(&path)
+                    .map(|dir| dir.join("qemu-system-aarch64"))
+                    .find(|candidate| candidate.exists())
+            })
+        })
+        .or_else(|| {
+            [
+                "/usr/bin/qemu-system-aarch64",
+                "/usr/sbin/qemu-system-aarch64",
+            ]
+            .into_iter()
+            .map(PathBuf::from)
+            .find(|path| path.exists())
+        })
 }
 
 fn run_qemu(disk_image: &Path) -> Result<(), Box<dyn Error>> {
@@ -70,7 +141,10 @@ fn run_qemu(disk_image: &Path) -> Result<(), Box<dyn Error>> {
     let mut command = Command::new(&qemu_binary);
     command.args(["-machine", "q35,pcspk-audiodev=speaker"]);
     command.args(["-m", "1048"]);
-    command.args(["-smp", "2"]);
+    // SERVICEOS_SMP controls the guest CPU count (default single-core, which
+    // keeps kernel boot output byte-identical to the pre-SMP kernel).
+    let smp_cpus = env::var("SERVICEOS_SMP").unwrap_or_else(|_| "1".to_string());
+    command.args(["-smp", &smp_cpus]);
     command.args(["-cpu", "max"]);
     match accel {
         QemuAccelMode::Tcg => {

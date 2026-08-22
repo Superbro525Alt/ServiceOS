@@ -10,17 +10,20 @@ pub enum Arch {
 pub enum BootKind {
     Uefi,
     RaspberryPiFirmware,
+    QemuKernel,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ImageKind {
     RawDisk,
     RaspberryPiBundle,
+    QemuKernel,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RunKind {
     QemuVirtio,
+    QemuArmVirt,
     ManualDeploy,
 }
 
@@ -38,7 +41,7 @@ pub struct PlatformSpec {
 }
 
 impl PlatformSpec {
-    const ALL: [Self; 2] = [Self::qemu_virtio(), Self::raspi5()];
+    const ALL: [Self; 3] = [Self::qemu_virtio(), Self::raspi5(), Self::virt()];
 
     pub const fn all() -> &'static [Self] {
         &Self::ALL
@@ -48,6 +51,7 @@ impl PlatformSpec {
         match name {
             "qemu-virtio" => Ok(Self::qemu_virtio()),
             "raspi5" => Ok(Self::raspi5()),
+            "virt" => Ok(Self::virt()),
             _ => Err(Box::new(UnknownPlatform(name.to_owned()))),
         }
     }
@@ -80,6 +84,20 @@ impl PlatformSpec {
         }
     }
 
+    pub const fn virt() -> Self {
+        Self {
+            name: "virt",
+            arch: Arch::Aarch64,
+            rust_target: Some("aarch64-unknown-none-softfloat"),
+            kernel_package: Some("serviceos-kernel-virt"),
+            arch_package: "serviceos-kernel-arch-aarch64",
+            platform_package: "serviceos-platform-virt",
+            image_kind: ImageKind::QemuKernel,
+            boot_kind: BootKind::QemuKernel,
+            run_kind: RunKind::QemuArmVirt,
+        }
+    }
+
     pub fn image_root(self, workspace_root: &std::path::Path, profile: &str) -> PathBuf {
         workspace_root
             .join("target")
@@ -104,7 +122,7 @@ impl PlatformSpec {
         let target = self.rust_target?;
         let file_name = match self.boot_kind {
             BootKind::Uefi => format!("{package}.efi"),
-            BootKind::RaspberryPiFirmware => package.to_owned(),
+            BootKind::RaspberryPiFirmware | BootKind::QemuKernel => package.to_owned(),
         };
 
         Some(

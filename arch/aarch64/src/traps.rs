@@ -20,29 +20,70 @@ mod imp {
     const ESR_EC_DATA_ABORT_LOWER_EL: u64 = 0x24;
     const ESR_EC_BRK64_LOWER_EL: u64 = 0x3c;
 
+    fn uart_trace_bytes(bytes: &[u8]) {
+        const UART_DATA: *mut u8 = 0x0900_0000 as *mut u8;
+        for &byte in bytes {
+            unsafe { core::ptr::write_volatile(UART_DATA, byte) };
+        }
+    }
+
+    fn uart_hex(value: u64) -> [u8; 18] {
+        let mut out = [b'0'; 18];
+        out[0] = b'0';
+        out[1] = b'x';
+        for nibble in 0..16 {
+            let shift = 60 - nibble * 4;
+            let digit = ((value >> shift) & 0xf) as u8;
+            out[2 + nibble] = if digit < 10 { b'0' + digit } else { b'a' + digit - 10 };
+        }
+        out
+    }
+
+    fn trace_sync(tag: u8, a: u64, b: u64, c: u64) {
+        let mut buf = [b' '; 64];
+        buf[0] = tag;
+        let mut len = 1;
+        for value in [a, b, c] {
+            buf[len..len + 18].copy_from_slice(&uart_hex(value));
+            len += 18;
+        }
+        buf[len] = b'\r';
+        buf[len + 1] = b'\n';
+        uart_trace_bytes(&buf[..len + 2]);
+    }
+
     global_asm!(
         r#"
 .global serviceos_aarch64_vector_table
+.macro VEC_SLOT target
+    b \target
+    .space 0x7c
+.endm
+.balign 0x800
 serviceos_aarch64_vector_table:
-    b serviceos_aarch64_fatal_vector
-    b serviceos_aarch64_fatal_vector
-    b serviceos_aarch64_fatal_vector
-    b serviceos_aarch64_fatal_vector
-    .balign 0x80
-    b serviceos_aarch64_fatal_vector
+    VEC_SLOT serviceos_aarch64_fatal_vector
+    VEC_SLOT serviceos_aarch64_fatal_vector
+    VEC_SLOT serviceos_aarch64_fatal_vector
+    VEC_SLOT serviceos_aarch64_fatal_vector
+
+    VEC_SLOT serviceos_aarch64_fatal_vector
+    VEC_SLOT serviceos_aarch64_current_el_irq
+    VEC_SLOT serviceos_aarch64_fatal_vector
+    VEC_SLOT serviceos_aarch64_fatal_vector
+
+    VEC_SLOT serviceos_aarch64_lower_el_sync
+    VEC_SLOT serviceos_aarch64_lower_el_irq
+    VEC_SLOT serviceos_aarch64_fatal_vector
+    VEC_SLOT serviceos_aarch64_fatal_vector
+
+    VEC_SLOT serviceos_aarch64_fatal_vector
+    VEC_SLOT serviceos_aarch64_fatal_vector
+    VEC_SLOT serviceos_aarch64_fatal_vector
+    VEC_SLOT serviceos_aarch64_fatal_vector
+
+.global serviceos_aarch64_current_el_irq
+serviceos_aarch64_current_el_irq:
     b serviceos_aarch64_lower_el_irq
-    b serviceos_aarch64_fatal_vector
-    b serviceos_aarch64_fatal_vector
-    .balign 0x80
-    b serviceos_aarch64_lower_el_sync
-    b serviceos_aarch64_lower_el_irq
-    b serviceos_aarch64_fatal_vector
-    b serviceos_aarch64_fatal_vector
-    .balign 0x80
-    b serviceos_aarch64_fatal_vector
-    b serviceos_aarch64_fatal_vector
-    b serviceos_aarch64_fatal_vector
-    b serviceos_aarch64_fatal_vector
 
 .global serviceos_aarch64_lower_el_irq
 serviceos_aarch64_lower_el_irq:
@@ -130,6 +171,7 @@ serviceos_aarch64_fatal_vector:
     #[unsafe(no_mangle)]
     extern "C" fn serviceos_aarch64_handle_user_sync(context: &mut SavedUserContext) -> u64 {
         let ec = (context.esr_el1 >> ESR_EC_SHIFT) & ESR_EC_MASK;
+        trace_sync(b'e', ec, context.far_el1, context.elr_el1);
         match ec {
             ESR_EC_SVC64 => handle_syscall(context),
             ESR_EC_BRK64_LOWER_EL => {
@@ -182,6 +224,7 @@ serviceos_aarch64_fatal_vector:
     }
 
     fn handle_syscall(context: &mut SavedUserContext) -> u64 {
+        trace_sync(b'n', context.x8, context.x0, context.elr_el1);
         context.elr_el1 = context.elr_el1.saturating_add(4);
         let syscall_context = SyscallContext {
             instruction_pointer: context.elr_el1,
@@ -193,12 +236,12 @@ serviceos_aarch64_fatal_vector:
         };
         let result =
             interrupts::dispatch_syscall(SyscallNumber(context.x8 as u32), &syscall_context);
-
         context.x0 = result.value;
         context.x1 = result.abi_error_code();
         match result.action {
             serviceos_kernel_core::syscall::SyscallAction::ReturnToCaller => 0,
             serviceos_kernel_core::syscall::SyscallAction::YieldCurrentThread => {
+                trace_sync(b'Y', context.x8, 0, 0);
                 if let Some(tasks) = system() {
                     let _ = tasks.scheduler().yield_current();
                 }
@@ -236,7 +279,8 @@ serviceos_aarch64_fatal_vector:
                 }
                 1
             }
-            serviceos_kernel_core::syscall::SyscallAction::ExitCurrentThread { status } => {
+            serviceos_kernel_core::syscall::            SyscallAction::ExitCurrentThread { status } => {
+                trace_sync(b'x', status, 0, 0);
                 user::mark_current_thread_exited(status);
                 if let Some(tasks) = system() {
                     let _ = tasks.scheduler().terminate_current();
@@ -247,6 +291,7 @@ serviceos_aarch64_fatal_vector:
     }
 
     fn terminate_current_user_context(context: &SavedUserContext) {
+        trace_sync(b'T', context.esr_el1, context.far_el1, context.elr_el1);
         let _ = interrupts::handle_exception(
             ExceptionDetail::PageFault {
                 fault_address: context.far_el1,

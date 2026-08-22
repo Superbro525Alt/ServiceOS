@@ -66,6 +66,38 @@ pub(crate) fn handle_channel_create(context: &SyscallContext) -> SyscallReturn {
     SyscallReturn::success(0)
 }
 
+struct TraceBuf {
+    bytes: [u8; 128],
+    len: usize,
+}
+
+impl core::fmt::Write for TraceBuf {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        let len = self.len;
+        let capacity = self.bytes.len();
+        if len >= capacity {
+            return Ok(());
+        }
+        let remaining = capacity - len;
+        let source = s.as_bytes();
+        let n = source.len().min(remaining);
+        self.bytes[len..len + n].copy_from_slice(&source[..n]);
+        self.len = len + n;
+        Ok(())
+    }
+}
+
+fn trace_ipc(args: core::fmt::Arguments<'_>) {
+    if let Some(writer) = super::DEBUG_LOG_WRITER.get() {
+        let mut buf = TraceBuf {
+            bytes: [0u8; 128],
+            len: 0,
+        };
+        let _ = core::fmt::write(&mut buf, args);
+        writer(&buf.bytes[..buf.len]);
+    }
+}
+
 pub(crate) fn handle_channel_send(context: &SyscallContext) -> SyscallReturn {
     let Ok(current_task) = current_task() else {
         return SyscallReturn::error(SyscallError::NotInitialized);
@@ -124,8 +156,28 @@ pub(crate) fn handle_channel_send(context: &SyscallContext) -> SyscallReturn {
         CapabilityHandle(context.arguments[0] as Handle),
         message,
     ) {
-        Ok(_) => SyscallReturn::success(0),
-        Err(error) => SyscallReturn::error(map_ipc_error(error)),
+        Ok(_) => {
+            trace_ipc(format_args!(
+                "S h={} tag={:#x} w0={:#x} wc={} hc={} ok\r\n",
+                context.arguments[0],
+                raw.tag,
+                raw.words[0],
+                word_count,
+                handle_count
+            ));
+            SyscallReturn::success(0)
+        }
+        Err(error) => {
+            trace_ipc(format_args!(
+                "S h={} tag={:#x} w0={:#x} wc={} hc={} err={error:?}\r\n",
+                context.arguments[0],
+                raw.tag,
+                raw.words[0],
+                word_count,
+                handle_count
+            ));
+            SyscallReturn::error(map_ipc_error(error))
+        }
     }
 }
 
@@ -148,6 +200,14 @@ pub(crate) fn handle_channel_receive(context: &SyscallContext) -> SyscallReturn 
         CapabilityHandle(context.arguments[0] as Handle),
     ) {
         Ok(message) => {
+            trace_ipc(format_args!(
+                "R h={} tag={:#x} w0={:#x} wc={} hc={} ok\r\n",
+                context.arguments[0],
+                message.tag.0,
+                message.words().first().copied().unwrap_or(0),
+                message.word_count,
+                message.transferred_capability_count
+            ));
             if message.word_count > IPC_MAX_WORDS
                 || message.transferred_capability_count > IPC_MAX_HANDLES
             {
@@ -189,7 +249,13 @@ pub(crate) fn handle_channel_receive(context: &SyscallContext) -> SyscallReturn 
                 SyscallAction::BlockCurrentThreadOnReceive { endpoint },
             )
         }
-        Err(error) => SyscallReturn::error(map_ipc_error(error)),
+        Err(error) => {
+            trace_ipc(format_args!(
+                "R h={} err={error:?}\r\n",
+                context.arguments[0]
+            ));
+            SyscallReturn::error(map_ipc_error(error))
+        }
     }
 }
 

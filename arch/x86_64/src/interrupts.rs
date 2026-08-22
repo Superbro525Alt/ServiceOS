@@ -23,6 +23,9 @@ use x86_64::{
 
 use crate::{cpu, lapic, msr};
 
+/// Busy-wait reference interval helper exposed for LAPIC timer calibration.
+pub(crate) use pic::pit_wait_for_tick_wraps;
+
 global_asm!(include_str!("timer_irq_entry.S"));
 global_asm!(include_str!("syscall_entry.S"));
 global_asm!(include_str!("syscall_fast_entry.S"));
@@ -106,6 +109,13 @@ pub fn initialize() -> DescriptorState {
     pic::initialize_pit(TIMER_TICK_HZ);
     initialize_syscall_sysret();
     initialize_per_cpu();
+    initialize_lapic_timer_source();
+    serviceos_kernel_core::task::register_current_cpu_hook(current_gs_cpu_index);
+    crate::kthread::spawn_pingpong_demo();
+    // Drain the two-thread ping-pong smoke test synchronously: each round
+    // crosses a real register-level context switch, and the final exit
+    // prints one serial line proving switches occurred.
+    crate::kthread::pump_pending();
 
     DescriptorState {
         gdt_loaded: true,
@@ -126,6 +136,41 @@ fn initialize_lapic() {
     unsafe {
         lapic::initialize();
     }
+}
+
+/// Calibrate the LAPIC timer against the running PIT and, on success, arm it
+/// as the system tick source (masking the PIC's IRQ0 so ticks are counted
+/// exactly once). On failure the system silently stays on the PIT.
+fn initialize_lapic_timer_source() {
+    const CALIBRATION_PIT_TICKS: u32 = 3;
+
+    let mut timer = lapic::timer();
+    let Some(ticks_per_ms) = timer.calibrate_against_pit(TIMER_TICK_HZ, CALIBRATION_PIT_TICKS)
+    else {
+        crate::serial::write_args(format_args!(
+            "serviceos: lapic-timer: calibration failed; staying on PIT @{}Hz\n",
+            TIMER_TICK_HZ
+        ));
+        return;
+    };
+
+    unsafe {
+        timer.arm_periodic(TIMER_TICK_HZ, ticks_per_ms);
+    }
+    if !timer.is_armed() {
+        crate::serial::write_args(format_args!(
+            "serviceos: lapic-timer: arm failed; staying on PIT @{}Hz\n",
+            TIMER_TICK_HZ
+        ));
+        return;
+    }
+
+    pic::mask_pic_irq_line(0);
+    crate::serial::write_args(format_args!(
+        "serviceos: lapic-timer: calibrated {} ticks/ms; armed periodic on vector {:#04x}; PIT IRQ0 masked\n",
+        ticks_per_ms,
+        lapic::LAPIC_TIMER_VECTOR
+    ));
 }
 
 fn initialize_syscall_sysret() {
@@ -158,6 +203,50 @@ fn initialize_per_cpu() {
         + PRIVILEGE_STACK_SIZE as u64;
     unsafe {
         crate::per_cpu::initialize_per_cpu_data(0, privilege_stack_top);
+    }
+}
+
+fn current_gs_cpu_index() -> usize {
+    // SAFETY: GS base points at this CPU's PerCpuData everywhere this hook
+    // can be invoked (it is registered only after initialize_per_cpu).
+    unsafe { crate::per_cpu::current_cpu_data().cpu_id as usize }
+}
+
+/// Re-arm this CPU's descriptor tables and per-CPU data after an AP enters
+/// long mode via the SMP trampoline.
+///
+/// The GDT/IDT/TSS themselves are shared, `Once`-initialized structures from
+/// the BSP boot; each CPU still needs its own LGDT/LIDT/LTR because those
+/// registers are per-CPU reset state. Interrupts stay disabled on APs after
+/// this call — they never enable them, so no per-CPU LAPIC timer or syscall
+/// MSR setup is required yet.
+pub fn initialize_ap(cpu_id: usize) {
+    let descriptor_tables = DESCRIPTOR_TABLES
+        .get()
+        .expect("BSP descriptor tables must be initialized before AP bring-up");
+    descriptor_tables.gdt.load();
+
+    unsafe {
+        CS::set_reg(descriptor_tables.selectors.kernel_code);
+        SS::set_reg(descriptor_tables.selectors.kernel_data);
+        DS::set_reg(descriptor_tables.selectors.kernel_data);
+        ES::set_reg(descriptor_tables.selectors.kernel_data);
+    }
+    // Deliberately NO load_tss here: the shared GDT's TSS descriptor went
+    // BUSY when the BSP loaded it, and an LTR against a busy descriptor
+    // faults. APs currently stay ring-0 with interrupts disabled (they run
+    // the cooperative kernel-thread idle loop), so task-register state is
+    // never consulted until per-CPU TSS support lands.
+
+    let idt = IDT
+        .get()
+        .expect("BSP IDT must be initialized before AP bring-up");
+    idt.load();
+
+    let privilege_stack_top = VirtAddr::from_ptr(&PRIVILEGE_STACK.0).as_u64()
+        + PRIVILEGE_STACK_SIZE as u64;
+    unsafe {
+        crate::per_cpu::initialize_per_cpu_data(cpu_id, privilege_stack_top);
     }
 }
 
@@ -291,6 +380,13 @@ fn install_interrupt_table() {
             .set_handler_fn(faults::security_exception_handler);
         unsafe {
             idt[TIMER_VECTOR]
+                .set_handler_addr(VirtAddr::from_ptr(
+                    serviceos_x86_64_timer_irq_entry as *const (),
+                ));
+            // The LAPIC timer shares the timer IRQ entry stub; it fires on
+            // its own vector once armed and the Rust body picks the correct
+            // controller acknowledgement from the armed flag.
+            idt[lapic::LAPIC_TIMER_VECTOR]
                 .set_handler_addr(VirtAddr::from_ptr(
                     serviceos_x86_64_timer_irq_entry as *const (),
                 ));

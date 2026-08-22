@@ -39,6 +39,12 @@ serviceos_aarch64_resume_user:
     str x0, [x10]
 
     mov x30, x0
+    ldr x12, [x30, #0xF8]
+    msr sp_el0, x12
+    ldr x12, [x30, #0x100]
+    msr elr_el1, x12
+    ldr x12, [x30, #0x108]
+    msr spsr_el1, x12
     ldp x0, x1, [x30, #0x00]
     ldp x2, x3, [x30, #0x10]
     ldp x4, x5, [x30, #0x20]
@@ -54,12 +60,6 @@ serviceos_aarch64_resume_user:
     ldp x24, x25, [x30, #0xC0]
     ldp x26, x27, [x30, #0xD0]
     ldp x28, x29, [x30, #0xE0]
-    ldr x12, [x30, #0xF8]
-    msr sp_el0, x12
-    ldr x12, [x30, #0x100]
-    msr elr_el1, x12
-    ldr x12, [x30, #0x108]
-    msr spsr_el1, x12
     ldr x30, [x30, #0xF0]
     eret
 
@@ -116,7 +116,18 @@ serviceos_aarch64_lower_el_sync:
     ret
 
 1:
-    mov x30, x11
+    // x0-x17 were clobbered by serviceos_aarch64_handle_user_sync (AAPCS
+    // caller-saved), so x11 no longer holds the context pointer. Reload it
+    // from the current_context global saved by serviceos_aarch64_resume_user.
+    adrp x30, serviceos_aarch64_current_context
+    add x30, x30, :lo12:serviceos_aarch64_current_context
+    ldr x30, [x30]
+    ldr x12, [x30, #0xF8]
+    msr sp_el0, x12
+    ldr x12, [x30, #0x100]
+    msr elr_el1, x12
+    ldr x12, [x30, #0x108]
+    msr spsr_el1, x12
     ldp x0, x1, [x30, #0x00]
     ldp x2, x3, [x30, #0x10]
     ldp x4, x5, [x30, #0x20]
@@ -132,12 +143,6 @@ serviceos_aarch64_lower_el_sync:
     ldp x24, x25, [x30, #0xC0]
     ldp x26, x27, [x30, #0xD0]
     ldp x28, x29, [x30, #0xE0]
-    ldr x12, [x30, #0xF8]
-    msr sp_el0, x12
-    ldr x12, [x30, #0x100]
-    msr elr_el1, x12
-    ldr x12, [x30, #0x108]
-    msr spsr_el1, x12
     ldr x30, [x30, #0xF0]
     eret
 "#
@@ -189,6 +194,19 @@ serviceos_aarch64_lower_el_sync:
     }
 
     impl SavedUserContext {
+        // The resume/trap asm addresses these fields by fixed byte offsets
+        // (x30 at 0xF0, sp_el0 at 0xF8, elr_el1 at 0x100, spsr_el1 at 0x108,
+        // esr_el1 at 0x110, far_el1 at 0x118); keep the repr(C) layout honest.
+        const _LAYOUT_MATCHES_ASM: () = {
+            assert!(core::mem::size_of::<Self>() == 36 * core::mem::size_of::<u64>());
+            assert!(core::mem::offset_of!(Self, x30) == 0xF0);
+            assert!(core::mem::offset_of!(Self, sp_el0) == 0xF8);
+            assert!(core::mem::offset_of!(Self, elr_el1) == 0x100);
+            assert!(core::mem::offset_of!(Self, spsr_el1) == 0x108);
+            assert!(core::mem::offset_of!(Self, esr_el1) == 0x110);
+            assert!(core::mem::offset_of!(Self, far_el1) == 0x118);
+        };
+
         fn initial(entry_point: u64, user_stack_pointer: u64) -> Self {
             Self {
                 x0: 0,
@@ -360,29 +378,21 @@ serviceos_aarch64_lower_el_sync:
     #[unsafe(no_mangle)]
     static mut serviceos_aarch64_kernel_return_sp: u64 = 0;
 
-    /// Exception stack storage; only its address is consumed by SP_EL1 setup.
+    /// Exception stack storage; reserved for future EL1 exception-stack use.
     #[allow(dead_code)]
     #[repr(align(16))]
     struct ExceptionStack([u8; 16 * 1024]);
 
+    #[allow(dead_code)]
     static EXCEPTION_STACK: ExceptionStack = ExceptionStack([0; 16 * 1024]);
 
     static USER_THREADS: Mutex<UserThreadRuntime> = Mutex::new(UserThreadRuntime::new());
     static ADDRESS_SPACES: Mutex<AddressSpaceRuntime> = Mutex::new(AddressSpaceRuntime::new());
 
     pub fn initialize() {
+        // SAFETY: barrier-only inline assembly touches no memory or stack.
         unsafe {
-            core::arch::asm!(
-                "adrp x9, {stack}",
-                "add x9, x9, :lo12:{stack}",
-                "mov x10, {size}",
-                "add x9, x9, x10",
-                "msr sp_el1, x9",
-                "isb",
-                stack = sym EXCEPTION_STACK,
-                size = const 16 * 1024,
-                options(nomem, nostack),
-            );
+            core::arch::asm!("isb", options(nomem, nostack));
         }
         user::register_arch_hooks(UserArchHooks {
             prepare_address_space,
@@ -533,6 +543,7 @@ serviceos_aarch64_lower_el_sync:
         Ok(())
     }
 
+
     pub fn run_thread(thread_id: ThreadId) -> Result<(), UserLaunchError> {
         let (page_table_root, context_ptr) = {
             let mut runtime = USER_THREADS.lock();
@@ -643,10 +654,11 @@ mod imp {
     pub fn run_thread(_thread_id: ThreadId) -> Result<(), UserLaunchError> {
         Err(UserLaunchError::Unsupported)
     }
+
 }
 
 pub use imp::{
-    SavedUserContext, UserLaunchError, initialize, map_memory_object, prepare_address_space,
-    register_address_space, register_thread_launch, release_address_space, release_thread_runtime,
-    run_thread, translate_address, unmap_memory_range, update_memory_protection,
+    SavedUserContext, UserLaunchError, initialize, map_memory_object, prepare_address_space, register_address_space,
+    register_thread_launch, release_address_space, release_thread_runtime, run_thread,
+    translate_address, unmap_memory_range, update_memory_protection,
 };

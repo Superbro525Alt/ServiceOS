@@ -61,6 +61,62 @@ pub(super) fn initialize_pit(tick_hz: u32) {
     }
 }
 
+pub(super) fn mask_pic_irq_line(irq_line: u8) {
+    let mut pic1_data = Port::<u8>::new(PIC1_DATA_PORT);
+    let mut pic2_data = Port::<u8>::new(PIC2_DATA_PORT);
+
+    unsafe {
+        if irq_line < 8 {
+            let mask = pic1_data.read() | (1u8 << irq_line);
+            pic1_data.write(mask);
+            return;
+        }
+
+        let secondary_line = irq_line - 8;
+        let mask = pic2_data.read() | (1u8 << secondary_line);
+        pic2_data.write(mask);
+    }
+}
+
+/// Latch and read the PIT channel 0 countdown without disturbing it.
+fn latch_pit_channel0() -> u16 {
+    let mut pit_command = Port::<u8>::new(PIT_COMMAND_PORT);
+    let mut pit_channel0 = Port::<u8>::new(PIT_CHANNEL0_PORT);
+
+    unsafe {
+        pit_command.write(0x00);
+        let low = pit_channel0.read();
+        let high = pit_channel0.read();
+        u16::from_le_bytes([low, high])
+    }
+}
+
+/// Busy-wait until the running PIT has wrapped (reloaded) `wraps` times.
+///
+/// Each wrap marks one full PIT period, giving callers an interrupt-free
+/// reference interval for calibrating other timers. Returns false on timeout
+/// (PIT not counting).
+pub(crate) fn pit_wait_for_tick_wraps(wraps: u32) -> bool {
+    let mut previous = latch_pit_channel0();
+    let mut seen_wraps = 0u32;
+    let mut guard = 0u64;
+
+    while seen_wraps < wraps {
+        let current = latch_pit_channel0();
+        // The counter decreases continuously and jumps back up on reload.
+        if current > previous {
+            seen_wraps += 1;
+        }
+        previous = current;
+        guard += 1;
+        if guard > 4_000_000 {
+            return false;
+        }
+    }
+
+    true
+}
+
 fn io_wait() {
     let mut wait_port = Port::<u8>::new(0x80);
 

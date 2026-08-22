@@ -241,8 +241,11 @@ mod imp {
             | (0b01 << 8)
             | (0b01 << 10)
             | (0b11 << 12)
-            | (0b00 << 14)
-            | (1 << 23)
+            | (16 << 16)
+            | (0b01 << 24)
+            | (0b01 << 26)
+            | (0b11 << 28)
+            | (0b10 << 30)
             | (0b101 << 32);
 
         unsafe {
@@ -250,6 +253,7 @@ mod imp {
                 "msr mair_el1, {mair}",
                 "msr tcr_el1, {tcr}",
                 "msr ttbr0_el1, {root}",
+                "msr ttbr1_el1, {root}",
                 "dsb ish",
                 "isb",
                 "mrs x9, sctlr_el1",

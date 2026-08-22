@@ -100,14 +100,16 @@ pub(crate) fn load_persistent_slot(
     let records_offset = u64::from_le_bytes(block[24..32].try_into().unwrap()) as usize;
     let data_offset = u64::from_le_bytes(block[32..40].try_into().unwrap()) as usize;
     let total_bytes = u64::from_le_bytes(block[40..48].try_into().unwrap()) as usize;
-    let minimum_data_offset =
-        align_up(records_offset + entry_count * PERSISTENT_RECORD_BYTES, block_size);
     if entry_count > MAX_MUTABLE_ENTRIES
         || records_offset < block_size
-        || data_offset < minimum_data_offset
         || total_bytes == 0
         || total_bytes > store.slot_blocks * block_size
     {
+        return Ok(None);
+    }
+    let minimum_data_offset =
+        align_up(records_offset + entry_count * PERSISTENT_RECORD_BYTES, block_size);
+    if data_offset < minimum_data_offset {
         return Ok(None);
     }
 

@@ -229,7 +229,14 @@ pub(crate) fn apply_interface_runtime(iface: &mut Interface, runtime_state: Inte
                 runtime_state.prefix_len,
             )));
         }
+        // Guest-internal loopback: lets UDP/TCP connect to 127.0.0.1 through
+        // the device loopback path (see device.rs).
+        let _ = addrs.push(IpCidr::Ipv4(Ipv4Cidr::new(
+            crate::consts::LOOPBACK_ADDRESS,
+            8,
+        )));
     });
+    crate::device::set_local_ipv4(runtime_state.address);
     let _ = iface.routes_mut().remove_default_ipv4_route();
     if runtime_state.gateway != Ipv4Address::UNSPECIFIED {
         let _ = iface.routes_mut().add_default_ipv4_route(runtime_state.gateway);

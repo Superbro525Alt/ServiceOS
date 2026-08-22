@@ -9,4 +9,4 @@ path = "src/main.rs"
 
 [dependencies]
 serviceos-userspace-runtime = { path = "../runtime" }
-smoltcp = { version = "0.12", default-features = false, features = ["medium-ethernet", "proto-ipv4", "socket-icmp", "socket-dhcpv4", "socket-dns", "socket-tcp"] }
+smoltcp = { version = "0.12", default-features = false, features = ["medium-ethernet", "proto-ipv4", "socket-icmp", "socket-dhcpv4", "socket-dns", "socket-tcp", "socket-udp"] }

@@ -13,11 +13,18 @@ use rt::{
 use crate::{
     consts::{EPHEMERAL_PORT_BASE, MAX_HOSTNAME_BYTES, MAX_TCP_SOCKETS},
     device::KernelPacketDevice,
-    types::{HostEntry, InterfaceRuntimeState, NetworkConfig, TcpTransportSlot},
+    types::{
+        HostEntry, InterfaceRuntimeState, NetworkConfig, TcpListenerSlot, TcpTransportSlot,
+        UdpDatagramSlot,
+    },
     util::{decode_inline_text, emit_log, ipv4_to_u32},
 };
 
-use super::transport::{perform_ping, resolve_target};
+use super::{
+    listeners::open_listener,
+    transport::{perform_ping, resolve_target},
+    udp::open_udp_socket,
+};
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_public_request(
@@ -36,6 +43,9 @@ pub(crate) fn handle_public_request(
     transports: &mut [TcpTransportSlot; MAX_TCP_SOCKETS],
     tcp_handles: [SocketHandle; MAX_TCP_SOCKETS],
     next_local_port: &mut u16,
+    udp_slots: &mut [UdpDatagramSlot; crate::consts::MAX_UDP_SOCKETS],
+    udp_handles: [SocketHandle; crate::consts::MAX_UDP_SOCKETS],
+    listeners: &mut [TcpListenerSlot; crate::consts::MAX_TCP_LISTENERS],
 ) -> rt::Result<()> {
     match request.tag {
         x if x == NetworkTag::InterfaceListRequest as u32 => {
@@ -196,20 +206,33 @@ pub(crate) fn handle_public_request(
             let _ = rt::handle_close(reply_handle);
         }
         x if x == NetworkTag::SocketOpenRequest as u32 => {
-            handle_socket_open_request(
+            let routed = open_udp_socket(
                 request,
                 log_handle,
-                config,
-                runtime_state,
-                hosts,
-                iface,
-                device,
+                udp_slots,
+                udp_handles,
                 sockets,
-                dns_handle,
-                transports,
-                tcp_handles,
                 next_local_port,
             )?;
+            if !routed {
+                handle_socket_open_request(
+                    request,
+                    log_handle,
+                    config,
+                    runtime_state,
+                    hosts,
+                    iface,
+                    device,
+                    sockets,
+                    dns_handle,
+                    transports,
+                    tcp_handles,
+                    next_local_port,
+                )?;
+            }
+        }
+        x if x == NetworkTag::SocketListenRequest as u32 => {
+            open_listener(request, log_handle, listeners, transports, tcp_handles, sockets)?;
         }
         x if x == NetworkTag::SocketListRequest as u32 => {
             if request.handle_count < 1 {
@@ -219,20 +242,68 @@ pub(crate) fn handle_public_request(
             let mut reply = RawMessage::empty(NetworkTag::SocketListReply as u32);
             reply.words[0] = NetworkStatus::Ok as u32 as u64;
             let mut count = 0usize;
-            for slot in transports.iter().filter(|slot| slot.active) {
-                if 2 + (count + 1) * 7 > rt::IPC_MAX_WORDS {
-                    break;
+            let push_entry = |reply: &mut RawMessage, count: &mut usize, entry: [u64; 7]| {
+                if 2 + (*count + 1) * 7 > rt::IPC_MAX_WORDS {
+                    return;
                 }
-                let base = 2 + count * 7;
-                reply.words[base] = count as u64;
-                reply.words[base + 1] = NetworkSocketKind::TcpStream as u32 as u64;
-                reply.words[base + 2] = slot.state as u32 as u64;
-                reply.words[base + 3] = ipv4_to_u32(slot.remote_address) as u64;
-                reply.words[base + 4] = slot.remote_port as u64;
-                reply.words[base + 5] = slot.local_port as u64;
-                reply.words[base + 6] = ((slot.rx_bytes.min(u32::MAX as u64)) << 32)
-                    | slot.tx_bytes.min(u32::MAX as u64);
-                count += 1;
+                let base = 2 + *count * 7;
+                reply.words[base] = entry[0];
+                reply.words[base + 1] = entry[1];
+                reply.words[base + 2] = entry[2];
+                reply.words[base + 3] = entry[3];
+                reply.words[base + 4] = entry[4];
+                reply.words[base + 5] = entry[5];
+                reply.words[base + 6] = entry[6];
+                *count += 1;
+            };
+            for (index, slot) in transports.iter().filter(|slot| slot.active).enumerate() {
+                push_entry(
+                    &mut reply,
+                    &mut count,
+                    [
+                        index as u64,
+                        NetworkSocketKind::TcpStream as u32 as u64,
+                        slot.state as u32 as u64,
+                        ipv4_to_u32(slot.remote_address) as u64,
+                        slot.remote_port as u64,
+                        slot.local_port as u64,
+                        ((slot.rx_bytes.min(u32::MAX as u64)) << 32)
+                            | slot.tx_bytes.min(u32::MAX as u64),
+                    ],
+                );
+            }
+            for slot in listeners.iter().filter(|slot| slot.active) {
+                let entry_slot = count;
+                push_entry(
+                    &mut reply,
+                    &mut count,
+                    [
+                        entry_slot as u64,
+                        NetworkSocketKind::TcpStream as u32 as u64,
+                        NetworkSocketState::Connecting as u32 as u64,
+                        0,
+                        0,
+                        slot.local_port as u64,
+                        slot.accept_len as u64,
+                    ],
+                );
+            }
+            for slot in udp_slots.iter().filter(|slot| slot.active) {
+                let entry_slot = count;
+                push_entry(
+                    &mut reply,
+                    &mut count,
+                    [
+                        entry_slot as u64,
+                        NetworkSocketKind::UdpDatagram as u32 as u64,
+                        NetworkSocketState::Established as u32 as u64,
+                        0,
+                        0,
+                        slot.local_port as u64,
+                        ((slot.rx_bytes.min(u32::MAX as u64)) << 32)
+                            | slot.tx_bytes.min(u32::MAX as u64),
+                    ],
+                );
             }
             reply.word_count = 2 + count as u32 * 7;
             reply.words[1] = count as u64;

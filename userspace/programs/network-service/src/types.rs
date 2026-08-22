@@ -114,3 +114,85 @@ impl TcpTransportSlot {
         }
     }
 }
+
+#[derive(Clone, Copy)]
+pub(crate) struct UdpDatagramSlot {
+    pub(crate) active: bool,
+    pub(crate) control_handle: rt::Handle,
+    pub(crate) socket_handle: Option<SocketHandle>,
+    pub(crate) local_port: u16,
+    pub(crate) rx_bytes: u64,
+    pub(crate) tx_bytes: u64,
+    pub(crate) last_activity_ticks: u64,
+}
+
+impl UdpDatagramSlot {
+    pub(crate) const fn empty() -> Self {
+        Self {
+            active: false,
+            control_handle: rt::INVALID_HANDLE,
+            socket_handle: None,
+            local_port: 0,
+            rx_bytes: 0,
+            tx_bytes: 0,
+            last_activity_ticks: 0,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct TcpListenerSlot {
+    pub(crate) active: bool,
+    pub(crate) control_handle: rt::Handle,
+    pub(crate) socket_handle: Option<SocketHandle>,
+    pub(crate) local_port: u16,
+    pub(crate) backlog: u32,
+    /// Transport slot indexes of completed inbound connections waiting for an
+    /// AcceptRequest, with the matching client-side control handles.
+    pub(crate) accept_queue: [usize; crate::consts::TCP_ACCEPT_BACKLOG],
+    pub(crate) accept_handles: [rt::Handle; crate::consts::TCP_ACCEPT_BACKLOG],
+    pub(crate) accept_len: usize,
+}
+
+impl TcpListenerSlot {
+    pub(crate) const fn empty() -> Self {
+        Self {
+            active: false,
+            control_handle: rt::INVALID_HANDLE,
+            socket_handle: None,
+            local_port: 0,
+            backlog: 0,
+            accept_queue: [usize::MAX; crate::consts::TCP_ACCEPT_BACKLOG],
+            accept_handles: [rt::INVALID_HANDLE; crate::consts::TCP_ACCEPT_BACKLOG],
+            accept_len: 0,
+        }
+    }
+
+    pub(crate) fn can_queue(&self, backlog: u32) -> bool {
+        self.accept_len < crate::consts::TCP_ACCEPT_BACKLOG.min(backlog.max(1) as usize)
+    }
+
+    pub(crate) fn push_accept(&mut self, slot_index: usize, client_handle: rt::Handle) -> bool {
+        if self.accept_len >= self.accept_queue.len() {
+            return false;
+        }
+        self.accept_queue[self.accept_len] = slot_index;
+        self.accept_handles[self.accept_len] = client_handle;
+        self.accept_len += 1;
+        true
+    }
+
+    pub(crate) fn pop_accept(&mut self) -> Option<(usize, rt::Handle)> {
+        if self.accept_len == 0 {
+            return None;
+        }
+        let slot_index = self.accept_queue[0];
+        let client_handle = self.accept_handles[0];
+        self.accept_queue.copy_within(1.., 0);
+        self.accept_handles.copy_within(1.., 0);
+        self.accept_len -= 1;
+        self.accept_queue[self.accept_len] = usize::MAX;
+        self.accept_handles[self.accept_len] = rt::INVALID_HANDLE;
+        Some((slot_index, client_handle))
+    }
+}

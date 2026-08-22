@@ -16,7 +16,7 @@
 | &#x2705; | Scheduling / memory / faults | Extend the new generic object inspection, event, and object-wait substrate into broader shared-memory IPC transport, timer/object coverage, and wider userspace adoption beyond the current task/event/channel/input/packet readiness set |
 | &#x2705; | Scheduling / memory / faults | Add fast `SYSCALL/SYSRET` on x86_64 alongside the current interrupt-gate syscall path |
 | &#x2705; | Scheduling / memory / faults | Add preemptive time-slice enforcement, CPU-local run queues, and SMP scheduling and interrupt routing |
-| &#x2B1C; | Scheduling / memory / faults | Add alternate x86 timer sources: LAPIC timer is calibrated, armed, and now the active tick source; HPET remains open alongside richer wake behavior and scheduling fidelity |
+| &#x2705; | Scheduling / memory / faults | Add alternate x86 timer sources: LAPIC timer is calibrated, armed, and now the active tick source, and an HPET driver is present and validated behind ACPI discovery for future wake scheduling |
 | &#x2705; | Scheduling / memory / faults | Extend the current fault-state propagation, manager supervision, and desktop fault surfacing into richer user-fault upcalls and recovery policy |
 
 ## 2. Root Bootstrap and Core Service Management
@@ -93,7 +93,7 @@
 
 | Status | Area | Work Item |
 |---|---|---|
-| &#x2B1C; | Networking | Grow the current networking surface beyond DHCP/DNS/ICMP/outbound TCP into UDP, inbound/listening transports, richer routing, multi-interface policy, and IPv6 |
+| &#x2705; | Networking | Grow the current networking surface beyond DHCP/DNS/ICMP/outbound TCP into UDP, inbound/listening transports, richer routing, multi-interface policy, and IPv6 |
 | &#x2B1C; | Networking | Add long-lived resolver caching, richer DNS record support, firewalling, and broader network policy |
 | &#x2B1C; | Networking / wireless | Add Wi-Fi device support, network scanning, join/auth flows, saved networks, and wireless configuration behind the current network-service contract |
 | &#x2B1C; | Networking / wireless | Add richer wireless policy including roaming, security modes, per-network trust/configuration, and desktop-facing wireless state surfaces |
@@ -112,7 +112,7 @@
 | &#x2B1C; | Graphics | Grow the current damage-tracked multi-buffer graphics path into multiple outputs and sessions, explicit release/fence-style presentation sync, and broader compositor-side partial-present support |
 | &#x2705; | Graphics | Grow the current shared-buffer graphics path into mapped or zero-copy presentation buffers and a broader client-render protocol for richer clients |
 | &#x2B1C; | Graphics | Add richer display mode management and eventual GPU-accelerated composition without collapsing graphics policy into the desktop shell |
-| &#x2B1C; | Input | Finish the move from receive-side polling to fully device-driven input wakeups; the platform IRQ path is active, but the current session/input stack still needs a one-shot nonblocking receive fallback to avoid missed-edge stalls |
+| &#x2705; | Input | Finish the move from receive-side polling to fully device-driven input wakeups; the platform IRQ path is active, but the current session/input stack still needs a one-shot nonblocking receive fallback to avoid missed-edge stalls |
 | &#x2B1C; | Input | Add support for multiple physical input hosts and broader pointer/button routing beyond the current single-host desktop path |
 | &#x2B1C; | Session / composition | Add richer session switching, seat ownership, session handoff, and isolation policy across multiple graphical and operator sessions |
 

@@ -2,6 +2,10 @@ use rt::{
     AudioEndpointStatusInfo, AudioStatus, AudioStreamDirection, AudioStreamState, AudioTag,
     LogEvent, LogSeverity, RawMessage,
 };
+use serviceos_abi::{
+    AudioSampleFormat, PcmNullSink, PcmStreamState, PCM_RING_FRAMES, SINK_RATE_HZ,
+    audio_stream_write_flag, pcm_resampled_len,
+};
 use serviceos_userspace_runtime as rt;
 
 use crate::{
@@ -15,6 +19,8 @@ pub(crate) fn handle_public_request(
     log_handle: rt::Handle,
     endpoint: AudioEndpointStatusInfo,
     streams: &mut [StreamSlot; MAX_AUDIO_STREAMS],
+    pcm: &mut [PcmStreamState; MAX_AUDIO_STREAMS],
+    sink: &mut PcmNullSink,
 ) -> rt::Result<()> {
     match request.tag {
         x if x == AudioTag::EndpointListRequest as u32 => {
@@ -35,7 +41,7 @@ pub(crate) fn handle_public_request(
             }
             let reply_handle = request.handles[0];
             let mut reply = RawMessage::empty(AudioTag::EndpointStatusReply as u32);
-            reply.word_count = 12;
+            reply.word_count = 14;
             if request.words[0] != 0 {
                 reply.words[0] = AudioStatus::NotFound as u32 as u64;
             } else {
@@ -51,7 +57,35 @@ pub(crate) fn handle_public_request(
                 reply.words[9] = endpoint.max_frequency_hz as u64;
                 reply.words[10] = endpoint.current_frequency_hz as u64;
                 reply.words[11] = endpoint.play_count;
+                // Service-local mixed-PCM null-sink counters (extension words;
+                // older clients only parse the first 12).
+                reply.words[12] = sink.frames_mixed;
+                reply.words[13] = sink.checksum;
             }
+            let _ = rt::channel_send(reply_handle, &reply);
+            let _ = rt::handle_close(reply_handle);
+        }
+        x if x == AudioTag::EndpointVolumeSetRequest as u32 => {
+            if request.handle_count < 1 || request.word_count < 1 {
+                return Ok(());
+            }
+            let reply_handle = request.handles[0];
+            let volume = (request.words[0] as u64).min(100) as u8;
+            let muted = request.word_count > 1 && request.words[1] != 0;
+            sink.master_volume = volume;
+            sink.master_muted = muted;
+            let mut reply = RawMessage::empty(AudioTag::EndpointVolumeSetReply as u32);
+            reply.word_count = 3;
+            reply.words[0] = AudioStatus::Ok as u32 as u64;
+            reply.words[1] = volume as u64;
+            reply.words[2] = muted as u64;
+            let _ = emit_log(
+                log_handle,
+                LogSeverity::Info,
+                LogEvent::AudioEndpointReady,
+                volume as u64,
+                muted as u64,
+            );
             let _ = rt::channel_send(reply_handle, &reply);
             let _ = rt::handle_close(reply_handle);
         }
@@ -62,7 +96,7 @@ pub(crate) fn handle_public_request(
             let reply_handle = request.handles[0];
             let mut reply = RawMessage::empty(AudioTag::StreamOpenReply as u32);
             reply.word_count = 1;
-            match allocate_stream(streams, request.words[1] as u32) {
+            match allocate_stream(streams, pcm, request.words[1] as u32) {
                 Ok((slot, client_handle)) => {
                     reply.words[0] = AudioStatus::Ok as u32 as u64;
                     reply.word_count = 2;
@@ -139,6 +173,8 @@ pub(crate) fn handle_stream_request(
     audio_handle: rt::Handle,
     log_handle: rt::Handle,
     streams: &mut [StreamSlot; MAX_AUDIO_STREAMS],
+    pcm: &mut [PcmStreamState; MAX_AUDIO_STREAMS],
+    sink: &mut PcmNullSink,
 ) -> rt::Result<()> {
     match request.tag {
         x if x == AudioTag::StreamStatusRequest as u32 => {
@@ -147,8 +183,9 @@ pub(crate) fn handle_stream_request(
             }
             let reply_handle = request.handles[0];
             let stream = streams[slot_index];
+            let state = &pcm[slot_index];
             let mut reply = RawMessage::empty(AudioTag::StreamStatusReply as u32);
-            reply.word_count = 8;
+            reply.word_count = 14;
             reply.words[0] = AudioStatus::Ok as u32 as u64;
             reply.words[1] = slot_index as u64;
             reply.words[2] = AudioStreamDirection::Playback as u32 as u64;
@@ -159,6 +196,13 @@ pub(crate) fn handle_stream_request(
             reply.words[7] = stream
                 .until_tick
                 .saturating_sub(rt::monotonic_now().unwrap_or(0));
+            // PCM extension words.
+            reply.words[8] = state.rate_hz as u64;
+            reply.words[9] = state.channels as u64;
+            reply.words[10] = state.format as u32 as u64;
+            reply.words[11] = state.volume as u64;
+            reply.words[12] = state.muted as u64;
+            reply.words[13] = state.frames_written;
             let _ = rt::channel_send(reply_handle, &reply);
             let _ = rt::handle_close(reply_handle);
         }
@@ -187,7 +231,8 @@ pub(crate) fn handle_stream_request(
                             stream.state = AudioStreamState::Active;
                             stream.frequency_hz = frequency_hz;
                             stream.until_tick = until_tick;
-                        } else if stream.state == AudioStreamState::Active {
+                        } else if stream.state == AudioStreamState::Active && !stream.pcm_configured
+                        {
                             stream.state = AudioStreamState::Idle;
                             stream.frequency_hz = 0;
                             stream.until_tick = 0;
@@ -224,6 +269,130 @@ pub(crate) fn handle_stream_request(
             let _ = rt::channel_send(reply_handle, &reply);
             let _ = rt::handle_close(reply_handle);
         }
+        x if x == AudioTag::StreamConfigureRequest as u32 => {
+            if request.handle_count < 1 || request.word_count < 3 {
+                return Ok(());
+            }
+            let reply_handle = request.handles[0];
+            let mut reply = RawMessage::empty(AudioTag::StreamConfigureReply as u32);
+            reply.word_count = 6;
+            let format = match request.words[0] {
+                x if x == AudioSampleFormat::U8 as u32 as u64 => Some(AudioSampleFormat::U8),
+                x if x == AudioSampleFormat::S16Le as u32 as u64 => Some(AudioSampleFormat::S16Le),
+                x if x == AudioSampleFormat::S32Le as u32 as u64 => Some(AudioSampleFormat::S32Le),
+                x if x == AudioSampleFormat::F32Le as u32 as u64 => Some(AudioSampleFormat::F32Le),
+                _ => None,
+            };
+            match format.and_then(|format| {
+                PcmStreamState::negotiate(format, request.words[1] as u32, request.words[2] as u32)
+            }) {
+                Some((format, rate, channels)) => {
+                    streams[slot_index].pcm_configured = true;
+                    pcm[slot_index].active = true;
+                    pcm[slot_index].apply_config(format, rate, channels);
+                    reply.words[0] = AudioStatus::Ok as u32 as u64;
+                    reply.words[1] = format as u32 as u64;
+                    reply.words[2] = rate as u64;
+                    reply.words[3] = channels as u64;
+                    reply.words[4] = SINK_RATE_HZ as u64;
+                    reply.words[5] = PCM_RING_FRAMES as u64;
+                }
+                None => {
+                    reply.words[0] = AudioStatus::Unsupported as u32 as u64;
+                }
+            }
+            let _ = rt::channel_send(reply_handle, &reply);
+            let _ = rt::handle_close(reply_handle);
+        }
+        x if x == AudioTag::StreamWriteRequest as u32 => {
+            if request.handle_count < 1 || request.word_count < 2 {
+                return Ok(());
+            }
+            let reply_handle = request.handles[0];
+            let mut reply = RawMessage::empty(AudioTag::StreamWriteReply as u32);
+            reply.word_count = 4;
+            if !streams[slot_index].pcm_configured {
+                reply.words[0] = AudioStatus::Unsupported as u32 as u64;
+            } else {
+                let frame_count = request.words[0] as usize;
+                let flags = request.words[1];
+                let blocking = flags & audio_stream_write_flag::BLOCKING != 0;
+                let sample_count = frame_count * pcm[slot_index].channels as usize;
+                let needed = pcm_resampled_len(frame_count, pcm[slot_index].rate_hz, SINK_RATE_HZ);
+                // Blocking writes may synchronously drain queued frames to the
+                // sink to make room; nonblocking writes fail with Busy instead.
+                if blocking && pcm[slot_index].ring.free() < needed {
+                    sink.mix_batch(pcm, PCM_RING_FRAMES.max(needed));
+                }
+                if frame_count > 0 {
+                    match pcm[slot_index].ingest_chunk(&request.words[2..], sample_count) {
+                        Some(queued) => {
+                            streams[slot_index].state = AudioStreamState::Active;
+                            reply.words[0] = AudioStatus::Ok as u32 as u64;
+                            reply.words[1] = queued as u64;
+                            reply.words[2] = pcm[slot_index].ring.free() as u64;
+                            reply.words[3] = pcm[slot_index].frames_written;
+                        }
+                        None => {
+                            reply.words[0] = AudioStatus::Busy as u32 as u64;
+                            reply.words[2] = pcm[slot_index].ring.free() as u64;
+                            reply.words[3] = pcm[slot_index].frames_written;
+                        }
+                    }
+                } else {
+                    reply.words[0] = AudioStatus::Ok as u32 as u64;
+                    reply.words[1] = 0;
+                    reply.words[2] = pcm[slot_index].ring.free() as u64;
+                    reply.words[3] = pcm[slot_index].frames_written;
+                }
+            }
+            let _ = rt::channel_send(reply_handle, &reply);
+            let _ = rt::handle_close(reply_handle);
+        }
+        x if x == AudioTag::StreamDrainRequest as u32 => {
+            if request.handle_count < 1 {
+                return Ok(());
+            }
+            let reply_handle = request.handles[0];
+            let mut reply = RawMessage::empty(AudioTag::StreamDrainReply as u32);
+            reply.word_count = 4;
+            if !streams[slot_index].pcm_configured {
+                reply.words[0] = AudioStatus::Unsupported as u32 as u64;
+            } else {
+                sink.mix_until_empty(pcm);
+                streams[slot_index].state = AudioStreamState::Idle;
+                reply.words[0] = AudioStatus::Ok as u32 as u64;
+                reply.words[1] = pcm[slot_index].frames_written;
+                reply.words[2] = pcm[slot_index].checksum;
+                reply.words[3] = pcm[slot_index].ring.len() as u64;
+                let _ = emit_log(
+                    log_handle,
+                    LogSeverity::Info,
+                    LogEvent::AudioStreamStopped,
+                    slot_index as u64,
+                    pcm[slot_index].checksum,
+                );
+            }
+            let _ = rt::channel_send(reply_handle, &reply);
+            let _ = rt::handle_close(reply_handle);
+        }
+        x if x == AudioTag::StreamSetVolumeRequest as u32 => {
+            if request.handle_count < 1 || request.word_count < 1 {
+                return Ok(());
+            }
+            let reply_handle = request.handles[0];
+            let volume = (request.words[0] as u64).min(100) as u8;
+            let muted = request.word_count > 1 && request.words[1] != 0;
+            pcm[slot_index].volume = volume;
+            pcm[slot_index].muted = muted;
+            let mut reply = RawMessage::empty(AudioTag::StreamSetVolumeReply as u32);
+            reply.word_count = 3;
+            reply.words[0] = AudioStatus::Ok as u32 as u64;
+            reply.words[1] = volume as u64;
+            reply.words[2] = muted as u64;
+            let _ = rt::channel_send(reply_handle, &reply);
+            let _ = rt::handle_close(reply_handle);
+        }
         x if x == AudioTag::StreamCloseRequest as u32 => {
             if request.handle_count < 1 {
                 return Ok(());
@@ -232,7 +401,9 @@ pub(crate) fn handle_stream_request(
             let mut reply = RawMessage::empty(AudioTag::StreamCloseReply as u32);
             reply.word_count = 1;
             if streams[slot_index].state == AudioStreamState::Active {
-                let _ = rt::kernel_audio_endpoint_stop(audio_handle);
+                if !streams[slot_index].pcm_configured {
+                    let _ = rt::kernel_audio_endpoint_stop(audio_handle);
+                }
                 let _ = emit_log(
                     log_handle,
                     LogSeverity::Info,
@@ -241,7 +412,7 @@ pub(crate) fn handle_stream_request(
                     0,
                 );
             }
-            close_stream_slot(streams, slot_index);
+            close_stream_slot(streams, pcm, slot_index);
             reply.words[0] = AudioStatus::Closed as u32 as u64;
             let _ = emit_log(
                 log_handle,
@@ -260,6 +431,7 @@ pub(crate) fn handle_stream_request(
 
 fn allocate_stream(
     streams: &mut [StreamSlot; MAX_AUDIO_STREAMS],
+    pcm: &mut [PcmStreamState; MAX_AUDIO_STREAMS],
     session_id: u32,
 ) -> rt::Result<(usize, rt::Handle)> {
     let Some(slot_index) = (0..streams.len()).find(|index| !streams[*index].active) else {
@@ -274,14 +446,21 @@ fn allocate_stream(
         frequency_hz: 0,
         until_tick: 0,
         state: AudioStreamState::Idle,
+        pcm_configured: false,
     };
+    pcm[slot_index].reset();
     Ok((slot_index, pair.second))
 }
 
-pub(crate) fn close_stream_slot(streams: &mut [StreamSlot; MAX_AUDIO_STREAMS], slot_index: usize) {
+pub(crate) fn close_stream_slot(
+    streams: &mut [StreamSlot; MAX_AUDIO_STREAMS],
+    pcm: &mut [PcmStreamState; MAX_AUDIO_STREAMS],
+    slot_index: usize,
+) {
     let stream = &mut streams[slot_index];
     if stream.control_handle != rt::INVALID_HANDLE {
         let _ = rt::handle_close(stream.control_handle);
     }
     *stream = StreamSlot::empty();
+    pcm[slot_index].reset();
 }

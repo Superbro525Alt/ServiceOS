@@ -27,6 +27,19 @@ pub mod audio_capability {
     pub const PCM: u32 = 1 << 3;
 }
 
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AudioSampleFormat {
+    U8 = 1,
+    S16Le = 2,
+    S32Le = 3,
+    F32Le = 4,
+}
+
+pub mod audio_stream_write_flag {
+    pub const BLOCKING: u64 = 1 << 0;
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AudioEndpointInfo {
@@ -69,6 +82,16 @@ pub enum AudioTag {
     StreamPlayToneReply = 0x88b,
     StreamCloseRequest = 0x88c,
     StreamCloseReply = 0x88d,
+    StreamConfigureRequest = 0x88e,
+    StreamConfigureReply = 0x88f,
+    StreamWriteRequest = 0x890,
+    StreamWriteReply = 0x891,
+    StreamDrainRequest = 0x892,
+    StreamDrainReply = 0x893,
+    StreamSetVolumeRequest = 0x894,
+    StreamSetVolumeReply = 0x895,
+    EndpointVolumeSetRequest = 0x896,
+    EndpointVolumeSetReply = 0x897,
 }
 
 #[repr(u32)]

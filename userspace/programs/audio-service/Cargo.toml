@@ -8,4 +8,5 @@ name = "serviceos-audio-service"
 path = "src/main.rs"
 
 [dependencies]
+serviceos-abi = { path = "../../../shared/abi" }
 serviceos-userspace-runtime = { path = "../runtime" }

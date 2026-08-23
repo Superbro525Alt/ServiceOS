@@ -169,7 +169,7 @@
 
 | Status | Area | Work Item |
 |---|---|---|
-| &#x2B1C; | Audio | Grow the current audio surface beyond tone playback into PCM/shared-buffer output, capture streams, mixing, per-app volume/session policy, and notification/media controls |
+| &#x2B1C; | Audio | Grow the current audio surface beyond tone playback: PCM output streams with format negotiation (U8/S16/S32/F32, mono/stereo, rate table), chunked IPC writes (blocking/nonblocking), N-stream mixing with clipping protection, and per-stream + master volume/mute landed on a mixed-PCM null sink validated by boot selftest and host unit tests; the PC-speaker endpoint remains tone-only, and shared-buffer output, audible PCM backends, capture streams, per-app policy, and notification/media controls remain open |
 | &#x2B1C; | Audio / hardware | Add broader hardware audio backends beyond the current wired/emulated paths, including Bluetooth audio and future USB audio paths |
 | &#x2B1C; | Audio / Bluetooth | Add Bluetooth audio output/input support, pairing integration, and endpoint routing on top of the broader audio platform |
 | &#x2B1C; | Media | Add codecs, containers, richer media pipelines, DMA-safe memory-object policy, and broader hardware backends beyond the current QEMU PC speaker path |

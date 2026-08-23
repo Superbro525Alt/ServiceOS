@@ -10,6 +10,7 @@ pub(crate) struct StreamSlot {
     pub(crate) frequency_hz: u32,
     pub(crate) until_tick: u64,
     pub(crate) state: AudioStreamState,
+    pub(crate) pcm_configured: bool,
 }
 
 impl StreamSlot {
@@ -22,6 +23,7 @@ impl StreamSlot {
             frequency_hz: 0,
             until_tick: 0,
             state: AudioStreamState::Closed,
+            pcm_configured: false,
         }
     }
 }

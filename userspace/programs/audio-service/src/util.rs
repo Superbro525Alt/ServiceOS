@@ -62,6 +62,10 @@ pub(crate) fn update_stream_expiry(
         if !slot.active {
             continue;
         }
+        // PCM streams are driven by the mixer, not by speaker tone expiry.
+        if slot.pcm_configured {
+            continue;
+        }
         let expired = slot.until_tick != 0 && now >= slot.until_tick;
         if !endpoint_active || expired {
             if slot.state == AudioStreamState::Active {

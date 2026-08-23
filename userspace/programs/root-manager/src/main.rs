@@ -1,10 +1,12 @@
-#![no_std]
-#![no_main]
+#![cfg_attr(not(test), no_std)]
+#![cfg_attr(not(test), no_main)]
 
 mod boot_ui;
+mod bootmode;
 mod control;
 mod graph;
 mod state;
+mod timing;
 mod util;
 
 use rt::{ControlTag, LogEvent, LogSeverity, RawMessage, ServiceId, rights};
@@ -20,6 +22,7 @@ use crate::state::{
 };
 use crate::util::{emit_manager_event, fallback_log, service_index_path};
 
+#[cfg(not(test))]
 rt::entry!(main);
 
 fn main() -> u64 {
@@ -104,15 +107,25 @@ fn main() -> u64 {
         audio: audio_resource,
     };
 
+    let boot_mode = bootmode::BootMode::from_word(if startup.word_count > 3 {
+        startup.words[3]
+    } else {
+        0
+    });
+    let _ = util::fallback_logf(format_args!("boot mode={}", boot_mode.name()));
+
     fallback_log("bootstrap started");
 
     let mut slots = [ServiceSlot::empty(); MAX_SERVICE_SLOTS];
     let mut graph_status = GraphStatus::empty();
     let mut boot_ui = boot_ui::BootUi::empty();
+    let mut timing = timing::BringUpTiming::empty();
+    timing.graph_start_tick = rt::monotonic_now().unwrap_or(0);
     slots[0].manifest = storage_manifest();
     slots[0].occupied = true;
     let mut service_count = 1usize;
 
+    let storage_start_tick = rt::monotonic_now().unwrap_or(0);
     if start_service(
         &mut slots,
         service_count,
@@ -136,12 +149,15 @@ fn main() -> u64 {
     {
         return 0xf604;
     }
+    timing.begin(ServiceId::Storage, storage_start_tick);
+    timing.end(ServiceId::Storage, rt::monotonic_now().unwrap_or(0));
 
     if graph::load_base_service_graph(&mut slots, &mut service_count, service_index_path(platform))
         .is_err()
     {
         return 0xf605;
     }
+    bootmode::apply_boot_mode(&mut slots, service_count, boot_mode);
     if activate_base_service_graph(
         &mut slots,
         &mut service_count,
@@ -149,11 +165,13 @@ fn main() -> u64 {
         bootstrap_resources,
         &mut graph_status,
         &mut boot_ui,
+        &mut timing,
     )
     .is_err()
     {
         return 0xf606;
     }
+    timing::emit_timing_summary(&timing);
 
     let _ = emit_manager_event(
         &slots,

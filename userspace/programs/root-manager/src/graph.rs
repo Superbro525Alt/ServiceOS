@@ -66,6 +66,7 @@ pub(crate) fn activate_base_service_graph(
     bootstrap_resources: BootstrapResources,
     graph_status: &mut GraphStatus,
     boot_ui: &mut crate::boot_ui::BootUi,
+    timing: &mut crate::timing::BringUpTiming,
 ) -> rt::Result<()> {
     loop {
         let _ = crate::boot_ui::update(boot_ui, slots, *service_count, *graph_status);
@@ -107,6 +108,7 @@ pub(crate) fn activate_base_service_graph(
                 "activating {}",
                 service_name(slots[index].manifest.service_id)
             ));
+            timing.begin(slots[index].manifest.service_id, rt::monotonic_now().unwrap_or(0));
             match start_service(
                 slots,
                 *service_count,
@@ -131,6 +133,10 @@ pub(crate) fn activate_base_service_graph(
                     mark_service_degraded(slots, *service_count, index);
                 }
             }
+            timing.end(
+                slots[index].manifest.service_id,
+                rt::monotonic_now().unwrap_or(0),
+            );
         }
 
         graph_status.blocked_services = blocked;
@@ -678,6 +684,20 @@ fn mark_service_degraded(
 }
 
 fn emit_blocked_graph_diagnostics(slots: &[ServiceSlot; MAX_SERVICE_SLOTS], service_count: usize) {
+    let mut waiting = [false; MAX_SERVICE_SLOTS];
+    let mut ids = [ServiceId::RootManager; MAX_SERVICE_SLOTS];
+    let mut blocked_on = [ServiceId::RootManager; MAX_SERVICE_SLOTS];
+    for (index, slot) in slots[..service_count].iter().enumerate() {
+        if !slot.occupied {
+            continue;
+        }
+        if slot.phase == ServicePhase::WaitingDependencies {
+            waiting[index] = true;
+            blocked_on[index] = slot.blocked_dependency;
+        }
+        ids[index] = slot.manifest.service_id;
+    }
+
     for slot in &slots[..service_count] {
         if !slot.occupied || slot.phase != ServicePhase::WaitingDependencies {
             continue;
@@ -687,5 +707,23 @@ fn emit_blocked_graph_diagnostics(slots: &[ServiceSlot; MAX_SERVICE_SLOTS], serv
             service_name(slot.manifest.service_id),
             service_name(slot.blocked_dependency),
         ));
+    }
+
+    if let Some(cycle) =
+        crate::bootmode::find_blocked_cycle(&waiting, &ids, &blocked_on, service_count)
+    {
+        crate::bootmode::log_cycle_path(&cycle);
+        let _ = emit_manager_event(
+            slots,
+            service_count,
+            LogSeverity::Error,
+            LogEvent::ServiceFailed,
+            cycle.nodes[0],
+            0xc7c1,
+        );
+    } else {
+        let _ = fallback_logf(
+            format_args!("no dependency cycle; blocked graph has no ready path forward"),
+        );
     }
 }

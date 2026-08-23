@@ -30,8 +30,8 @@
 | &#x2705; | Root bootstrap | Manager-mediated registration and discovery |
 | &#x2705; | Packages / services | Add dynamic service installation, on-demand activation policy, and richer health-check definitions in manifests and package flows |
 | &#x2705; | Observability / supervision | Add richer root-manager supervision and health policy without moving service lifecycle policy back into the kernel |
-| &#x2B1C; | Bootstrap / service graph | Extend the current degraded startup and partial-graph recovery path with explicit boot-mode selection and operator-directed reduced graphs |
-| &#x2B1C; | Bootstrap / orchestration | Extend the current blocked-dependency diagnostics with cycle explanation and startup timing/ordering visibility for service bring-up |
+| &#x2B1C; | Bootstrap / service graph | Extend the current degraded startup and partial-graph recovery path with explicit boot-mode selection and operator-directed reduced graphs (partial: manager parses a boot-mode startup word (full/reduced/safe), applies core-set reduced graphs via transitive dependency/lookup closure with unit tests, and logs the selected mode; the kernel/platform side does not yet send the mode word, so full mode remains the boot default) |
+| &#x2705; | Bootstrap / orchestration | Extend the current blocked-dependency diagnostics with cycle explanation and startup timing/ordering visibility for service bring-up (manager logs per-service ms/tick start-to-ready durations, an ordering line, total plus slowest-three summary at bring-up completion, and the concrete A&#x2192;B&#x2192;A path when a blocked-dependency chain closes a cycle) |
 
 ## 3. Foundational Services
 

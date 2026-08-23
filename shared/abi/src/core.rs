@@ -85,6 +85,7 @@ pub enum SyscallNumber {
     MemoryQuery = 44,
     FaultHandlerRegister = 45,
     FaultHandlerUnregister = 46,
+    TaskLoadedLibraries = 47,
 }
 
 #[repr(u32)]
@@ -177,6 +178,18 @@ pub enum TaskStateCode {
 pub struct TaskStatus {
     pub state: TaskStateCode,
     pub exit_code: u64,
+}
+
+/// One companion library image mapped into a task's address space by the
+/// loader (extended flat-image headers only). Returned by
+/// [`SyscallNumber::TaskLoadedLibraries`].
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TaskLoadedLibrary {
+    pub image_id: u32,
+    pub _pad: u32,
+    pub base: u64,
+    pub mapped_bytes: u64,
 }
 
 #[repr(C)]

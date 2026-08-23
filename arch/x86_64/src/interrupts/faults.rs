@@ -99,6 +99,25 @@ fn log_exception(report: ExceptionReport) {
                 report.frame.instruction_pointer,
                 report.frame.origin()
             ));
+            // TEMP-DEBUG(qisa-gpf): dump iretq-frame snapshot; remove.
+            #[allow(static_mut_refs)]
+            {
+                let (rsp, w0, w1, w2, w3, w4, rax_src) = unsafe {
+                    (
+                        crate::user::serviceos_kdbg_rsp_snap,
+                        crate::user::serviceos_kdbg_w0,
+                        crate::user::serviceos_kdbg_w1,
+                        crate::user::serviceos_kdbg_w2,
+                        crate::user::serviceos_kdbg_w3,
+                        crate::user::serviceos_kdbg_w4,
+                        crate::user::serviceos_kdbg_rax_src,
+                    )
+                };
+                serial::write_args(format_args!(
+                    "dbg: asmsnap rsp={:#x} w0(ip)={:#x} w1(cs)={:#x} w2(fl)={:#x} w3(sp)={:#x} w4(ss)={:#x} raxsrc={:#x}\n",
+                    rsp, w0, w1, w2, w3, w4, rax_src
+                ));
+            }
         }
         ExceptionDetail::PageFault {
             fault_address,

@@ -27,6 +27,7 @@ pub fn initialize_kernel_heap(
     };
 
     let mut next_page = heap_range.start;
+    let mut progress = 0u64;
     for _ in 0..heap_range.page_count_4kib() {
         let frame = frame_allocator
             .allocate_4kib()
@@ -38,6 +39,10 @@ pub fn initialize_kernel_heap(
             frame_allocator,
         )?;
         next_page = next_page.offset(PAGE_SIZE_BYTES);
+        progress += 1;
+        if progress % 4096 == 0 {
+            crate::debug_probe(b'h');
+        }
     }
 
     unsafe {

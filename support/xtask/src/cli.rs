@@ -77,6 +77,7 @@ fn intern_platform(value: &str) -> Result<&'static str, Box<dyn Error>> {
         "qemu-virtio" => Ok("qemu-virtio"),
         "raspi5" => Ok("raspi5"),
         "virt" => Ok("virt"),
+        "qemu-isa" => Ok("qemu-isa"),
         _ => Err(Box::new(UsageError)),
     }
 }
@@ -88,7 +89,7 @@ impl fmt::Display for UsageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "usage: cargo xtask <build|image|run|qemu|release|ci-matrix> [--platform <qemu-virtio|raspi5|virt>] [--release]"
+            "usage: cargo xtask <build|image|run|qemu|release|ci-matrix> [--platform <qemu-virtio|raspi5|virt|qemu-isa>] [--release]"
         )
     }
 }

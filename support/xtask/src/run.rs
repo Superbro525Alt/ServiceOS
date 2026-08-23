@@ -15,6 +15,7 @@ pub fn run_platform(artifacts: &BuildArtifacts, image: &Path) -> Result<(), Box<
     match artifacts.spec.run_kind {
         RunKind::QemuVirtio => run_qemu(image),
         RunKind::QemuArmVirt => run_qemu_virt(artifacts),
+        RunKind::QemuIsa => run_qemu_isa(artifacts),
         RunKind::ManualDeploy => {
             println!(
                 "Platform '{}' does not have emulator run support yet.",
@@ -90,7 +91,55 @@ fn run_qemu_virt(artifacts: &BuildArtifacts) -> Result<(), Box<dyn Error>> {
             error
         )
     })?;
+
     ensure_success(status, "QEMU virt run failed")
+}
+
+fn run_qemu_isa(artifacts: &BuildArtifacts) -> Result<(), Box<dyn Error>> {
+    let kernel_elf = artifacts
+        .kernel_binary
+        .as_ref()
+        .ok_or_else(|| "qemu-isa requires a kernel ELF".to_string())?;
+    if !kernel_elf.exists() {
+        return Err(format!("qemu-isa kernel ELF missing: {}", kernel_elf.display()).into());
+    }
+    let qemu_binary = find_qemu_binary().ok_or_else(|| {
+        "qemu-system-x86_64 not found; install QEMU or set QEMU_SYSTEM_X86_64 to an absolute path"
+    })?;
+    let headless = qemu_headless();
+    println!("Launching QEMU with:");
+    println!("  binary: {}", qemu_binary.display());
+    println!("  machine: pc (legacy BIOS, multiboot kernel)");
+    println!("  kernel: {}", kernel_elf.display());
+    println!(
+        "  display mode: {}",
+        if headless { "headless" } else { "graphical" }
+    );
+
+    let mut command = Command::new(&qemu_binary);
+    command.args(["-machine", "pc"]);
+    command.args(["-m", "1024"]);
+    command.args(["-kernel", &kernel_elf.to_string_lossy()]);
+    if headless {
+        command.args(["-display", "none", "-serial", "stdio"]);
+    } else {
+        command.args(["-display", "gtk,gl=off"]);
+    }
+    if let Some(extra_args) = env::var_os("QEMU_EXTRA_ARGS") {
+        for arg in extra_args.to_string_lossy().split_whitespace() {
+            command.arg(arg);
+        }
+    }
+
+    let status = command.status().map_err(|error| {
+        format!(
+            "failed to launch QEMU binary {} with kernel {}: {}",
+            qemu_binary.display(),
+            kernel_elf.display(),
+            error
+        )
+    })?;
+    ensure_success(status, "QEMU isa run failed")
 }
 
 fn ensure_virt_data_image(data_image: &Path) -> Result<(), Box<dyn Error>> {

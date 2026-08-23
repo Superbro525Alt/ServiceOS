@@ -18,7 +18,46 @@ pub fn create_platform_image(artifacts: &BuildArtifacts) -> Result<PathBuf, Box<
         ImageKind::RawDisk => create_qemu_disk_image(&layout.root_dir),
         ImageKind::RaspberryPiBundle => create_raspi_bundle(artifacts, &layout),
         ImageKind::QemuKernel => create_virt_kernel_bundle(artifacts, &layout),
+        ImageKind::MultibootElf => create_isa_kernel_bundle(artifacts, &layout),
     }
+}
+
+fn ensure_isa_kernel_elf(artifacts: &BuildArtifacts) -> Result<PathBuf, Box<dyn Error>> {
+    let kernel_elf = artifacts
+        .kernel_binary
+        .as_ref()
+        .ok_or_else(|| "qemu-isa platform requires a multiboot kernel ELF".to_string())?;
+    if !kernel_elf.exists() {
+        return Err(format!("qemu-isa kernel ELF is missing: {}", kernel_elf.display()).into());
+    }
+    Ok(kernel_elf.clone())
+}
+
+fn create_isa_kernel_bundle(
+    artifacts: &BuildArtifacts,
+    layout: &crate::bundle::StagedPlatformLayout,
+) -> Result<PathBuf, Box<dyn Error>> {
+    let boot_dir = &layout.boot_dir;
+    fs::create_dir_all(boot_dir)?;
+    let release_mode = if artifacts.release { "release" } else { "debug" };
+    let kernel_elf = ensure_isa_kernel_elf(artifacts)?;
+    // Flat binary: file offset 0 == LBA 0 == the stage1 boot sector at
+    // 0x7C00; payload LMAs start at 0x100000 and follow contiguously, so the
+    // objcopy output is directly a bootable raw disk image.
+    let disk_image = artifacts.image_root.join("serviceos-isa.img");
+    convert_elf_to_binary(&kernel_elf, &disk_image)?;
+    fs::write(
+        boot_dir.join("README.txt"),
+        format!(
+            "ServiceOS qemu-isa (legacy BIOS) kernel bundle\n\nProfile: {release_mode}\n\nStaged files:\n- kernels/serviceos-kernel.elf\n- ../serviceos-isa.img (bootable raw disk)\n- serviceos/bootstore.bin\n\nRun:\ncargo xtask run --platform qemu-isa\n"
+        ),
+    )?;
+    println!(
+        "Created qemu-isa BIOS bundle at: {} (bootable disk: {})",
+        boot_dir.display(),
+        disk_image.display()
+    );
+    Ok(boot_dir.to_path_buf())
 }
 
 pub fn ensure_virt_kernel_image(artifacts: &BuildArtifacts) -> Result<PathBuf, Box<dyn Error>> {

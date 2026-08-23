@@ -14,10 +14,12 @@ pub fn stage_platform_bundle(
     let root_dir = match artifacts.spec.boot_kind {
         BootKind::Uefi => artifacts.image_root.join("esp"),
         BootKind::RaspberryPiFirmware | BootKind::QemuKernel => artifacts.image_root.join("boot"),
+        BootKind::MultibootElf => artifacts.image_root.join("boot"),
     };
     let boot_dir = match artifacts.spec.boot_kind {
         BootKind::Uefi => root_dir.join("EFI").join("BOOT"),
         BootKind::RaspberryPiFirmware | BootKind::QemuKernel => root_dir.clone(),
+        BootKind::MultibootElf => root_dir.join("kernels"),
     };
     let serviceos_dir = root_dir.join("serviceos");
 
@@ -34,6 +36,7 @@ pub fn stage_platform_bundle(
             BootKind::RaspberryPiFirmware | BootKind::QemuKernel => {
                 serviceos_dir.join("serviceos-kernel.elf")
             }
+            BootKind::MultibootElf => boot_dir.join("serviceos-kernel.elf"),
         };
         fs::copy(kernel_binary, destination)?;
     }

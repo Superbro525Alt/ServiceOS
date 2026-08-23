@@ -36,6 +36,7 @@ pub fn spawn_image_bytes(
     let prepared = (hooks.prepare_address_space)(image)?;
     runtime.register_address_space(address_space_id, prepared.page_table_root);
     (hooks.register_address_space)(address_space_id, prepared.page_table_root);
+    crate::user::record_loaded_image(address_space_id, prepared.image);
 
     let task = objects.registry().create_task(TaskDescriptor {
         address_space: Some(address_space_id),

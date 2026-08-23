@@ -21,6 +21,7 @@ struct UserRuntimeState {
     tasks: BTreeMap<TaskId, TaskExitStatus>,
     threads: BTreeMap<ThreadId, TaskId>,
     address_spaces: BTreeMap<AddressSpaceId, AddressSpaceRuntime>,
+    loaded_images: BTreeMap<AddressSpaceId, super::LoadedUserImage>,
 }
 
 pub struct UserRuntime {
@@ -35,6 +36,7 @@ impl UserRuntime {
                 tasks: BTreeMap::new(),
                 threads: BTreeMap::new(),
                 address_spaces: BTreeMap::new(),
+                loaded_images: BTreeMap::new(),
             }),
         }
     }
@@ -132,7 +134,27 @@ impl UserRuntime {
     }
 
     pub fn release_address_space(&self, address_space_id: AddressSpaceId) {
-        self.state.lock().address_spaces.remove(&address_space_id);
+        let mut state = self.state.lock();
+        state.address_spaces.remove(&address_space_id);
+        state.loaded_images.remove(&address_space_id);
+    }
+
+    pub fn record_loaded_image(
+        &self,
+        address_space_id: AddressSpaceId,
+        image: super::LoadedUserImage,
+    ) {
+        self.state
+            .lock()
+            .loaded_images
+            .insert(address_space_id, image);
+    }
+
+    pub fn loaded_image(
+        &self,
+        address_space_id: AddressSpaceId,
+    ) -> Option<super::LoadedUserImage> {
+        self.state.lock().loaded_images.get(&address_space_id).copied()
     }
 }
 
@@ -158,6 +180,16 @@ pub fn register_arch_hooks(hooks: super::UserArchHooks) {
 
 pub fn image_resolver() -> Option<fn(u32) -> Option<&'static [u8]>> {
     IMAGE_RESOLVER.get().copied()
+}
+
+pub fn record_loaded_image(address_space_id: AddressSpaceId, image: super::LoadedUserImage) {
+    if let Some(runtime) = runtime() {
+        runtime.record_loaded_image(address_space_id, image);
+    }
+}
+
+pub fn loaded_image_for(address_space_id: AddressSpaceId) -> Option<super::LoadedUserImage> {
+    runtime().and_then(|runtime| runtime.loaded_image(address_space_id))
 }
 
 pub fn arch_hooks() -> Option<super::UserArchHooks> {

@@ -28,7 +28,7 @@ use serviceos_kernel_core::{
     user::{self as kernel_user, SpawnError, TaskExitStatus},
 };
 use serviceos_platform_virt::{
-    block, boot, dtb::InterruptControllerRegions, framebuffer, input, net, timer, uart,
+    block, boot, dtb::InterruptControllerRegions, framebuffer, input, net, selftest, timer, uart,
 };
 use serviceos_userspace_catalog::BOOT_STORE_IMAGE;
 use spin::Once;
@@ -282,13 +282,21 @@ extern "C" fn serviceos_virt_entry(dtb_ptr: usize) -> ! {
 
     let virtio_devices =
         &boot_state.summary.virtio_mmio_devices[..boot_state.summary.virtio_mmio_count];
-    let bootstrap_block = block::initialize(virtio_devices)
+    let block_backend = block::initialize(virtio_devices);
+    let network_backend = net::initialize(virtio_devices);
+    let display_backend = framebuffer::initialize(virtio_devices);
+    let input_backend = input::initialize(virtio_devices);
+    let bootstrap_block = block_backend
+        .clone()
         .map(|backend| kernel.objects().registry().create_block_device(backend));
-    let bootstrap_network = net::initialize(virtio_devices)
+    let bootstrap_network = network_backend
+        .clone()
         .map(|backend| kernel.objects().registry().create_packet_interface(backend));
-    let bootstrap_display = framebuffer::initialize(virtio_devices)
+    let bootstrap_display = display_backend
+        .clone()
         .map(|backend| kernel.objects().registry().create_display_output(backend));
-    let bootstrap_input = input::initialize(virtio_devices)
+    let bootstrap_input = input_backend
+        .clone()
         .map(|backend| kernel.objects().registry().create_input_source(backend));
 
     if let Some(summary) = block::bringup_summary() {
@@ -383,6 +391,13 @@ extern "C" fn serviceos_virt_entry(dtb_ptr: usize) -> ! {
             );
         }
     }
+    log_line("bootstrap", "device selftests starting");
+    selftest::run_all(
+        &block_backend,
+        &network_backend,
+        &display_backend,
+        &input_backend,
+    );
     log_line("bootstrap", "starting serial-first userspace graph");
 
     let summary = match launch_root_manager(

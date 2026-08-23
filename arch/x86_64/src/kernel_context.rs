@@ -6,13 +6,27 @@ mod imp {
 
     use core::arch::global_asm;
 
+    // First entry trampoline: the seeded stack places this stub address
+    // where the switch-in `ret` lands, followed by the argument and then the
+    // entry function. The stub pops the argument into the target ABI's first
+    // argument register and returns into the entry. Stack alignment at the
+    // entry's first instruction is rsp % 16 == 8 either way.
+    // SysV targets (x86_64-unknown-none): first argument in RDI.
+    #[cfg(target_env = "")]
     global_asm!(
         r#"
 .global serviceos_x86_64_kthread_entry
-# First entry trampoline: the seeded stack places this stub address where the
-# switch-in `ret` lands, followed by the argument. Popping the argument into
-# rdi and returning again enters the thread entry with SysV-correct stack
-# alignment (rsp % 16 == 8 at the first instruction).
+serviceos_x86_64_kthread_entry:
+    pop rdi
+    ret
+"#
+    );
+
+    // Microsoft x64 targets (x86_64-unknown-uefi): first argument in RCX.
+    #[cfg(not(target_env = ""))]
+    global_asm!(
+        r#"
+.global serviceos_x86_64_kthread_entry
 serviceos_x86_64_kthread_entry:
     pop rcx
     ret
@@ -81,12 +95,9 @@ serviceos_x86_64_kthread_entry:
     /// restores the true call-site return address, so the compiler must not
     /// add any prologue or epilogue of its own (an alignment `push` shifts
     /// the saved chain by one slot and makes the resuming `ret` consume
-    /// garbage — verified against exactly that failure mode). The ABI is
-    /// Microsoft x64 (the UEFI target's "C" convention): `from` arrives in
-    /// RCX, `to` in RDX, and RBX/RBP/RDI/RSI/R12-R15 are the callee-saved
-    /// set that must survive the switch.
+    /// garbage — verified against exactly that failure mode).
     #[unsafe(naked)]
-    pub unsafe extern "C" fn kernel_context_switch(from: &mut KernelContext, to: &KernelContext) {
+    unsafe extern "C" fn kernel_context_switch_body() {
         core::arch::naked_asm!(
             "push rbx",
             "push rbp",
@@ -107,6 +118,23 @@ serviceos_x86_64_kthread_entry:
             "pop rbp",
             "pop rbx",
             "ret",
+        );
+    }
+
+    /// Public switch entry point. ABI-neutral: the arguments are placed in
+    /// fixed registers explicitly and the body is invoked through inline
+    /// asm, so the protocol works identically on SysV targets
+    /// (x86_64-unknown-none) and Microsoft-x64 targets
+    /// (x86_64-unknown-uefi). The body preserves exactly rbx/rbp/rdi/rsi/
+    /// r12-r15 -- the callee-saved set shared by both conventions.
+    #[inline(never)]
+    pub unsafe extern "C" fn kernel_context_switch(from: &mut KernelContext, to: &KernelContext) {
+        core::arch::asm!(
+            "call {body}",
+            in("rcx") from as *mut KernelContext as usize,
+            in("rdx") to as *const KernelContext as usize,
+            body = sym kernel_context_switch_body,
+            clobber_abi("C"),
         );
     }
 }

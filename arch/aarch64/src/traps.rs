@@ -295,6 +295,7 @@ serviceos_aarch64_fatal_vector:
 
     fn terminate_current_user_context(context: &SavedUserContext) {
         trace_sync(b'T', context.esr_el1, context.far_el1, context.elr_el1);
+        trace_sync(b'S', context.sp_el0, context.x30, context.spsr_el1);
         let _ = interrupts::handle_exception(
             ExceptionDetail::PageFault {
                 fault_address: context.far_el1,

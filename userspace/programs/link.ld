@@ -15,10 +15,15 @@ SECTIONS
 
     .data : ALIGN(4K) {
         *(.data .data.*)
+        *(.sdata .sdata.*)
+        *(.lrodata .lrodata.*)
+        *(.ldata .ldata.*)
     }
 
     .bss : ALIGN(4K) {
         *(.bss .bss.*)
+        *(.sbss .sbss.*)
+        *(.lbss .lbss.*)
         *(COMMON)
     }
 }

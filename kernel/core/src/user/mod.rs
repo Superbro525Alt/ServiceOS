@@ -5,17 +5,18 @@ mod types;
 
 pub use loader::{ElfMachine, load_flat_image, load_image, parse_flat_image};
 pub use runtime::{
-    UserRuntime, arch_hooks, initialize_runtime, register_arch_hooks, register_image_resolver,
-    runtime,
+    UserRuntime, arch_hooks, image_resolver, initialize_runtime, loaded_image_for,
+    record_loaded_image, register_arch_hooks, register_image_resolver, runtime,
 };
 pub use spawn::{
     current_task, mark_current_thread_exited, mark_current_thread_faulted, spawn_builtin_task,
     spawn_image_bytes,
 };
 pub use types::{
-    AddressSpacePreparationError, FlatImageHeader, LoadError, LoadedUserImage,
-    PreparedUserAddressSpace, SpawnError, SpawnedUserTask, TaskExitStatus, UserArchHooks,
-    UserThreadLaunch,
+    AddressSpacePreparationError, FlatDependencyRecord, FlatImageHeader, FlatSegmentRecord,
+    KERNEL_ABI_VERSION, MAX_FLAT_DEPENDENCIES, MAX_FLAT_SEGMENTS, LoadError, LoadedLibraryRecord,
+    LoadedUserImage, PreparedUserAddressSpace, SpawnError, SpawnedUserTask, TaskExitStatus,
+    UserArchHooks, UserThreadLaunch, flat_image_policy,
 };
 
 #[cfg(test)]

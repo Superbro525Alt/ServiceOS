@@ -93,6 +93,22 @@ pub fn spawn(entry: extern "C" fn(u64) -> !, arg: u64) -> Option<u32> {
 
     let context = unsafe { init_context_in(stack, entry, arg)? };
 
+    // TEMP qemu-isa bring-up diagnostic (REMOVE).
+    {
+        let base = stack as usize;
+        let words = unsafe { core::slice::from_raw_parts(base as *const u64, 4) };
+        crate::serial::write_args(core::format_args!(
+            "kdbg: stack={:#x} ctx={:#x} rsp={:#x} w0={:#x} w1={:#x} w2={:#x} w3={:#x}\n",
+            base,
+            context as *mut KernelContext as usize,
+            context.rsp,
+            words[0],
+            words[1],
+            words[2],
+            words[3],
+        ));
+    }
+
     THREADS.lock().push(ThreadRecord {
         tid,
         context: context as *mut KernelContext as usize,
@@ -204,6 +220,15 @@ pub fn ap_idle_loop(cpu: usize) -> ! {
 /// is currently running, and interrupts must be disabled.
 unsafe fn run_one(cpu: usize, entry: ReadyEntry) {
     unsafe {
+        // TEMP qemu-isa bring-up diagnostic (REMOVE).
+        let to = &*(entry.context as *const KernelContext);
+        crate::serial::write_args(core::format_args!(
+            "kdbg2: cpu={} tid={} ctx={:#x} rsp={:#x}\n",
+            cpu,
+            entry.tid,
+            entry.context,
+            to.rsp,
+        ));
         let slot = &RUNNERS.contexts[cpu % RUN_QUEUE_CPUS];
         RUNNERS.active[cpu % RUN_QUEUE_CPUS].store(slot.get() as usize, Ordering::Release);
         RUNNERS.current[cpu % RUN_QUEUE_CPUS].store(entry.tid, Ordering::Release);

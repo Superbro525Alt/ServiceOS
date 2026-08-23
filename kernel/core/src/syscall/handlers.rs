@@ -35,4 +35,7 @@ pub(crate) use system::{
     handle_debug_log_write, handle_kernel_event_query_info, handle_kernel_event_query_record,
     handle_monotonic_now, handle_thread_exit, handle_yield_current,
 };
-pub(crate) use task::{handle_service_spawn, handle_task_spawn_image, handle_task_status};
+pub(crate) use task::{
+    handle_service_spawn, handle_task_loaded_libraries, handle_task_spawn_image,
+    handle_task_status,
+};

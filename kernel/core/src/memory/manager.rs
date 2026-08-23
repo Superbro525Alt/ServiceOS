@@ -113,9 +113,11 @@ pub fn initialize(
         return Err(InitializationError::MissingMemoryMap);
     }
 
+    crate::debug_probe(b'a');
     let mut frame_allocator = EarlyFrameAllocator::from_boot_context(boot_context)?;
     let virtual_layout = KernelVirtualLayout::bootstrap_default();
     let heap = super::heap::initialize_kernel_heap(mapper, &mut frame_allocator, &virtual_layout)?;
+    crate::debug_probe(b'b');
     let reclaimed_boot_services_bytes =
         frame_allocator.reclaim_boot_services(boot_context)? * PAGE_SIZE_BYTES;
     let kernel_address_space = KernelAddressSpace::new(
@@ -128,6 +130,7 @@ pub fn initialize(
         &frame_allocator,
         reclaimed_boot_services_bytes,
     );
+    crate::debug_probe(b'c');
 
     Ok(MEMORY_MANAGER.call_once(|| MemoryManager {
         frame_allocator: Mutex::new(frame_allocator),

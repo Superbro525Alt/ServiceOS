@@ -11,6 +11,7 @@ use crate::{
     capability::{CapabilityHandle, CapabilityResolver, CapabilityRights, TransferMode},
     task::TaskRole,
     user,
+    user::MAX_FLAT_DEPENDENCIES,
 };
 
 pub(crate) fn handle_service_spawn(context: &SyscallContext) -> SyscallReturn {
@@ -110,6 +111,62 @@ pub(crate) fn handle_task_status(context: &SyscallContext) -> SyscallReturn {
     };
 
     SyscallReturn::success(0)
+}
+
+pub(crate) fn handle_task_loaded_libraries(context: &SyscallContext) -> SyscallReturn {
+    use serviceos_abi::TaskLoadedLibrary;
+
+    let Ok(current_task) = current_task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let object = match resolve_object(
+        &current_task,
+        context.arguments[0] as Handle,
+        CapabilityRights::READ,
+    ) {
+        Ok(view) => view.object,
+        Err(error) => return SyscallReturn::error(error),
+    };
+    let Some(target_task) = object.task() else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Some(address_space_id) = target_task.address_space() else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Some(image) = user::loaded_image_for(address_space_id) else {
+        return SyscallReturn::error(SyscallError::NotFound);
+    };
+
+    let capacity = context.arguments[2] as usize;
+    if capacity < image.library_count {
+        return SyscallReturn::error(SyscallError::CapacityExceeded);
+    }
+    if image.library_count > 0 {
+        let mut staged = [TaskLoadedLibrary {
+            image_id: 0,
+            _pad: 0,
+            base: 0,
+            mapped_bytes: 0,
+        }; MAX_FLAT_DEPENDENCIES];
+        for (slot, record) in staged.iter_mut().zip(image.libraries.iter()) {
+            *slot = TaskLoadedLibrary {
+                image_id: record.image_id,
+                _pad: 0,
+                base: record.base.as_u64(),
+                mapped_bytes: record.mapped_bytes as u64,
+            };
+        }
+        let byte_len = core::mem::size_of::<TaskLoadedLibrary>() * image.library_count;
+        let Ok(out_bytes) =
+            (unsafe { super::super::user_slice_mut(context.arguments[1], byte_len) })
+        else {
+            return SyscallReturn::error(SyscallError::InvalidArgument);
+        };
+        let src = core::ptr::slice_from_raw_parts(staged.as_ptr().cast::<u8>(), byte_len);
+        out_bytes.copy_from_slice(unsafe { &*src });
+    }
+
+    SyscallReturn::success(image.library_count as u64)
 }
 
 pub(crate) fn handle_task_spawn_image(context: &SyscallContext) -> SyscallReturn {

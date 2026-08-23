@@ -26,6 +26,12 @@ pub(crate) fn build_program(
     let mut command = Command::new("cargo");
     command.current_dir(programs_root);
     command.env("CARGO_TARGET_DIR", target_dir);
+    // Nested cargo inherits the OUTER cargo's rustflags env (root config
+    // selects kernel code-model for the x86_64-unknown-none kernel image).
+    // Strip it so userspace programs get only the leaf config plus the
+    // explicit per-program flags below.
+    command.env_remove("CARGO_ENCODED_RUSTFLAGS");
+    command.env_remove("RUSTFLAGS");
     command.args([
         "rustc",
         "--target",
@@ -38,7 +44,10 @@ pub(crate) fn build_program(
     if profile == "release" {
         command.arg("--release");
     }
-    command.args(["--", "-C", "relocation-model=static"]);
+    // PIC codegen keeps every reference RIP-relative: the image lives high in
+    // the 64-bit user window where small/static-model 32-bit relocations
+    // cannot reach (nightly regressed on anon-rodata refs, rust#116344).
+    command.args(["--", "-C", "relocation-model=pic"]);
     if user_target == X86_64_USER_TARGET {
         command.args(["-C", "code-model=large"]);
         command.args(["-C", "target-feature=-mmx,-sse,-sse2,+soft-float"]);

@@ -23,8 +23,13 @@ pub(crate) fn map_spawn_error(error: SpawnError) -> SyscallError {
             LoadError::UnsupportedFormat
             | LoadError::UnsupportedAbi
             | LoadError::UnsupportedHeader
-            | LoadError::UnsupportedMachine,
+            | LoadError::UnsupportedMachine
+            | LoadError::KernelAbiTooNew
+            | LoadError::DependencyInvalid,
         )) => SyscallError::Unsupported,
+        SpawnError::AddressSpace(AddressSpacePreparationError::Load(
+            LoadError::DependencyUnavailable,
+        )) => SyscallError::NotFound,
         SpawnError::AddressSpace(AddressSpacePreparationError::Load(
             LoadError::Truncated | LoadError::InvalidMagic | LoadError::AddressAlignment,
         ))

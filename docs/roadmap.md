@@ -86,7 +86,7 @@
 | &#x2B1C; | Platform / hardware follow-on | Add Wi-Fi and Bluetooth controller backends behind the relevant `platform/<platform>` contracts as supported hardware targets expand |
 | &#x2B1C; | Platform / hardware follow-on | Expand Raspberry Pi 5 beyond the current serial-first bootstrap into the normal graphical and network-backed service graph |
 | &#x2705; | Platform / targets | Add `platform/aarch64/virt` or equivalent clean ARM virtual target to keep ARM bring-up separate from Pi-specific board quirks |
-| &#x2B1C; | Platform / targets | Add a second x86 platform target and split the remaining x86 PC interrupt-controller details out of `arch/x86_64` if needed |
+| &#x2B1C; | Platform / targets | Add a second x86 platform target: `qemu-isa` (legacy BIOS/SeaBIOS PVH boot, serial-first) boots the full kernel and userspace bootstrap; final userspace entry transition still faults (see docs/handoff-qemu-isa.md). Splitting x86 PC interrupt-controller details out of `arch/x86_64` remains open |
 | &#x2B1C; | Platform / targets | Add additional future-facing targets such as real x86 PC hardware and/or `riscv64/virt` once the current platform layering stabilizes |
 
 ## 7. Networking

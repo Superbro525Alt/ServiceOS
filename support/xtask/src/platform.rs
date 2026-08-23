@@ -11,6 +11,7 @@ pub enum BootKind {
     Uefi,
     RaspberryPiFirmware,
     QemuKernel,
+    MultibootElf,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -18,6 +19,7 @@ pub enum ImageKind {
     RawDisk,
     RaspberryPiBundle,
     QemuKernel,
+    MultibootElf,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -25,6 +27,7 @@ pub enum RunKind {
     QemuVirtio,
     QemuArmVirt,
     ManualDeploy,
+    QemuIsa,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -41,7 +44,7 @@ pub struct PlatformSpec {
 }
 
 impl PlatformSpec {
-    const ALL: [Self; 3] = [Self::qemu_virtio(), Self::raspi5(), Self::virt()];
+    const ALL: [Self; 4] = [Self::qemu_virtio(), Self::raspi5(), Self::virt(), Self::qemu_isa()];
 
     pub const fn all() -> &'static [Self] {
         &Self::ALL
@@ -52,6 +55,7 @@ impl PlatformSpec {
             "qemu-virtio" => Ok(Self::qemu_virtio()),
             "raspi5" => Ok(Self::raspi5()),
             "virt" => Ok(Self::virt()),
+            "qemu-isa" => Ok(Self::qemu_isa()),
             _ => Err(Box::new(UnknownPlatform(name.to_owned()))),
         }
     }
@@ -98,6 +102,20 @@ impl PlatformSpec {
         }
     }
 
+    pub const fn qemu_isa() -> Self {
+        Self {
+            name: "qemu-isa",
+            arch: Arch::X86_64,
+            rust_target: Some("x86_64-unknown-none"),
+            kernel_package: Some("serviceos-kernel-qemu-isa"),
+            arch_package: "serviceos-kernel-arch-x86_64",
+            platform_package: "serviceos-platform-qemu-isa",
+            image_kind: ImageKind::MultibootElf,
+            boot_kind: BootKind::MultibootElf,
+            run_kind: RunKind::QemuIsa,
+        }
+    }
+
     pub fn image_root(self, workspace_root: &std::path::Path, profile: &str) -> PathBuf {
         workspace_root
             .join("target")
@@ -122,7 +140,9 @@ impl PlatformSpec {
         let target = self.rust_target?;
         let file_name = match self.boot_kind {
             BootKind::Uefi => format!("{package}.efi"),
-            BootKind::RaspberryPiFirmware | BootKind::QemuKernel => package.to_owned(),
+            BootKind::RaspberryPiFirmware | BootKind::QemuKernel | BootKind::MultibootElf => {
+                package.to_owned()
+            }
         };
 
         Some(

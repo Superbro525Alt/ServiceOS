@@ -1,5 +1,5 @@
-#![no_std]
-#![no_main]
+#![cfg_attr(not(test), no_std)]
+#![cfg_attr(not(test), no_main)]
 
 mod logging;
 mod requests;
@@ -16,6 +16,7 @@ use crate::{
     state::{MAX_PUBLIC_REQUESTS_PER_TURN, MAX_SESSION_MESSAGES_PER_TURN, MAX_SESSIONS, Session},
 };
 
+#[cfg(not(test))]
 rt::entry!(main);
 
 fn main() -> u64 {

@@ -59,16 +59,23 @@ pub(crate) fn poll_control(
                 if let Some(ch) = core::char::from_u32(message.words[0] as u32) {
                     let mut visual_changed = state.selection.is_some();
                     state.selection = None;
-                    if let Some(tab) = crate::tabs::active_tab_mut(state) {
-                        let mut bytes = [0u8; 4];
-                        let encoded = ch.encode_utf8(&mut bytes);
-                        visual_changed |= tab.scroll_offset != 0;
-                        tab.scroll_offset = 0;
-                        let _ =
-                            rt::terminal_session_send_input(tab.session_handle, encoded.as_bytes());
-                        changed |= visual_changed;
-                        did_work = true;
-                    }
+                    let session_handle = {
+                        let Some(tab) = crate::tabs::active_tab_mut(state) else {
+                            continue;
+                        };
+                        let Some(pane) = tab.focused_pane_mut() else {
+                            continue;
+                        };
+                        visual_changed |= pane.scroll_offset != 0;
+                        pane.scroll_offset = 0;
+                        pane.session_handle
+                    };
+                    let mut bytes = [0u8; 4];
+                    let encoded = ch.encode_utf8(&mut bytes);
+                    let _ =
+                        rt::terminal_session_send_input(session_handle, encoded.as_bytes());
+                    changed |= visual_changed;
+                    did_work = true;
                 }
             }
             Ok(()) if message.tag == AppControlTag::Key as u32 && message.word_count >= 2 => {
@@ -98,8 +105,22 @@ pub(crate) fn handle_key_down(
                 crate::tabs::open_new_tab(state)?;
                 return Ok(true);
             }
+            // Close focused pane first; when the tab has no split left it
+            // closes the whole tab.
             KEY_W => {
-                crate::tabs::close_active_tab(state);
+                crate::tabs::close_focused_pane_or_tab(state);
+                return Ok(true);
+            }
+            KEY_E => {
+                crate::tabs::split_active_pane(state, crate::panes::SplitAxis::Columns)?;
+                return Ok(true);
+            }
+            KEY_D => {
+                crate::tabs::split_active_pane(state, crate::panes::SplitAxis::Rows)?;
+                return Ok(true);
+            }
+            KEY_P => {
+                state.profile_index = (state.profile_index + 1) % profiles::PROFILE_COUNT;
                 return Ok(true);
             }
             KEY_C => {
@@ -126,6 +147,34 @@ pub(crate) fn handle_key_down(
         }
     }
 
+    // Pane focus navigation and split-ratio resize.
+    if modifiers & MOD_CTRL != 0 && modifiers & MOD_ALT != 0 {
+        use crate::panes::{PaneDirection, RATIO_STEP_PERMILLE};
+        let direction = match key_code {
+            KEY_LEFT => Some(PaneDirection::Left),
+            KEY_RIGHT => Some(PaneDirection::Right),
+            KEY_UP => Some(PaneDirection::Up),
+            KEY_DOWN => Some(PaneDirection::Down),
+            _ => None,
+        };
+        if let Some(direction) = direction {
+            if modifiers & MOD_SHIFT != 0 {
+                let delta = match direction {
+                    PaneDirection::Left | PaneDirection::Up => -(RATIO_STEP_PERMILLE as i32),
+                    PaneDirection::Right | PaneDirection::Down => RATIO_STEP_PERMILLE as i32,
+                };
+                if let Some(tab) = crate::tabs::active_tab_mut(state) {
+                    if tab.tree.split {
+                        tab.tree.resize_ratio(delta);
+                    }
+                }
+            } else if let Some(tab) = crate::tabs::active_tab_mut(state) {
+                tab.tree.focus_direction(direction);
+            }
+            return Ok(true);
+        }
+    }
+
     if modifiers & MOD_CTRL != 0 && key_code == KEY_TAB {
         if modifiers & MOD_SHIFT != 0 {
             crate::tabs::focus_previous_tab(state);
@@ -137,38 +186,47 @@ pub(crate) fn handle_key_down(
     if modifiers & MOD_CTRL != 0 && key_code == KEY_C {
         state.selection = None;
         if let Some(tab) = crate::tabs::active_tab_mut(state) {
-            tab.scroll_offset = 0;
-            rt::terminal_session_send_input(tab.session_handle, &[0x03])?;
-            return Ok(true);
+            if let Some(pane) = tab.focused_pane_mut() {
+                pane.scroll_offset = 0;
+                rt::terminal_session_send_input(pane.session_handle, &[0x03])?;
+                return Ok(true);
+            }
         }
     }
     if key_code == KEY_PAGE_UP || (modifiers & MOD_SHIFT != 0 && key_code == KEY_UP) {
-        let rows = state.rows;
+        let state_rows = state.rows;
         if let Some(tab) = crate::tabs::active_tab_mut(state) {
-            crate::render::scroll_up_view(
-                tab,
-                if key_code == KEY_PAGE_UP {
-                    rows.saturating_sub(1).max(1)
-                } else {
-                    1
-                },
-                rows,
-            );
-            return Ok(true);
+            let rows = tab
+                .focused_pane_ref()
+                .map(|pane| pane.rows)
+                .unwrap_or(state_rows);
+            if let Some(pane) = tab.focused_pane_mut() {
+                crate::render::scroll_up_view(
+                    pane,
+                    if key_code == KEY_PAGE_UP {
+                        rows.saturating_sub(1).max(1)
+                    } else {
+                        1
+                    },
+                    rows,
+                );
+                return Ok(true);
+            }
         }
     }
     if key_code == KEY_PAGE_DOWN || (modifiers & MOD_SHIFT != 0 && key_code == KEY_DOWN) {
-        let rows = state.rows;
         if let Some(tab) = crate::tabs::active_tab_mut(state) {
-            crate::render::scroll_down_view(
-                tab,
-                if key_code == KEY_PAGE_DOWN {
-                    rows.saturating_sub(1).max(1)
-                } else {
-                    1
-                },
-            );
-            return Ok(true);
+            if let Some(pane) = tab.focused_pane_mut() {
+                crate::render::scroll_down_view(
+                    pane,
+                    if key_code == KEY_PAGE_DOWN {
+                        pane.rows.saturating_sub(1).max(1)
+                    } else {
+                        1
+                    },
+                );
+                return Ok(true);
+            }
         }
     }
 
@@ -176,14 +234,17 @@ pub(crate) fn handle_key_down(
     let Some(tab) = crate::tabs::active_tab_mut(state) else {
         return Ok(false);
     };
-    let visual_changed = tab.scroll_offset != 0;
-    tab.scroll_offset = 0;
+    let Some(pane) = tab.focused_pane_mut() else {
+        return Ok(false);
+    };
+    let visual_changed = pane.scroll_offset != 0;
+    pane.scroll_offset = 0;
     match key_code {
-        KEY_BACKSPACE => rt::terminal_session_send_input(tab.session_handle, &[0x7f])?,
-        KEY_UP => rt::terminal_session_send_input(tab.session_handle, b"\x1b[A")?,
-        KEY_DOWN => rt::terminal_session_send_input(tab.session_handle, b"\x1b[B")?,
-        KEY_RIGHT => rt::terminal_session_send_input(tab.session_handle, b"\x1b[C")?,
-        KEY_LEFT => rt::terminal_session_send_input(tab.session_handle, b"\x1b[D")?,
+        KEY_BACKSPACE => rt::terminal_session_send_input(pane.session_handle, &[0x7f])?,
+        KEY_UP => rt::terminal_session_send_input(pane.session_handle, b"\x1b[A")?,
+        KEY_DOWN => rt::terminal_session_send_input(pane.session_handle, b"\x1b[B")?,
+        KEY_RIGHT => rt::terminal_session_send_input(pane.session_handle, b"\x1b[C")?,
+        KEY_LEFT => rt::terminal_session_send_input(pane.session_handle, b"\x1b[D")?,
         _ => return Ok(false),
     }
     Ok(visual_changed)
@@ -198,16 +259,26 @@ fn handle_pointer_down(state: &mut TerminalState, x: i32, y: i32) -> bool {
         }
         return false;
     }
-    let Some(cell) = crate::render::pointer_to_cell(state, x, y) else {
+    let Some((pane_index, cell)) = crate::render::pointer_to_cell(state, x, y) else {
         state.selection = None;
         return false;
     };
+    // Focus follows click.
+    let focus_changed = state
+        .tabs
+        .get(state.active_tab)
+        .map(|tab| tab.tree.focused != pane_index)
+        .unwrap_or(false);
+    if let Some(tab) = crate::tabs::active_tab_mut(state) {
+        tab.tree.focused = pane_index.min(MAX_PANES_PER_TAB - 1);
+    }
     state.selection = Some(Selection {
+        pane: pane_index,
         anchor: cell,
         focus: cell,
         dragging: true,
     });
-    true
+    focus_changed
 }
 
 fn handle_pointer_move(state: &mut TerminalState, x: i32, y: i32) -> bool {
@@ -217,9 +288,12 @@ fn handle_pointer_move(state: &mut TerminalState, x: i32, y: i32) -> bool {
     if !selection.dragging {
         return false;
     }
-    let Some(cell) = crate::render::pointer_to_cell(state, x, y) else {
+    let Some((pane_index, cell)) = crate::render::pointer_to_cell(state, x, y) else {
         return false;
     };
+    if pane_index != selection.pane {
+        return false;
+    }
     selection.focus = cell;
     state.selection = Some(selection);
     true
@@ -229,8 +303,10 @@ fn handle_pointer_up(state: &mut TerminalState, x: i32, y: i32) -> bool {
     let Some(mut selection) = state.selection else {
         return false;
     };
-    if let Some(cell) = crate::render::pointer_to_cell(state, x, y) {
-        selection.focus = cell;
+    if let Some((pane_index, cell)) = crate::render::pointer_to_cell(state, x, y) {
+        if pane_index == selection.pane {
+            selection.focus = cell;
+        }
     }
     selection.dragging = false;
     state.selection = Some(selection);
@@ -239,12 +315,18 @@ fn handle_pointer_up(state: &mut TerminalState, x: i32, y: i32) -> bool {
 }
 
 fn handle_pointer_scroll(state: &mut TerminalState, delta_y: i32) {
-    let rows = state.rows;
+    let state_rows = state.rows;
     if let Some(tab) = crate::tabs::active_tab_mut(state) {
-        if delta_y > 0 {
-            crate::render::scroll_up_view(tab, delta_y as usize, rows);
-        } else if delta_y < 0 {
-            crate::render::scroll_down_view(tab, (-delta_y) as usize);
+        let rows = tab
+            .focused_pane_ref()
+            .map(|pane| pane.rows)
+            .unwrap_or(state_rows);
+        if let Some(pane) = tab.focused_pane_mut() {
+            if delta_y > 0 {
+                crate::render::scroll_up_view(pane, delta_y as usize, rows);
+            } else if delta_y < 0 {
+                crate::render::scroll_down_view(pane, (-delta_y) as usize);
+            }
         }
     }
 }

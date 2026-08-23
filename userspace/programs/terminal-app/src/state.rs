@@ -7,9 +7,10 @@ pub(crate) const BUFFER_HEIGHT: u32 = 768;
 pub(crate) const BUFFER_BYTES: usize = BUFFER_WIDTH as usize * BUFFER_HEIGHT as usize * 4;
 pub(crate) const SURFACE_BUFFER_SLOTS: usize = 2;
 pub(crate) const MAX_TABS: usize = 4;
+pub(crate) const MAX_PANES_PER_TAB: usize = 2;
 pub(crate) const MAX_COLS: usize = 120;
 pub(crate) const MAX_SCROLLBACK_LINES: usize = 256;
-pub(crate) const MAX_OUTPUT_MESSAGES_PER_TAB_PER_TURN: usize = 8;
+pub(crate) const MAX_OUTPUT_MESSAGES_PER_PANE_PER_TURN: usize = 8;
 pub(crate) const CLIPBOARD_BYTES: usize = 1024;
 pub(crate) const MAX_TITLE_BYTES: usize = 24;
 pub(crate) const MAX_OSC_BYTES: usize = 64;
@@ -25,7 +26,10 @@ pub(crate) const KEY_3: u32 = 4;
 pub(crate) const KEY_BACKSPACE: u32 = 14;
 pub(crate) const KEY_TAB: u32 = 15;
 pub(crate) const KEY_W: u32 = 17;
+pub(crate) const KEY_E: u32 = 18;
 pub(crate) const KEY_T: u32 = 20;
+pub(crate) const KEY_P: u32 = 25;
+pub(crate) const KEY_D: u32 = 32;
 pub(crate) const KEY_C: u32 = 46;
 pub(crate) const KEY_V: u32 = 47;
 pub(crate) const KEY_UP: u32 = 103;
@@ -34,8 +38,9 @@ pub(crate) const KEY_LEFT: u32 = 105;
 pub(crate) const KEY_RIGHT: u32 = 106;
 pub(crate) const KEY_DOWN: u32 = 108;
 pub(crate) const KEY_PAGE_DOWN: u32 = 109;
-pub(crate) const MOD_CTRL: u32 = 1 << 2;
 pub(crate) const MOD_SHIFT: u32 = 1 << 0;
+pub(crate) const MOD_ALT: u32 = 1 << 1;
+pub(crate) const MOD_CTRL: u32 = 1 << 2;
 pub(crate) const PIXEL_STRIDE: usize = BUFFER_WIDTH as usize;
 
 pub(crate) const COLOR_DEFAULT: u8 = 0;
@@ -61,8 +66,15 @@ impl Cell {
     }
 }
 
-pub(crate) struct GlobalCells(UnsafeCell<[[[Cell; MAX_COLS]; MAX_SCROLLBACK_LINES]; MAX_TABS]>);
-pub(crate) struct GlobalWraps(UnsafeCell<[[bool; MAX_SCROLLBACK_LINES]; MAX_TABS]>);
+/// Grid slots are keyed by pane, not tab: slot = tab * MAX_PANES_PER_TAB + pane.
+pub(crate) const fn grid_slot(tab_index: usize, pane_index: usize) -> usize {
+    tab_index * MAX_PANES_PER_TAB + pane_index
+}
+
+pub(crate) const GRID_SLOTS: usize = MAX_TABS * MAX_PANES_PER_TAB;
+
+pub(crate) struct GlobalCells(UnsafeCell<[[[Cell; MAX_COLS]; MAX_SCROLLBACK_LINES]; GRID_SLOTS]>);
+pub(crate) struct GlobalWraps(UnsafeCell<[[bool; MAX_SCROLLBACK_LINES]; GRID_SLOTS]>);
 pub(crate) struct ReflowCells(UnsafeCell<[[Cell; MAX_COLS]; MAX_SCROLLBACK_LINES]>);
 pub(crate) struct ReflowWraps(UnsafeCell<[bool; MAX_SCROLLBACK_LINES]>);
 
@@ -74,29 +86,29 @@ unsafe impl Sync for ReflowWraps {}
 impl GlobalCells {
     pub(crate) const fn new() -> Self {
         Self(UnsafeCell::new(
-            [[[Cell::blank(); MAX_COLS]; MAX_SCROLLBACK_LINES]; MAX_TABS],
+            [[[Cell::blank(); MAX_COLS]; MAX_SCROLLBACK_LINES]; GRID_SLOTS],
         ))
     }
 
-    pub(crate) unsafe fn tab(&self, index: usize) -> &[[Cell; MAX_COLS]; MAX_SCROLLBACK_LINES] {
-        unsafe { &(*self.0.get())[index] }
+    pub(crate) unsafe fn pane(&self, slot: usize) -> &[[Cell; MAX_COLS]; MAX_SCROLLBACK_LINES] {
+        unsafe { &(*self.0.get())[slot] }
     }
 
-    pub(crate) unsafe fn tab_mut(
+    pub(crate) unsafe fn pane_mut(
         &self,
-        index: usize,
+        slot: usize,
     ) -> &mut [[Cell; MAX_COLS]; MAX_SCROLLBACK_LINES] {
-        unsafe { &mut (*self.0.get())[index] }
+        unsafe { &mut (*self.0.get())[slot] }
     }
 }
 
 impl GlobalWraps {
     pub(crate) const fn new() -> Self {
-        Self(UnsafeCell::new([[false; MAX_SCROLLBACK_LINES]; MAX_TABS]))
+        Self(UnsafeCell::new([[false; MAX_SCROLLBACK_LINES]; GRID_SLOTS]))
     }
 
-    pub(crate) unsafe fn tab_mut(&self, index: usize) -> &mut [bool; MAX_SCROLLBACK_LINES] {
-        unsafe { &mut (*self.0.get())[index] }
+    pub(crate) unsafe fn wraps_mut(&self, slot: usize) -> &mut [bool; MAX_SCROLLBACK_LINES] {
+        unsafe { &mut (*self.0.get())[slot] }
     }
 }
 
@@ -190,8 +202,13 @@ pub(crate) struct TerminalState {
     pub(crate) clipboard_handle: rt::Handle,
     pub(crate) columns: usize,
     pub(crate) rows: usize,
+    pub(crate) content_x: usize,
+    pub(crate) content_y: usize,
+    pub(crate) content_w: usize,
+    pub(crate) content_h: usize,
     pub(crate) active_tab: usize,
     pub(crate) theme_index: usize,
+    pub(crate) profile_index: usize,
     pub(crate) tabs: [TerminalTab; MAX_TABS],
     pub(crate) selection: Option<Selection>,
     pub(crate) clipboard: [u8; CLIPBOARD_BYTES],
@@ -201,8 +218,44 @@ pub(crate) struct TerminalState {
 #[derive(Clone, Copy)]
 pub(crate) struct TerminalTab {
     pub(crate) occupied: bool,
+    pub(crate) profile_index: usize,
+    pub(crate) pane_count: usize,
+    pub(crate) tree: crate::panes::PaneTree,
+    pub(crate) panes: [TerminalPane; MAX_PANES_PER_TAB],
+}
+
+impl TerminalTab {
+    pub(crate) const fn empty() -> Self {
+        Self {
+            occupied: false,
+            profile_index: 0,
+            pane_count: 0,
+            tree: crate::panes::PaneTree::single(),
+            panes: [TerminalPane::empty(); MAX_PANES_PER_TAB],
+        }
+    }
+
+    pub(crate) fn focused_pane_mut(&mut self) -> Option<&mut TerminalPane> {
+        if !self.occupied {
+            return None;
+        }
+        self.panes.get_mut(self.tree.focused.min(self.pane_count - 1))
+    }
+
+    pub(crate) fn focused_pane_ref(&self) -> Option<&TerminalPane> {
+        if !self.occupied {
+            return None;
+        }
+        self.panes.get(self.tree.focused.min(self.pane_count - 1))
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct TerminalPane {
     pub(crate) session_handle: rt::Handle,
     pub(crate) session_id: u32,
+    pub(crate) columns: usize,
+    pub(crate) rows: usize,
     pub(crate) line_count: usize,
     pub(crate) cursor_line: usize,
     pub(crate) cursor_col: usize,
@@ -224,12 +277,13 @@ pub(crate) struct TerminalTab {
     pub(crate) cursor_visible: bool,
 }
 
-impl TerminalTab {
+impl TerminalPane {
     pub(crate) const fn empty() -> Self {
         Self {
-            occupied: false,
             session_handle: rt::INVALID_HANDLE,
             session_id: 0,
+            columns: 0,
+            rows: 0,
             line_count: 1,
             cursor_line: 0,
             cursor_col: 0,
@@ -251,6 +305,13 @@ impl TerminalTab {
             cursor_visible: true,
         }
     }
+
+    pub(crate) fn opened(session_handle: rt::Handle, session_id: u32) -> Self {
+        let mut pane = Self::empty();
+        pane.session_handle = session_handle;
+        pane.session_id = session_id;
+        pane
+    }
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -269,6 +330,7 @@ pub(crate) struct CellPos {
 
 #[derive(Clone, Copy)]
 pub(crate) struct Selection {
+    pub(crate) pane: usize,
     pub(crate) anchor: CellPos,
     pub(crate) focus: CellPos,
     pub(crate) dragging: bool,

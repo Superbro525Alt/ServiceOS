@@ -22,7 +22,7 @@ pub(crate) fn render(
         theme.bg,
     );
 
-    draw_titlebar(bytes, width, theme);
+    draw_titlebar(bytes, width, state);
     draw_tab_strip(bytes, width, state, theme);
     draw_terminal_contents(bytes, width, height, state, theme);
     presenter.present(
@@ -32,7 +32,8 @@ pub(crate) fn render(
     )
 }
 
-fn draw_titlebar(bytes: &mut [u8], width: usize, theme: &Theme) {
+fn draw_titlebar(bytes: &mut [u8], width: usize, state: &TerminalState) {
+    let theme = &THEMES[state.theme_index];
     let close_x = width as i32 - ui::WINDOW_BUTTON_RIGHT_MARGIN - ui::WINDOW_BUTTON_SIZE as i32;
     let minimize_x = close_x - ui::WINDOW_BUTTON_GAP - ui::WINDOW_BUTTON_SIZE as i32;
     let maximize_x = minimize_x - ui::WINDOW_BUTTON_GAP - ui::WINDOW_BUTTON_SIZE as i32;
@@ -85,7 +86,10 @@ fn draw_titlebar(bytes: &mut [u8], width: usize, theme: &Theme) {
         "X",
     );
     rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, 10, 9, ui::TEXT_PRIMARY, "TERMINAL");
-    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, 76, 9, theme.muted, theme.name);
+    let profile =
+        profiles::DEFAULT_PROFILES[state.profile_index % profiles::PROFILE_COUNT].name_str();
+    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, 76, 9, ui::TEXT_PRIMARY, profile);
+    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, 140, 9, theme.muted, theme.name);
 }
 
 fn draw_tab_strip(bytes: &mut [u8], width: usize, state: &TerminalState, theme: &Theme) {
@@ -116,10 +120,18 @@ fn draw_tab_strip(bytes: &mut [u8], width: usize, state: &TerminalState, theme: 
             TAB_STRIP_HEIGHT.saturating_sub(2),
             fill,
         );
-        if state.tabs[index].title_len > 0 {
-            let text =
-                core::str::from_utf8(&state.tabs[index].title[..state.tabs[index].title_len])
-                    .unwrap_or("TAB");
+        let tab = &state.tabs[index];
+        let focused_pane = tab
+            .tree
+            .focused
+            .min(tab.pane_count.saturating_sub(1));
+        let pane = &tab.panes[focused_pane];
+        let text = if pane.title_len > 0 {
+            core::str::from_utf8(&pane.title[..pane.title_len]).unwrap_or("TAB")
+        } else {
+            ""
+        };
+        if !text.is_empty() {
             rt::draw_text_rgba8888(
                 bytes,
                 PIXEL_STRIDE,
@@ -130,17 +142,27 @@ fn draw_tab_strip(bytes: &mut [u8], width: usize, state: &TerminalState, theme: 
             );
         } else {
             let mut label = rt::FixedLogBuffer::<16>::new();
-            let _ = write!(&mut label, "SHELL {}", state.tabs[index].session_id);
-            if let Ok(text) = core::str::from_utf8(label.as_bytes()) {
+            let _ = write!(&mut label, "SHELL {}", pane.session_id);
+            if let Ok(label) = core::str::from_utf8(label.as_bytes()) {
                 rt::draw_text_rgba8888(
                     bytes,
                     PIXEL_STRIDE,
                     (x + 8) as i32,
                     (strip_y + 4) as i32,
                     ui::TEXT_PRIMARY,
-                    text,
+                    label,
                 );
             }
+        }
+        if tab.tree.split {
+            rt::draw_text_rgba8888(
+                bytes,
+                PIXEL_STRIDE,
+                (x + TAB_WIDTH.saturating_sub(12)) as i32,
+                (strip_y + 4) as i32,
+                theme.bg,
+                "|",
+            );
         }
     }
 }
@@ -155,30 +177,68 @@ fn draw_terminal_contents(
     let Some(tab) = crate::tabs::active_tab_ref(state) else {
         return;
     };
-    let start_x = CONTENT_PADDING_X;
-    let start_y = ui::TITLEBAR_HEIGHT as usize + TAB_STRIP_HEIGHT + CONTENT_PADDING_Y;
-    let visible_rows = state.rows.min(MAX_SCROLLBACK_LINES);
-    let first_line = first_visible_line(tab, visible_rows);
-    let lines = unsafe { GRIDS.tab(state.active_tab) };
+    let area = crate::panes::content_area(state);
+    let rects = crate::panes::pane_rects(area, &tab.tree);
+
+    for pane_index in 0..tab.pane_count {
+        let slot = grid_slot(state.active_tab, pane_index);
+        draw_pane(
+            bytes,
+            width,
+            height,
+            state,
+            theme,
+            tab,
+            pane_index,
+            slot,
+            rects[pane_index],
+        );
+    }
+    if tab.tree.split {
+        let divider = rects[2];
+        fill_rect(bytes, divider.x, divider.y, divider.w, divider.h, theme.panel_alt);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_pane(
+    bytes: &mut [u8],
+    width: usize,
+    height: usize,
+    state: &TerminalState,
+    theme: &Theme,
+    tab: &TerminalTab,
+    pane_index: usize,
+    slot: usize,
+    rect: crate::panes::PixelRect,
+) {
+    let Some(pane) = tab.panes.get(pane_index).filter(|_| tab.occupied) else {
+        return;
+    };
+    // Pane backdrop keeps split regions visually distinct.
+    fill_rect(bytes, rect.x, rect.y, rect.w, rect.h, theme.panel);
+    let visible_rows = pane.rows.min(MAX_SCROLLBACK_LINES);
+    let first_line = first_visible_line(pane, visible_rows);
+    let lines = unsafe { GRIDS.pane(slot) };
 
     for row in 0..visible_rows {
         let grid_line = first_line + row;
         if grid_line >= MAX_SCROLLBACK_LINES {
             break;
         }
-        let y = start_y + row * CELL_HEIGHT;
-        if y + CELL_HEIGHT >= height {
+        let y = rect.y + row * CELL_HEIGHT;
+        if y + CELL_HEIGHT >= rect.y.saturating_add(rect.h) || y + CELL_HEIGHT >= height {
             break;
         }
-        for col in 0..state.columns {
-            let x = start_x + col * CELL_WIDTH;
-            if x + CELL_WIDTH >= width {
+        for col in 0..pane.columns {
+            let x = rect.x + col * CELL_WIDTH;
+            if x + CELL_WIDTH >= rect.x.saturating_add(rect.w) || x + CELL_WIDTH >= width {
                 break;
             }
             let cell = lines[grid_line][col];
             let (fg, bg) = resolve_cell_colors(cell, theme);
-            let highlight = selection_contains(state.selection, grid_line, col);
-            if highlight || bg != theme.bg {
+            let highlight = selection_contains(state.selection, pane_index, grid_line, col);
+            if highlight || bg != theme.panel {
                 fill_rect(
                     bytes,
                     x,
@@ -201,36 +261,41 @@ fn draw_terminal_contents(
         }
     }
 
-    if tab.scroll_offset > 0 {
+    let is_focused = tab.tree.focused == pane_index;
+    if is_focused && pane.scroll_offset > 0 && rect.w > 64 {
         let mut status = rt::FixedLogBuffer::<32>::new();
-        let _ = write!(&mut status, "SCROLL -{}", tab.scroll_offset);
+        let _ = write!(&mut status, "SCROLL -{}", pane.scroll_offset);
         if let Ok(label) = core::str::from_utf8(status.as_bytes()) {
             let label_width = label.len() * rt::BITMAP_GLYPH_ADVANCE;
-            let label_x = width.saturating_sub(label_width + CONTENT_PADDING_X);
+            let label_x = rect.x.saturating_add(rect.w.saturating_sub(label_width + 6));
             rt::draw_text_rgba8888(
                 bytes,
                 PIXEL_STRIDE,
                 label_x as i32,
-                start_y as i32,
+                rect.y as i32,
                 theme.muted,
                 label,
             );
         }
     }
 
-    if state.focused && tab.scroll_offset == 0 && tab.cursor_visible {
-        let cursor_visible_row = tab.cursor_line.saturating_sub(first_line);
-        if cursor_visible_row < visible_rows && tab.cursor_col < state.columns {
-            let cursor_x = start_x + tab.cursor_col * CELL_WIDTH;
-            let cursor_y = start_y + cursor_visible_row * CELL_HEIGHT;
-            fill_rect(
-                bytes,
-                cursor_x,
-                cursor_y + CELL_HEIGHT - 2,
-                CELL_WIDTH,
-                2,
-                ui::ACCENT,
-            );
+    if state.focused && is_focused && pane.scroll_offset == 0 && pane.cursor_visible {
+        let cursor_visible_row = pane.cursor_line.saturating_sub(first_line);
+        if cursor_visible_row < visible_rows && pane.cursor_col < pane.columns {
+            let cursor_x = rect.x + pane.cursor_col * CELL_WIDTH;
+            let cursor_y = rect.y + cursor_visible_row * CELL_HEIGHT;
+            if cursor_x + CELL_WIDTH < width
+                && cursor_y < rect.y.saturating_add(rect.h)
+            {
+                fill_rect(
+                    bytes,
+                    cursor_x,
+                    cursor_y + CELL_HEIGHT - 2,
+                    CELL_WIDTH,
+                    2,
+                    ui::ACCENT,
+                );
+            }
         }
     }
 }
@@ -255,10 +320,18 @@ fn resolve_cell_colors(cell: Cell, theme: &Theme) -> (u32, u32) {
     (fg, bg)
 }
 
-fn selection_contains(selection: Option<Selection>, line: usize, col: usize) -> bool {
+fn selection_contains(
+    selection: Option<Selection>,
+    pane_index: usize,
+    line: usize,
+    col: usize,
+) -> bool {
     let Some(selection) = selection else {
         return false;
     };
+    if selection.pane != pane_index {
+        return false;
+    }
     let (start, end) = ordered_selection(selection);
     if line < start.line || line > end.line {
         return false;
@@ -286,29 +359,29 @@ fn ordered_selection(selection: Selection) -> (CellPos, CellPos) {
     }
 }
 
-fn first_visible_line(tab: &TerminalTab, visible_rows: usize) -> usize {
-    let scroll_offset = tab
+fn first_visible_line(pane: &TerminalPane, visible_rows: usize) -> usize {
+    let scroll_offset = pane
         .scroll_offset
-        .min(tab.line_count.saturating_sub(visible_rows));
-    tab.line_count.saturating_sub(visible_rows + scroll_offset)
+        .min(pane.line_count.saturating_sub(visible_rows));
+    pane.line_count.saturating_sub(visible_rows + scroll_offset)
 }
 
-pub(crate) fn clamp_scroll_offset(tab: &mut TerminalTab, rows: usize) {
-    let max_offset = tab
+pub(crate) fn clamp_scroll_offset(pane: &mut TerminalPane, rows: usize) {
+    let max_offset = pane
         .line_count
         .saturating_sub(rows.min(MAX_SCROLLBACK_LINES));
-    tab.scroll_offset = tab.scroll_offset.min(max_offset);
+    pane.scroll_offset = pane.scroll_offset.min(max_offset);
 }
 
-pub(crate) fn scroll_up_view(tab: &mut TerminalTab, lines: usize, rows: usize) {
-    let max_offset = tab
+pub(crate) fn scroll_up_view(pane: &mut TerminalPane, lines: usize, rows: usize) {
+    let max_offset = pane
         .line_count
         .saturating_sub(rows.min(MAX_SCROLLBACK_LINES));
-    tab.scroll_offset = tab.scroll_offset.saturating_add(lines).min(max_offset);
+    pane.scroll_offset = pane.scroll_offset.saturating_add(lines).min(max_offset);
 }
 
-pub(crate) fn scroll_down_view(tab: &mut TerminalTab, lines: usize) {
-    tab.scroll_offset = tab.scroll_offset.saturating_sub(lines);
+pub(crate) fn scroll_down_view(pane: &mut TerminalPane, lines: usize) {
+    pane.scroll_offset = pane.scroll_offset.saturating_sub(lines);
 }
 
 pub(crate) fn copy_selection(state: &mut TerminalState) {
@@ -323,7 +396,14 @@ fn copy_selection_into_local_buffer(state: &mut TerminalState) -> usize {
         state.clipboard_len = 0;
         return 0;
     };
-    let lines = unsafe { GRIDS.tab(state.active_tab) };
+    let slot = grid_slot(state.active_tab, selection.pane.min(MAX_PANES_PER_TAB - 1));
+    let lines = unsafe { GRIDS.pane(slot) };
+    let columns = state
+        .tabs
+        .get(state.active_tab)
+        .and_then(|tab| tab.panes.get(selection.pane))
+        .map(|pane| pane.columns)
+        .unwrap_or(state.columns);
     let (start, end) = ordered_selection(selection);
     let mut len = 0usize;
     for line in start.line..=end.line {
@@ -331,7 +411,7 @@ fn copy_selection_into_local_buffer(state: &mut TerminalState) -> usize {
         let end_col = if line == end.line {
             end.col
         } else {
-            state.columns.saturating_sub(1)
+            columns.saturating_sub(1)
         };
         for col in start_col..=end_col.min(MAX_COLS.saturating_sub(1)) {
             if len >= state.clipboard.len() {
@@ -365,8 +445,11 @@ pub(crate) fn paste_clipboard(state: &mut TerminalState) -> rt::Result<()> {
             let Some(tab) = crate::tabs::active_tab_mut(state) else {
                 return Ok(());
             };
-            tab.scroll_offset = 0;
-            tab.session_handle
+            let Some(pane) = tab.focused_pane_mut() else {
+                return Ok(());
+            };
+            pane.scroll_offset = 0;
+            pane.session_handle
         };
         state.selection = None;
         rt::terminal_session_send_input(session_handle, &state.clipboard[..len])?;
@@ -387,20 +470,30 @@ pub(crate) fn tab_strip_hit_index(x: i32, y: i32) -> Option<usize> {
     (index < MAX_TABS).then_some(index)
 }
 
-pub(crate) fn pointer_to_cell(state: &TerminalState, x: i32, y: i32) -> Option<CellPos> {
+/// Map a pointer position to the containing pane plus its grid cell.
+pub(crate) fn pointer_to_cell(
+    state: &TerminalState,
+    x: i32,
+    y: i32,
+) -> Option<(usize, CellPos)> {
     let tab = crate::tabs::active_tab_ref(state)?;
-    let start_x = CONTENT_PADDING_X as i32;
-    let start_y = (ui::TITLEBAR_HEIGHT as usize + TAB_STRIP_HEIGHT + CONTENT_PADDING_Y) as i32;
-    if x < start_x || y < start_y {
-        return None;
+    let area = crate::panes::content_area(state);
+    let rects = crate::panes::pane_rects(area, &tab.tree);
+    for pane_index in 0..tab.pane_count {
+        let rect = rects[pane_index];
+        if !rect.contains(x, y) {
+            continue;
+        }
+        let pane = tab.panes.get(pane_index)?;
+        let col = ((x - rect.x as i32) as usize) / CELL_WIDTH;
+        let row = ((y - rect.y as i32) as usize) / CELL_HEIGHT;
+        if col >= pane.columns || row >= pane.rows {
+            return None;
+        }
+        let line = first_visible_line(pane, pane.rows.min(MAX_SCROLLBACK_LINES)) + row;
+        return Some((pane_index, CellPos { line, col }));
     }
-    let col = ((x - start_x) as usize) / CELL_WIDTH;
-    let row = ((y - start_y) as usize) / CELL_HEIGHT;
-    if col >= state.columns || row >= state.rows {
-        return None;
-    }
-    let line = first_visible_line(tab, state.rows.min(MAX_SCROLLBACK_LINES)) + row;
-    Some(CellPos { line, col })
+    None
 }
 
 fn fill_rect(bytes: &mut [u8], x: usize, y: usize, width: usize, height: usize, rgb: u32) {

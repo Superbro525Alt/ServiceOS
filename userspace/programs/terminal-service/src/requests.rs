@@ -3,7 +3,9 @@ use serviceos_userspace_runtime as rt;
 
 use crate::{
     session::{handle_input_byte, initialize_session, release_session, unpack_bytes},
-    state::{MAX_INLINE_BYTES, MAX_SESSIONS, Session},
+    state::{
+        MAX_INLINE_BYTES, MAX_SESSIONS, Session, SessionProfile, PROFILE_WIRE_LEN,
+    },
 };
 
 pub(crate) fn handle_public_request(
@@ -21,8 +23,21 @@ pub(crate) fn handle_public_request(
             let mut reply = RawMessage::empty(TerminalTag::SessionOpenReply as u32);
             reply.word_count = 4;
             reply.words[0] = TerminalStatus::Busy as u32 as u64;
+            // Optional session-profile payload: words[0] = byte length, then
+            // packed wire bytes. Older clients send no words.
+            let profile = if request.word_count >= 1 {
+                let len = (request.words[0] as usize).min(PROFILE_WIRE_LEN);
+                let mut wire = [0u8; PROFILE_WIRE_LEN];
+                match unpack_bytes(&request.words[1..request.word_count as usize], len, &mut wire)
+                {
+                    Ok(()) => SessionProfile::from_wire(&wire),
+                    Err(_) => None,
+                }
+            } else {
+                None
+            };
             if let Some(session) = sessions.iter_mut().find(|session| !session.occupied) {
-                let pair = initialize_session(bootstrap, session, next_session_id)?;
+                let pair = initialize_session(bootstrap, session, next_session_id, profile)?;
 
                 reply.words[0] = TerminalStatus::Ok as u32 as u64;
                 reply.words[1] = session.id as u64;

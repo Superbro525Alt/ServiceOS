@@ -8,7 +8,7 @@ use serviceos_userspace_runtime as rt;
 
 use crate::{
     logging::emit_terminal_log,
-    state::{EscapeState, MAX_HISTORY, MAX_INLINE_BYTES, Session},
+    state::{EscapeState, MAX_HISTORY, MAX_INLINE_BYTES, Session, SessionProfile},
 };
 
 pub(crate) fn handle_input_byte(
@@ -19,8 +19,7 @@ pub(crate) fn handle_input_byte(
     if byte == 0x03 {
         terminal_output_write(session.endpoint, "^C\r\n")?;
         clear_line(session);
-        terminal_output_write(session.endpoint, SHELL_PROMPT)?;
-        return Ok(());
+        return write_session_prompt(session.endpoint, session);
     }
 
     match session.escape_state {
@@ -72,7 +71,7 @@ pub(crate) fn handle_input_byte(
                 }
             }
             clear_line(session);
-            terminal_output_write(session.endpoint, SHELL_PROMPT)?;
+            write_session_prompt(session.endpoint, session)?;
         }
         0x08 | 0x7f => backspace(session)?,
         0x20..=0x7e => insert_byte(session, byte)?,
@@ -85,6 +84,7 @@ pub(crate) fn initialize_session(
     bootstrap: rt::Handle,
     session: &mut Session,
     next_session_id: &mut u32,
+    profile: Option<SessionProfile>,
 ) -> rt::Result<rt::HandlePair> {
     let pair = rt::channel_create()?;
     session.endpoint = pair.first;
@@ -97,6 +97,7 @@ pub(crate) fn initialize_session(
     session.history_view = None;
     session.history_stash_len = 0;
     session.escape_state = EscapeState::None;
+    session.profile = profile.unwrap_or(SessionProfile::empty());
     session.occupied = true;
     let _ = emit_terminal_log(
         bootstrap,
@@ -107,8 +108,59 @@ pub(crate) fn initialize_session(
     );
     let _ = terminal_output_write(pair.first, SHELL_READY_TEXT);
     let _ = terminal_output_write(pair.first, "\r\n");
-    let _ = terminal_output_write(pair.first, SHELL_PROMPT);
+    write_profile_banner(pair.first, &session.profile)?;
+    write_session_prompt(pair.first, session)?;
     Ok(pair)
+}
+
+/// Echo the session-profile launch metadata (name/program/args/env/cwd) so the
+/// operator can see which profile the pane was opened with.
+fn write_profile_banner(endpoint: rt::Handle, profile: &SessionProfile) -> rt::Result<()> {
+    if profile.name_len > 0 {
+        let mut line = rt::FixedLogBuffer::<48>::new();
+        let name = core::str::from_utf8(&profile.name[..profile.name_len]).unwrap_or("");
+        let _ = write!(&mut line, "[profile {}]", name);
+        terminal_output_write(endpoint, core::str::from_utf8(line.as_bytes()).unwrap_or(""))?;
+        terminal_output_write(endpoint, "\r\n")?;
+    }
+    if profile.program_len > 0 {
+        let mut line = rt::FixedLogBuffer::<64>::new();
+        let program = core::str::from_utf8(&profile.program[..profile.program_len]).unwrap_or("");
+        let args = core::str::from_utf8(&profile.args[..profile.args_len]).unwrap_or("");
+        let _ = write!(&mut line, "shell: {} {}", program, args);
+        terminal_output_write(endpoint, core::str::from_utf8(line.as_bytes()).unwrap_or(""))?;
+        terminal_output_write(endpoint, "\r\n")?;
+    }
+    if profile.env_len > 0 {
+        let mut line = rt::FixedLogBuffer::<64>::new();
+        let env = core::str::from_utf8(&profile.env[..profile.env_len]).unwrap_or("");
+        let _ = write!(&mut line, "env: {}", env);
+        terminal_output_write(endpoint, core::str::from_utf8(line.as_bytes()).unwrap_or(""))?;
+        terminal_output_write(endpoint, "\r\n")?;
+    }
+    if profile.cwd_len > 0 {
+        let mut line = rt::FixedLogBuffer::<48>::new();
+        let cwd = core::str::from_utf8(&profile.cwd[..profile.cwd_len]).unwrap_or("");
+        let _ = write!(&mut line, "cwd: {}", cwd);
+        terminal_output_write(endpoint, core::str::from_utf8(line.as_bytes()).unwrap_or(""))?;
+        terminal_output_write(endpoint, "\r\n")?;
+    }
+    Ok(())
+}
+
+/// Prompt reflects the profile working directory when one is set.
+fn write_session_prompt(endpoint: rt::Handle, session: &Session) -> rt::Result<()> {
+    let profile = &session.profile;
+    if profile.cwd_len == 0 {
+        return terminal_output_write(endpoint, SHELL_PROMPT);
+    }
+    let mut buffer = rt::FixedLogBuffer::<64>::new();
+    let cwd = core::str::from_utf8(&profile.cwd[..profile.cwd_len]).unwrap_or("");
+    let _ = write!(&mut buffer, "{}{} ", cwd, SHELL_PROMPT);
+    terminal_output_write(
+        endpoint,
+        core::str::from_utf8(buffer.as_bytes()).unwrap_or(SHELL_PROMPT),
+    )
 }
 
 pub(crate) fn release_session(bootstrap: rt::Handle, session: &mut Session) {
@@ -283,7 +335,7 @@ fn history_slot(session: &Session, order_index: usize) -> usize {
 
 fn redraw_input_line(session: &Session) -> rt::Result<()> {
     terminal_output_write(session.endpoint, "\r\x1b[2K")?;
-    terminal_output_write(session.endpoint, SHELL_PROMPT)?;
+    write_session_prompt(session.endpoint, session)?;
     if session.line_len > 0 {
         let text = core::str::from_utf8(&session.line[..session.line_len])
             .map_err(|_| rt::Error::InvalidArgument)?;

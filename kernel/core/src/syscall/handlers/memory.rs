@@ -207,7 +207,11 @@ pub(crate) fn handle_memory_unmap(context: &SyscallContext) -> SyscallReturn {
         return SyscallReturn::error(SyscallError::PermissionDenied);
     }
 
-    match (hooks.unmap_memory_range)(address_space_id, crate::memory::VirtualAddress::new(address as u64), page_count) {
+    match (hooks.unmap_memory_range)(
+        address_space_id,
+        crate::memory::VirtualAddress::new(address as u64),
+        page_count,
+    ) {
         Ok(()) => SyscallReturn::success(0),
         Err(crate::memory::MappingError::AddressAlignment) => {
             SyscallReturn::error(SyscallError::InvalidArgument)
@@ -280,7 +284,12 @@ pub(crate) fn handle_memory_protect(context: &SyscallContext) -> SyscallReturn {
         flags |= MappingFlags::USER_ACCESSIBLE;
     }
 
-    match (hooks.update_memory_protection)(address_space_id, crate::memory::VirtualAddress::new(address as u64), page_count, flags) {
+    match (hooks.update_memory_protection)(
+        address_space_id,
+        crate::memory::VirtualAddress::new(address as u64),
+        page_count,
+        flags,
+    ) {
         Ok(()) => SyscallReturn::success(0),
         Err(crate::memory::MappingError::AddressAlignment) => {
             SyscallReturn::error(SyscallError::InvalidArgument)
@@ -373,20 +382,12 @@ pub(crate) fn handle_fault_handler_register(context: &SyscallContext) -> Syscall
         n => FaultType::Other(n as u8),
     };
 
-    let view = match resolve_object(
-        &current_task,
-        endpoint_handle,
-        CapabilityRights::SEND,
-    ) {
+    let view = match resolve_object(&current_task, endpoint_handle, CapabilityRights::SEND) {
         Ok(view) => view,
         Err(error) => return SyscallReturn::error(error),
     };
 
-    match fault::register_fault_handler(
-        fault_type,
-        thread_id,
-        view.object.id(),
-    ) {
+    match fault::register_fault_handler(fault_type, thread_id, view.object.id()) {
         Ok(()) => SyscallReturn::success(0),
         Err(fault::FaultRegistrationError::AlreadyRegistered) => {
             SyscallReturn::error(SyscallError::Busy)

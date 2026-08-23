@@ -1,10 +1,10 @@
 use crate::{
+    Error, Handle, IPC_MAX_WORDS, PackageMaintenanceAction, PackageMaintenanceInfo,
+    PackagePolicyInfo, PackageStatus, PackageTag, RawMessage, Result, ServiceId, pack_bytes,
     package::common::{
         package_channel_from_word, package_mutation, package_ring_from_word, send_request,
     },
-    pack_bytes, package_status_error, package_status_from_word, unpack_bytes, Error, Handle,
-    PackageMaintenanceAction, PackageMaintenanceInfo,
-    PackagePolicyInfo, PackageStatus, PackageTag, RawMessage, Result, ServiceId, IPC_MAX_WORDS,
+    package_status_error, package_status_from_word, unpack_bytes,
 };
 
 pub fn package_install(

@@ -1,7 +1,7 @@
 use crate::{
+    Error, Handle, RawMessage, Result, StatusHealth, StatusResult, StatusServiceInfo, StatusTag,
     channel_call, channel_create, channel_receive_blocking, channel_send, handle_close,
-    manager_phase_from_word, rights, service_id_from_word, Error, Handle, RawMessage, Result,
-    StatusHealth, StatusResult, StatusServiceInfo, StatusTag,
+    manager_phase_from_word, rights, service_id_from_word,
 };
 
 pub fn status_snapshot(status_handle: Handle) -> Result<(u64, u64, u64)> {
@@ -119,10 +119,7 @@ pub fn status_list_services(
     Ok(loaded)
 }
 
-pub fn status_subscribe(
-    status_handle: Handle,
-    filter: Option<crate::ServiceId>,
-) -> Result<Handle> {
+pub fn status_subscribe(status_handle: Handle, filter: Option<crate::ServiceId>) -> Result<Handle> {
     let subscription = channel_create()?;
     let reply = channel_create()?;
     let mut request = RawMessage::empty(StatusTag::SubscribeRequest as u32);

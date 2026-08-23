@@ -1,11 +1,11 @@
-use serviceos_bundle::ServiceManifest;
-use serviceos_userspace_runtime as rt;
 use rt::{
     LogDomain, LogEvent, LogSeverity, ManagerAction, ManagerAvailability, ManagerServicePhase,
     ManagerStartupMode, ServiceId, ServiceImageId,
 };
+use serviceos_bundle::ServiceManifest;
+use serviceos_userspace_runtime as rt;
 
-use crate::state::{BootstrapResources, ServicePhase, ServiceSlot, MAX_SERVICE_SLOTS};
+use crate::state::{BootstrapResources, MAX_SERVICE_SLOTS, ServicePhase, ServiceSlot};
 
 pub(crate) fn emit_manager_event(
     slots: &[ServiceSlot; MAX_SERVICE_SLOTS],
@@ -41,7 +41,8 @@ pub(crate) fn publish_manager_status(
     detail0: u64,
     detail1: u64,
 ) {
-    let Some(status_index) = find_slot_index_checked(slots, service_count, ServiceId::Status) else {
+    let Some(status_index) = find_slot_index_checked(slots, service_count, ServiceId::Status)
+    else {
         return;
     };
     let status_handle = slots[status_index].public_handle;
@@ -325,9 +326,7 @@ pub(crate) fn image_id_from_word(value: u64) -> ServiceImageId {
         x if x == ServiceImageId::NetworkService as u32 => ServiceImageId::NetworkService,
         x if x == ServiceImageId::GraphicsService as u32 => ServiceImageId::GraphicsService,
         x if x == ServiceImageId::SessionService as u32 => ServiceImageId::SessionService,
-        x if x == ServiceImageId::DesktopShellService as u32 => {
-            ServiceImageId::DesktopShellService
-        }
+        x if x == ServiceImageId::DesktopShellService as u32 => ServiceImageId::DesktopShellService,
         x if x == ServiceImageId::SettingsApp as u32 => ServiceImageId::SettingsApp,
         x if x == ServiceImageId::FilesApp as u32 => ServiceImageId::FilesApp,
         x if x == ServiceImageId::MonitorApp as u32 => ServiceImageId::MonitorApp,

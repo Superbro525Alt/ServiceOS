@@ -1,6 +1,6 @@
 use crate::{
-    syscall1, syscall2, Error, Handle, HandlePair, RawMessage, Result, SyscallNumber,
-    IPC_FLAG_NONBLOCK, INVALID_HANDLE, rights,
+    Error, Handle, HandlePair, INVALID_HANDLE, IPC_FLAG_NONBLOCK, RawMessage, Result,
+    SyscallNumber, rights, syscall1, syscall2,
 };
 
 pub fn channel_create() -> Result<HandlePair> {
@@ -8,7 +8,10 @@ pub fn channel_create() -> Result<HandlePair> {
         first: INVALID_HANDLE,
         second: INVALID_HANDLE,
     };
-    syscall1(SyscallNumber::ChannelCreate, &mut pair as *mut HandlePair as u64)?;
+    syscall1(
+        SyscallNumber::ChannelCreate,
+        &mut pair as *mut HandlePair as u64,
+    )?;
     Ok(pair)
 }
 

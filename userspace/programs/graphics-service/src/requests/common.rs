@@ -1,5 +1,5 @@
-use serviceos_userspace_runtime as rt;
 use rt::{GraphicsStatus, RawMessage, SurfaceTag};
+use serviceos_userspace_runtime as rt;
 
 use crate::types::{DamageSet, DirtyState};
 

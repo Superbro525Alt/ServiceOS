@@ -3,9 +3,9 @@
 
 use core::{fmt::Write, str};
 
+use rt::{AppControlTag, ControlTag, FixedLogBuffer, RawMessage};
 use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
-use rt::{AppControlTag, ControlTag, FixedLogBuffer, RawMessage};
 
 const REFRESH_TICKS: u64 = 100;
 const BUFFER_WIDTH: u32 = 640;
@@ -29,7 +29,10 @@ fn main() -> u64 {
     if rt::channel_receive_blocking(bootstrap, &mut startup).is_err() {
         return 0xf201;
     }
-    if startup.tag != ControlTag::Startup as u32 || startup.handle_count < 4 || startup.word_count < 4 {
+    if startup.tag != ControlTag::Startup as u32
+        || startup.handle_count < 4
+        || startup.word_count < 4
+    {
         return 0xf202;
     }
 
@@ -188,7 +191,9 @@ fn poll_control(
     loop {
         let mut message = RawMessage::empty(0);
         match rt::channel_receive_nonblocking(control_handle, &mut message) {
-            Ok(()) if message.tag == AppControlTag::FocusChanged as u32 && message.word_count > 0 => {
+            Ok(())
+                if message.tag == AppControlTag::FocusChanged as u32 && message.word_count > 0 =>
+            {
                 did_work = true;
                 *focused = message.words[0] != 0;
             }
@@ -227,12 +232,30 @@ fn render_buffer(bytes: &mut [u8], width: u32, height: u32, snapshot: MonitorSna
         }
     }
 
-    fill_rect(bytes, 12, 52, width.saturating_sub(24), 14, if snapshot.link_up { ui::STATUS_OK } else { ui::STATUS_WARN });
+    fill_rect(
+        bytes,
+        12,
+        52,
+        width.saturating_sub(24),
+        14,
+        if snapshot.link_up {
+            ui::STATUS_OK
+        } else {
+            ui::STATUS_WARN
+        },
+    );
     fill_rect(bytes, 18, 84, width.saturating_sub(36), 18, 0x24334a);
 
     let meter_width = width.saturating_sub(36);
     let heartbeat_fill = ((snapshot.heartbeat_count as usize) % meter_width.max(1)) + 1;
-    fill_rect(bytes, 18, 84, heartbeat_fill.min(meter_width), 18, ui::ACCENT);
+    fill_rect(
+        bytes,
+        18,
+        84,
+        heartbeat_fill.min(meter_width),
+        18,
+        ui::ACCENT,
+    );
 
     let octets = [
         ((snapshot.ipv4_address >> 24) & 0xff) as usize,

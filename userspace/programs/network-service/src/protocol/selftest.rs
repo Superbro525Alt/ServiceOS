@@ -36,14 +36,25 @@ pub(crate) fn run(_log_handle: rt::Handle, iface: &mut Interface, device: &mut K
         ),
     );
 
-    let (mut sent, mut got, mut replied, mut echoed, mut estab) = (false, false, false, false, false);
-    let udp_ok = udp_round_trip(iface, device, &mut sent, &mut got, &mut replied, &mut echoed);
+    let (mut sent, mut got, mut replied, mut echoed, mut estab) =
+        (false, false, false, false, false);
+    let udp_ok = udp_round_trip(
+        iface,
+        device,
+        &mut sent,
+        &mut got,
+        &mut replied,
+        &mut echoed,
+    );
     let _ = rt::write_logf(
         "network",
         format_args!(
             "net-selftest udp {} sent={} got={} replied={} echoed={}",
             if udp_ok { "ok" } else { "failed" },
-            sent, got, replied, echoed
+            sent,
+            got,
+            replied,
+            echoed
         ),
     );
 
@@ -129,7 +140,10 @@ fn udp_round_trip(
             SELFTEST_UDP_PORT_A,
         )))
         .is_ok();
-    let bound_b = sockets.get_mut::<udp::Socket>(b).bind(SELFTEST_UDP_PORT_B).is_ok();
+    let bound_b = sockets
+        .get_mut::<udp::Socket>(b)
+        .bind(SELFTEST_UDP_PORT_B)
+        .is_ok();
     if !bound_a || !bound_b {
         sockets.remove(a);
         sockets.remove(b);
@@ -239,8 +253,10 @@ fn tcp_listen_accept_round_trip(
     if listening && connecting {
         for _ in 0..SELFTEST_POLL_LIMIT {
             pump(iface, device, &mut sockets);
-            let client_ready = sockets.get_mut::<tcp::Socket>(client).state() == tcp::State::Established;
-            let server_ready = sockets.get_mut::<tcp::Socket>(server).state() == tcp::State::Established;
+            let client_ready =
+                sockets.get_mut::<tcp::Socket>(client).state() == tcp::State::Established;
+            let server_ready =
+                sockets.get_mut::<tcp::Socket>(server).state() == tcp::State::Established;
             if client_ready && server_ready {
                 established = true;
                 *estab_flag = true;
@@ -260,7 +276,10 @@ fn tcp_listen_accept_round_trip(
             for _ in 0..SELFTEST_POLL_LIMIT {
                 pump(iface, device, &mut sockets);
                 let mut buffer = [0u8; SELFTEST_BUFFER_BYTES];
-                match sockets.get_mut::<tcp::Socket>(server).recv_slice(&mut buffer) {
+                match sockets
+                    .get_mut::<tcp::Socket>(server)
+                    .recv_slice(&mut buffer)
+                {
                     Ok(count) if count > 0 => {
                         forwarded = count == TCP_PAYLOAD.len() && &buffer[..count] == TCP_PAYLOAD;
                         *forwarded_flag = true;
@@ -283,7 +302,10 @@ fn tcp_listen_accept_round_trip(
             for _ in 0..SELFTEST_POLL_LIMIT {
                 pump(iface, device, &mut sockets);
                 let mut buffer = [0u8; SELFTEST_BUFFER_BYTES];
-                match sockets.get_mut::<tcp::Socket>(client).recv_slice(&mut buffer) {
+                match sockets
+                    .get_mut::<tcp::Socket>(client)
+                    .recv_slice(&mut buffer)
+                {
                     Ok(count) if count > 0 => {
                         replied = count == TCP_REPLY.len() && &buffer[..count] == TCP_REPLY;
                         *replied_flag = true;

@@ -7,10 +7,8 @@ use smoltcp::{
     wire::{EthernetAddress, HardwareAddress},
 };
 
+use rt::{ControlTag, LogEvent, LogSeverity, NetworkConfigState, RawMessage, ServiceId};
 use serviceos_userspace_runtime as rt;
-use rt::{
-    ControlTag, LogEvent, LogSeverity, NetworkConfigState, RawMessage, ServiceId,
-};
 
 mod config;
 mod consts;
@@ -233,8 +231,14 @@ pub(crate) fn run() -> u64 {
         }
 
         update_transport_states(log_handle, config, &mut sockets, &mut transports);
-        if pump_listeners(log_handle, &mut listeners, &mut transports, tcp_handles, &mut sockets)
-            .is_err()
+        if pump_listeners(
+            log_handle,
+            &mut listeners,
+            &mut transports,
+            tcp_handles,
+            &mut sockets,
+        )
+        .is_err()
         {
             return 0xfb0f;
         }

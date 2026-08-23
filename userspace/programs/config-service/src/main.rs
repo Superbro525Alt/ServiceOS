@@ -3,11 +3,11 @@
 
 use core::fmt::Write;
 
-use serviceos_userspace_runtime as rt;
 use rt::{
     ConfigKey, ConfigStatus, ConfigTag, ConfigValueKind, ControlTag, LifecycleEvent, RawMessage,
     ServiceId, StorageEntryKind,
 };
+use serviceos_userspace_runtime as rt;
 
 const MAX_CONFIG_BYTES: usize = 512;
 const MAX_CONFIG_ENTRIES: usize = 14;
@@ -85,11 +85,13 @@ fn main() -> u64 {
                 }
 
                 let reply_handle = request.handles[0];
-                let (kind, value) =
-                    match find_config(&entries[..entry_count], config_key_from_word(request.words[0])) {
-                        Some(entry) => (entry.kind as u32 as u64, entry.value),
-                        None => (0, 0),
-                    };
+                let (kind, value) = match find_config(
+                    &entries[..entry_count],
+                    config_key_from_word(request.words[0]),
+                ) {
+                    Some(entry) => (entry.kind as u32 as u64, entry.value),
+                    None => (0, 0),
+                };
 
                 let mut reply = RawMessage::empty(ConfigTag::ReadReply as u32);
                 reply.word_count = 3;
@@ -112,7 +114,9 @@ fn main() -> u64 {
                 } else if let Some(index) = find_config_index(&entries[..entry_count], key) {
                     entries[index].value = value;
                     match storage_handle {
-                        Some(storage) if persist_namespace(storage, &entries[..entry_count], key).is_ok() => {
+                        Some(storage)
+                            if persist_namespace(storage, &entries[..entry_count], key).is_ok() =>
+                        {
                             ConfigStatus::Ok
                         }
                         Some(_) => ConfigStatus::Denied,
@@ -126,7 +130,9 @@ fn main() -> u64 {
                     };
                     entry_count += 1;
                     match storage_handle {
-                        Some(storage) if persist_namespace(storage, &entries[..entry_count], key).is_ok() => {
+                        Some(storage)
+                            if persist_namespace(storage, &entries[..entry_count], key).is_ok() =>
+                        {
                             ConfigStatus::Ok
                         }
                         Some(_) => ConfigStatus::Denied,
@@ -156,7 +162,11 @@ fn main() -> u64 {
 fn parse_config_entries(bytes: &[u8], entries: &mut [ConfigEntry]) -> rt::Result<usize> {
     let text = core::str::from_utf8(bytes).map_err(|_| rt::Error::InvalidArgument)?;
     let mut count = 0usize;
-    for line in text.lines().map(|line| line.trim()).filter(|line| !line.is_empty()) {
+    for line in text
+        .lines()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty())
+    {
         let Some((key, value)) = line.split_once('=') else {
             return Err(rt::Error::InvalidArgument);
         };
@@ -185,7 +195,10 @@ fn parse_config_entries(bytes: &[u8], entries: &mut [ConfigEntry]) -> rt::Result
                 _ => return Err(rt::Error::InvalidArgument),
             },
             kind: ConfigValueKind::Unsigned,
-            value: value.trim().parse::<u64>().map_err(|_| rt::Error::InvalidArgument)?,
+            value: value
+                .trim()
+                .parse::<u64>()
+                .map_err(|_| rt::Error::InvalidArgument)?,
         };
         count += 1;
     }
@@ -209,10 +222,18 @@ fn config_key_from_word(value: u64) -> ConfigKey {
         x if x == ConfigKey::NetworkProbeTimeoutTicks as u32 => ConfigKey::NetworkProbeTimeoutTicks,
         x if x == ConfigKey::NetworkDynamicIpv4 as u32 => ConfigKey::NetworkDynamicIpv4,
         x if x == ConfigKey::NetworkDnsServer as u32 => ConfigKey::NetworkDnsServer,
-        x if x == ConfigKey::NetworkDnsQueryTimeoutTicks as u32 => ConfigKey::NetworkDnsQueryTimeoutTicks,
-        x if x == ConfigKey::NetworkDhcpAcquireTimeoutTicks as u32 => ConfigKey::NetworkDhcpAcquireTimeoutTicks,
-        x if x == ConfigKey::NetworkTcpConnectTimeoutTicks as u32 => ConfigKey::NetworkTcpConnectTimeoutTicks,
-        x if x == ConfigKey::NetworkTcpIdleTimeoutTicks as u32 => ConfigKey::NetworkTcpIdleTimeoutTicks,
+        x if x == ConfigKey::NetworkDnsQueryTimeoutTicks as u32 => {
+            ConfigKey::NetworkDnsQueryTimeoutTicks
+        }
+        x if x == ConfigKey::NetworkDhcpAcquireTimeoutTicks as u32 => {
+            ConfigKey::NetworkDhcpAcquireTimeoutTicks
+        }
+        x if x == ConfigKey::NetworkTcpConnectTimeoutTicks as u32 => {
+            ConfigKey::NetworkTcpConnectTimeoutTicks
+        }
+        x if x == ConfigKey::NetworkTcpIdleTimeoutTicks as u32 => {
+            ConfigKey::NetworkTcpIdleTimeoutTicks
+        }
         x if x == ConfigKey::StatusConsoleMirror as u32 => ConfigKey::StatusConsoleMirror,
         x if x == ConfigKey::StatusHeartbeatLogPeriod as u32 => ConfigKey::StatusHeartbeatLogPeriod,
         _ => ConfigKey::StatusHeartbeatTicks,
@@ -343,17 +364,29 @@ fn write_storage_file(storage_handle: rt::Handle, path: &str, bytes: &[u8]) -> r
     let mut offset = 0usize;
     while offset < bytes.len() {
         let chunk_len = (bytes.len() - offset).min((rt::IPC_MAX_WORDS - 3) * 8);
-        let _ = rt::storage_write(file, offset, bytes.len(), &bytes[offset..offset + chunk_len])?;
+        let _ = rt::storage_write(
+            file,
+            offset,
+            bytes.len(),
+            &bytes[offset..offset + chunk_len],
+        )?;
         offset += chunk_len;
     }
     let _ = rt::storage_blob_close(file);
     Ok(())
 }
 
-fn serialize_namespace(entries: &[ConfigEntry], namespace: &str) -> rt::Result<rt::FixedLogBuffer<MAX_CONFIG_BYTES>> {
+fn serialize_namespace(
+    entries: &[ConfigEntry],
+    namespace: &str,
+) -> rt::Result<rt::FixedLogBuffer<MAX_CONFIG_BYTES>> {
     let mut out = rt::FixedLogBuffer::<MAX_CONFIG_BYTES>::new();
     let _ = core::fmt::write(&mut out, format_args!("version=1\n"));
-    for entry in entries.iter().copied().filter(|entry| namespace_for_key(entry.key) == namespace) {
+    for entry in entries
+        .iter()
+        .copied()
+        .filter(|entry| namespace_for_key(entry.key) == namespace)
+    {
         let _ = core::fmt::write(
             &mut out,
             format_args!("{}={}\n", config_key_name(entry.key), entry.value),

@@ -23,7 +23,15 @@ pub(super) fn handle_pointer_down(state: &mut DesktopState, x: i32, y: i32) -> r
                 focus_app(state, app_id)?
             };
             let (local_x, local_y) = app_local_coords(state, app_id, x, y)?;
-            dispatch_pointer_to_app(state, app_id, AppPointerAction::Down, local_x, local_y, 1, 0)?;
+            dispatch_pointer_to_app(
+                state,
+                app_id,
+                AppPointerAction::Down,
+                local_x,
+                local_y,
+                1,
+                0,
+            )?;
             Ok(surface_id)
         }
         HitTarget::WindowMove {
@@ -203,7 +211,10 @@ fn app_local_coords(
     let window = state.apps[index].window;
     let max_x = (window.width.saturating_sub(1)) as i32;
     let max_y = (window.height.saturating_sub(1)) as i32;
-    Ok(((x - window.x).clamp(0, max_x), (y - window.y).clamp(0, max_y)))
+    Ok((
+        (x - window.x).clamp(0, max_x),
+        (y - window.y).clamp(0, max_y),
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -260,8 +271,7 @@ fn resize_drag(
     }
 
     state.apps[index].window.maximized = false;
-    state.apps[index].window.x =
-        clamp_window_x(state.chrome.output_width, new_width as u32, new_x);
+    state.apps[index].window.x = clamp_window_x(state.chrome.output_width, new_width as u32, new_x);
     state.apps[index].window.y =
         clamp_window_y(state.chrome.output_height, new_height as u32, new_y);
     state.apps[index].window.width = new_width as u32;

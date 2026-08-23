@@ -1,9 +1,9 @@
-use serviceos_userspace_runtime as rt;
 use rt::{ControlTag, LifecycleEvent, RawMessage, ServiceId};
+use serviceos_userspace_runtime as rt;
 
 use crate::{
     consts::{MAX_JOBS, MAX_TOOLCHAINS, MAX_WORKSPACES},
-    protocol::{handle_public_request, poll_job_exits, poll_job_reports, Catalog},
+    protocol::{Catalog, handle_public_request, poll_job_exits, poll_job_reports},
     types::{JobSlot, ToolchainSlot, WorkspaceSlot},
     util::{emit_log, read_catalog},
 };
@@ -24,11 +24,15 @@ pub(crate) fn run() -> u64 {
 
     let mut toolchains = [ToolchainSlot::empty(); MAX_TOOLCHAINS];
     let mut workspaces = [WorkspaceSlot::empty(); MAX_WORKSPACES];
-    let (toolchain_count, workspace_count) =
-        match read_catalog(storage_handle, catalog_handle, &mut toolchains, &mut workspaces) {
-            Ok(counts) => counts,
-            Err(_) => return 0xfd03,
-        };
+    let (toolchain_count, workspace_count) = match read_catalog(
+        storage_handle,
+        catalog_handle,
+        &mut toolchains,
+        &mut workspaces,
+    ) {
+        Ok(counts) => counts,
+        Err(_) => return 0xfd03,
+    };
 
     let public = match rt::channel_create() {
         Ok(pair) => pair,

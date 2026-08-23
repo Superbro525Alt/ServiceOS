@@ -1,6 +1,6 @@
 use crate::{
-    channel_call, channel_send, pack_bytes, ConsoleTag, Error, Handle, RawMessage, Result,
-    IPC_MAX_WORDS,
+    ConsoleTag, Error, Handle, IPC_MAX_WORDS, RawMessage, Result, channel_call, channel_send,
+    pack_bytes,
 };
 
 pub fn console_write_record(
@@ -53,6 +53,10 @@ pub fn console_session_read_line(session_handle: Handle, buffer: &mut [u8]) -> R
         return Err(Error::InvalidArgument);
     }
     let len = response.words[0] as usize;
-    crate::unpack_bytes(&response.words[1..response.word_count as usize], len, buffer)?;
+    crate::unpack_bytes(
+        &response.words[1..response.word_count as usize],
+        len,
+        buffer,
+    )?;
     Ok(len)
 }

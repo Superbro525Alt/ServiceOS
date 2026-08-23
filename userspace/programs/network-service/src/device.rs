@@ -6,8 +6,8 @@ use smoltcp::{
     wire::{ArpOperation, ArpPacket, ArpRepr, EthernetAddress, EthernetFrame, Ipv4Address},
 };
 
-use serviceos_userspace_runtime as rt;
 use rt::PacketInterfaceInfo;
+use serviceos_userspace_runtime as rt;
 
 use crate::consts::{LOOPBACK_ADDRESS, MAX_FRAME_BYTES};
 
@@ -141,8 +141,9 @@ impl Device for KernelPacketDevice {
                 self.rx_buffer[..length].copy_from_slice(&frame[..length]);
                 length
             }
-            None => rt::packet_interface_receive_nonblocking(self.handle, &mut self.rx_buffer)
-                .ok()?,
+            None => {
+                rt::packet_interface_receive_nonblocking(self.handle, &mut self.rx_buffer).ok()?
+            }
         };
         Some((
             KernelRxToken {

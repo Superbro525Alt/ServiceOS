@@ -3,8 +3,8 @@
 
 use core::fmt::Write;
 
-use serviceos_userspace_runtime as rt;
 use rt::{FixedLogBuffer, RawMessage, RuntimeWorkloadKind};
+use serviceos_userspace_runtime as rt;
 
 const MAX_PATH_BYTES: usize = 64;
 
@@ -16,7 +16,10 @@ fn main() -> u64 {
     if rt::channel_receive_blocking(bootstrap, &mut startup).is_err() {
         return 0xfd01;
     }
-    if startup.tag != rt::ControlTag::Startup as u32 || startup.handle_count < 2 || startup.word_count < 2 {
+    if startup.tag != rt::ControlTag::Startup as u32
+        || startup.handle_count < 2
+        || startup.word_count < 2
+    {
         return 0xfd02;
     }
 
@@ -32,8 +35,12 @@ fn main() -> u64 {
     let arg_len = startup.words[1] as usize;
     let mut arg = [0u8; MAX_PATH_BYTES];
     if arg_len > arg.len()
-        || rt::unpack_bytes(&startup.words[2..startup.word_count as usize], arg_len, &mut arg)
-            .is_err()
+        || rt::unpack_bytes(
+            &startup.words[2..startup.word_count as usize],
+            arg_len,
+            &mut arg,
+        )
+        .is_err()
     {
         let _ = rt::handle_close(relay);
         let _ = rt::handle_close(session);
@@ -57,8 +64,14 @@ fn main() -> u64 {
 fn write_inspect(output: rt::Handle, session: rt::Handle) -> rt::Result<()> {
     let info = rt::runtime_session_info(session)?;
     write_linef(output, format_args!("runtime env {}", info.env_id))?;
-    write_linef(output, format_args!("kind: {}", runtime_kind_name(info.kind)))?;
-    write_linef(output, format_args!("state: {}", runtime_env_state_name(info.state)))?;
+    write_linef(
+        output,
+        format_args!("kind: {}", runtime_kind_name(info.kind)),
+    )?;
+    write_linef(
+        output,
+        format_args!("state: {}", runtime_env_state_name(info.state)),
+    )?;
     write_linef(output, format_args!("caps: {:#x}", info.capabilities))?;
     write_linef(output, format_args!("mounts: {}", info.mount_count))?;
     write_linef(output, format_args!("vars: {}", info.var_count))
@@ -68,7 +81,9 @@ fn write_vars(output: rt::Handle, session: rt::Handle) -> rt::Result<()> {
     let mut index = 0usize;
     let mut key = [0u8; 32];
     let mut value = [0u8; 80];
-    while let Some((key_len, value_len)) = rt::runtime_session_var(session, index, &mut key, &mut value)? {
+    while let Some((key_len, value_len)) =
+        rt::runtime_session_var(session, index, &mut key, &mut value)?
+    {
         let key = core::str::from_utf8(&key[..key_len]).map_err(|_| rt::Error::InvalidArgument)?;
         let value =
             core::str::from_utf8(&value[..value_len]).map_err(|_| rt::Error::InvalidArgument)?;

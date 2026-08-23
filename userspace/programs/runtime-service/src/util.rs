@@ -1,5 +1,5 @@
-use serviceos_userspace_runtime as rt;
 use rt::{LogDomain, LogEvent, LogSeverity, RuntimeEnvState, RuntimeKind};
+use serviceos_userspace_runtime as rt;
 
 use crate::{
     consts::{MAX_PROFILE_BYTES, MAX_STORAGE_PATH},
@@ -53,7 +53,11 @@ fn parse_profile(text: &str) -> rt::Result<Profile> {
             }
             "caps" => {
                 let mut caps = 0u32;
-                for entry in value.split(',').map(str::trim).filter(|entry| !entry.is_empty()) {
+                for entry in value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|entry| !entry.is_empty())
+                {
                     caps |= match entry {
                         "file-read" => rt::runtime_capability::FILE_READ,
                         "terminal-io" => rt::runtime_capability::TERMINAL_IO,
@@ -118,7 +122,9 @@ pub(crate) fn instantiate_env(profile: Profile) -> EnvSlot {
 }
 
 pub(crate) fn sensitive_capabilities(bits: u32) -> u32 {
-    bits & (rt::runtime_capability::NETWORK | rt::runtime_capability::GRAPHICS | rt::runtime_capability::AUDIO)
+    bits & (rt::runtime_capability::NETWORK
+        | rt::runtime_capability::GRAPHICS
+        | rt::runtime_capability::AUDIO)
 }
 
 pub(crate) fn release_run_slot(run: &mut RunSlot) {
@@ -184,11 +190,7 @@ fn matches_guest_prefix(path: &[u8], prefix: &[u8]) -> bool {
         && (path.len() == prefix.len() || path.get(prefix.len()) == Some(&b'/'))
 }
 
-pub(crate) fn pack_pair(
-    first: &[u8],
-    second: &[u8],
-    words: &mut [u64],
-) -> rt::Result<u32> {
+pub(crate) fn pack_pair(first: &[u8], second: &[u8], words: &mut [u64]) -> rt::Result<u32> {
     let mut combined = [0u8; rt::IPC_MAX_WORDS * 8];
     if first.len() + second.len() > combined.len() {
         return Err(rt::Error::BufferTooSmall);

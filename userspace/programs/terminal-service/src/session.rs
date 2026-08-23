@@ -1,11 +1,10 @@
 use core::fmt::Write;
 
+use rt::{LogEvent, LogSeverity, RawMessage, ServiceId, TerminalTag};
 use serviceos_shell_service::{
-    SHELL_PROMPT, SHELL_READY_TEXT, ShellOutput, execute_command_with_source,
-    write_output_linef,
+    SHELL_PROMPT, SHELL_READY_TEXT, ShellOutput, execute_command_with_source, write_output_linef,
 };
 use serviceos_userspace_runtime as rt;
-use rt::{LogEvent, LogSeverity, RawMessage, ServiceId, TerminalTag};
 
 use crate::{
     logging::emit_terminal_log,
@@ -59,12 +58,9 @@ pub(crate) fn handle_input_byte(
                 let trimmed = line.trim();
                 if !trimmed.is_empty() {
                     let output = ShellOutput::new(session.endpoint, terminal_output_write);
-                    if let Err(error) = execute_command_with_source(
-                        bootstrap,
-                        ServiceId::Terminal,
-                        output,
-                        trimmed,
-                    ) {
+                    if let Err(error) =
+                        execute_command_with_source(bootstrap, ServiceId::Terminal, output, trimmed)
+                    {
                         let _ = write_output_linef(
                             output,
                             format_args!(

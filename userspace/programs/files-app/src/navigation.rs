@@ -1,11 +1,11 @@
 use core::{cmp::Ordering, fmt::Write, str};
 
-use serviceos_userspace_runtime as rt;
 use rt::FixedLogBuffer;
+use serviceos_userspace_runtime as rt;
 
 use crate::state::{
-    EntryKind, ExplorerEntry, ExplorerState, MAX_ENTRIES, MAX_STORAGE_PATH, ROW_HEIGHT,
-    LIST_BOTTOM_MARGIN, LIST_Y, BUFFER_HEIGHT,
+    BUFFER_HEIGHT, EntryKind, ExplorerEntry, ExplorerState, LIST_BOTTOM_MARGIN, LIST_Y,
+    MAX_ENTRIES, MAX_STORAGE_PATH, ROW_HEIGHT,
 };
 
 pub(crate) fn visible_row_count(state: &ExplorerState) -> usize {
@@ -220,7 +220,10 @@ fn insert_unique_entry(state: &mut ExplorerState, kind: EntryKind, path: &[u8]) 
         return;
     }
     for entry in state.entries.iter().take(state.entry_count) {
-        if entry.kind == kind && entry.path_len == path.len() && entry.path[..entry.path_len] == path[..] {
+        if entry.kind == kind
+            && entry.path_len == path.len()
+            && entry.path[..entry.path_len] == path[..]
+        {
             return;
         }
     }

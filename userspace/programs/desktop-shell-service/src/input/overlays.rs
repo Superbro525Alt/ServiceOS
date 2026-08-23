@@ -14,7 +14,11 @@ pub(super) fn focus_recent_app(state: &mut DesktopState, offset: usize) -> rt::R
     }
     let current_index = state
         .focused_app
-        .and_then(|app_id| candidates[..count].iter().position(|candidate| *candidate == app_id))
+        .and_then(|app_id| {
+            candidates[..count]
+                .iter()
+                .position(|candidate| *candidate == app_id)
+        })
         .unwrap_or(0);
     let next = candidates[(current_index + offset) % count];
     focus_app(state, next)
@@ -105,7 +109,8 @@ pub(super) fn handle_clipboard_overlay_key(
             Ok(focused_surface_id(state))
         }
         KEY_DOWN => {
-            state.overlay_selection = (state.overlay_selection + 1).min(CLIPBOARD_HISTORY_LINES - 1);
+            state.overlay_selection =
+                (state.overlay_selection + 1).min(CLIPBOARD_HISTORY_LINES - 1);
             Ok(focused_surface_id(state))
         }
         KEY_ENTER => {
@@ -115,7 +120,10 @@ pub(super) fn handle_clipboard_overlay_key(
                 state.overlay_selection = 0;
                 return Ok(focused_surface_id(state));
             }
-            rt::clipboard_activate(state.clipboard_service_handle, state.overlay_selection as u32)?;
+            rt::clipboard_activate(
+                state.clipboard_service_handle,
+                state.overlay_selection as u32,
+            )?;
             state.overlay_mode = OverlayMode::None;
             state.overlay_selection = 0;
             post_notification(state, None, false, b"clipboard selection activated")?;
@@ -127,7 +135,9 @@ pub(super) fn handle_clipboard_overlay_key(
 
 fn perform_palette_action(state: &mut DesktopState, action: PaletteAction) -> rt::Result<u32> {
     match action {
-        PaletteAction::Launch(app_id) => crate::windows::schedule_launch_or_focus_app(state, app_id),
+        PaletteAction::Launch(app_id) => {
+            crate::windows::schedule_launch_or_focus_app(state, app_id)
+        }
         PaletteAction::ShowNotifications => {
             state.overlay_mode = OverlayMode::Notifications;
             Ok(focused_surface_id(state))

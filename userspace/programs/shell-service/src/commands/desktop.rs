@@ -1,14 +1,14 @@
 use core::fmt::Write;
 
-use serviceos_userspace_runtime as rt;
 use rt::{
     DesktopAppId, DesktopAppInfo, DesktopWindowInfo, DesktopWorkspaceAction, FixedLogBuffer,
     ServiceId,
 };
+use serviceos_userspace_runtime as rt;
 
 use crate::util::{
-    desktop_app_name, desktop_drag_name, parse_desktop_app_name, write_output_linef, ShellOutput,
-    MAX_DESKTOP_APPS, MAX_DESKTOP_WINDOWS,
+    MAX_DESKTOP_APPS, MAX_DESKTOP_WINDOWS, ShellOutput, desktop_app_name, desktop_drag_name,
+    parse_desktop_app_name, write_output_linef,
 };
 
 pub(crate) fn cmd_desktop<'a, I>(
@@ -89,7 +89,9 @@ where
             }
             _ => write_output_linef(
                 output,
-                format_args!("usage: desktop resize <settings|files|monitor|terminal> <width> <height>"),
+                format_args!(
+                    "usage: desktop resize <settings|files|monitor|terminal> <width> <height>"
+                ),
             ),
         },
         Some("click") => match (
@@ -219,23 +221,39 @@ fn cmd_desktop_windows(bootstrap: rt::Handle, output: ShellOutput) -> rt::Result
     Ok(())
 }
 
-fn cmd_desktop_launch(bootstrap: rt::Handle, output: ShellOutput, app_id: DesktopAppId) -> rt::Result<()> {
+fn cmd_desktop_launch(
+    bootstrap: rt::Handle,
+    output: ShellOutput,
+    app_id: DesktopAppId,
+) -> rt::Result<()> {
     let desktop_handle = rt::lookup_service(bootstrap, ServiceId::DesktopShell)?;
     let surface_id = rt::desktop_launch_app(desktop_handle, app_id)?;
     let _ = rt::handle_close(desktop_handle);
     write_output_linef(
         output,
-        format_args!("launched {} on surface {}", desktop_app_name(app_id), surface_id),
+        format_args!(
+            "launched {} on surface {}",
+            desktop_app_name(app_id),
+            surface_id
+        ),
     )
 }
 
-fn cmd_desktop_focus(bootstrap: rt::Handle, output: ShellOutput, app_id: DesktopAppId) -> rt::Result<()> {
+fn cmd_desktop_focus(
+    bootstrap: rt::Handle,
+    output: ShellOutput,
+    app_id: DesktopAppId,
+) -> rt::Result<()> {
     let desktop_handle = rt::lookup_service(bootstrap, ServiceId::DesktopShell)?;
     let surface_id = rt::desktop_focus_app(desktop_handle, app_id)?;
     let _ = rt::handle_close(desktop_handle);
     write_output_linef(
         output,
-        format_args!("focused {} on surface {}", desktop_app_name(app_id), surface_id),
+        format_args!(
+            "focused {} on surface {}",
+            desktop_app_name(app_id),
+            surface_id
+        ),
     )
 }
 
@@ -276,11 +294,9 @@ where
 {
     let desktop_handle = rt::lookup_service(bootstrap, ServiceId::DesktopShell)?;
     let result = match parts.next() {
-        None | Some("status") => rt::desktop_workspace_action(
-            desktop_handle,
-            DesktopWorkspaceAction::Status,
-            0,
-        ),
+        None | Some("status") => {
+            rt::desktop_workspace_action(desktop_handle, DesktopWorkspaceAction::Status, 0)
+        }
         Some("switch") => match parts.next().and_then(|value| value.parse::<u32>().ok()) {
             Some(workspace_id) => rt::desktop_workspace_action(
                 desktop_handle,
@@ -322,9 +338,7 @@ where
         output,
         format_args!(
             "workspace={}/{} focused-surface={}",
-            result.active_workspace,
-            result.workspace_count,
-            result.focused_surface,
+            result.active_workspace, result.workspace_count, result.focused_surface,
         ),
     )
 }
@@ -347,7 +361,8 @@ where
         match rt::desktop_notification_history(desktop_handle, index as u32) {
             Ok(entry) => {
                 any = true;
-                let text = core::str::from_utf8(&entry.text[..entry.text_len as usize]).unwrap_or("NOTICE");
+                let text = core::str::from_utf8(&entry.text[..entry.text_len as usize])
+                    .unwrap_or("NOTICE");
                 write_output_linef(
                     output,
                     format_args!(
@@ -373,30 +388,50 @@ where
     Ok(())
 }
 
-fn cmd_desktop_close(bootstrap: rt::Handle, output: ShellOutput, app_id: DesktopAppId) -> rt::Result<()> {
+fn cmd_desktop_close(
+    bootstrap: rt::Handle,
+    output: ShellOutput,
+    app_id: DesktopAppId,
+) -> rt::Result<()> {
     let desktop_handle = rt::lookup_service(bootstrap, ServiceId::DesktopShell)?;
     rt::desktop_close_app(desktop_handle, app_id)?;
     let _ = rt::handle_close(desktop_handle);
     write_output_linef(output, format_args!("closed {}", desktop_app_name(app_id)))
 }
 
-fn cmd_desktop_minimize(bootstrap: rt::Handle, output: ShellOutput, app_id: DesktopAppId) -> rt::Result<()> {
+fn cmd_desktop_minimize(
+    bootstrap: rt::Handle,
+    output: ShellOutput,
+    app_id: DesktopAppId,
+) -> rt::Result<()> {
     let desktop_handle = rt::lookup_service(bootstrap, ServiceId::DesktopShell)?;
     let surface_id = rt::desktop_minimize_app(desktop_handle, app_id)?;
     let _ = rt::handle_close(desktop_handle);
     write_output_linef(
         output,
-        format_args!("minimized {} on surface {}", desktop_app_name(app_id), surface_id),
+        format_args!(
+            "minimized {} on surface {}",
+            desktop_app_name(app_id),
+            surface_id
+        ),
     )
 }
 
-fn cmd_desktop_restore(bootstrap: rt::Handle, output: ShellOutput, app_id: DesktopAppId) -> rt::Result<()> {
+fn cmd_desktop_restore(
+    bootstrap: rt::Handle,
+    output: ShellOutput,
+    app_id: DesktopAppId,
+) -> rt::Result<()> {
     let desktop_handle = rt::lookup_service(bootstrap, ServiceId::DesktopShell)?;
     let surface_id = rt::desktop_restore_app(desktop_handle, app_id)?;
     let _ = rt::handle_close(desktop_handle);
     write_output_linef(
         output,
-        format_args!("restored {} on surface {}", desktop_app_name(app_id), surface_id),
+        format_args!(
+            "restored {} on surface {}",
+            desktop_app_name(app_id),
+            surface_id
+        ),
     )
 }
 
@@ -410,7 +445,11 @@ fn cmd_desktop_maximize(
     let _ = rt::handle_close(desktop_handle);
     write_output_linef(
         output,
-        format_args!("maximized {} on surface {}", desktop_app_name(app_id), surface_id),
+        format_args!(
+            "maximized {} on surface {}",
+            desktop_app_name(app_id),
+            surface_id
+        ),
     )
 }
 
@@ -458,17 +497,15 @@ fn cmd_desktop_resize(
     )
 }
 
-fn cmd_desktop_click(
-    bootstrap: rt::Handle,
-    output: ShellOutput,
-    x: i32,
-    y: i32,
-) -> rt::Result<()> {
+fn cmd_desktop_click(bootstrap: rt::Handle, output: ShellOutput, x: i32, y: i32) -> rt::Result<()> {
     let desktop_handle = rt::lookup_service(bootstrap, ServiceId::DesktopShell)?;
     let surface_id = rt::desktop_pointer_click(desktop_handle, x, y)?;
     let _ = rt::handle_close(desktop_handle);
     write_output_linef(
         output,
-        format_args!("desktop click at ({}, {}) targeted surface {}", x, y, surface_id),
+        format_args!(
+            "desktop click at ({}, {}) targeted surface {}",
+            x, y, surface_id
+        ),
     )
 }

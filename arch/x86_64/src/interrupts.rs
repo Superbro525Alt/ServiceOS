@@ -199,8 +199,8 @@ fn initialize_per_cpu() {
     // gs:[0x00] (kernel_rsp) and gs:[0x08] (user_rsp), matching the
     // PerCpuData field layout, and never swaps GS, so the base must be valid
     // from this point on in every context.
-    let privilege_stack_top = VirtAddr::from_ptr(&PRIVILEGE_STACK.0).as_u64()
-        + PRIVILEGE_STACK_SIZE as u64;
+    let privilege_stack_top =
+        VirtAddr::from_ptr(&PRIVILEGE_STACK.0).as_u64() + PRIVILEGE_STACK_SIZE as u64;
     unsafe {
         crate::per_cpu::initialize_per_cpu_data(0, privilege_stack_top);
     }
@@ -243,8 +243,8 @@ pub fn initialize_ap(cpu_id: usize) {
         .expect("BSP IDT must be initialized before AP bring-up");
     idt.load();
 
-    let privilege_stack_top = VirtAddr::from_ptr(&PRIVILEGE_STACK.0).as_u64()
-        + PRIVILEGE_STACK_SIZE as u64;
+    let privilege_stack_top =
+        VirtAddr::from_ptr(&PRIVILEGE_STACK.0).as_u64() + PRIVILEGE_STACK_SIZE as u64;
     unsafe {
         crate::per_cpu::initialize_per_cpu_data(cpu_id, privilege_stack_top);
     }
@@ -379,17 +379,15 @@ fn install_interrupt_table() {
         idt.security_exception
             .set_handler_fn(faults::security_exception_handler);
         unsafe {
-            idt[TIMER_VECTOR]
-                .set_handler_addr(VirtAddr::from_ptr(
-                    serviceos_x86_64_timer_irq_entry as *const (),
-                ));
+            idt[TIMER_VECTOR].set_handler_addr(VirtAddr::from_ptr(
+                serviceos_x86_64_timer_irq_entry as *const (),
+            ));
             // The LAPIC timer shares the timer IRQ entry stub; it fires on
             // its own vector once armed and the Rust body picks the correct
             // controller acknowledgement from the armed flag.
-            idt[lapic::LAPIC_TIMER_VECTOR]
-                .set_handler_addr(VirtAddr::from_ptr(
-                    serviceos_x86_64_timer_irq_entry as *const (),
-                ));
+            idt[lapic::LAPIC_TIMER_VECTOR].set_handler_addr(VirtAddr::from_ptr(
+                serviceos_x86_64_timer_irq_entry as *const (),
+            ));
             idt[lapic::LAPIC_SPURIOUS_VECTOR].set_handler_fn(irq::lapic_spurious_interrupt_handler);
             idt[PIC_PRIMARY_OFFSET + 1].set_handler_fn(irq::external_irq1_handler);
             idt[PIC_PRIMARY_OFFSET + 2].set_handler_fn(irq::external_irq2_handler);

@@ -1,5 +1,5 @@
-use crate::memory::USER_SPACE_END;
 use super::SyscallError;
+use crate::memory::USER_SPACE_END;
 
 /// Lowest virtual address from which userspace images and buffers may be
 /// backed. The image builder places every userspace image at

@@ -1,10 +1,10 @@
 use core::str;
 
-use serviceos_userspace_runtime as rt;
 use rt::{
     DeveloperArtifactFormat, DeveloperTarget, DeveloperToolchainState, LogDomain, LogEvent,
     LogSeverity, ServiceId, rights,
 };
+use serviceos_userspace_runtime as rt;
 
 use crate::{
     consts::{MAX_CATALOG_BYTES, MAX_SOURCE},
@@ -49,13 +49,18 @@ pub(crate) fn read_catalog(
 ) -> rt::Result<(usize, usize)> {
     let mut catalog_bytes = [0u8; MAX_CATALOG_BYTES];
     let loaded = read_blob_all(catalog_handle, &mut catalog_bytes)?;
-    let catalog = str::from_utf8(&catalog_bytes[..loaded]).map_err(|_| rt::Error::InvalidArgument)?;
+    let catalog =
+        str::from_utf8(&catalog_bytes[..loaded]).map_err(|_| rt::Error::InvalidArgument)?;
     let mut descriptor_bytes = [0u8; MAX_CATALOG_BYTES];
 
     let mut toolchain_count = 0usize;
     let mut workspace_count = 0usize;
 
-    for line in catalog.lines().map(str::trim).filter(|line| !line.is_empty()) {
+    for line in catalog
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
         if let Some(path) = line.strip_prefix("toolchain=") {
             let descriptor = read_storage_text(storage_handle, path.trim(), &mut descriptor_bytes)?;
             if toolchain_count >= toolchains.len() {

@@ -235,10 +235,7 @@ fn rects_touch_or_overlap(left: DamageRect, right: DamageRect) -> bool {
 pub(crate) enum DirtyState {
     Clean,
     CursorOnly(DamageRect),
-    Region {
-        damages: DamageSet,
-        immediate: bool,
-    },
+    Region { damages: DamageSet, immediate: bool },
     Full { immediate: bool },
 }
 
@@ -287,5 +284,9 @@ pub(crate) fn active_buffer(surface: &SurfaceSlot) -> Option<BufferBinding> {
 }
 
 pub(crate) fn attached_buffer_count(surface: &SurfaceSlot) -> usize {
-    surface.buffers.iter().filter(|buffer| buffer.attached()).count()
+    surface
+        .buffers
+        .iter()
+        .filter(|buffer| buffer.attached())
+        .count()
 }

@@ -69,14 +69,20 @@ impl InputCore {
 
     #[cfg(test)]
     pub(crate) fn latch_wakeup(&self, backend: &Arc<dyn InputBackend>) {
-        if let Some(source) = self.sources.lock().iter().find(|s| s.matches_backend(backend)) {
+        if let Some(source) = self
+            .sources
+            .lock()
+            .iter()
+            .find(|s| s.matches_backend(backend))
+        {
             source.wakeup_pending.store(true, Ordering::Release);
         }
     }
 
     #[cfg(test)]
     pub(crate) fn latch_peek(&self, backend: &Arc<dyn InputBackend>) -> bool {
-        self.lookup_latch(backend).is_some_and(|latch| latch.load(Ordering::Acquire))
+        self.lookup_latch(backend)
+            .is_some_and(|latch| latch.load(Ordering::Acquire))
     }
 
     /// Consumes the latched wakeup for `backend`, returning true when at least

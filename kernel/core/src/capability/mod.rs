@@ -49,11 +49,7 @@ mod tests {
             .install(object, CapabilityRights::memory_object(), Some(0xab))
             .expect("source capability should install");
         let transfer = space
-            .prepare_transfer(
-                source,
-                CapabilityRights::READ,
-                TransferMode::Move,
-            )
+            .prepare_transfer(source, CapabilityRights::READ, TransferMode::Move)
             .expect("move transfer should succeed");
         assert!(matches!(
             space.resolve(source, CapabilityRights::READ),
@@ -73,7 +69,8 @@ mod tests {
     }
 
     #[test]
-    fn move_transfer_closes_source_and_reinstalls_in_receiver() {        let registry = ObjectRegistry::new();
+    fn move_transfer_closes_source_and_reinstalls_in_receiver() {
+        let registry = ObjectRegistry::new();
         let object = registry.create_memory_object(8192, true);
         let sender = CapabilitySpace::new();
         let receiver = CapabilitySpace::new();

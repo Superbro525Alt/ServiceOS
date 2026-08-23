@@ -1,9 +1,9 @@
+use rt::{
+    IPC_MAX_WORDS, PackageChannel, PackageRepositorySyncState, PackageRepositoryTrustMode,
+    PackageRing, PackageTrustState, ServiceId,
+};
 use serviceos_bundle::{BOOT_STORE_PATH_MAX, InlinePath, PackageManifest};
 use serviceos_userspace_runtime as rt;
-use rt::{
-    PackageChannel, PackageRepositorySyncState, PackageRepositoryTrustMode, PackageRing,
-    PackageTrustState, ServiceId, IPC_MAX_WORDS,
-};
 
 pub(crate) const MAX_INDEX_BYTES: usize = 512;
 pub(crate) const MAX_PACKAGE_BYTES: usize = 2048;

@@ -84,9 +84,7 @@ extern "C" fn serviceos_x86_64_handle_timer_irq(frame: *mut TimerIrqFrame) -> u6
     1
 }
 
-pub(super) extern "x86-interrupt" fn lapic_spurious_interrupt_handler(
-    _frame: InterruptStackFrame,
-) {
+pub(super) extern "x86-interrupt" fn lapic_spurious_interrupt_handler(_frame: InterruptStackFrame) {
     // Spurious LAPIC interrupts must not receive an EOI (SDM 10.9).
     let _ = interrupts::note_external_interrupt(InterruptVector(
         crate::lapic::LAPIC_SPURIOUS_VECTOR as u16,

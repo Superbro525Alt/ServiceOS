@@ -7,16 +7,16 @@ mod graph;
 mod state;
 mod util;
 
+use rt::{ControlTag, LogEvent, LogSeverity, RawMessage, ServiceId, rights};
 use serviceos_abi::bootstrap_resource;
 use serviceos_userspace_runtime as rt;
-use rt::{ControlTag, LogEvent, LogSeverity, RawMessage, ServiceId, rights};
 
 use crate::graph::{
     activate_base_service_graph, start_service, supervision_loop, wait_until_ready,
 };
 use crate::state::{
-    storage_manifest, BootstrapResource, BootstrapResources, GraphStatus, ServiceSlot,
-    MAX_SERVICE_SLOTS,
+    BootstrapResource, BootstrapResources, GraphStatus, MAX_SERVICE_SLOTS, ServiceSlot,
+    storage_manifest,
 };
 use crate::util::{emit_manager_event, fallback_log, service_index_path};
 
@@ -28,7 +28,9 @@ fn main() -> u64 {
     if rt::channel_receive_blocking(bootstrap, &mut startup).is_err() {
         return 0xf601;
     }
-    if startup.tag != ControlTag::Startup as u32 || startup.handle_count < 2 || startup.word_count < 1
+    if startup.tag != ControlTag::Startup as u32
+        || startup.handle_count < 2
+        || startup.word_count < 1
     {
         return 0xf602;
     }
@@ -135,12 +137,8 @@ fn main() -> u64 {
         return 0xf604;
     }
 
-    if graph::load_base_service_graph(
-        &mut slots,
-        &mut service_count,
-        service_index_path(platform),
-    )
-    .is_err()
+    if graph::load_base_service_graph(&mut slots, &mut service_count, service_index_path(platform))
+        .is_err()
     {
         return 0xf605;
     }

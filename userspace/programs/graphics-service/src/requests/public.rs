@@ -1,12 +1,11 @@
-use serviceos_userspace_runtime as rt;
 use rt::{GraphicsStatus, GraphicsTag, LogEvent, LogSeverity, RawMessage};
+use serviceos_userspace_runtime as rt;
 
 use crate::{
     logging::emit_log,
     types::{
-        DirtyState, MAX_PUBLIC_REQUESTS_PER_TURN, MAX_SURFACE_LABELS, MAX_SURFACE_RECTS,
-        Surfaces, active_buffer, active_surface_count, attached_buffer_count, find_surface,
-        surface_bounds,
+        DirtyState, MAX_PUBLIC_REQUESTS_PER_TURN, MAX_SURFACE_LABELS, MAX_SURFACE_RECTS, Surfaces,
+        active_buffer, active_surface_count, attached_buffer_count, find_surface, surface_bounds,
     },
 };
 
@@ -189,8 +188,10 @@ fn handle_public_request(
             reply.words[1] = slot.id as u64;
             reply.handle_count = 1;
             reply.handles[0] = pair.second;
-            reply.handle_rights[0] =
-                rt::rights::SEND | rt::rights::RECEIVE | rt::rights::DUPLICATE | rt::rights::TRANSFER;
+            reply.handle_rights[0] = rt::rights::SEND
+                | rt::rights::RECEIVE
+                | rt::rights::DUPLICATE
+                | rt::rights::TRANSFER;
             let _ = rt::channel_send(reply_handle, &reply);
             let _ = rt::handle_close(reply_handle);
             let _ = rt::handle_close(pair.second);

@@ -1,13 +1,12 @@
 use core::str;
 
+use rt::{IPC_MAX_HANDLES, LogEvent, LogSeverity, ServiceId, TaskStateCode, rights};
 use serviceos_bundle::{RestartPolicy, ServiceStartupMode};
 use serviceos_userspace_runtime as rt;
-use rt::{LogEvent, LogSeverity, ServiceId, TaskStateCode, rights, IPC_MAX_HANDLES};
 
 use crate::control::{load_manifest_from_storage, pump_control_channels};
 use crate::state::{
-    BootstrapResources, GraphStatus, ServicePhase, ServiceSlot, MAX_INDEX_BYTES,
-    MAX_SERVICE_SLOTS,
+    BootstrapResources, GraphStatus, MAX_INDEX_BYTES, MAX_SERVICE_SLOTS, ServicePhase, ServiceSlot,
 };
 use crate::util::{
     allocate_slot, bootstrap_resource_for, close_slot_handles, dependencies_ready,
@@ -30,7 +29,11 @@ pub(crate) fn load_base_service_graph(
 
     let index_text =
         core::str::from_utf8(&index_buffer[..loaded]).map_err(|_| rt::Error::InvalidArgument)?;
-    for line in index_text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+    for line in index_text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
         let manifest = load_manifest_from_storage(slots, *service_count, line)?;
         let slot_index = allocate_slot(slots, service_count)?;
         slots[slot_index] = ServiceSlot {
@@ -70,7 +73,8 @@ pub(crate) fn activate_base_service_graph(
         let ready = ready_service_count(slots, *service_count);
         if ready == total {
             graph_status.blocked_services = 0;
-            graph_status.degraded_services = count_phase(slots, *service_count, ServicePhase::Degraded) as u32;
+            graph_status.degraded_services =
+                count_phase(slots, *service_count, ServicePhase::Degraded) as u32;
             return Ok(());
         }
 
@@ -130,7 +134,8 @@ pub(crate) fn activate_base_service_graph(
         }
 
         graph_status.blocked_services = blocked;
-        graph_status.degraded_services = count_phase(slots, *service_count, ServicePhase::Degraded) as u32;
+        graph_status.degraded_services =
+            count_phase(slots, *service_count, ServicePhase::Degraded) as u32;
 
         if !pending_eager {
             return Ok(());
@@ -185,7 +190,9 @@ pub(crate) fn start_service(
     startup.words[1] = slots[index].attempts as u64;
     startup.words[2] = manifest.grant_count as u64;
     startup.words[3] = manifest.resource_count as u64;
-    startup.words[4] = bootstrap_resource.map(|(_, len, _)| len as u64).unwrap_or(0);
+    startup.words[4] = bootstrap_resource
+        .map(|(_, len, _)| len as u64)
+        .unwrap_or(0);
 
     let mut handle_index = 0usize;
     if let Some((handle, _, bootstrap_rights)) = bootstrap_resource {
@@ -202,10 +209,8 @@ pub(crate) fn start_service(
             .block
             .map(|resource| (resource.handle, resource.len, resource.rights))
         {
-            startup.handles[handle_index] = rt::handle_duplicate(
-                handle,
-                block_rights | rights::DUPLICATE | rights::TRANSFER,
-            )?;
+            startup.handles[handle_index] =
+                rt::handle_duplicate(handle, block_rights | rights::DUPLICATE | rights::TRANSFER)?;
             startup.handle_rights[handle_index] = block_rights;
             startup.handle_count += 1;
             handle_index += 1;
@@ -294,7 +299,10 @@ pub(crate) fn wait_until_ready(
         if slot.phase == ServicePhase::Ready {
             return Ok(());
         }
-        if matches!(slot.phase, ServicePhase::Backoff | ServicePhase::Degraded | ServicePhase::Exited) {
+        if matches!(
+            slot.phase,
+            ServicePhase::Backoff | ServicePhase::Degraded | ServicePhase::Exited
+        ) {
             return Err(rt::Error::Busy);
         }
         let status = rt::task_status(slot.task_handle)?;
@@ -309,7 +317,8 @@ pub(crate) fn wait_until_ready(
         }
         if slot.manifest.ready_timeout_ticks != 0 {
             let now = rt::monotonic_now()?;
-            if now.saturating_sub(slot.last_start_tick) >= slot.manifest.ready_timeout_ticks as u64 {
+            if now.saturating_sub(slot.last_start_tick) >= slot.manifest.ready_timeout_ticks as u64
+            {
                 return Err(rt::Error::Busy);
             }
         }
@@ -342,7 +351,7 @@ pub(crate) fn ensure_service_ready(
                 bootstrap_resources,
                 service_id,
                 boot_ui,
-            )
+            );
         }
         ServicePhase::Degraded | ServicePhase::Exited => return Err(rt::Error::Busy),
     }
@@ -401,7 +410,8 @@ pub(crate) fn supervision_loop(
                 continue;
             }
 
-            if slots[index].phase == ServicePhase::Backoff && now >= slots[index].next_restart_tick {
+            if slots[index].phase == ServicePhase::Backoff && now >= slots[index].next_restart_tick
+            {
                 if dependencies_ready(slots, *service_count, index) {
                     let service_id = slots[index].manifest.service_id;
                     let _ = fallback_logf(format_args!(
@@ -485,7 +495,9 @@ pub(crate) fn supervision_loop(
             slots[index].last_exit_code = status.exit_code;
             close_slot_handles(&mut slots[index]);
 
-            if status.exit_code == 0 && slots[index].manifest.startup == ServiceStartupMode::OnDemand {
+            if status.exit_code == 0
+                && slots[index].manifest.startup == ServiceStartupMode::OnDemand
+            {
                 slots[index].phase = ServicePhase::Dormant;
                 slots[index].restart_requested = false;
                 publish_manager_status(
@@ -605,8 +617,10 @@ pub(crate) fn supervision_loop(
             }
         }
 
-        graph_status.blocked_services = count_phase(slots, *service_count, ServicePhase::WaitingDependencies) as u32;
-        graph_status.degraded_services = count_phase(slots, *service_count, ServicePhase::Degraded) as u32;
+        graph_status.blocked_services =
+            count_phase(slots, *service_count, ServicePhase::WaitingDependencies) as u32;
+        graph_status.degraded_services =
+            count_phase(slots, *service_count, ServicePhase::Degraded) as u32;
 
         if rt::yield_current().is_err() {
             return 0xf670;
@@ -663,10 +677,7 @@ fn mark_service_degraded(
     );
 }
 
-fn emit_blocked_graph_diagnostics(
-    slots: &[ServiceSlot; MAX_SERVICE_SLOTS],
-    service_count: usize,
-) {
+fn emit_blocked_graph_diagnostics(slots: &[ServiceSlot; MAX_SERVICE_SLOTS], service_count: usize) {
     for slot in &slots[..service_count] {
         if !slot.occupied || slot.phase != ServicePhase::WaitingDependencies {
             continue;

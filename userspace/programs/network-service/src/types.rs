@@ -1,7 +1,7 @@
 use smoltcp::{iface::SocketHandle, wire::Ipv4Address};
 
-use serviceos_userspace_runtime as rt;
 use rt::{NetworkConfigMode, NetworkConfigState, NetworkSocketState};
+use serviceos_userspace_runtime as rt;
 
 use crate::consts::MAX_HOSTNAME_BYTES;
 

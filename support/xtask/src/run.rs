@@ -34,6 +34,8 @@ fn run_qemu_virt(artifacts: &BuildArtifacts) -> Result<(), Box<dyn Error>> {
     let qemu_binary = find_qemu_aarch64_binary().ok_or_else(|| {
         "qemu-system-aarch64 not found; install QEMU or set QEMU_SYSTEM_AARCH64 to an absolute path"
     })?;
+    let data_image = artifacts.image_root.join("serviceos-data.img");
+    ensure_virt_data_image(&data_image)?;
 
     let headless = qemu_headless();
     println!("Launching QEMU with:");
@@ -41,9 +43,10 @@ fn run_qemu_virt(artifacts: &BuildArtifacts) -> Result<(), Box<dyn Error>> {
     println!("  machine: virt,gic-version=3");
     println!("  cpu: cortex-a76");
     println!("  kernel: {}", kernel_image.display());
+    println!("  data image: {}", data_image.display());
     println!(
         "  display mode: {}",
-        if headless { "headless" } else { "nographic" }
+        if headless { "headless" } else { "graphical" }
     );
 
     let mut command = Command::new(&qemu_binary);
@@ -53,12 +56,26 @@ fn run_qemu_virt(artifacts: &BuildArtifacts) -> Result<(), Box<dyn Error>> {
     command.args(["-smp", "2"]);
     command.args(["-accel", "tcg,thread=multi"]);
     command.args(["-kernel", &kernel_image.to_string_lossy()]);
+    command.args(["-serial", "stdio"]);
     if headless {
         command.args(["-display", "none"]);
-        command.args(["-serial", "stdio"]);
     } else {
-        command.args(["-nographic"]);
+        command.args(["-display", "gtk,gl=off"]);
     }
+    command.args(["-device", "virtio-gpu-device"]);
+    command.args(["-netdev", "user,id=net0"]);
+    command.args([
+        "-device",
+        "virtio-net-device,netdev=net0,mac=52:54:00:12:34:56",
+    ]);
+    command.args(["-device", "virtio-keyboard-device"]);
+    command.args(["-device", "virtio-mouse-device"]);
+    command.args(["-device", "virtio-tablet-device"]);
+    command.args([
+        "-drive",
+        &format!("if=none,id=data0,format=raw,file={}", data_image.display()),
+    ]);
+    command.args(["-device", "virtio-blk-device,drive=data0"]);
     if let Some(extra_args) = env::var_os("QEMU_EXTRA_ARGS") {
         for arg in extra_args.to_string_lossy().split_whitespace() {
             command.arg(arg);
@@ -74,6 +91,18 @@ fn run_qemu_virt(artifacts: &BuildArtifacts) -> Result<(), Box<dyn Error>> {
         )
     })?;
     ensure_success(status, "QEMU virt run failed")
+}
+
+fn ensure_virt_data_image(data_image: &Path) -> Result<(), Box<dyn Error>> {
+    if data_image.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = data_image.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let file = std::fs::File::create(data_image)?;
+    file.set_len(64 * 1024 * 1024)?;
+    Ok(())
 }
 
 fn find_qemu_aarch64_binary() -> Option<PathBuf> {

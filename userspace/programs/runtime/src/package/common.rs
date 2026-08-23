@@ -1,13 +1,11 @@
 use crate::{
-    channel_call, pack_bytes, package_status_error, package_status_from_word, Error, Handle, PackageChannel,
-    PackageRepositorySyncState, PackageRepositoryTrustMode, PackageRing, PackageStatus, PackageTag,
-    PackageTrustState, RawMessage, Result, ServiceId, IPC_MAX_WORDS,
+    Error, Handle, IPC_MAX_WORDS, PackageChannel, PackageRepositorySyncState,
+    PackageRepositoryTrustMode, PackageRing, PackageStatus, PackageTag, PackageTrustState,
+    RawMessage, Result, ServiceId, channel_call, pack_bytes, package_status_error,
+    package_status_from_word,
 };
 
-pub(crate) fn send_request(
-    package_handle: Handle,
-    mut request: RawMessage,
-) -> Result<RawMessage> {
+pub(crate) fn send_request(package_handle: Handle, mut request: RawMessage) -> Result<RawMessage> {
     channel_call(package_handle, &mut request)
 }
 
@@ -53,12 +51,8 @@ pub(crate) fn package_trust_mode_from_word(value: u64) -> PackageRepositoryTrust
 pub(crate) fn package_repo_sync_state_from_word(value: u64) -> PackageRepositorySyncState {
     match value as u32 {
         x if x == PackageRepositorySyncState::Ready as u32 => PackageRepositorySyncState::Ready,
-        x if x == PackageRepositorySyncState::Offline as u32 => {
-            PackageRepositorySyncState::Offline
-        }
-        x if x == PackageRepositorySyncState::Failed as u32 => {
-            PackageRepositorySyncState::Failed
-        }
+        x if x == PackageRepositorySyncState::Offline as u32 => PackageRepositorySyncState::Offline,
+        x if x == PackageRepositorySyncState::Failed as u32 => PackageRepositorySyncState::Failed,
         _ => PackageRepositorySyncState::Idle,
     }
 }

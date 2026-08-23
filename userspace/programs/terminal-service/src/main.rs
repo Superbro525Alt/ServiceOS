@@ -6,16 +6,14 @@ mod requests;
 mod session;
 mod state;
 
-use serviceos_userspace_runtime as rt;
 use rt::{ControlTag, RawMessage, ServiceId};
+use serviceos_userspace_runtime as rt;
 
 use crate::{
     logging::poll_lifecycle,
     requests::{handle_public_request, handle_session_message},
     session::release_session,
-    state::{
-        MAX_PUBLIC_REQUESTS_PER_TURN, MAX_SESSION_MESSAGES_PER_TURN, MAX_SESSIONS, Session,
-    },
+    state::{MAX_PUBLIC_REQUESTS_PER_TURN, MAX_SESSION_MESSAGES_PER_TURN, MAX_SESSIONS, Session},
 };
 
 rt::entry!(main);

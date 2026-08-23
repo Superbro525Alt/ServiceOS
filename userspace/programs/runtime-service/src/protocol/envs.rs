@@ -1,8 +1,8 @@
-use serviceos_userspace_runtime as rt;
 use rt::{
     LogEvent, LogSeverity, PermissionPolicyState, RawMessage, RuntimeStatus, RuntimeTag,
     SecurityAuditKind,
 };
+use serviceos_userspace_runtime as rt;
 
 use crate::{
     consts::{MAX_AUDIT, MAX_ENVS},
@@ -114,7 +114,12 @@ pub(crate) fn handle_audit_list_request(
     let index = message.words[0] as usize;
     let mut reply = RawMessage::empty(RuntimeTag::AuditListReply as u32);
     reply.word_count = 6;
-    if let Some(entry) = audits.iter().filter(|entry| entry.occupied).nth(index).copied() {
+    if let Some(entry) = audits
+        .iter()
+        .filter(|entry| entry.occupied)
+        .nth(index)
+        .copied()
+    {
         reply.words[0] = RuntimeStatus::Ok as u32 as u64;
         reply.words[1] = entry.sequence as u64;
         reply.words[2] = entry.kind as u32 as u64;

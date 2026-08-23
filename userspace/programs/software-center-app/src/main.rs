@@ -6,14 +6,17 @@ mod control;
 mod render;
 mod state;
 
+use rt::{ControlTag, RawMessage};
 use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
-use rt::{ControlTag, RawMessage};
 
 use crate::actions::{error_label, reload_catalog, set_statusf};
-use crate::control::{poll_control, ControlFlow};
+use crate::control::{ControlFlow, poll_control};
 use crate::render::render;
-use crate::state::{AppState, CatalogEntry, BUFFER_BYTES, BUFFER_HEIGHT, BUFFER_WIDTH, MAX_ENTRIES, MAX_STATUS_BYTES, SURFACE_BUFFER_SLOTS};
+use crate::state::{
+    AppState, BUFFER_BYTES, BUFFER_HEIGHT, BUFFER_WIDTH, CatalogEntry, MAX_ENTRIES,
+    MAX_STATUS_BYTES, SURFACE_BUFFER_SLOTS,
+};
 
 rt::entry!(main);
 
@@ -23,7 +26,10 @@ fn main() -> u64 {
     if rt::channel_receive_blocking(bootstrap, &mut startup).is_err() {
         return 0xf501;
     }
-    if startup.tag != ControlTag::Startup as u32 || startup.handle_count < 3 || startup.word_count < 4 {
+    if startup.tag != ControlTag::Startup as u32
+        || startup.handle_count < 3
+        || startup.word_count < 4
+    {
         return 0xf502;
     }
 
@@ -56,8 +62,7 @@ fn main() -> u64 {
 
     set_statusf(&mut state, format_args!("Loading catalog..."));
     let (slot, buffer) = buffers.current();
-    if render(&mut presenter, slot, buffer, package_handle, &state).is_err()
-    {
+    if render(&mut presenter, slot, buffer, package_handle, &state).is_err() {
         return 0xf503;
     }
 

@@ -7,9 +7,9 @@ mod state;
 mod tabs;
 mod vt;
 
+use rt::{AppControlTag, ControlTag, RawMessage};
 use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
-use rt::{AppControlTag, ControlTag, RawMessage};
 
 pub(crate) use state::*;
 
@@ -21,7 +21,10 @@ fn main() -> u64 {
     if rt::channel_receive_blocking(bootstrap, &mut startup).is_err() {
         return 0xfa01;
     }
-    if startup.tag != ControlTag::Startup as u32 || startup.handle_count < 3 || startup.word_count < 4 {
+    if startup.tag != ControlTag::Startup as u32
+        || startup.handle_count < 3
+        || startup.word_count < 4
+    {
         return 0xfa02;
     }
 
@@ -82,7 +85,13 @@ fn main() -> u64 {
             Err(_) => return 0xfa06,
         }
 
-        match control::poll_control(control_handle, &mut state, &mut width, &mut height, &mut focused) {
+        match control::poll_control(
+            control_handle,
+            &mut state,
+            &mut width,
+            &mut height,
+            &mut focused,
+        ) {
             Ok((control::ControlFlow::Continue, control_changed, control_worked)) => {
                 changed |= control_changed;
                 did_work |= control_worked;
@@ -103,7 +112,12 @@ fn main() -> u64 {
             if state.columns != old_columns {
                 for tab_index in 0..MAX_TABS {
                     if state.tabs[tab_index].occupied {
-                        vt::reflow_tab(&mut state.tabs[tab_index], tab_index, old_columns, state.columns);
+                        vt::reflow_tab(
+                            &mut state.tabs[tab_index],
+                            tab_index,
+                            old_columns,
+                            state.columns,
+                        );
                     }
                 }
             }
@@ -132,7 +146,10 @@ fn main() -> u64 {
             }
             let mut output_budget = MAX_OUTPUT_MESSAGES_PER_TAB_PER_TURN;
             loop {
-                match control::receive_terminal_message(state.tabs[tab_index].session_handle, &mut data) {
+                match control::receive_terminal_message(
+                    state.tabs[tab_index].session_handle,
+                    &mut data,
+                ) {
                     Ok(Some(control::TerminalMessage::Output(len))) => {
                         vt::apply_output(&mut state, tab_index, &data[..len]);
                         changed = true;

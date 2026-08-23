@@ -1,13 +1,13 @@
-use serviceos_userspace_runtime as rt;
 use rt::{AppControlTag, RawMessage};
 use serviceos_desktop_ui as ui;
+use serviceos_userspace_runtime as rt;
 
-use crate::actions::{apply_selected_package_action, sync_repositories, PackageAction};
+use crate::actions::{PackageAction, apply_selected_package_action, sync_repositories};
 use crate::render::render;
 use crate::state::{
-    clamp_view, compute_layout, ensure_selected_visible, scroll_down, scroll_up, selected_entry,
-    visible_row_count, AppState, KEY_BACKSPACE, KEY_DELETE, KEY_DOWN, KEY_ENTER, KEY_PAGE_DOWN,
-    KEY_PAGE_UP, KEY_R, KEY_UP, ROW_HEIGHT, SURFACE_BUFFER_SLOTS,
+    AppState, KEY_BACKSPACE, KEY_DELETE, KEY_DOWN, KEY_ENTER, KEY_PAGE_DOWN, KEY_PAGE_UP, KEY_R,
+    KEY_UP, ROW_HEIGHT, SURFACE_BUFFER_SLOTS, clamp_view, compute_layout, ensure_selected_visible,
+    scroll_down, scroll_up, selected_entry, visible_row_count,
 };
 
 pub(crate) enum ControlFlow {
@@ -28,7 +28,9 @@ pub(crate) fn poll_control(
     loop {
         let mut message = RawMessage::empty(0);
         match rt::channel_receive_nonblocking(control_handle, &mut message) {
-            Ok(()) if message.tag == AppControlTag::FocusChanged as u32 && message.word_count > 0 => {
+            Ok(())
+                if message.tag == AppControlTag::FocusChanged as u32 && message.word_count > 0 =>
+            {
                 state.focused = message.words[0] != 0;
                 changed = true;
                 did_work = true;
@@ -64,7 +66,10 @@ pub(crate) fn poll_control(
             }
             Ok(()) if message.tag == AppControlTag::Key as u32 && message.word_count >= 2 => {
                 did_work = true;
-                if matches!(ui::decode_app_key_action(message.words[0]), Some(rt::AppKeyAction::Down)) {
+                if matches!(
+                    ui::decode_app_key_action(message.words[0]),
+                    Some(rt::AppKeyAction::Down)
+                ) {
                     changed |= handle_key_down(package_handle, state, message.words[1] as u32)?;
                 }
             }
@@ -99,13 +104,26 @@ fn handle_pointer_down(
         sync_repositories(package_handle, state);
         return Ok(true);
     }
-    if y >= layout.install_y0 && y < layout.install_y1 && x >= layout.install_x0 && x < layout.install_x1 {
+    if y >= layout.install_y0
+        && y < layout.install_y1
+        && x >= layout.install_x0
+        && x < layout.install_x1
+    {
         if let Some(entry) = selected_entry(state) {
-            apply_selected_package_action(package_handle, state, entry, PackageAction::InstallOrUpdate);
+            apply_selected_package_action(
+                package_handle,
+                state,
+                entry,
+                PackageAction::InstallOrUpdate,
+            );
             return Ok(true);
         }
     }
-    if y >= layout.remove_y0 && y < layout.remove_y1 && x >= layout.remove_x0 && x < layout.remove_x1 {
+    if y >= layout.remove_y0
+        && y < layout.remove_y1
+        && x >= layout.remove_x0
+        && x < layout.remove_x1
+    {
         if let Some(entry) = selected_entry(state) {
             apply_selected_package_action(package_handle, state, entry, PackageAction::Remove);
             return Ok(true);
@@ -156,7 +174,12 @@ fn handle_key_down(package_handle: rt::Handle, state: &mut AppState, key: u32) -
         }
         KEY_ENTER => {
             if let Some(entry) = selected_entry(state) {
-                apply_selected_package_action(package_handle, state, entry, PackageAction::InstallOrUpdate);
+                apply_selected_package_action(
+                    package_handle,
+                    state,
+                    entry,
+                    PackageAction::InstallOrUpdate,
+                );
                 return Ok(true);
             }
         }

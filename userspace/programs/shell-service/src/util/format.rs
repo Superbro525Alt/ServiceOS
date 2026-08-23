@@ -1,7 +1,7 @@
 use core::fmt::Write;
 
-use serviceos_userspace_runtime as rt;
 use rt::ConfigKey;
+use serviceos_userspace_runtime as rt;
 
 pub(crate) fn config_value_text(key: ConfigKey, value: u64) -> FixedValueText {
     match key {
@@ -95,9 +95,5 @@ impl Write for FixedValueText {
 }
 
 pub(crate) fn printable_version(value: &str) -> &str {
-    if value.is_empty() {
-        "-"
-    } else {
-        value
-    }
+    if value.is_empty() { "-" } else { value }
 }

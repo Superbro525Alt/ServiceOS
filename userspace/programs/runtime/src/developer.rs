@@ -1,10 +1,10 @@
 use crate::{
-    channel_create, channel_receive_blocking, channel_send, handle_close, handle_duplicate,
-    unpack_bytes, developer_artifact_format_from_word, developer_job_state_from_word,
-    developer_status_error, developer_status_from_word, developer_target_from_word,
-    developer_toolchain_state_from_word, rights, DeveloperArtifactFormat, DeveloperJobInfo,
-    DeveloperStatus, DeveloperTag, DeveloperTarget, DeveloperToolchainInfo, DeveloperWorkspaceInfo,
-    Error, Handle, RawMessage, Result, IPC_MAX_WORDS,
+    DeveloperArtifactFormat, DeveloperJobInfo, DeveloperStatus, DeveloperTag, DeveloperTarget,
+    DeveloperToolchainInfo, DeveloperWorkspaceInfo, Error, Handle, IPC_MAX_WORDS, RawMessage,
+    Result, channel_create, channel_receive_blocking, channel_send,
+    developer_artifact_format_from_word, developer_job_state_from_word, developer_status_error,
+    developer_status_from_word, developer_target_from_word, developer_toolchain_state_from_word,
+    handle_close, handle_duplicate, rights, unpack_bytes,
 };
 
 pub fn developer_toolchain_list(
@@ -204,8 +204,7 @@ pub fn developer_workspace_status(
                 &mut combined,
             )?;
             name[..name_len].copy_from_slice(&combined[..name_len]);
-            source_path[..source_len]
-                .copy_from_slice(&combined[name_len..name_len + source_len]);
+            source_path[..source_len].copy_from_slice(&combined[name_len..name_len + source_len]);
             Ok(DeveloperWorkspaceInfo {
                 workspace_id,
                 target_mask,

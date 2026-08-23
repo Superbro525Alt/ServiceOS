@@ -1,9 +1,9 @@
 use core::str;
 
-use serviceos_userspace_runtime as rt;
 use rt::{PermissionPolicyState, ServiceId, ServiceImageId};
+use serviceos_userspace_runtime as rt;
 
-use crate::util::{parse_service_name, ShellOutput, write_output_linef};
+use crate::util::{ShellOutput, parse_service_name, write_output_linef};
 
 const MAX_SECURITY_AUDIT: usize = 8;
 
@@ -23,25 +23,67 @@ where
                     return write_output_linef(output, format_args!("unknown app: {}", name));
                 };
                 match parts.next() {
-                    Some("allow") => cmd_security_app_set(bootstrap, output, image_id, PermissionPolicyState::Allowed),
-                    Some("block") => cmd_security_app_set(bootstrap, output, image_id, PermissionPolicyState::Blocked),
-                    Some("default") => cmd_security_app_set(bootstrap, output, image_id, PermissionPolicyState::DefaultAllow),
+                    Some("allow") => cmd_security_app_set(
+                        bootstrap,
+                        output,
+                        image_id,
+                        PermissionPolicyState::Allowed,
+                    ),
+                    Some("block") => cmd_security_app_set(
+                        bootstrap,
+                        output,
+                        image_id,
+                        PermissionPolicyState::Blocked,
+                    ),
+                    Some("default") => cmd_security_app_set(
+                        bootstrap,
+                        output,
+                        image_id,
+                        PermissionPolicyState::DefaultAllow,
+                    ),
                     None => cmd_security_app_info(bootstrap, output, image_id),
-                    _ => write_output_linef(output, format_args!("usage: security app <name> [allow|block|default]")),
+                    _ => write_output_linef(
+                        output,
+                        format_args!("usage: security app <name> [allow|block|default]"),
+                    ),
                 }
             }
-            None => write_output_linef(output, format_args!("usage: security app <name> [allow|block|default]")),
+            None => write_output_linef(
+                output,
+                format_args!("usage: security app <name> [allow|block|default]"),
+            ),
         },
         Some("runtimes") => cmd_security_runtimes(bootstrap, output),
         Some("runtime") => match parts.next().and_then(|v| v.parse::<u32>().ok()) {
             Some(env_id) => match parts.next() {
-                Some("approve") => cmd_security_runtime_set(bootstrap, output, env_id, PermissionPolicyState::Allowed),
-                Some("deny") => cmd_security_runtime_set(bootstrap, output, env_id, PermissionPolicyState::Blocked),
-                Some("reset") => cmd_security_runtime_set(bootstrap, output, env_id, PermissionPolicyState::DefaultAllow),
+                Some("approve") => cmd_security_runtime_set(
+                    bootstrap,
+                    output,
+                    env_id,
+                    PermissionPolicyState::Allowed,
+                ),
+                Some("deny") => cmd_security_runtime_set(
+                    bootstrap,
+                    output,
+                    env_id,
+                    PermissionPolicyState::Blocked,
+                ),
+                Some("reset") => cmd_security_runtime_set(
+                    bootstrap,
+                    output,
+                    env_id,
+                    PermissionPolicyState::DefaultAllow,
+                ),
                 None => cmd_security_runtime_info(bootstrap, output, env_id),
-                _ => write_output_linef(output, format_args!("usage: security runtime <env-id> [approve|deny|reset]")),
+                _ => write_output_linef(
+                    output,
+                    format_args!("usage: security runtime <env-id> [approve|deny|reset]"),
+                ),
             },
-            None => write_output_linef(output, format_args!("usage: security runtime <env-id> [approve|deny|reset]")),
+            None => write_output_linef(
+                output,
+                format_args!("usage: security runtime <env-id> [approve|deny|reset]"),
+            ),
         },
         Some("repos") => cmd_security_repos(bootstrap, output),
         Some("package") => match parts.next().and_then(parse_service_name) {
@@ -53,12 +95,17 @@ where
             None => write_output_linef(output, format_args!("usage: security workspace <id>")),
         },
         Some("audit") => {
-            let count = parts.next().and_then(|v| v.parse::<usize>().ok()).unwrap_or(MAX_SECURITY_AUDIT);
+            let count = parts
+                .next()
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(MAX_SECURITY_AUDIT);
             cmd_security_audit(bootstrap, output, count)
         }
         _ => write_output_linef(
             output,
-            format_args!("usage: security <apps|app|runtimes|runtime|repos|package|workspace|audit> ..."),
+            format_args!(
+                "usage: security <apps|app|runtimes|runtime|repos|package|workspace|audit> ..."
+            ),
         ),
     }
 }
@@ -83,7 +130,11 @@ fn cmd_security_apps(bootstrap: rt::Handle, output: ShellOutput) -> rt::Result<(
         index += 1;
     }
     let _ = rt::handle_close(security);
-    if any { Ok(()) } else { write_output_linef(output, format_args!("no security policies")) }
+    if any {
+        Ok(())
+    } else {
+        write_output_linef(output, format_args!("no security policies"))
+    }
 }
 
 fn cmd_security_app_info(
@@ -96,11 +147,20 @@ fn cmd_security_app_info(
     let _ = rt::handle_close(security);
     let name = str::from_utf8(&info.name[..info.name_len as usize]).unwrap_or("?");
     write_output_linef(output, format_args!("{}", name))?;
-    write_output_linef(output, format_args!("  policy={}", policy_name(info.policy)))?;
-    write_output_linef(output, format_args!("  perms={}", permission_summary(info.permissions)))?;
     write_output_linef(
         output,
-        format_args!("  sensitive={}", permission_summary(info.sensitive_permissions)),
+        format_args!("  policy={}", policy_name(info.policy)),
+    )?;
+    write_output_linef(
+        output,
+        format_args!("  perms={}", permission_summary(info.permissions)),
+    )?;
+    write_output_linef(
+        output,
+        format_args!(
+            "  sensitive={}",
+            permission_summary(info.sensitive_permissions)
+        ),
     )
 }
 
@@ -156,9 +216,18 @@ fn cmd_security_runtime_info(
     let env = rt::runtime_env_status(runtime, env_id)?;
     let _ = rt::handle_close(runtime);
     write_output_linef(output, format_args!("env{}", env.env_id))?;
-    write_output_linef(output, format_args!("  kind={}", runtime_kind_name(env.kind)))?;
-    write_output_linef(output, format_args!("  state={}", runtime_env_state_name(env.state)))?;
-    write_output_linef(output, format_args!("  caps={}", runtime_cap_summary(env.capabilities)))
+    write_output_linef(
+        output,
+        format_args!("  kind={}", runtime_kind_name(env.kind)),
+    )?;
+    write_output_linef(
+        output,
+        format_args!("  state={}", runtime_env_state_name(env.state)),
+    )?;
+    write_output_linef(
+        output,
+        format_args!("  caps={}", runtime_cap_summary(env.capabilities)),
+    )
 }
 
 fn cmd_security_runtime_set(
@@ -207,7 +276,15 @@ fn cmd_security_package(
     let mut rollback = [0u8; 24];
     let mut latest = [0u8; 24];
     let mut source = [0u8; 96];
-    let info = rt::package_provenance(package, service_id, &mut installed, &mut active, &mut rollback, &mut latest, &mut source)?;
+    let info = rt::package_provenance(
+        package,
+        service_id,
+        &mut installed,
+        &mut active,
+        &mut rollback,
+        &mut latest,
+        &mut source,
+    )?;
     let _ = rt::handle_close(package);
     write_output_linef(
         output,
@@ -222,7 +299,11 @@ fn cmd_security_package(
     )
 }
 
-fn cmd_security_workspace(bootstrap: rt::Handle, output: ShellOutput, workspace_id: u32) -> rt::Result<()> {
+fn cmd_security_workspace(
+    bootstrap: rt::Handle,
+    output: ShellOutput,
+    workspace_id: u32,
+) -> rt::Result<()> {
     let developer = rt::lookup_service(bootstrap, ServiceId::Developer)?;
     let mut name = [0u8; 64];
     let mut source = [0u8; 96];
@@ -232,14 +313,22 @@ fn cmd_security_workspace(bootstrap: rt::Handle, output: ShellOutput, workspace_
     let source = str::from_utf8(&source[..info.source_path_len as usize]).unwrap_or("?");
     write_output_linef(output, format_args!("{}", name))?;
     write_output_linef(output, format_args!("  source={}", source))?;
-    write_output_linef(output, format_args!("  review=package-delivered workspace metadata"))?;
-    write_output_linef(output, format_args!("  build-authority=read source, emit artifact, no ambient network"))
+    write_output_linef(
+        output,
+        format_args!("  review=package-delivered workspace metadata"),
+    )?;
+    write_output_linef(
+        output,
+        format_args!("  build-authority=read source, emit artifact, no ambient network"),
+    )
 }
 
 fn cmd_security_audit(bootstrap: rt::Handle, output: ShellOutput, count: usize) -> rt::Result<()> {
     let security = rt::security_lookup(bootstrap)?;
     for index in 0..count {
-        let Some(entry) = rt::security_audit_list(security, index)? else { break };
+        let Some(entry) = rt::security_audit_list(security, index)? else {
+            break;
+        };
         write_output_linef(
             output,
             format_args!(
@@ -259,7 +348,9 @@ fn cmd_security_audit(bootstrap: rt::Handle, output: ShellOutput, count: usize) 
         Err(_) => return Ok(()),
     };
     for index in 0..count {
-        let Some(entry) = rt::runtime_audit_list(runtime, index)? else { break };
+        let Some(entry) = rt::runtime_audit_list(runtime, index)? else {
+            break;
+        };
         write_output_linef(
             output,
             format_args!(

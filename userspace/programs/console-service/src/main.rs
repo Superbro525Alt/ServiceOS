@@ -8,14 +8,14 @@ mod public;
 mod session;
 mod state;
 
-use serviceos_userspace_runtime as rt;
 use rt::{RawMessage, ServiceId};
+use serviceos_userspace_runtime as rt;
 
 use crate::input::handle_input_byte;
 use crate::lifecycle::poll_lifecycle;
 use crate::public::handle_public_message;
 use crate::session::handle_session_message;
-use crate::state::{release_session, BootProgress, Session, MAX_SESSIONS};
+use crate::state::{BootProgress, MAX_SESSIONS, Session, release_session};
 
 rt::entry!(main);
 

@@ -199,9 +199,7 @@ pub fn parse(dtb_ptr: *const u8) -> Result<DeviceTreeBootInfo<'static>, DeviceTr
             let regions = InterruptControllerRegions {
                 distributor: MemoryRange {
                     start: PhysicalAddress::new(distributor.address),
-                    end: PhysicalAddress::new(
-                        distributor.address.saturating_add(distributor.len),
-                    ),
+                    end: PhysicalAddress::new(distributor.address.saturating_add(distributor.len)),
                 },
                 redistributors: MemoryRange {
                     start: PhysicalAddress::new(redistributors.address),

@@ -1,5 +1,5 @@
-use serviceos_userspace_runtime as rt;
 use rt::{LogDomain, LogEvent, LogSeverity, ServiceId};
+use serviceos_userspace_runtime as rt;
 
 pub(crate) fn emit_log(
     log_handle: rt::Handle,

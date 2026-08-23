@@ -7,6 +7,7 @@ mod lifecycle;
 mod path;
 mod persistent;
 mod root;
+mod selftest;
 mod state;
 mod util;
 
@@ -14,11 +15,12 @@ pub(crate) use persistent::{
     initialize_persistent_store, release_blob_session, release_directory_session,
     release_mutable_entry,
 };
+pub(crate) use root::stamp_blob_session;
 pub(crate) use state::*;
 
-use serviceos_bundle::{parse_boot_store_entry, parse_boot_store_header, BootStoreHeader};
-use serviceos_userspace_runtime as rt;
 use rt::{ControlTag, RawMessage, ServiceId};
+use serviceos_bundle::{BootStoreHeader, parse_boot_store_entry, parse_boot_store_header};
+use serviceos_userspace_runtime as rt;
 
 rt::entry!(main);
 
@@ -28,7 +30,10 @@ fn main() -> u64 {
     if rt::channel_receive_blocking(bootstrap, &mut startup).is_err() {
         return 0xf501;
     }
-    if startup.tag != ControlTag::Startup as u32 || startup.handle_count < 1 || startup.word_count < 5 {
+    if startup.tag != ControlTag::Startup as u32
+        || startup.handle_count < 1
+        || startup.word_count < 5
+    {
         return 0xf502;
     }
 
@@ -66,10 +71,11 @@ fn main() -> u64 {
     }
 
     let mut entries = [EntrySlot::empty(); MAX_BOOTSTORE_ENTRIES];
-    for index in 0..entry_count {
-        let start = index * BOOT_ENTRY_BYTES;
-        let end = start + BOOT_ENTRY_BYTES;
-        let record = match parse_boot_store_entry(&table_bytes[start..end]) {
+    for (index, record_bytes) in table_bytes[..entry_table_len]
+        .chunks_exact(BOOT_ENTRY_BYTES)
+        .enumerate()
+    {
+        let record = match parse_boot_store_entry(record_bytes) {
             Ok(record) => record,
             Err(_) => return 0xf507,
         };
@@ -81,10 +87,7 @@ fn main() -> u64 {
                 "storage",
                 format_args!(
                     "invalid entry index={} offset={} len={} total={}",
-                    index,
-                    record.data_offset,
-                    record.data_len,
-                    bootstore_len,
+                    index, record.data_offset, record.data_len, bootstore_len,
                 ),
             );
             return 0xf509;
@@ -109,20 +112,25 @@ fn main() -> u64 {
     let mut blob_sessions = [BlobSession::empty(); MAX_BLOB_SESSIONS];
     let mut directory_sessions = [DirectorySession::empty(); MAX_DIRECTORY_SESSIONS];
     let mut mutable_entries = [MutableEntry::empty(); MAX_MUTABLE_ENTRIES];
+    let mut mounts: MountTable = [rt::StorageMount::empty(); rt::STORAGE_MOUNT_TABLE_MAX];
+    crate::persistent::seed_mount_table(&mut mounts);
     let mut persistent_store = if block_handle != rt::INVALID_HANDLE {
-        match initialize_persistent_store(block_handle, &mut mutable_entries) {
+        match initialize_persistent_store(block_handle, &mut mounts, &mut mutable_entries) {
             Ok(store) => store,
             Err(error) => {
                 let _ = rt::write_logf(
                     "storage",
                     format_args!("persistent backing unavailable error={:?}", error),
                 );
+                crate::persistent::seed_mount_table(&mut mounts);
                 None
             }
         }
     } else {
+        crate::persistent::seed_mount_table(&mut mounts);
         None
     };
+    crate::persistent::ensure_boot_root(&mut mounts);
     let _ = rt::write_logf(
         "storage",
         format_args!(
@@ -131,6 +139,14 @@ fn main() -> u64 {
             bootstore_len,
             persistent_store.is_some(),
         ),
+    );
+
+    selftest::run_boot_selftest(
+        &mut mounts,
+        &mut mutable_entries,
+        &mut blob_sessions,
+        &mut directory_sessions,
+        persistent_store.as_mut(),
     );
 
     loop {
@@ -146,6 +162,7 @@ fn main() -> u64 {
             Ok(()) => {
                 did_work = true;
                 if root::handle_root_request(
+                    &mut mounts,
                     &entries[..entry_count],
                     &mut mutable_entries,
                     &mut blob_sessions,
@@ -172,6 +189,7 @@ fn main() -> u64 {
                     did_work = true;
                     if blob::handle_blob_request(
                         bootstore_handle,
+                        &mounts,
                         &mut mutable_entries,
                         persistent_store.as_mut(),
                         session,
@@ -199,6 +217,7 @@ fn main() -> u64 {
                 Ok(()) => {
                     did_work = true;
                     if directory::handle_directory_request(
+                        &mut mounts,
                         &entries[..entry_count],
                         &mut mutable_entries,
                         &mut directory_sessions,

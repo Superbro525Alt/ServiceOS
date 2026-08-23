@@ -1,13 +1,11 @@
-use serviceos_userspace_runtime as rt;
 use rt::{GraphicsStatus, RawMessage, SurfaceTag};
+use serviceos_userspace_runtime as rt;
 
-use crate::{
-    types::{
-        BufferBinding, DirtyState, MAX_BUFFER_ROW_BYTES, MAX_LABEL_BYTES,
-        MAX_SURFACE_BUFFERS, MAX_SURFACE_LABELS, MAX_SURFACE_MESSAGES_PER_SLOT_PER_TURN,
-        MAX_SURFACE_RECTS, MAX_SURFACE_REQUESTS_PER_TURN, SurfaceSlot, Surfaces,
-        is_cursor_surface, release_surface, surface_bounds,
-    },
+use crate::types::{
+    BufferBinding, DirtyState, MAX_BUFFER_ROW_BYTES, MAX_LABEL_BYTES, MAX_SURFACE_BUFFERS,
+    MAX_SURFACE_LABELS, MAX_SURFACE_MESSAGES_PER_SLOT_PER_TURN, MAX_SURFACE_RECTS,
+    MAX_SURFACE_REQUESTS_PER_TURN, SurfaceSlot, Surfaces, is_cursor_surface, release_surface,
+    surface_bounds,
 };
 
 use super::common::{merge_region_dirty, reply_surface_status, unpack_bytes};
@@ -20,7 +18,10 @@ fn visible_surface_damage(surface: &SurfaceSlot) -> crate::types::DamageRect {
     }
 }
 
-fn scene_rect_damage(surface: &SurfaceSlot, rect: crate::types::RectSlot) -> crate::types::DamageRect {
+fn scene_rect_damage(
+    surface: &SurfaceSlot,
+    rect: crate::types::RectSlot,
+) -> crate::types::DamageRect {
     if !rect.occupied || !rect.visible || rect.width == 0 || rect.height == 0 || !surface.visible {
         return crate::types::DamageRect::empty();
     }
@@ -183,8 +184,13 @@ fn handle_surface_request(
             let damage = old_rect.merge(new_rect);
             if is_cursor_surface(surface) && !matches!(dirty, DirtyState::Full { .. }) {
                 *dirty = match *dirty {
-                    DirtyState::CursorOnly(existing) => DirtyState::CursorOnly(existing.merge(damage)),
-                    DirtyState::Region { damages: existing, immediate } => DirtyState::Region {
+                    DirtyState::CursorOnly(existing) => {
+                        DirtyState::CursorOnly(existing.merge(damage))
+                    }
+                    DirtyState::Region {
+                        damages: existing,
+                        immediate,
+                    } => DirtyState::Region {
                         damages: existing.push(damage),
                         immediate,
                     },
@@ -295,7 +301,8 @@ fn handle_surface_request(
                     || old.occupied != new.occupied
                 {
                     *slot = new;
-                    let damage = scene_rect_damage(surface, old).merge(scene_rect_damage(surface, new));
+                    let damage =
+                        scene_rect_damage(surface, old).merge(scene_rect_damage(surface, new));
                     if damage.width != 0 && damage.height != 0 {
                         merge_region_dirty(dirty, damage, false);
                     }
@@ -346,8 +353,8 @@ fn handle_surface_request(
                         || old.bytes[..text_len] != candidate.bytes[..text_len]
                     {
                         *slot = candidate;
-                        let damage =
-                            scene_label_damage(surface, old).merge(scene_label_damage(surface, candidate));
+                        let damage = scene_label_damage(surface, old)
+                            .merge(scene_label_damage(surface, candidate));
                         if damage.width != 0 && damage.height != 0 {
                             merge_region_dirty(dirty, damage, false);
                         }
@@ -440,13 +447,16 @@ fn handle_surface_request(
                     mark_surface_dirty(dirty, surface, false);
                 } else if is_cursor_surface(surface) && !matches!(dirty, DirtyState::Full { .. }) {
                     *dirty = match *dirty {
-                        DirtyState::CursorOnly(existing) => DirtyState::CursorOnly(existing.merge(damage)),
-                        DirtyState::Region { damages: existing, immediate } => {
-                            DirtyState::Region {
-                                damages: existing.push(damage),
-                                immediate,
-                            }
+                        DirtyState::CursorOnly(existing) => {
+                            DirtyState::CursorOnly(existing.merge(damage))
                         }
+                        DirtyState::Region {
+                            damages: existing,
+                            immediate,
+                        } => DirtyState::Region {
+                            damages: existing.push(damage),
+                            immediate,
+                        },
                         DirtyState::Clean => DirtyState::CursorOnly(damage),
                         DirtyState::Full { immediate } => DirtyState::Full { immediate },
                     };

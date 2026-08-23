@@ -31,7 +31,11 @@ pub fn clipboard_read(service_handle: Handle, buffer: &mut [u8]) -> Result<usize
     match clipboard_status_from_word(response.words[0]) {
         ClipboardStatus::Ok if response.word_count >= 2 => {
             let len = response.words[1] as usize;
-            unpack_bytes(&response.words[2..response.word_count as usize], len, buffer)?;
+            unpack_bytes(
+                &response.words[2..response.word_count as usize],
+                len,
+                buffer,
+            )?;
             Ok(len)
         }
         status => Err(clipboard_status_error(status)),
@@ -56,7 +60,11 @@ pub fn clipboard_history_entry(
             }
             let len = response.words[3] as usize;
             let mut bytes = [0u8; 64];
-            unpack_bytes(&response.words[4..response.word_count as usize], len, &mut bytes)?;
+            unpack_bytes(
+                &response.words[4..response.word_count as usize],
+                len,
+                &mut bytes,
+            )?;
             Ok(ClipboardHistoryEntry {
                 index: response.words[1] as u32,
                 active: response.words[2] != 0,

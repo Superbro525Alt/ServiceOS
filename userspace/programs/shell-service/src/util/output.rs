@@ -1,7 +1,7 @@
 use core::fmt::Write;
 
-use serviceos_userspace_runtime as rt;
 use rt::{FixedLogBuffer, LogDomain, LogEvent, LogSeverity, ServiceId};
+use serviceos_userspace_runtime as rt;
 
 pub(crate) const MAX_LISTED_SERVICES: usize = 24;
 pub(crate) const MAX_STORAGE_PATH: usize = 96;
@@ -18,10 +18,7 @@ pub struct ShellOutput {
 }
 
 impl ShellOutput {
-    pub const fn new(
-        handle: rt::Handle,
-        write: fn(rt::Handle, &str) -> rt::Result<()>,
-    ) -> Self {
+    pub const fn new(handle: rt::Handle, write: fn(rt::Handle, &str) -> rt::Result<()>) -> Self {
         Self { handle, write }
     }
 }
@@ -148,10 +145,7 @@ pub fn emit_shell_log(
     result
 }
 
-pub fn write_output_linef(
-    output: ShellOutput,
-    args: core::fmt::Arguments<'_>,
-) -> rt::Result<()> {
+pub fn write_output_linef(output: ShellOutput, args: core::fmt::Arguments<'_>) -> rt::Result<()> {
     let mut buffer = FixedLogBuffer::<256>::new();
     let _ = buffer.write_fmt(args);
     let _ = buffer.write_str("\r\n");

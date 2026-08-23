@@ -24,7 +24,7 @@ extern "C" fn serviceos_x86_64_handle_syscall_fast(frame: &mut SavedUserContext)
 
     frame.rax = result.value;
     frame.rdx = result.abi_error_code();
-    
+
     match result.action {
         SyscallAction::ReturnToCaller => 0,
         SyscallAction::YieldCurrentThread => {

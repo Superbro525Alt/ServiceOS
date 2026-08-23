@@ -1,13 +1,11 @@
+use rt::{LogEvent, LogSeverity, ManagerStatus, ManagerTag, RawMessage, ServiceId};
 use serviceos_bundle::{BOOT_STORE_PATH_MAX, ServiceStartupMode};
 use serviceos_userspace_runtime as rt;
-use rt::{LogEvent, LogSeverity, ManagerStatus, ManagerTag, RawMessage, ServiceId};
 
 use crate::{
     graph::{start_service, wait_until_ready},
-    state::{BootstrapResources, ServiceSlot, MAX_SERVICE_SLOTS},
-    util::{
-        allocate_slot, compact_service_slots, emit_manager_event, find_slot_index_checked,
-    },
+    state::{BootstrapResources, MAX_SERVICE_SLOTS, ServiceSlot},
+    util::{allocate_slot, compact_service_slots, emit_manager_event, find_slot_index_checked},
 };
 
 use super::{
@@ -35,7 +33,11 @@ pub(super) fn handle_activate_request(
 
     let path_len = message.words[0] as usize;
     let mut path_bytes = [0u8; BOOT_STORE_PATH_MAX];
-    let path = match unpack_path(&message.words[1..message.word_count as usize], path_len, &mut path_bytes) {
+    let path = match unpack_path(
+        &message.words[1..message.word_count as usize],
+        path_len,
+        &mut path_bytes,
+    ) {
         Ok(path) => path,
         Err(_) => {
             reply.words[0] = ManagerStatus::Failed as u32 as u64;

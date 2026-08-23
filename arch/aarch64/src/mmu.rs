@@ -470,7 +470,10 @@ mod imp {
         }
     }
 
-    fn unmap_page_from(root_frame: PhysicalAddress, page_start: VirtualAddress) -> Result<(), MappingError> {
+    fn unmap_page_from(
+        root_frame: PhysicalAddress,
+        page_start: VirtualAddress,
+    ) -> Result<(), MappingError> {
         if page_start.as_u64() % PAGE_BYTES != 0 {
             return Err(MappingError::AddressAlignment);
         }

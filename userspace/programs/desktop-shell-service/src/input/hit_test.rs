@@ -29,28 +29,29 @@ pub(super) fn hit_test(state: &DesktopState, x: i32, y: i32) -> HitTarget {
         let local_x = x - window.x;
         let local_y = y - window.y;
         if local_y < ui::TITLEBAR_HEIGHT as i32 {
-            let close_left =
-                window.width as i32 - ui::WINDOW_BUTTON_RIGHT_MARGIN - ui::WINDOW_BUTTON_SIZE as i32;
+            let close_left = window.width as i32
+                - ui::WINDOW_BUTTON_RIGHT_MARGIN
+                - ui::WINDOW_BUTTON_SIZE as i32;
             let minimize_left = close_left - ui::WINDOW_BUTTON_GAP - ui::WINDOW_BUTTON_SIZE as i32;
-            let maximize_left = minimize_left - ui::WINDOW_BUTTON_GAP - ui::WINDOW_BUTTON_SIZE as i32;
+            let maximize_left =
+                minimize_left - ui::WINDOW_BUTTON_GAP - ui::WINDOW_BUTTON_SIZE as i32;
             if local_x >= close_left && local_x < close_left + ui::WINDOW_BUTTON_SIZE as i32 {
                 return HitTarget::WindowClose(app_id);
             }
-            if local_x >= minimize_left
-                && local_x < minimize_left + ui::WINDOW_BUTTON_SIZE as i32
-            {
+            if local_x >= minimize_left && local_x < minimize_left + ui::WINDOW_BUTTON_SIZE as i32 {
                 return HitTarget::WindowMinimize(app_id);
             }
-            if local_x >= maximize_left
-                && local_x < maximize_left + ui::WINDOW_BUTTON_SIZE as i32
-            {
+            if local_x >= maximize_left && local_x < maximize_left + ui::WINDOW_BUTTON_SIZE as i32 {
                 return HitTarget::WindowMaximize(app_id);
             }
         }
 
         let resize_edges = resize_hit_edges(&window, local_x, local_y);
         if !resize_edges.is_empty() && !window.maximized {
-            return HitTarget::WindowResize { app_id, edges: resize_edges };
+            return HitTarget::WindowResize {
+                app_id,
+                edges: resize_edges,
+            };
         }
 
         if local_y < ui::TITLEBAR_HEIGHT as i32 {

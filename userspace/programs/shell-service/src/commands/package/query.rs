@@ -1,9 +1,11 @@
-use serviceos_userspace_runtime as rt;
 use rt::ServiceId;
+use serviceos_userspace_runtime as rt;
 
-use crate::util::{printable_version, service_name, write_output_linef, ShellOutput, MAX_VERSION_BYTES};
+use crate::util::{
+    MAX_VERSION_BYTES, ShellOutput, printable_version, service_name, write_output_linef,
+};
 
-use super::parse::{channel_name, ring_name, trust_state_name, MAX_PACKAGE_TEXT};
+use super::parse::{MAX_PACKAGE_TEXT, channel_name, ring_name, trust_state_name};
 
 pub(super) fn cmd_pkg_list(bootstrap: rt::Handle, output: ShellOutput) -> rt::Result<()> {
     let package_handle = rt::lookup_service(bootstrap, ServiceId::Package)?;
@@ -24,7 +26,11 @@ pub(super) fn cmd_pkg_list(bootstrap: rt::Handle, output: ShellOutput) -> rt::Re
                 entry.repository_versions,
                 printable_version(installed_version),
                 printable_version(active_version),
-                if entry.rollback_available { "yes" } else { "no" },
+                if entry.rollback_available {
+                    "yes"
+                } else {
+                    "no"
+                },
             ),
         )?;
         index += 1;
@@ -45,9 +51,13 @@ pub(super) fn cmd_pkg_catalog(bootstrap: rt::Handle, output: ShellOutput) -> rt:
     let mut summary = [0u8; MAX_PACKAGE_TEXT];
     let mut index = 0usize;
 
-    while let Some(entry) =
-        rt::package_catalog(package_handle, index, &mut latest, &mut category, &mut summary)?
-    {
+    while let Some(entry) = rt::package_catalog(
+        package_handle,
+        index,
+        &mut latest,
+        &mut category,
+        &mut summary,
+    )? {
         let latest_text = core::str::from_utf8(&latest[..entry.latest_version_len])
             .map_err(|_| rt::Error::InvalidArgument)?;
         let category_text = core::str::from_utf8(&category[..entry.category_len])
@@ -142,10 +152,12 @@ pub(super) fn cmd_pkg_history(
             "{} current={} rollback={}",
             service_name(service_id),
             printable_version(
-                core::str::from_utf8(&current[..current_len]).map_err(|_| rt::Error::InvalidArgument)?
+                core::str::from_utf8(&current[..current_len])
+                    .map_err(|_| rt::Error::InvalidArgument)?
             ),
             printable_version(
-                core::str::from_utf8(&previous[..previous_len]).map_err(|_| rt::Error::InvalidArgument)?
+                core::str::from_utf8(&previous[..previous_len])
+                    .map_err(|_| rt::Error::InvalidArgument)?
             ),
         ),
     )
@@ -198,7 +210,8 @@ pub(super) fn cmd_pkg_provenance(
                 core::str::from_utf8(&latest[..info.latest_version_len])
                     .map_err(|_| rt::Error::InvalidArgument)?
             ),
-            core::str::from_utf8(&source[..info.source_len]).map_err(|_| rt::Error::InvalidArgument)?,
+            core::str::from_utf8(&source[..info.source_len])
+                .map_err(|_| rt::Error::InvalidArgument)?,
         ),
     )
 }

@@ -5,7 +5,10 @@ use serviceos_kernel_core::{
     memory::{PAGE_SIZE_BYTES, PhysicalAddress},
 };
 
-use crate::dtb::{self, DeviceTreeBootInfo, DeviceTreeError, InterruptControllerRegions};
+use crate::dtb::{
+    self, DeviceTreeBootInfo, DeviceTreeError, InterruptControllerRegions, MAX_VIRTIO_MMIO_DEVICES,
+    VirtioMmioDevice,
+};
 use crate::uart::UartDescriptor;
 
 const MAX_BOOT_MEMORY_REGIONS: usize = 32;
@@ -46,6 +49,8 @@ pub struct BootSummary<'boot> {
     pub dtb_size: usize,
     pub uart: Option<UartDescriptor<'boot>>,
     pub interrupt_controller: Option<InterruptControllerRegions>,
+    pub virtio_mmio_devices: [VirtioMmioDevice; MAX_VIRTIO_MMIO_DEVICES],
+    pub virtio_mmio_count: usize,
 }
 
 pub struct CapturedBootState<'boot> {
@@ -88,6 +93,8 @@ pub fn capture_boot_info(
             dtb_size: dtb.dtb_size,
             uart: dtb.stdout_uart,
             interrupt_controller: dtb.interrupt_controller,
+            virtio_mmio_devices: dtb.virtio_mmio_devices,
+            virtio_mmio_count: dtb.virtio_mmio_count,
         },
     })
 }
@@ -168,7 +175,7 @@ fn build_boot_memory_map(
         if cursor < range_end {
             push_region(
                 storage,
-                    &mut count,
+                &mut count,
                 BootMemoryRegion {
                     start: PhysicalAddress::new(cursor),
                     end: PhysicalAddress::new(range_end),

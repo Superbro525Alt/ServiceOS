@@ -1,5 +1,5 @@
-use serviceos_userspace_runtime as rt;
 use rt::{ControlTag, LifecycleEvent, RawMessage, ServiceId};
+use serviceos_userspace_runtime as rt;
 
 use crate::{
     consts::{MAX_AUDIT, MAX_ENVS, MAX_RUNS},
@@ -14,7 +14,10 @@ pub(crate) fn run() -> u64 {
     if rt::channel_receive_blocking(bootstrap, &mut startup).is_err() {
         return 0xfc01;
     }
-    if startup.tag != ControlTag::Startup as u32 || startup.handle_count < 2 || startup.word_count < 5 {
+    if startup.tag != ControlTag::Startup as u32
+        || startup.handle_count < 2
+        || startup.word_count < 5
+    {
         return 0xfc02;
     }
 

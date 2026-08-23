@@ -40,7 +40,8 @@ pub(crate) fn handle_install_request(
             LogEvent::PackageInstalled,
         );
         if status == PackageStatus::Ok {
-            let _ = crate::storage::persist_installed_state(storage_handle, packages, package_count);
+            let _ =
+                crate::storage::persist_installed_state(storage_handle, packages, package_count);
             *journal = JournalState::empty();
             let _ = crate::storage::persist_journal_state(storage_handle, *journal);
         }
@@ -98,7 +99,11 @@ pub(crate) fn handle_update_request(
                         LogEvent::PackageUpdated,
                     );
                     if status == PackageStatus::Ok {
-                        let _ = crate::storage::persist_installed_state(storage_handle, packages, package_count);
+                        let _ = crate::storage::persist_installed_state(
+                            storage_handle,
+                            packages,
+                            package_count,
+                        );
                         *journal = JournalState::empty();
                         let _ = crate::storage::persist_journal_state(storage_handle, *journal);
                     }
@@ -147,7 +152,11 @@ pub(crate) fn handle_remove_request(
                         slot.service_id as u32 as u64,
                         encode_version_text(version_text(slot, active)),
                     );
-                    let _ = crate::storage::persist_installed_state(storage_handle, packages, package_count);
+                    let _ = crate::storage::persist_installed_state(
+                        storage_handle,
+                        packages,
+                        package_count,
+                    );
                     *journal = JournalState::empty();
                     let _ = crate::storage::persist_journal_state(storage_handle, *journal);
                     PackageStatus::Ok
@@ -206,7 +215,11 @@ pub(crate) fn handle_rollback_request(
                 slot.active = Some(target);
                 slot.installed = Some(target);
                 slot.rollback = previous;
-                let _ = crate::storage::persist_installed_state(storage_handle, packages, package_count);
+                let _ = crate::storage::persist_installed_state(
+                    storage_handle,
+                    packages,
+                    package_count,
+                );
                 *journal = JournalState::empty();
                 let _ = crate::storage::persist_journal_state(storage_handle, *journal);
             }
@@ -236,7 +249,8 @@ fn activate_package_version(
         return PackageStatus::NotFound;
     }
 
-    let materialized = ensure_version_materialized(storage_handle, network_handle, slot, target, repos);
+    let materialized =
+        ensure_version_materialized(storage_handle, network_handle, slot, target, repos);
     if materialized != PackageStatus::Ok {
         return materialized;
     }
@@ -257,7 +271,8 @@ fn activate_package_version(
     }
 
     let previous = slot.active;
-    match rt::manager_activate_service(bootstrap, manifest.service_manifest.as_str().unwrap_or("")) {
+    match rt::manager_activate_service(bootstrap, manifest.service_manifest.as_str().unwrap_or(""))
+    {
         Ok(_) => {
             slot.rollback = previous;
             slot.installed = Some(target);
@@ -285,7 +300,9 @@ fn activate_package_version(
             );
             if let Some(previous) = previous {
                 let previous_path = active_manifest_path(&slot.versions[previous]);
-                if let Ok(previous_manifest) = load_manifest_from_storage_path(storage_handle, previous_path) {
+                if let Ok(previous_manifest) =
+                    load_manifest_from_storage_path(storage_handle, previous_path)
+                {
                     let _ = rt::manager_activate_service(
                         bootstrap,
                         previous_manifest.service_manifest.as_str().unwrap_or(""),
@@ -362,12 +379,16 @@ fn materialize_remote_version(
         Err(_) => return PackageStatus::Unsupported,
     };
 
-    let install_root =
-        match crate::storage::install_root_path(slot.package_name.as_str().unwrap_or("package"), version_text(slot, target)) {
-            Ok(path) => path,
-            Err(_) => return PackageStatus::Busy,
-        };
-    if crate::storage::create_install_root(storage_handle, install_root.as_str()) != rt::Result::Ok(()) {
+    let install_root = match crate::storage::install_root_path(
+        slot.package_name.as_str().unwrap_or("package"),
+        version_text(slot, target),
+    ) {
+        Ok(path) => path,
+        Err(_) => return PackageStatus::Busy,
+    };
+    if crate::storage::create_install_root(storage_handle, install_root.as_str())
+        != rt::Result::Ok(())
+    {
         return PackageStatus::Busy;
     }
     for content in remote_manifest.contents[..remote_manifest.content_count].iter() {
@@ -378,23 +399,32 @@ fn materialize_remote_version(
             Ok(url) => url,
             Err(_) => return PackageStatus::Unsupported,
         };
-        let local_path = match crate::storage::local_installed_content_path(install_root.as_str(), remote_path) {
+        let local_path = match crate::storage::local_installed_content_path(
+            install_root.as_str(),
+            remote_path,
+        ) {
             Ok(path) => path,
             Err(_) => return PackageStatus::Busy,
         };
         let mut bytes = [0u8; MAX_HTTP_BYTES];
-        let loaded = match crate::repositories::http_fetch_text(network_handle, url.as_str(), &mut bytes) {
-            Ok(len) => len,
-            Err(_) => return PackageStatus::Offline,
-        };
+        let loaded =
+            match crate::repositories::http_fetch_text(network_handle, url.as_str(), &mut bytes) {
+                Ok(len) => len,
+                Err(_) => return PackageStatus::Offline,
+            };
         if crate::storage::ensure_parent_directories(storage_handle, local_path.as_str()).is_err() {
             return PackageStatus::Busy;
         }
-        if crate::storage::write_storage_file(storage_handle, local_path.as_str(), &bytes[..loaded]).is_err() {
+        if crate::storage::write_storage_file(storage_handle, local_path.as_str(), &bytes[..loaded])
+            .is_err()
+        {
             return PackageStatus::Busy;
         }
     }
-    let rewritten = match crate::storage::rewrite_manifest_for_install(remote_manifest, install_root.as_str()) {
+    let rewritten = match crate::storage::rewrite_manifest_for_install(
+        remote_manifest,
+        install_root.as_str(),
+    ) {
         Ok(manifest) => manifest,
         Err(_) => return PackageStatus::Busy,
     };
@@ -402,10 +432,11 @@ fn materialize_remote_version(
         Ok(text) => text,
         Err(_) => return PackageStatus::Busy,
     };
-    let local_manifest_path = match crate::storage::local_installed_manifest_path(install_root.as_str()) {
-        Ok(path) => path,
-        Err(_) => return PackageStatus::Busy,
-    };
+    let local_manifest_path =
+        match crate::storage::local_installed_manifest_path(install_root.as_str()) {
+            Ok(path) => path,
+            Err(_) => return PackageStatus::Busy,
+        };
     if crate::storage::write_storage_file(
         storage_handle,
         local_manifest_path.as_str().unwrap_or(""),
@@ -449,7 +480,10 @@ fn load_service_manifest(
     parse_manifest(&bytes[..loaded]).map_err(|_| rt::Error::InvalidArgument)
 }
 
-fn verify_package_integrity(storage_handle: rt::Handle, manifest: PackageManifest) -> rt::Result<bool> {
+fn verify_package_integrity(
+    storage_handle: rt::Handle,
+    manifest: PackageManifest,
+) -> rt::Result<bool> {
     let mut hash = 0xcbf2_9ce4_8422_2325u64;
     let mut buffer = [0u8; 96];
     for content in manifest.contents[..manifest.content_count].iter() {

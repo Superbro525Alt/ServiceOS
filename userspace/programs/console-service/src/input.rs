@@ -2,8 +2,8 @@ use serviceos_userspace_runtime as rt;
 
 use crate::session::pack_bytes;
 use crate::state::{
-    pop_display_byte, push_display_byte, reset_input_state, EscapeState, Session,
-    MAX_DISPLAY_BYTES, MAX_HISTORY, MAX_SESSIONS,
+    EscapeState, MAX_DISPLAY_BYTES, MAX_HISTORY, MAX_SESSIONS, Session, pop_display_byte,
+    push_display_byte, reset_input_state,
 };
 
 pub(crate) fn handle_input_byte(
@@ -130,7 +130,8 @@ fn history_up(session: &mut Session) -> rt::Result<()> {
     }
     let next_view = match session.history_view {
         None => {
-            session.history_stash[..session.line_len].copy_from_slice(&session.line[..session.line_len]);
+            session.history_stash[..session.line_len]
+                .copy_from_slice(&session.line[..session.line_len]);
             session.history_stash_len = session.line_len;
             session.history_count - 1
         }
@@ -202,7 +203,10 @@ fn redraw_input_line(session: &mut Session) -> rt::Result<()> {
 }
 
 fn rebuild_display(session: &mut Session) {
-    let keep = session.prompt_len.min(session.display_len).min(session.display.len());
+    let keep = session
+        .prompt_len
+        .min(session.display_len)
+        .min(session.display.len());
     let prompt = session.display;
     let mut next = [0u8; MAX_DISPLAY_BYTES];
     next[..keep].copy_from_slice(&prompt[..keep]);

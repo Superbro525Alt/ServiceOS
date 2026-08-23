@@ -1,12 +1,10 @@
+use rt::{LogEvent, LogSeverity, ManagerStatus, ManagerTag, RawMessage, ServiceId, rights};
 use serviceos_abi::IPC_MAX_WORDS;
 use serviceos_bundle::BOOT_STORE_PATH_MAX;
 use serviceos_userspace_runtime as rt;
-use rt::{
-    LogEvent, LogSeverity, ManagerStatus, ManagerTag, RawMessage, ServiceId, rights,
-};
 
 use crate::{
-    state::{ServiceSlot, MAX_SERVICE_SLOTS},
+    state::{MAX_SERVICE_SLOTS, ServiceSlot},
     util::{emit_manager_event, image_id_from_word},
 };
 

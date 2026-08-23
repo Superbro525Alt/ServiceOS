@@ -220,8 +220,11 @@ name = "serviceos-platform-virt"
 version = "0.1.0"
 dependencies = [
  "fdt",
+ "serviceos-abi",
  "serviceos-kernel-arch-aarch64",
  "serviceos-kernel-core",
+ "spin",
+ "virtio-drivers",
 ]
 
 [[package]]

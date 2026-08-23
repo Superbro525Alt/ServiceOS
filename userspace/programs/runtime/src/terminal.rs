@@ -1,7 +1,7 @@
 use crate::{
-    channel_create, channel_receive_blocking, channel_receive_nonblocking, channel_send,
-    handle_close, pack_bytes, unpack_bytes, rights, Error, Handle, RawMessage, Result,
-    TerminalStatus, TerminalTag, IPC_MAX_WORDS,
+    Error, Handle, IPC_MAX_WORDS, RawMessage, Result, TerminalStatus, TerminalTag, channel_create,
+    channel_receive_blocking, channel_receive_nonblocking, channel_send, handle_close, pack_bytes,
+    rights, unpack_bytes,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

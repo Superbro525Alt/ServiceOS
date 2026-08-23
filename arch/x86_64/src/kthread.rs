@@ -11,8 +11,7 @@ use crate::kernel_context::{init_kernel_thread_context, kernel_context_switch};
 use crate::serial;
 
 /// Stack size reserved for each kernel thread (16-aligned at spawn).
-const KERNEL_THREAD_STACK_BYTES: usize =
-    KERNEL_THREAD_STACK_WORDS * core::mem::size_of::<u64>();
+const KERNEL_THREAD_STACK_BYTES: usize = KERNEL_THREAD_STACK_WORDS * core::mem::size_of::<u64>();
 const KERNEL_THREAD_STACK_WORDS: usize = 8192;
 
 /// Number of per-CPU kernel-thread run queues. CPUs beyond this cap share
@@ -84,11 +83,8 @@ pub fn spawn(entry: extern "C" fn(u64) -> !, arg: u64) -> Option<u32> {
 
     let stack = unsafe {
         alloc::alloc::alloc(
-            core::alloc::Layout::from_size_align(
-                KERNEL_THREAD_STACK_BYTES,
-                16,
-            )
-            .expect("kernel thread stack layout is valid"),
+            core::alloc::Layout::from_size_align(KERNEL_THREAD_STACK_BYTES, 16)
+                .expect("kernel thread stack layout is valid"),
         )
     };
     if stack.is_null() {
@@ -271,9 +267,7 @@ fn note_demo_exit() {
         return;
     }
     let exited = DEMO_EXITED.fetch_add(1, Ordering::Relaxed) + 1;
-    if exited == spawned
-        && !DEMO_SUMMARY_PRINTED.swap(true, Ordering::Relaxed)
-    {
+    if exited == spawned && !DEMO_SUMMARY_PRINTED.swap(true, Ordering::Relaxed) {
         serial::write_args(format_args!(
             "serviceos: kthread: ping-pong complete counters=({},{}) switches={}\n",
             DEMO_COUNTERS[0].load(Ordering::Relaxed),

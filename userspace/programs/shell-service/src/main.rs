@@ -1,11 +1,11 @@
 #![no_std]
 #![no_main]
 
+use rt::{LogEvent, LogSeverity, RawMessage, ServiceId};
 use serviceos_shell_service::{
     SHELL_PROMPT, SHELL_READY_TEXT, ShellOutput, execute_command, write_output_linef,
 };
 use serviceos_userspace_runtime as rt;
-use rt::{LogEvent, LogSeverity, RawMessage, ServiceId};
 
 const MAX_LINE_BYTES: usize = serviceos_shell_service::MAX_LINE_BYTES;
 
@@ -70,7 +70,10 @@ fn main() -> u64 {
         if let Err(error) = execute_command(bootstrap, output, line) {
             let _ = write_output_linef(
                 output,
-                format_args!("command failed: {}", serviceos_shell_service::util::error_name(error)),
+                format_args!(
+                    "command failed: {}",
+                    serviceos_shell_service::util::error_name(error)
+                ),
             );
         }
     }

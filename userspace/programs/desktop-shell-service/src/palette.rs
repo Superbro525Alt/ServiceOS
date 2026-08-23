@@ -1,7 +1,7 @@
 use serviceos_userspace_runtime::DesktopAppId;
 
 use crate::{
-    state::{DesktopState, PaletteAction, APP_COUNT, OVERLAY_RESULT_MAX},
+    state::{APP_COUNT, DesktopState, OVERLAY_RESULT_MAX, PaletteAction},
     windows,
 };
 

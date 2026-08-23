@@ -3,24 +3,22 @@ mod keyboard;
 mod overlays;
 mod pointer;
 
+use rt::{AppKeyAction, AppPointerAction, DesktopAppId, DesktopInputAction};
 use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
-use rt::{AppKeyAction, AppPointerAction, DesktopAppId, DesktopInputAction};
 
 use crate::{
-    palette_matches,
+    APP_COUNT, CLIPBOARD_HISTORY_LINES, ContentCapture, DesktopState, DragState, HitTarget, KEY_1,
+    KEY_2, KEY_3, KEY_4, KEY_5, KEY_BACKSPACE, KEY_DOWN, KEY_ENTER, KEY_ESC, KEY_F4, KEY_LEFT_ALT,
+    KEY_N, KEY_RIGHT_ALT, KEY_SPACE, KEY_TAB, KEY_UP, KEY_V, MOD_ALT, MOD_CTRL, MOD_SHIFT,
+    OVERLAY_RESULT_MAX, OverlayMode, PANEL_MARGIN, PaletteAction, RESIZE_GRIP_SIZE, ResizeEdges,
+    TOPBAR_HEIGHT, WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH, WindowState, palette_matches,
     render::{render_desktop, render_overlays_only, sync_cursor},
     windows::{
-        app_slot_index, clamp_window_x, clamp_window_y, close_app, focus_app,
-        focused_surface_id, maximize_app, minimize_app, move_app, move_focused_to_workspace,
-        post_notification, switch_workspace, visible_on_workspace,
+        app_slot_index, clamp_window_x, clamp_window_y, close_app, focus_app, focused_surface_id,
+        maximize_app, minimize_app, move_app, move_focused_to_workspace, post_notification,
+        switch_workspace, visible_on_workspace,
     },
-    ContentCapture, DesktopState, DragState, HitTarget, OverlayMode, PaletteAction,
-    ResizeEdges, WindowState, APP_COUNT, CLIPBOARD_HISTORY_LINES, KEY_1, KEY_2, KEY_3, KEY_4,
-    KEY_5, KEY_BACKSPACE, KEY_DOWN, KEY_ENTER, KEY_ESC, KEY_F4, KEY_LEFT_ALT, KEY_N,
-    KEY_RIGHT_ALT, KEY_SPACE, KEY_TAB, KEY_UP, KEY_V, MOD_ALT, MOD_CTRL, MOD_SHIFT,
-    OVERLAY_RESULT_MAX, PANEL_MARGIN, RESIZE_GRIP_SIZE, TOPBAR_HEIGHT, WINDOW_MIN_HEIGHT,
-    WINDOW_MIN_WIDTH,
 };
 
 pub(crate) fn handle_input(

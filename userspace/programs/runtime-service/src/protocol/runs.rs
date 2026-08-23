@@ -1,5 +1,8 @@
+use rt::{
+    LogEvent, LogSeverity, RawMessage, RuntimeRunState, RuntimeStatus, RuntimeTag,
+    RuntimeWorkloadKind, TaskStateCode,
+};
 use serviceos_userspace_runtime as rt;
-use rt::{LogEvent, LogSeverity, RawMessage, RuntimeRunState, RuntimeStatus, RuntimeTag, RuntimeWorkloadKind, TaskStateCode};
 
 use crate::{
     consts::{MAX_ENVS, MAX_RUNS},
@@ -13,7 +16,10 @@ pub(crate) fn poll_run_exits(
     runs: &mut [RunSlot; MAX_RUNS],
 ) {
     for (run_id, run) in runs.iter_mut().enumerate() {
-        if !run.occupied || run.state == RuntimeRunState::Exited || run.state == RuntimeRunState::Failed {
+        if !run.occupied
+            || run.state == RuntimeRunState::Exited
+            || run.state == RuntimeRunState::Failed
+        {
             continue;
         }
         let Ok(status) = rt::task_status(run.task_handle) else {
@@ -51,7 +57,10 @@ pub(crate) fn poll_run_exits(
 fn allocate_run_slot(runs: &mut [RunSlot; MAX_RUNS]) -> rt::Result<usize> {
     if let Some(index) = (0..runs.len()).find(|index| {
         !runs[*index].occupied
-            || matches!(runs[*index].state, RuntimeRunState::Exited | RuntimeRunState::Failed)
+            || matches!(
+                runs[*index].state,
+                RuntimeRunState::Exited | RuntimeRunState::Failed
+            )
     }) {
         if runs[index].occupied {
             release_run_slot(&mut runs[index]);

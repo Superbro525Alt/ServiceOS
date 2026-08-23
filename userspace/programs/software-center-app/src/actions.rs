@@ -1,11 +1,11 @@
 use core::{fmt::Write, str};
 
-use serviceos_userspace_runtime as rt;
 use rt::{FixedLogBuffer, PackageChannel, PackageRing};
+use serviceos_userspace_runtime as rt;
 
 use crate::state::{
-    select_service, AppState, CatalogEntry, MAX_CATEGORY_BYTES, MAX_ENTRIES, MAX_STATUS_BYTES,
-    MAX_SUMMARY_BYTES,
+    AppState, CatalogEntry, MAX_CATEGORY_BYTES, MAX_ENTRIES, MAX_STATUS_BYTES, MAX_SUMMARY_BYTES,
+    select_service,
 };
 
 pub(crate) fn reload_catalog(package_handle: rt::Handle, state: &mut AppState) -> rt::Result<()> {
@@ -16,8 +16,13 @@ pub(crate) fn reload_catalog(package_handle: rt::Handle, state: &mut AppState) -
     let mut category = [0u8; MAX_CATEGORY_BYTES];
     let mut summary = [0u8; MAX_SUMMARY_BYTES];
     for index in 0..MAX_ENTRIES {
-        let Some(entry) =
-            rt::package_catalog(package_handle, index, &mut latest, &mut category, &mut summary)?
+        let Some(entry) = rt::package_catalog(
+            package_handle,
+            index,
+            &mut latest,
+            &mut category,
+            &mut summary,
+        )?
         else {
             break;
         };
@@ -37,7 +42,10 @@ pub(crate) fn reload_catalog(package_handle: rt::Handle, state: &mut AppState) -
         state.entry_count += 1;
     }
     let entry_count = state.entry_count;
-    set_statusf(state, format_args!("catalog loaded: {} entries", entry_count));
+    set_statusf(
+        state,
+        format_args!("catalog loaded: {} entries", entry_count),
+    );
     Ok(())
 }
 
@@ -50,7 +58,10 @@ pub(crate) fn sync_repositories(package_handle: rt::Handle, state: &mut AppState
                     format_args!("sync complete: {} ok, {} failed", sync.synced, sync.failed),
                 );
             } else {
-                set_statusf(state, format_args!("sync complete but catalog reload failed"));
+                set_statusf(
+                    state,
+                    format_args!("sync complete but catalog reload failed"),
+                );
             }
         }
         Err(error) => set_statusf(state, format_args!("sync failed: {}", error_label(error))),
@@ -89,34 +100,53 @@ pub(crate) fn apply_selected_package_action(
                         if entry.installed {
                             set_statusf(
                                 state,
-                                format_args!("updated {}", crate::state::service_label(entry.service_id)),
+                                format_args!(
+                                    "updated {}",
+                                    crate::state::service_label(entry.service_id)
+                                ),
                             );
                         } else {
                             set_statusf(
                                 state,
-                                format_args!("installed {}", crate::state::service_label(entry.service_id)),
+                                format_args!(
+                                    "installed {}",
+                                    crate::state::service_label(entry.service_id)
+                                ),
                             );
                         }
                     }
                     PackageAction::Remove => {
                         set_statusf(
                             state,
-                            format_args!("removed {}", crate::state::service_label(entry.service_id)),
+                            format_args!(
+                                "removed {}",
+                                crate::state::service_label(entry.service_id)
+                            ),
                         );
                     }
                 }
             } else {
-                set_statusf(state, format_args!("package action completed but reload failed"));
+                set_statusf(
+                    state,
+                    format_args!("package action completed but reload failed"),
+                );
             }
         }
         Err(error) => {
             let verb = match action {
                 PackageAction::InstallOrUpdate => {
-                    if entry.installed { "update" } else { "install" }
+                    if entry.installed {
+                        "update"
+                    } else {
+                        "install"
+                    }
                 }
                 PackageAction::Remove => "remove",
             };
-            set_statusf(state, format_args!("{} failed: {}", verb, error_label(error)));
+            set_statusf(
+                state,
+                format_args!("{} failed: {}", verb, error_label(error)),
+            );
         }
     }
 }
@@ -146,11 +176,7 @@ pub(crate) fn error_label(error: rt::Error) -> &'static str {
 
 pub(crate) fn category_chip_label(entry: &CatalogEntry) -> &str {
     let category = text_or_dash(&entry.category[..entry.category_len]);
-    if category == "-" {
-        "SYSTEM"
-    } else {
-        category
-    }
+    if category == "-" { "SYSTEM" } else { category }
 }
 
 pub(crate) fn trust_badge(value: rt::PackageTrustState) -> &'static str {

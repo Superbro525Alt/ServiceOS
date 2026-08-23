@@ -1,5 +1,5 @@
-use serviceos_userspace_runtime as rt;
 use rt::{LogEvent, ServiceId};
+use serviceos_userspace_runtime as rt;
 
 pub(crate) const MAX_SESSIONS: usize = 2;
 pub(crate) const MAX_LINE_BYTES: usize = 128;
@@ -143,9 +143,7 @@ impl Session {
 
 pub(crate) fn active_session(sessions: &[Session; MAX_SESSIONS]) -> Option<&Session> {
     sessions.iter().find(|session| {
-        session.occupied
-            && session.pending_reply != rt::INVALID_HANDLE
-            && session.display_len > 0
+        session.occupied && session.pending_reply != rt::INVALID_HANDLE && session.display_len > 0
     })
 }
 

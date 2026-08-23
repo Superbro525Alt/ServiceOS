@@ -131,7 +131,9 @@ unsafe fn child_tables<'a>(
 ///
 /// Returns `None` silently when the RSDP is missing or its root table does
 /// not validate, letting callers stay quiet on degraded firmware.
-fn root_table_header(rsdp_address: Option<PhysicalAddress>) -> Option<&'static SystemDescriptionTableHeader> {
+fn root_table_header(
+    rsdp_address: Option<PhysicalAddress>,
+) -> Option<&'static SystemDescriptionTableHeader> {
     let addr = rsdp_address?;
     let rsdp = unsafe { rsdp_at(addr) }?;
 
@@ -155,7 +157,9 @@ fn root_table_header(rsdp_address: Option<PhysicalAddress>) -> Option<&'static S
 ///
 /// Returns `None` silently whenever any step fails (missing RSDP, missing
 /// MADT), letting callers stay single-core without log noise.
-pub(crate) fn madt_header(rsdp_address: Option<PhysicalAddress>) -> Option<&'static SystemDescriptionTableHeader> {
+pub(crate) fn madt_header(
+    rsdp_address: Option<PhysicalAddress>,
+) -> Option<&'static SystemDescriptionTableHeader> {
     let root = root_table_header(rsdp_address)?;
 
     unsafe {
@@ -168,9 +172,7 @@ pub(crate) fn madt_header(rsdp_address: Option<PhysicalAddress>) -> Option<&'sta
 
 /// Physical MMIO base of the High Precision Event Timer from the ACPI HPET
 /// Description Table, or `None` when firmware exposes no HPET block.
-pub(crate) fn hpet_base_address(
-    rsdp_address: Option<PhysicalAddress>,
-) -> Option<u64> {
+pub(crate) fn hpet_base_address(rsdp_address: Option<PhysicalAddress>) -> Option<u64> {
     let root = root_table_header(rsdp_address)?;
 
     unsafe {
@@ -195,9 +197,7 @@ pub(crate) fn hpet_base_address(
 ///
 /// The first entry corresponds to the bootstrap processor on every platform
 /// this kernel targets (QEMU emits ascending APIC IDs with the BSP first).
-pub fn enabled_lapic_ids(
-    rsdp_address: Option<PhysicalAddress>,
-) -> Option<Vec<u8>> {
+pub fn enabled_lapic_ids(rsdp_address: Option<PhysicalAddress>) -> Option<Vec<u8>> {
     let madt = madt_header(rsdp_address)?;
     let base = madt as *const SystemDescriptionTableHeader as u64;
     let mut ids = Vec::new();

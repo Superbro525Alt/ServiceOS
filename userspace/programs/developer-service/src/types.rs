@@ -1,5 +1,5 @@
-use serviceos_userspace_runtime as rt;
 use rt::{DeveloperArtifactFormat, DeveloperJobState, DeveloperTarget, DeveloperToolchainState};
+use serviceos_userspace_runtime as rt;
 
 use crate::consts::{MAX_NAME, MAX_PATH};
 

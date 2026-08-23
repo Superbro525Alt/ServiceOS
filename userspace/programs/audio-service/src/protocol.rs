@@ -1,8 +1,8 @@
-use serviceos_userspace_runtime as rt;
 use rt::{
     AudioEndpointStatusInfo, AudioStatus, AudioStreamDirection, AudioStreamState, AudioTag,
     LogEvent, LogSeverity, RawMessage,
 };
+use serviceos_userspace_runtime as rt;
 
 use crate::{
     consts::MAX_AUDIO_STREAMS,
@@ -156,7 +156,9 @@ pub(crate) fn handle_stream_request(
             reply.words[4] = stream.session_id as u64;
             reply.words[5] = stream.endpoint_index as u64;
             reply.words[6] = stream.frequency_hz as u64;
-            reply.words[7] = stream.until_tick.saturating_sub(rt::monotonic_now().unwrap_or(0));
+            reply.words[7] = stream
+                .until_tick
+                .saturating_sub(rt::monotonic_now().unwrap_or(0));
             let _ = rt::channel_send(reply_handle, &reply);
             let _ = rt::handle_close(reply_handle);
         }
@@ -170,7 +172,8 @@ pub(crate) fn handle_stream_request(
             let frequency_hz = request.words[0] as u32;
             let duration_ms = request.words[1] as u32;
             let duration_ticks = ticks_from_ms(duration_ms);
-            let result = rt::kernel_audio_endpoint_play_tone(audio_handle, frequency_hz, duration_ticks);
+            let result =
+                rt::kernel_audio_endpoint_play_tone(audio_handle, frequency_hz, duration_ticks);
             match result {
                 Ok(()) => {
                     let until_tick = rt::monotonic_now()

@@ -1,9 +1,9 @@
 use crate::{
-    syscall1, syscall2, syscall3, syscall4, syscall5, AudioEndpointInfo, AudioToneRequest, BlockDeviceBackend,
-    BlockDeviceInfo, DisplayOutputBackend, DisplayOutputInfo, DisplayOutputState,
-    DisplayPixelFormat, Handle, InputEventInfo, InputSourceBackend, InputSourceInfo,
-    PacketInterfaceBackend, PacketInterfaceInfo, PacketInterfaceLinkState, Result, SyscallNumber, INPUT_SOURCE_FLAG_NONBLOCK,
-    PACKET_INTERFACE_FLAG_NONBLOCK,
+    AudioEndpointInfo, AudioToneRequest, BlockDeviceBackend, BlockDeviceInfo, DisplayOutputBackend,
+    DisplayOutputInfo, DisplayOutputState, DisplayPixelFormat, Handle, INPUT_SOURCE_FLAG_NONBLOCK,
+    InputEventInfo, InputSourceBackend, InputSourceInfo, PACKET_INTERFACE_FLAG_NONBLOCK,
+    PacketInterfaceBackend, PacketInterfaceInfo, PacketInterfaceLinkState, Result, SyscallNumber,
+    syscall1, syscall2, syscall3, syscall4, syscall5,
 };
 
 pub fn block_device_info(handle: Handle) -> Result<BlockDeviceInfo> {

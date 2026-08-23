@@ -1,5 +1,8 @@
+use rt::{
+    LogEvent, LogSeverity, PermissionPolicyState, RawMessage, RuntimeStatus, RuntimeTag,
+    SecurityAuditKind,
+};
 use serviceos_userspace_runtime as rt;
-use rt::{LogEvent, LogSeverity, PermissionPolicyState, RawMessage, RuntimeStatus, RuntimeTag, SecurityAuditKind};
 
 use crate::{
     consts::{MAX_AUDIT, MAX_ENVS, MAX_RUNS},
@@ -174,13 +177,7 @@ pub(crate) fn handle_public_request(
             handle_env_var_request(envs, message)?;
         }
         x if x == RuntimeTag::RunLaunchRequest as u32 => {
-            handle_run_launch_request(
-                bootstrap,
-                log_handle,
-                envs,
-                runs,
-                message,
-            )?;
+            handle_run_launch_request(bootstrap, log_handle, envs, runs, message)?;
         }
         x if x == RuntimeTag::EnvDecisionRequest as u32 => {
             handle_env_decision_request(log_handle, envs, audits, next_audit_sequence, message)?;

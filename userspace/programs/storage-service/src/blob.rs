@@ -1,20 +1,22 @@
+use rt::{Handle, IPC_MAX_WORDS, RawMessage, StorageStatus, StorageTag};
 use serviceos_userspace_runtime as rt;
-use rt::{Handle, RawMessage, StorageStatus, StorageTag, IPC_MAX_WORDS};
 
 use crate::{
-    persistent::persist_mutable_entries,
+    BlobSession, BlobSource, INITIAL_FILE_CAPACITY, MAX_MUTABLE_ENTRIES, MountTable, MutableEntry,
+    PersistentStore,
+    persistent::persist_state,
     util::{pack_bytes, unpack_bytes},
-    BlobSession, BlobSource, MutableEntry, PersistentStore, INITIAL_FILE_CAPACITY,
-    MAX_MUTABLE_ENTRIES,
 };
 
 pub(crate) fn handle_blob_request(
     bootstore_handle: Handle,
+    mounts: &MountTable,
     mutable_entries: &mut [MutableEntry; MAX_MUTABLE_ENTRIES],
     persistent_store: Option<&mut PersistentStore>,
     session: &mut BlobSession,
     message: &RawMessage,
 ) -> rt::Result<()> {
+    let _ = mounts;
     if message.tag == StorageTag::CloseRequest as u32 {
         crate::release_blob_session(session);
         return Ok(());
@@ -25,7 +27,7 @@ pub(crate) fn handle_blob_request(
             handle_read_request(bootstore_handle, mutable_entries, session, message)
         }
         x if x == StorageTag::WriteRequest as u32 => {
-            handle_write_request(mutable_entries, persistent_store, session, message)
+            handle_write_request(mounts, mutable_entries, persistent_store, session, message)
         }
         _ => Ok(()),
     }
@@ -60,11 +62,16 @@ fn handle_read_request(
     let read_len = available.min(requested).min(payload_capacity);
     let mut bytes = [0u8; (IPC_MAX_WORDS - 3) * 8];
     let copied = match session.source {
-        BlobSource::BootStore => {
-            rt::memory_read(bootstore_handle, session.data_offset + offset, &mut bytes[..read_len])?
-        }
+        BlobSource::BootStore => rt::memory_read(
+            bootstore_handle,
+            session.data_offset + offset,
+            &mut bytes[..read_len],
+        )?,
         BlobSource::Mutable => {
-            let Some(entry) = mutable_entries.get(session.entry_index).filter(|entry| entry.occupied) else {
+            let Some(entry) = mutable_entries
+                .get(session.entry_index)
+                .filter(|entry| entry.occupied)
+            else {
                 reply.words[0] = StorageStatus::NotFound as u32 as u64;
                 let _ = rt::channel_send(reply_handle, &reply);
                 let _ = rt::handle_close(reply_handle);
@@ -83,6 +90,7 @@ fn handle_read_request(
 }
 
 fn handle_write_request(
+    mounts: &MountTable,
     mutable_entries: &mut [MutableEntry; MAX_MUTABLE_ENTRIES],
     persistent_store: Option<&mut PersistentStore>,
     session: &mut BlobSession,
@@ -133,7 +141,7 @@ fn handle_write_request(
     let _ = rt::memory_write(entry.data_handle, offset, &bytes[..write_len])?;
     entry.data_len = total_len;
     session.data_len = total_len;
-    persist_mutable_entries(persistent_store, mutable_entries)?;
+    persist_state(persistent_store, mounts, mutable_entries)?;
     reply.words[0] = StorageStatus::Ok as u32 as u64;
     reply.words[1] = total_len as u64;
     let _ = rt::channel_send(reply_handle, &reply);

@@ -1,10 +1,10 @@
 use crate::{
-    channel_create, channel_receive_blocking, channel_send, handle_close, handle_duplicate, pack_bytes,
-    runtime_env_state_from_word, runtime_kind_from_word, runtime_run_state_from_word,
-    runtime_status_error, runtime_status_from_word, runtime_workload_kind_from_word, rights,
-    security_audit_kind_from_word, unpack_bytes, Error, Handle, PermissionPolicyState, RawMessage,
-    Result, RuntimeAuditInfo, RuntimeEnvInfo, RuntimeKind, RuntimeRunInfo, RuntimeStatus,
-    RuntimeTag, RuntimeWorkloadKind, IPC_MAX_WORDS,
+    Error, Handle, IPC_MAX_WORDS, PermissionPolicyState, RawMessage, Result, RuntimeAuditInfo,
+    RuntimeEnvInfo, RuntimeKind, RuntimeRunInfo, RuntimeStatus, RuntimeTag, RuntimeWorkloadKind,
+    channel_create, channel_receive_blocking, channel_send, handle_close, handle_duplicate,
+    pack_bytes, rights, runtime_env_state_from_word, runtime_kind_from_word,
+    runtime_run_state_from_word, runtime_status_error, runtime_status_from_word,
+    runtime_workload_kind_from_word, security_audit_kind_from_word, unpack_bytes,
 };
 
 pub fn runtime_env_create(runtime_handle: Handle, kind: RuntimeKind) -> Result<u32> {
@@ -172,10 +172,13 @@ pub fn runtime_env_mount(
                 return Err(Error::BufferTooSmall);
             }
             let mut combined = [0u8; IPC_MAX_WORDS * 8];
-            unpack_bytes(&response.words[3..response.word_count as usize], total, &mut combined)?;
+            unpack_bytes(
+                &response.words[3..response.word_count as usize],
+                total,
+                &mut combined,
+            )?;
             guest[..guest_len].copy_from_slice(&combined[..guest_len]);
-            source[..source_len]
-                .copy_from_slice(&combined[guest_len..guest_len + source_len]);
+            source[..source_len].copy_from_slice(&combined[guest_len..guest_len + source_len]);
             Ok(Some((guest_len, source_len)))
         }
         RuntimeStatus::NotFound => Ok(None),
@@ -220,7 +223,11 @@ pub fn runtime_env_var(
                 return Err(Error::BufferTooSmall);
             }
             let mut combined = [0u8; IPC_MAX_WORDS * 8];
-            unpack_bytes(&response.words[3..response.word_count as usize], total, &mut combined)?;
+            unpack_bytes(
+                &response.words[3..response.word_count as usize],
+                total,
+                &mut combined,
+            )?;
             key[..key_len].copy_from_slice(&combined[..key_len]);
             value[..value_len].copy_from_slice(&combined[key_len..key_len + value_len]);
             Ok(Some((key_len, value_len)))
@@ -416,10 +423,13 @@ pub fn runtime_session_mount(
                 return Err(Error::BufferTooSmall);
             }
             let mut combined = [0u8; IPC_MAX_WORDS * 8];
-            unpack_bytes(&response.words[3..response.word_count as usize], total, &mut combined)?;
+            unpack_bytes(
+                &response.words[3..response.word_count as usize],
+                total,
+                &mut combined,
+            )?;
             guest[..guest_len].copy_from_slice(&combined[..guest_len]);
-            source[..source_len]
-                .copy_from_slice(&combined[guest_len..guest_len + source_len]);
+            source[..source_len].copy_from_slice(&combined[guest_len..guest_len + source_len]);
             Ok(Some((guest_len, source_len)))
         }
         RuntimeStatus::NotFound => Ok(None),
@@ -462,7 +472,11 @@ pub fn runtime_session_var(
                 return Err(Error::BufferTooSmall);
             }
             let mut combined = [0u8; IPC_MAX_WORDS * 8];
-            unpack_bytes(&response.words[3..response.word_count as usize], total, &mut combined)?;
+            unpack_bytes(
+                &response.words[3..response.word_count as usize],
+                total,
+                &mut combined,
+            )?;
             key[..key_len].copy_from_slice(&combined[..key_len]);
             value[..value_len].copy_from_slice(&combined[key_len..key_len + value_len]);
             Ok(Some((key_len, value_len)))
@@ -509,7 +523,11 @@ pub fn runtime_session_read_file(
             if byte_len > buffer.len() {
                 return Err(Error::BufferTooSmall);
             }
-            unpack_bytes(&response.words[2..response.word_count as usize], byte_len, buffer)?;
+            unpack_bytes(
+                &response.words[2..response.word_count as usize],
+                byte_len,
+                buffer,
+            )?;
             Ok(byte_len)
         }
         status => Err(runtime_status_error(status)),
@@ -544,7 +562,10 @@ pub fn runtime_env_decide(
     }
 }
 
-pub fn runtime_audit_list(runtime_handle: Handle, index: usize) -> Result<Option<RuntimeAuditInfo>> {
+pub fn runtime_audit_list(
+    runtime_handle: Handle,
+    index: usize,
+) -> Result<Option<RuntimeAuditInfo>> {
     let reply = channel_create()?;
     let mut request = RawMessage::empty(RuntimeTag::AuditListRequest as u32);
     request.word_count = 1;

@@ -1,9 +1,9 @@
 use crate::{
-    channel_call, channel_create, channel_receive_blocking, channel_send, display_backend_from_word,
+    Error, GraphicsOutputStatusInfo, GraphicsStatus, GraphicsSurfaceStatusInfo, GraphicsTag,
+    Handle, IPC_MAX_WORDS, RawMessage, Result, SurfaceTag, channel_call, channel_create,
+    channel_receive_blocking, channel_send, display_backend_from_word,
     display_pixel_format_from_word, display_state_from_word, graphics_status_error,
-    graphics_status_from_word, handle_close, pack_bytes, rights, Error, GraphicsOutputStatusInfo,
-    GraphicsStatus, GraphicsSurfaceStatusInfo, GraphicsTag, Handle, RawMessage, Result,
-    SurfaceTag, IPC_MAX_WORDS,
+    graphics_status_from_word, handle_close, pack_bytes, rights,
 };
 
 pub fn graphics_output_count(graphics_handle: Handle) -> Result<usize> {
@@ -307,7 +307,14 @@ pub fn surface_attach_buffer(
     height: u32,
     stride_pixels: u32,
 ) -> Result<()> {
-    surface_attach_buffer_slot(surface_handle, 0, buffer_handle, width, height, stride_pixels)
+    surface_attach_buffer_slot(
+        surface_handle,
+        0,
+        buffer_handle,
+        width,
+        height,
+        stride_pixels,
+    )
 }
 
 pub fn surface_attach_buffer_slot(

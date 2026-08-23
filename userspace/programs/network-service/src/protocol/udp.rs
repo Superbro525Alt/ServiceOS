@@ -4,14 +4,14 @@ use smoltcp::{
     wire::{IpAddress, Ipv4Address},
 };
 
-use serviceos_userspace_runtime as rt;
 use rt::{
     LogEvent, LogSeverity, NetworkSocketKind, NetworkSocketState, NetworkSocketTag, NetworkStatus,
     NetworkTag, RawMessage,
 };
+use serviceos_userspace_runtime as rt;
 
 use crate::{
-    consts::{MAX_SOCKET_INLINE_BYTES, MAX_UDP_SOCKETS, EPHEMERAL_PORT_BASE},
+    consts::{EPHEMERAL_PORT_BASE, MAX_SOCKET_INLINE_BYTES, MAX_UDP_SOCKETS},
     types::UdpDatagramSlot,
     util::{decode_inline_bytes, emit_log, ipv4_to_u32, pack_inline_bytes},
 };
@@ -132,8 +132,8 @@ pub(crate) fn handle_datagram_request(
             reply.words[4] = 0;
             reply.words[5] = 0;
             reply.words[6] = slot.local_port as u64;
-            reply.words[7] = (slot.rx_bytes.min(u32::MAX as u64)) << 32
-                | slot.tx_bytes.min(u32::MAX as u64);
+            reply.words[7] =
+                (slot.rx_bytes.min(u32::MAX as u64)) << 32 | slot.tx_bytes.min(u32::MAX as u64);
             reply
         }
         x if x == NetworkSocketTag::BindRequest as u32 => {
@@ -148,8 +148,10 @@ pub(crate) fn handle_datagram_request(
                     reply.words[0] = NetworkStatus::InvalidTarget as u32 as u64;
                 }
                 (Some(socket_handle), _) => {
-                    let bound =
-                        sockets.get_mut::<udp::Socket>(socket_handle).bind(port).is_ok();
+                    let bound = sockets
+                        .get_mut::<udp::Socket>(socket_handle)
+                        .bind(port)
+                        .is_ok();
                     if bound {
                         slot.local_port = port;
                         reply.words[0] = NetworkStatus::Ok as u32 as u64;
@@ -160,9 +162,7 @@ pub(crate) fn handle_datagram_request(
             }
             reply
         }
-        x if x == NetworkSocketTag::SendToRequest as u32 => {
-            send_datagram(sockets, slot, request)
-        }
+        x if x == NetworkSocketTag::SendToRequest as u32 => send_datagram(sockets, slot, request),
         x if x == NetworkSocketTag::ReceiveRequest as u32
             || x == NetworkSocketTag::ReceiveFromRequest as u32 =>
         {

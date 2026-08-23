@@ -1,12 +1,12 @@
 use core::{fmt::Write, str};
 
+use rt::FixedLogBuffer;
 use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
-use rt::FixedLogBuffer;
 
 use crate::navigation::{entry_name_bytes, push_selected_path, visible_row_count};
 use crate::state::{
-    EntryKind, ExplorerEntry, ExplorerState, BUFFER_BYTES, BUFFER_HEIGHT, BUFFER_WIDTH, LIST_X,
+    BUFFER_BYTES, BUFFER_HEIGHT, BUFFER_WIDTH, EntryKind, ExplorerEntry, ExplorerState, LIST_X,
     LIST_Y, PIXEL_STRIDE, ROW_HEIGHT,
 };
 
@@ -139,7 +139,11 @@ fn draw_list(bytes: &mut [u8], state: &ExplorerState) {
             EntryKind::Parent => ui::STATUS_WARN,
             EntryKind::Directory => ui::ACCENT,
             EntryKind::File => {
-                if selected { ui::TEXT_PRIMARY } else { ui::TEXT_SECONDARY }
+                if selected {
+                    ui::TEXT_PRIMARY
+                } else {
+                    ui::TEXT_SECONDARY
+                }
             }
         };
         draw_entry_label(bytes, entry, (LIST_X + 8) as i32, (y + 4) as i32, color);

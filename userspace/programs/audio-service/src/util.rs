@@ -1,8 +1,8 @@
-use serviceos_userspace_runtime as rt;
 use rt::{
     AudioEndpointStatusInfo, AudioStreamState, ControlTag, LifecycleEvent, LogDomain, LogEvent,
     LogSeverity, RawMessage, ServiceId,
 };
+use serviceos_userspace_runtime as rt;
 
 pub(crate) fn poll_lifecycle(bootstrap: rt::Handle) -> rt::Result<bool> {
     let mut message = RawMessage::empty(0);

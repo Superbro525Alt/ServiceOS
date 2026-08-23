@@ -117,8 +117,9 @@ fn draw_tab_strip(bytes: &mut [u8], width: usize, state: &TerminalState, theme: 
             fill,
         );
         if state.tabs[index].title_len > 0 {
-            let text = core::str::from_utf8(&state.tabs[index].title[..state.tabs[index].title_len])
-                .unwrap_or("TAB");
+            let text =
+                core::str::from_utf8(&state.tabs[index].title[..state.tabs[index].title_len])
+                    .unwrap_or("TAB");
             rt::draw_text_rgba8888(
                 bytes,
                 PIXEL_STRIDE,
@@ -276,7 +277,8 @@ fn selection_contains(selection: Option<Selection>, line: usize, col: usize) -> 
 
 fn ordered_selection(selection: Selection) -> (CellPos, CellPos) {
     if selection.anchor.line < selection.focus.line
-        || (selection.anchor.line == selection.focus.line && selection.anchor.col <= selection.focus.col)
+        || (selection.anchor.line == selection.focus.line
+            && selection.anchor.col <= selection.focus.col)
     {
         (selection.anchor, selection.focus)
     } else {
@@ -292,12 +294,16 @@ fn first_visible_line(tab: &TerminalTab, visible_rows: usize) -> usize {
 }
 
 pub(crate) fn clamp_scroll_offset(tab: &mut TerminalTab, rows: usize) {
-    let max_offset = tab.line_count.saturating_sub(rows.min(MAX_SCROLLBACK_LINES));
+    let max_offset = tab
+        .line_count
+        .saturating_sub(rows.min(MAX_SCROLLBACK_LINES));
     tab.scroll_offset = tab.scroll_offset.min(max_offset);
 }
 
 pub(crate) fn scroll_up_view(tab: &mut TerminalTab, lines: usize, rows: usize) {
-    let max_offset = tab.line_count.saturating_sub(rows.min(MAX_SCROLLBACK_LINES));
+    let max_offset = tab
+        .line_count
+        .saturating_sub(rows.min(MAX_SCROLLBACK_LINES));
     tab.scroll_offset = tab.scroll_offset.saturating_add(lines).min(max_offset);
 }
 

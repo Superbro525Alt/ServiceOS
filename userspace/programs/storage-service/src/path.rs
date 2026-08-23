@@ -1,10 +1,6 @@
 use serviceos_userspace_runtime::StorageEntryKind;
 
-use crate::{
-    state::{
-        EntrySlot, MutableEntry, MAX_MUTABLE_ENTRIES, MAX_STORAGE_PATH, MUTABLE_ROOTS,
-    },
-};
+use crate::state::{EntrySlot, MAX_MUTABLE_ENTRIES, MAX_STORAGE_PATH, MountTable, MutableEntry};
 
 pub(crate) fn find_mutable_entry(
     entries: &[MutableEntry; MAX_MUTABLE_ENTRIES],
@@ -23,22 +19,26 @@ pub(crate) fn find_mutable_directory(
         .filter(|index| entries[*index].kind == StorageEntryKind::Directory)
 }
 
+/// Longest-prefix mount resolution; `None` means no mount claims this path.
+pub(crate) fn resolve_mount<'a>(
+    mounts: &'a MountTable,
+    path: &[u8],
+) -> Option<&'a serviceos_userspace_runtime::StorageMount> {
+    serviceos_userspace_runtime::storage_resolve_mount(mounts, path)
+}
+
+/// A path is writable when its owning mount grants write access.
+pub(crate) fn mount_allows_write(mounts: &MountTable, path: &[u8]) -> bool {
+    resolve_mount(mounts, path).is_some_and(|mount| mount.writable())
+}
+
+/// Legacy alias kept for readability at call sites: mutable == writable mount.
+pub(crate) fn is_mutable_path(mounts: &MountTable, path: &[u8]) -> bool {
+    mount_allows_write(mounts, path)
+}
+
 pub(crate) fn valid_directory_path(path: &[u8]) -> bool {
     path.is_empty() || path.ends_with(b"/")
-}
-
-pub(crate) fn is_mutable_root(path: &[u8]) -> bool {
-    MUTABLE_ROOTS.iter().any(|root| *root == path)
-}
-
-pub(crate) fn is_mutable_path(path: &[u8]) -> bool {
-    MUTABLE_ROOTS
-        .iter()
-        .any(|root| path.len() >= root.len() && path[..root.len()] == **root)
-}
-
-pub(crate) fn is_mutable_directory_path(path: &[u8]) -> bool {
-    valid_directory_path(path) && (path.is_empty() || is_mutable_root(path) || is_mutable_path(path))
 }
 
 pub(crate) fn path_matches_prefix(path: &[u8], prefix: &[u8]) -> bool {
@@ -46,25 +46,30 @@ pub(crate) fn path_matches_prefix(path: &[u8], prefix: &[u8]) -> bool {
 }
 
 pub(crate) fn boot_directory_exists(entries: &[EntrySlot], path: &[u8]) -> bool {
-    entries
-        .iter()
-        .any(|entry| entry.path_len > path.len() && path_matches_prefix(&entry.path[..entry.path_len], path))
+    entries.iter().any(|entry| {
+        entry.path_len > path.len() && path_matches_prefix(&entry.path[..entry.path_len], path)
+    })
 }
 
 pub(crate) fn mutable_directory_has_children(
     entries: &[MutableEntry; MAX_MUTABLE_ENTRIES],
     path: &[u8],
 ) -> bool {
-    entries
-        .iter()
-        .any(|entry| entry.occupied && entry.path_len > path.len() && path_matches_prefix(&entry.path[..entry.path_len], path))
+    entries.iter().any(|entry| {
+        entry.occupied
+            && entry.path_len > path.len()
+            && path_matches_prefix(&entry.path[..entry.path_len], path)
+    })
 }
 
-pub(crate) fn mutable_root_has_materialized_children(
+pub(crate) fn subtree_has_entries(
     entries: &[EntrySlot],
     mutable_entries: &[MutableEntry; MAX_MUTABLE_ENTRIES],
     root: &[u8],
 ) -> bool {
+    if root.is_empty() {
+        return false;
+    }
     boot_directory_exists(entries, root)
         || mutable_entries.iter().any(|entry| {
             entry.occupied && entry.path_len >= root.len() && entry.path[..root.len()] == *root
@@ -94,10 +99,14 @@ pub(crate) fn compose_child_path(
     name: &[u8],
     kind: StorageEntryKind,
 ) -> Option<([u8; MAX_STORAGE_PATH], usize)> {
-    if name.is_empty() || name.iter().any(|byte| *byte == b'/') {
+    if name.is_empty() || name.contains(&b'/') {
         return None;
     }
-    let suffix = if kind == StorageEntryKind::Directory { 1 } else { 0 };
+    let suffix = if kind == StorageEntryKind::Directory {
+        1
+    } else {
+        0
+    };
     let total_len = parent.len().checked_add(name.len())?.checked_add(suffix)?;
     if total_len > MAX_STORAGE_PATH {
         return None;
@@ -116,7 +125,9 @@ pub(crate) fn compose_relative_path(
     relative: &[u8],
     kind: StorageEntryKind,
 ) -> Option<([u8; MAX_STORAGE_PATH], usize)> {
-    if relative.is_empty() || relative[0] == b'/' {
+    // Boundary rule for relative capability traversal: reject absolute paths,
+    // empty components, and any `.`/`..` escape before composing.
+    if !serviceos_userspace_runtime::storage_relative_components_valid(relative) {
         return None;
     }
 
@@ -128,9 +139,6 @@ pub(crate) fn compose_relative_path(
     path[..len].copy_from_slice(parent);
 
     for (index, component) in relative.split(|byte| *byte == b'/').enumerate() {
-        if component.is_empty() || component == b"." || component == b".." {
-            return None;
-        }
         if index != 0 && (len == 0 || path[len - 1] != b'/') {
             if len >= MAX_STORAGE_PATH {
                 return None;
@@ -175,7 +183,6 @@ pub(crate) fn directory_exists(
     path: &[u8],
 ) -> bool {
     path.is_empty()
-        || is_mutable_root(path)
         || boot_directory_exists(entries, path)
         || find_mutable_directory(mutable_entries, path).is_some()
 }

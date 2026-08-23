@@ -1,7 +1,7 @@
 use crate::{
-    package::common::send_request, package_status_error, package_status_from_word,
-    unpack_bytes, Error, Handle, PackageCatalogEntry, PackageInfo, PackageListEntry, PackageProvenanceInfo,
-    PackageStatus, PackageTag, RawMessage, Result, ServiceId, IPC_MAX_WORDS,
+    Error, Handle, IPC_MAX_WORDS, PackageCatalogEntry, PackageInfo, PackageListEntry,
+    PackageProvenanceInfo, PackageStatus, PackageTag, RawMessage, Result, ServiceId,
+    package::common::send_request, package_status_error, package_status_from_word, unpack_bytes,
 };
 
 pub fn package_list(

@@ -253,8 +253,7 @@ impl FreeListAllocator {
             // neighbour. Never lose memory silently: account the bytes so the
             // leak is observable, keep the allocator running, and let
             // drop_stats() surface it.
-            self.dropped_free_bytes =
-                self.dropped_free_bytes.saturating_add(region.size as u64);
+            self.dropped_free_bytes = self.dropped_free_bytes.saturating_add(region.size as u64);
             self.dropped_free_events = self.dropped_free_events.saturating_add(1);
             return;
         }

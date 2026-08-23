@@ -4,11 +4,11 @@ use smoltcp::{
     wire::{IpAddress, Ipv4Address},
 };
 
-use serviceos_userspace_runtime as rt;
 use rt::{
     LogEvent, LogSeverity, NetworkConfigState, NetworkSocketKind, NetworkSocketState,
     NetworkStatus, NetworkTag, RawMessage,
 };
+use serviceos_userspace_runtime as rt;
 
 use crate::{
     consts::{EPHEMERAL_PORT_BASE, MAX_HOSTNAME_BYTES, MAX_TCP_SOCKETS},
@@ -104,7 +104,9 @@ pub(crate) fn handle_public_request(
             )?;
             let mut reply = RawMessage::empty(NetworkTag::ResolveReply as u32);
             reply.word_count = 2;
-            if runtime_state.state == NetworkConfigState::Pending && crate::config::parse_ipv4(target).is_none() {
+            if runtime_state.state == NetworkConfigState::Pending
+                && crate::config::parse_ipv4(target).is_none()
+            {
                 reply.words[0] = NetworkStatus::Busy as u32 as u64;
                 reply.words[1] = 0;
             } else {
@@ -232,7 +234,14 @@ pub(crate) fn handle_public_request(
             }
         }
         x if x == NetworkTag::SocketListenRequest as u32 => {
-            open_listener(request, log_handle, listeners, transports, tcp_handles, sockets)?;
+            open_listener(
+                request,
+                log_handle,
+                listeners,
+                transports,
+                tcp_handles,
+                sockets,
+            )?;
         }
         x if x == NetworkTag::SocketListRequest as u32 => {
             if request.handle_count < 1 {

@@ -1,8 +1,8 @@
 #![no_std]
 #![no_main]
 
-use serviceos_userspace_runtime as rt;
 use rt::{DeveloperArtifactFormat, DeveloperTarget, RawMessage};
+use serviceos_userspace_runtime as rt;
 
 const REPORT_TAG: u32 = 1;
 const MAX_SOURCE: usize = 256;
@@ -20,7 +20,10 @@ fn main() -> u64 {
     if rt::channel_receive_blocking(bootstrap, &mut startup).is_err() {
         return 0xfe01;
     }
-    if startup.tag != rt::ControlTag::Startup as u32 || startup.handle_count < 3 || startup.word_count < 3 {
+    if startup.tag != rt::ControlTag::Startup as u32
+        || startup.handle_count < 3
+        || startup.word_count < 3
+    {
         return 0xfe02;
     }
 
@@ -39,12 +42,20 @@ fn main() -> u64 {
         return 0xfe03;
     }
     let mut artifact_name = [0u8; MAX_NAME];
-    if rt::unpack_bytes(&startup.words[3..startup.word_count as usize], name_len, &mut artifact_name).is_err() {
+    if rt::unpack_bytes(
+        &startup.words[3..startup.word_count as usize],
+        name_len,
+        &mut artifact_name,
+    )
+    .is_err()
+    {
         return 0xfe04;
     }
 
     let mut source = [0u8; MAX_SOURCE];
-    if source_len > source.len() || rt::memory_read(source_handle, 0, &mut source[..source_len]).is_err() {
+    if source_len > source.len()
+        || rt::memory_read(source_handle, 0, &mut source[..source_len]).is_err()
+    {
         return 0xfe05;
     }
     trim_message(&mut source, &mut source_len);
@@ -66,8 +77,18 @@ fn main() -> u64 {
             (DeveloperArtifactFormat::Pe32Plus, len, 0u64)
         }
         DeveloperTarget::MacosX64 => {
-            let _ = rt::text_relay_write(output, "builder: macOS target requires future remote build/sign support\r\n");
-            let _ = send_report(report, 1, DeveloperArtifactFormat::MachO64, 0, &artifact_name[..name_len], None);
+            let _ = rt::text_relay_write(
+                output,
+                "builder: macOS target requires future remote build/sign support\r\n",
+            );
+            let _ = send_report(
+                report,
+                1,
+                DeveloperArtifactFormat::MachO64,
+                0,
+                &artifact_name[..name_len],
+                None,
+            );
             let _ = rt::handle_close(output);
             let _ = rt::handle_close(report);
             let _ = rt::handle_close(source_handle);
@@ -317,8 +338,10 @@ fn build_windows_pe(output: &mut [u8]) -> usize {
     output[iat_off..iat_off + 8].copy_from_slice(&(name_rva as u64).to_le_bytes());
     let import_desc_off = text + 0x40;
     output[import_desc_off..import_desc_off + 4].copy_from_slice(&(int_rva as u32).to_le_bytes());
-    output[import_desc_off + 12..import_desc_off + 16].copy_from_slice(&(dll_rva as u32).to_le_bytes());
-    output[import_desc_off + 16..import_desc_off + 20].copy_from_slice(&(iat_rva as u32).to_le_bytes());
+    output[import_desc_off + 12..import_desc_off + 16]
+        .copy_from_slice(&(dll_rva as u32).to_le_bytes());
+    output[import_desc_off + 16..import_desc_off + 20]
+        .copy_from_slice(&(iat_rva as u32).to_le_bytes());
     let int_off = text + 0x68;
     output[int_off..int_off + 8].copy_from_slice(&(name_rva as u64).to_le_bytes());
     let name_off = text + 0x78;

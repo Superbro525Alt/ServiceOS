@@ -1,10 +1,7 @@
 use alloc::collections::BTreeMap;
 use spin::Mutex;
 
-use crate::{
-    object::ObjectId,
-    task::ThreadId,
-};
+use crate::{object::ObjectId, task::ThreadId};
 
 /// Fault types that can be handled by user-space handlers
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -121,9 +118,7 @@ pub fn has_fault_handler(fault_type: &FaultType) -> bool {
 }
 
 /// Convert an exception detail to a fault type
-pub fn fault_type_for_exception(
-    detail: &crate::interrupts::ExceptionDetail,
-) -> FaultType {
+pub fn fault_type_for_exception(detail: &crate::interrupts::ExceptionDetail) -> FaultType {
     match detail {
         crate::interrupts::ExceptionDetail::InvalidOpcode => FaultType::InvalidOpcode,
         crate::interrupts::ExceptionDetail::PageFault { .. } => FaultType::PageFault,

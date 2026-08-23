@@ -159,22 +159,14 @@ pub(crate) fn handle_channel_send(context: &SyscallContext) -> SyscallReturn {
         Ok(_) => {
             trace_ipc(format_args!(
                 "S h={} tag={:#x} w0={:#x} wc={} hc={} ok\r\n",
-                context.arguments[0],
-                raw.tag,
-                raw.words[0],
-                word_count,
-                handle_count
+                context.arguments[0], raw.tag, raw.words[0], word_count, handle_count
             ));
             SyscallReturn::success(0)
         }
         Err(error) => {
             trace_ipc(format_args!(
                 "S h={} tag={:#x} w0={:#x} wc={} hc={} err={error:?}\r\n",
-                context.arguments[0],
-                raw.tag,
-                raw.words[0],
-                word_count,
-                handle_count
+                context.arguments[0], raw.tag, raw.words[0], word_count, handle_count
             ));
             SyscallReturn::error(map_ipc_error(error))
         }

@@ -1,7 +1,7 @@
 use smoltcp::wire::Ipv4Address;
 
-use serviceos_userspace_runtime as rt;
 use rt::ConfigKey;
+use serviceos_userspace_runtime as rt;
 
 use crate::{
     consts::{MAX_HOSTNAME_BYTES, MAX_HOSTS, MAX_HOSTS_RESOURCE_BYTES},
@@ -11,17 +11,18 @@ use crate::{
 
 pub(crate) fn read_network_config(config_handle: rt::Handle) -> rt::Result<NetworkConfig> {
     Ok(NetworkConfig {
-        static_address: u32_to_ipv4(
-            read_config_value(config_handle, ConfigKey::NetworkIpv4Address, 0)? as u32,
-        ),
-        static_prefix_len: read_config_value(
+        static_address: u32_to_ipv4(read_config_value(
             config_handle,
-            ConfigKey::NetworkIpv4PrefixLength,
-            24,
-        )? as u8,
-        static_gateway: u32_to_ipv4(
-            read_config_value(config_handle, ConfigKey::NetworkIpv4Gateway, 0)? as u32,
-        ),
+            ConfigKey::NetworkIpv4Address,
+            0,
+        )? as u32),
+        static_prefix_len: read_config_value(config_handle, ConfigKey::NetworkIpv4PrefixLength, 24)?
+            as u8,
+        static_gateway: u32_to_ipv4(read_config_value(
+            config_handle,
+            ConfigKey::NetworkIpv4Gateway,
+            0,
+        )? as u32),
         dynamic_ipv4: read_config_value(config_handle, ConfigKey::NetworkDynamicIpv4, 0)? != 0,
         dns_server: u32_to_ipv4(
             read_config_value(config_handle, ConfigKey::NetworkDnsServer, 0)? as u32,
@@ -62,7 +63,10 @@ fn read_config_value(handle: rt::Handle, key: ConfigKey, default: u64) -> rt::Re
     }
 }
 
-pub(crate) fn load_hosts(handle: rt::Handle, hosts: &mut [HostEntry; MAX_HOSTS]) -> rt::Result<usize> {
+pub(crate) fn load_hosts(
+    handle: rt::Handle,
+    hosts: &mut [HostEntry; MAX_HOSTS],
+) -> rt::Result<usize> {
     if handle == rt::INVALID_HANDLE {
         return Ok(0);
     }
@@ -109,9 +113,7 @@ pub(crate) fn parse_ipv4(value: &str) -> Option<Ipv4Address> {
         count += 1;
     }
     if count == 4 {
-        Some(Ipv4Address::new(
-            octets[0], octets[1], octets[2], octets[3],
-        ))
+        Some(Ipv4Address::new(octets[0], octets[1], octets[2], octets[3]))
     } else {
         None
     }

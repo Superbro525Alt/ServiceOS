@@ -1,8 +1,8 @@
 #![no_std]
 #![no_main]
 
-use serviceos_userspace_runtime as rt;
 use rt::{ClipboardStatus, ClipboardTag, ControlTag, LifecycleEvent, RawMessage, ServiceId};
+use serviceos_userspace_runtime as rt;
 
 const MAX_CLIPBOARD_BYTES: usize = rt::IPC_MAX_WORDS * 8;
 const HISTORY_SLOTS: usize = 8;
@@ -102,7 +102,8 @@ fn handle_public_request(
                 reply.word_count = 1;
                 reply.words[0] = ClipboardStatus::NotFound as u32 as u64;
             } else {
-                reply.word_count = 2 + pack_bytes(&clipboard[..*clipboard_len], &mut reply.words[2..])?;
+                reply.word_count =
+                    2 + pack_bytes(&clipboard[..*clipboard_len], &mut reply.words[2..])?;
                 reply.words[0] = ClipboardStatus::Ok as u32 as u64;
                 reply.words[1] = *clipboard_len as u64;
             }
@@ -118,7 +119,11 @@ fn handle_public_request(
             let status = if requested > clipboard.len() {
                 ClipboardStatus::Denied
             } else {
-                unpack_bytes(&message.words[1..message.word_count as usize], requested, clipboard)?;
+                unpack_bytes(
+                    &message.words[1..message.word_count as usize],
+                    requested,
+                    clipboard,
+                )?;
                 *clipboard_len = requested;
                 record_history(history, history_len, &clipboard[..requested]);
                 ClipboardStatus::Ok

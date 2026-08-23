@@ -49,7 +49,12 @@ pub(crate) fn encode_window_page(state: &DesktopState, start: usize, reply: &mut
     reply.word_count = (3 + returned * 5) as u32;
 }
 
-pub(crate) fn pack_window_flags(z_order: u32, focused: bool, minimized: bool, visible: bool) -> u64 {
+pub(crate) fn pack_window_flags(
+    z_order: u32,
+    focused: bool,
+    minimized: bool,
+    visible: bool,
+) -> u64 {
     let mut flags = (z_order as u64) << 32;
     if focused {
         flags |= 0x1;

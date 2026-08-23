@@ -1,5 +1,5 @@
-use serviceos_userspace_runtime as rt;
 use rt::{LogEvent, LogSeverity, RawMessage, RuntimeStatus, RuntimeTag};
+use serviceos_userspace_runtime as rt;
 
 use crate::{
     consts::{MAX_ENVS, MAX_STORAGE_PATH},

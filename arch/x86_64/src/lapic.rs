@@ -205,7 +205,10 @@ impl LapicTimer {
         }
 
         unsafe {
-            self.write_reg(LAPIC_LVT_TIMER, LVT_MODE_PERIODIC | LAPIC_TIMER_VECTOR as u32);
+            self.write_reg(
+                LAPIC_LVT_TIMER,
+                LVT_MODE_PERIODIC | LAPIC_TIMER_VECTOR as u32,
+            );
             self.write_reg(LAPIC_TIMER_DCR, TDCR_DIV_BY_16);
             self.start(ticks_per_period);
         }

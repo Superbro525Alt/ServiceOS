@@ -1,8 +1,8 @@
-use serviceos_userspace_runtime as rt;
 use rt::{
     ConfigKey, DesktopAppId, DesktopDragMode, LogDomain, LogEvent, LogSeverity,
     ManagerServicePhase, ServiceId,
 };
+use serviceos_userspace_runtime as rt;
 
 pub(crate) fn parse_service_name(name: &str) -> Option<ServiceId> {
     match name {

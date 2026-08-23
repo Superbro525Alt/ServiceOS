@@ -1,12 +1,12 @@
-use serviceos_userspace_runtime as rt;
 use rt::{
     LifecycleEvent, LogEvent, LogSeverity, LookupStatus, ManagerAction, ManagerAvailability,
     ManagerLookupPolicy, ManagerStartupMode, ManagerStatus, ManagerTag, RawMessage, ServiceId,
 };
+use serviceos_userspace_runtime as rt;
 
 use crate::{
     graph::ensure_service_ready,
-    state::{BootstrapResources, GraphStatus, ServicePhase, ServiceSlot, MAX_SERVICE_SLOTS},
+    state::{BootstrapResources, GraphStatus, MAX_SERVICE_SLOTS, ServicePhase, ServiceSlot},
     util::{
         emit_manager_event, encode_phase, find_slot_index_checked, lookup_rights,
         manager_action_from_word, manager_phase, service_availability, service_id_from_word,
@@ -39,7 +39,8 @@ pub(super) fn handle_lookup_request(
     match (permission, target_index) {
         (Some(rights), Some(target_index)) => {
             if slots[target_index].phase != ServicePhase::Ready
-                && slots[target_index].manifest.startup == serviceos_bundle::ServiceStartupMode::OnDemand
+                && slots[target_index].manifest.startup
+                    == serviceos_bundle::ServiceStartupMode::OnDemand
             {
                 let mut boot_ui = crate::boot_ui::BootUi::empty();
                 let _ = ensure_service_ready(
@@ -368,7 +369,8 @@ pub(super) fn handle_service_action_request(
         reply.words[0] = ManagerStatus::Denied as u32 as u64;
         return rt::channel_send(slots[service_index].control_handle, &reply);
     }
-    if slots[target_index].restart_requested || slots[target_index].phase == ServicePhase::Starting {
+    if slots[target_index].restart_requested || slots[target_index].phase == ServicePhase::Starting
+    {
         reply.words[0] = ManagerStatus::Busy as u32 as u64;
         return rt::channel_send(slots[service_index].control_handle, &reply);
     }
@@ -376,7 +378,10 @@ pub(super) fn handle_service_action_request(
     reply.words[0] = ManagerStatus::Ok as u32 as u64;
     rt::channel_send(slots[service_index].control_handle, &reply)?;
     if slots[target_index].control_handle != rt::INVALID_HANDLE {
-        send_lifecycle(slots[target_index].control_handle, LifecycleEvent::Restarting)?;
+        send_lifecycle(
+            slots[target_index].control_handle,
+            LifecycleEvent::Restarting,
+        )?;
     }
     slots[target_index].restart_requested = true;
     slots[target_index].next_restart_tick = 0;

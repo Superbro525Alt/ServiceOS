@@ -1,6 +1,6 @@
 use crate::{
-    KernelEventRecord, OBJECT_WAIT_FLAG_NONBLOCK, ObjectInfo, syscall0, syscall1, syscall2,
-    syscall3, Handle, Result, ServiceImageId, SyscallNumber, TaskStateCode, TaskStatus,
+    Handle, KernelEventRecord, OBJECT_WAIT_FLAG_NONBLOCK, ObjectInfo, Result, ServiceImageId,
+    SyscallNumber, TaskStateCode, TaskStatus, syscall0, syscall1, syscall2, syscall3,
 };
 
 pub fn abi_version() -> Result<u64> {

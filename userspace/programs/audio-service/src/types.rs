@@ -1,5 +1,5 @@
-use serviceos_userspace_runtime as rt;
 use rt::AudioStreamState;
+use serviceos_userspace_runtime as rt;
 
 #[derive(Clone, Copy)]
 pub(crate) struct StreamSlot {

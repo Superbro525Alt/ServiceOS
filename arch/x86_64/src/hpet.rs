@@ -15,7 +15,7 @@ use crate::{acpi, serial};
 use serviceos_kernel_core::memory::PhysicalAddress;
 
 pub use crate::hpet_math::{
-    femtoseconds_to_nanoseconds, frequency_hz, periodic_fit_ticks, PeriodicFitError,
+    PeriodicFitError, femtoseconds_to_nanoseconds, frequency_hz, periodic_fit_ticks,
 };
 
 /// Spec-mandated maximum clock period: 0x05F5E100 fs == 100 ns (10 MHz)
@@ -183,7 +183,12 @@ pub fn initialize(rsdp_address: Option<PhysicalAddress>) {
         // output masked: counting proceeds, no IRQ can ever fire, and the
         // LAPIC stays the system tick source.
         let observed_config = read_register(base_address, TIMER0_CONFIG);
-        match program_timer0_periodic(base_address, observed_config, TARGET_INTERVAL_FS, clock_period_fs) {
+        match program_timer0_periodic(
+            base_address,
+            observed_config,
+            TARGET_INTERVAL_FS,
+            clock_period_fs,
+        ) {
             Ok(delta) => {
                 *guard = Some(info);
                 serial::write_args(format_args!(

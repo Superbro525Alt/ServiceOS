@@ -22,7 +22,9 @@ pub(crate) fn poll_control(
     loop {
         let mut message = RawMessage::empty(0);
         match rt::channel_receive_nonblocking(control_handle, &mut message) {
-            Ok(()) if message.tag == AppControlTag::FocusChanged as u32 && message.word_count > 0 => {
+            Ok(())
+                if message.tag == AppControlTag::FocusChanged as u32 && message.word_count > 0 =>
+            {
                 *focused = message.words[0] != 0;
                 changed = true;
                 did_work = true;
@@ -62,7 +64,8 @@ pub(crate) fn poll_control(
                         let encoded = ch.encode_utf8(&mut bytes);
                         visual_changed |= tab.scroll_offset != 0;
                         tab.scroll_offset = 0;
-                        let _ = rt::terminal_session_send_input(tab.session_handle, encoded.as_bytes());
+                        let _ =
+                            rt::terminal_session_send_input(tab.session_handle, encoded.as_bytes());
                         changed |= visual_changed;
                         did_work = true;
                     }
@@ -144,7 +147,11 @@ pub(crate) fn handle_key_down(
         if let Some(tab) = crate::tabs::active_tab_mut(state) {
             crate::render::scroll_up_view(
                 tab,
-                if key_code == KEY_PAGE_UP { rows.saturating_sub(1).max(1) } else { 1 },
+                if key_code == KEY_PAGE_UP {
+                    rows.saturating_sub(1).max(1)
+                } else {
+                    1
+                },
                 rows,
             );
             return Ok(true);
@@ -155,7 +162,11 @@ pub(crate) fn handle_key_down(
         if let Some(tab) = crate::tabs::active_tab_mut(state) {
             crate::render::scroll_down_view(
                 tab,
-                if key_code == KEY_PAGE_DOWN { rows.saturating_sub(1).max(1) } else { 1 },
+                if key_code == KEY_PAGE_DOWN {
+                    rows.saturating_sub(1).max(1)
+                } else {
+                    1
+                },
             );
             return Ok(true);
         }

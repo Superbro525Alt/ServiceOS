@@ -580,11 +580,13 @@ impl Scheduler {
         self.state.lock().current
     }
 
-    pub fn kernel_context_switch_info(&self) -> Option<(ThreadId, Option<KernelContext>, Option<KernelContext>)> {
+    pub fn kernel_context_switch_info(
+        &self,
+    ) -> Option<(ThreadId, Option<KernelContext>, Option<KernelContext>)> {
         let state = self.state.lock();
         let previous = state.current?;
         let next = state.runnable_front()?;
-        
+
         if previous == *next {
             return None;
         }
@@ -688,7 +690,9 @@ impl SchedulerState {
         if let Some(thread_id) = self.runnable_queues[cpu].pop_front() {
             return Some(thread_id);
         }
-        self.runnable_queues.iter_mut().find_map(VecDeque::pop_front)
+        self.runnable_queues
+            .iter_mut()
+            .find_map(VecDeque::pop_front)
     }
 
     fn runnable_front(&self) -> Option<&ThreadId> {

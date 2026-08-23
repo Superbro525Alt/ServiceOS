@@ -1,6 +1,6 @@
 use crate::{
-    channel_receive_nonblocking, channel_send, pack_bytes, unpack_bytes, Error, Handle,
-    RawMessage, Result, IPC_MAX_WORDS,
+    Error, Handle, IPC_MAX_WORDS, RawMessage, Result, channel_receive_nonblocking, channel_send,
+    pack_bytes, unpack_bytes,
 };
 
 pub const TEXT_RELAY_TAG: u32 = 1;

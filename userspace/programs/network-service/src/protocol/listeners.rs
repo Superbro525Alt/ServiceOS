@@ -3,11 +3,11 @@ use smoltcp::{
     socket::tcp,
 };
 
-use serviceos_userspace_runtime as rt;
 use rt::{
     LogEvent, LogSeverity, NetworkSocketKind, NetworkSocketState, NetworkSocketTag, NetworkStatus,
     NetworkTag, RawMessage,
 };
+use serviceos_userspace_runtime as rt;
 
 use crate::{
     consts::MAX_TCP_LISTENERS,
@@ -212,8 +212,9 @@ pub(crate) fn pump_listeners(
         }
 
         // Invariant: this pool handle belongs to an inactive transport slot.
-        let Some(transport_index) =
-            tcp_handles.iter().position(|&handle| handle == socket_handle)
+        let Some(transport_index) = tcp_handles
+            .iter()
+            .position(|&handle| handle == socket_handle)
         else {
             continue;
         };
@@ -225,13 +226,11 @@ pub(crate) fn pump_listeners(
         let endpoints = {
             let socket = sockets.get_mut::<tcp::Socket>(socket_handle);
             match (socket.remote_endpoint(), socket.local_endpoint()) {
-                (Some(remote), Some(local)) => {
-                    match remote.addr {
-                        smoltcp::wire::IpAddress::Ipv4(address) => {
-                            Some((address, remote.port, local.port))
-                        }
+                (Some(remote), Some(local)) => match remote.addr {
+                    smoltcp::wire::IpAddress::Ipv4(address) => {
+                        Some((address, remote.port, local.port))
                     }
-                }
+                },
                 _ => None,
             }
         };

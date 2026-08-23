@@ -2,8 +2,8 @@ use crate::{
     AudioEndpointStatusInfo, AudioStatus, AudioStreamDirection, AudioStreamInfo, AudioTag,
     AudioToneRequest, Error, Handle, RawMessage, Result, audio_endpoint_backend_from_word,
     audio_endpoint_direction_from_word, audio_endpoint_info, audio_endpoint_play_tone,
-    audio_endpoint_state_from_word, audio_status_error, audio_status_from_word,
-    audio_stream_direction_from_word, audio_stream_state_from_word, audio_endpoint_stop,
+    audio_endpoint_state_from_word, audio_endpoint_stop, audio_status_error,
+    audio_status_from_word, audio_stream_direction_from_word, audio_stream_state_from_word,
     channel_call,
 };
 

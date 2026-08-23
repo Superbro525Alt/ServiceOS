@@ -1,16 +1,16 @@
 use core::{fmt::Write, str};
 
+use rt::FixedLogBuffer;
 use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
-use rt::FixedLogBuffer;
 
 use crate::actions::{
     action_label, category_chip_label, channel_label, ring_label, text_or_dash, trust_badge,
 };
 use crate::state::{
-    compute_layout, installed_count, selected_entry, service_title, AppState, CatalogEntry, Layout,
-    BUFFER_BYTES, BUFFER_HEIGHT, BUFFER_WIDTH, HEADER_HEIGHT, MAX_SOURCE_BYTES, PIXEL_STRIDE,
-    ROW_HEIGHT, STATUS_BAR_HEIGHT,
+    AppState, BUFFER_BYTES, BUFFER_HEIGHT, BUFFER_WIDTH, CatalogEntry, HEADER_HEIGHT, Layout,
+    MAX_SOURCE_BYTES, PIXEL_STRIDE, ROW_HEIGHT, STATUS_BAR_HEIGHT, compute_layout, installed_count,
+    selected_entry, service_title,
 };
 
 pub(crate) fn render(
@@ -51,10 +51,7 @@ pub(crate) fn render(
                 provenance.repo_index,
                 trust_badge(provenance.trust_state),
             );
-            let _ = write!(
-                &mut detail1,
-                ""
-            );
+            let _ = write!(&mut detail1, "");
             let _ = write!(
                 &mut detail2,
                 "latest={}  installed={}  active={}",
@@ -72,7 +69,11 @@ pub(crate) fn render(
             let _ = source;
         } else {
             let _ = write!(&mut detail0, "{}", service_title(entry.service_id));
-            let _ = write!(&mut detail1, "{}", text_or_dash(&entry.summary[..entry.summary_len]));
+            let _ = write!(
+                &mut detail1,
+                "{}",
+                text_or_dash(&entry.summary[..entry.summary_len])
+            );
             let _ = write!(
                 &mut detail2,
                 "latest={}",
@@ -86,7 +87,10 @@ pub(crate) fn render(
         }
     } else {
         let _ = write!(&mut detail0, "Select a package");
-        let _ = write!(&mut detail1, "Browse the catalog and inspect trust before installing.");
+        let _ = write!(
+            &mut detail1,
+            "Browse the catalog and inspect trust before installing."
+        );
     }
 
     ui::draw_window_frame_rgba8888(
@@ -99,10 +103,38 @@ pub(crate) fn render(
         "SOFTWARE CENTER",
     );
     draw_header(bytes, layout, state);
-    draw_panel(bytes, layout.left_x, layout.left_y, layout.left_w, layout.left_h, ui::BG_PANEL);
-    draw_panel(bytes, layout.right_x, layout.right_y, layout.right_w, layout.right_h, ui::BG_PANEL);
-    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, layout.left_x + 12, layout.left_y + 10, ui::TEXT_PRIMARY, "CATALOG");
-    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, layout.right_x + 12, layout.right_y + 10, ui::TEXT_PRIMARY, "DETAILS");
+    draw_panel(
+        bytes,
+        layout.left_x,
+        layout.left_y,
+        layout.left_w,
+        layout.left_h,
+        ui::BG_PANEL,
+    );
+    draw_panel(
+        bytes,
+        layout.right_x,
+        layout.right_y,
+        layout.right_w,
+        layout.right_h,
+        ui::BG_PANEL,
+    );
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        layout.left_x + 12,
+        layout.left_y + 10,
+        ui::TEXT_PRIMARY,
+        "CATALOG",
+    );
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        layout.right_x + 12,
+        layout.right_y + 10,
+        ui::TEXT_PRIMARY,
+        "DETAILS",
+    );
     draw_button(
         bytes,
         layout.sync_x0,
@@ -164,7 +196,14 @@ fn draw_header(bytes: &mut [u8], layout: Layout, state: &AppState) {
         HEADER_HEIGHT,
         ui::BG_PANEL,
     );
-    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, layout.header_x + 14, layout.header_y + 12, ui::TEXT_PRIMARY, "DISCOVER AND MANAGE SOFTWARE");
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        layout.header_x + 14,
+        layout.header_y + 12,
+        ui::TEXT_PRIMARY,
+        "DISCOVER AND MANAGE SOFTWARE",
+    );
     let mut summary = FixedLogBuffer::<64>::new();
     let _ = write!(
         &mut summary,
@@ -194,8 +233,22 @@ fn draw_details(
 ) {
     let meta_x = layout.right_x + 12;
     let title_y = layout.detail_title_y;
-    draw_text_fit(bytes, meta_x, title_y, ui::TEXT_PRIMARY, detail0, layout.detail_text_w);
-    draw_text_fit(bytes, meta_x, title_y + 16, ui::TEXT_SECONDARY, detail1, layout.detail_text_w);
+    draw_text_fit(
+        bytes,
+        meta_x,
+        title_y,
+        ui::TEXT_PRIMARY,
+        detail0,
+        layout.detail_text_w,
+    );
+    draw_text_fit(
+        bytes,
+        meta_x,
+        title_y + 16,
+        ui::TEXT_SECONDARY,
+        detail1,
+        layout.detail_text_w,
+    );
     if let Some(entry) = entry {
         draw_chip(
             bytes,
@@ -221,12 +274,39 @@ fn draw_details(
             } else {
                 layout.action_badge_y
             };
-            draw_chip(bytes, layout.install_x0, active_y, "ACTIVE", ui::ACCENT, ui::BG_PANEL);
+            draw_chip(
+                bytes,
+                layout.install_x0,
+                active_y,
+                "ACTIVE",
+                ui::ACCENT,
+                ui::BG_PANEL,
+            );
         }
     }
-    draw_text_fit(bytes, meta_x, layout.detail_body_y, ui::TEXT_SECONDARY, detail2, layout.detail_text_w);
-    draw_text_fit(bytes, meta_x, layout.detail_body_y + 14, ui::TEXT_SECONDARY, detail3, layout.detail_text_w);
-    draw_status_bar(bytes, layout.right_x + 12, layout.status_y, layout.right_w - 24, status);
+    draw_text_fit(
+        bytes,
+        meta_x,
+        layout.detail_body_y,
+        ui::TEXT_SECONDARY,
+        detail2,
+        layout.detail_text_w,
+    );
+    draw_text_fit(
+        bytes,
+        meta_x,
+        layout.detail_body_y + 14,
+        ui::TEXT_SECONDARY,
+        detail3,
+        layout.detail_text_w,
+    );
+    draw_status_bar(
+        bytes,
+        layout.right_x + 12,
+        layout.status_y,
+        layout.right_w - 24,
+        status,
+    );
 }
 
 fn draw_list(bytes: &mut [u8], layout: Layout, state: &AppState) {
@@ -248,14 +328,22 @@ fn draw_list(bytes: &mut [u8], layout: Layout, state: &AppState) {
             row_y,
             (layout.left_w - 16).max(0) as usize,
             (ROW_HEIGHT - 4).max(0) as usize,
-            if selected { ui::ACCENT_DIM } else { ui::BG_WINDOW },
+            if selected {
+                ui::ACCENT_DIM
+            } else {
+                ui::BG_WINDOW
+            },
         );
         rt::draw_text_rgba8888(
             bytes,
             PIXEL_STRIDE,
             layout.left_x + 14,
             row_y as i32 + 4,
-            if selected { ui::TEXT_PRIMARY } else { ui::TEXT_SECONDARY },
+            if selected {
+                ui::TEXT_PRIMARY
+            } else {
+                ui::TEXT_SECONDARY
+            },
             service_title(entry.service_id),
         );
         let mut meta = FixedLogBuffer::<96>::new();

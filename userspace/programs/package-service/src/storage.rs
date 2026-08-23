@@ -67,7 +67,10 @@ pub(crate) fn load_persisted_repositories(
             .and_then(|value| value.parse::<u32>().ok())
             .map(|value| trust_mode_from_word(value as u64))
             .unwrap_or(PackageRepositoryTrustMode::Unsigned);
-        let pinned_digest = parts.next().and_then(|value| value.parse::<u64>().ok()).unwrap_or(0);
+        let pinned_digest = parts
+            .next()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0);
         let channel = parts
             .next()
             .and_then(|value| value.parse::<u32>().ok())
@@ -79,14 +82,23 @@ pub(crate) fn load_persisted_repositories(
             .map(|value| package_ring_from_word(value as u64))
             .unwrap_or(PackageRing::Production);
         let enabled = parts.next().map(|value| value == "1").unwrap_or(true);
-        let last_digest = parts.next().and_then(|value| value.parse::<u64>().ok()).unwrap_or(0);
+        let last_digest = parts
+            .next()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0);
         let sync_state = parts
             .next()
             .and_then(|value| value.parse::<u32>().ok())
             .map(|value| match value {
-                x if x == PackageRepositorySyncState::Ready as u32 => PackageRepositorySyncState::Ready,
-                x if x == PackageRepositorySyncState::Offline as u32 => PackageRepositorySyncState::Offline,
-                x if x == PackageRepositorySyncState::Failed as u32 => PackageRepositorySyncState::Failed,
+                x if x == PackageRepositorySyncState::Ready as u32 => {
+                    PackageRepositorySyncState::Ready
+                }
+                x if x == PackageRepositorySyncState::Offline as u32 => {
+                    PackageRepositorySyncState::Offline
+                }
+                x if x == PackageRepositorySyncState::Failed as u32 => {
+                    PackageRepositorySyncState::Failed
+                }
                 _ => PackageRepositorySyncState::Idle,
             })
             .unwrap_or(PackageRepositorySyncState::Idle);
@@ -109,7 +121,9 @@ pub(crate) fn load_persisted_repositories(
     Ok(())
 }
 
-pub(crate) fn repo_feed_cache_path(repo_name: &str) -> rt::Result<rt::FixedLogBuffer<INSTALL_PATH_MAX>> {
+pub(crate) fn repo_feed_cache_path(
+    repo_name: &str,
+) -> rt::Result<rt::FixedLogBuffer<INSTALL_PATH_MAX>> {
     let mut path = rt::FixedLogBuffer::<INSTALL_PATH_MAX>::new();
     let _ = write!(&mut path, "state/packages/repos/{}/feed.idx", repo_name);
     Ok(path)
@@ -156,7 +170,8 @@ pub(crate) fn load_repo_feed_cache(
             }
         }
     };
-    let base_path = crate::repositories::repository_base_path(repos[repo_index].url.as_str().unwrap_or(""));
+    let base_path =
+        crate::repositories::repository_base_path(repos[repo_index].url.as_str().unwrap_or(""));
     crate::repositories::parse_feed_catalog(
         &bytes[..loaded],
         repos,
@@ -175,7 +190,10 @@ pub(crate) fn persist_installed_state(
 ) -> rt::Result<()> {
     let mut text = rt::FixedLogBuffer::<MAX_STATE_BYTES>::new();
     let _ = write!(&mut text, "version=1\n");
-    for slot in packages[..package_count].iter().filter(|slot| slot.occupied) {
+    for slot in packages[..package_count]
+        .iter()
+        .filter(|slot| slot.occupied)
+    {
         let active_manifest = slot
             .active
             .and_then(|index| slot.versions[index].local_manifest_path.as_str().ok())
@@ -198,7 +216,11 @@ pub(crate) fn persist_installed_state(
             rollback_manifest,
         );
     }
-    write_storage_file(storage_handle, "state/packages/installed.cfg", text.as_bytes())
+    write_storage_file(
+        storage_handle,
+        "state/packages/installed.cfg",
+        text.as_bytes(),
+    )
 }
 
 pub(crate) fn load_installed_state(
@@ -290,7 +312,8 @@ fn load_local_manifest_slot(
     manifest_path: &str,
     trust_state: PackageTrustState,
 ) -> rt::Result<()> {
-    let manifest = crate::operations::load_manifest_from_storage_path(storage_handle, manifest_path)?;
+    let manifest =
+        crate::operations::load_manifest_from_storage_path(storage_handle, manifest_path)?;
     let version = manifest.version.as_str().unwrap_or("0.0.0");
     let index = if let Some(existing) = find_version_by_name(slot, version) {
         existing
@@ -308,18 +331,28 @@ fn load_local_manifest_slot(
     let _ = slot.versions[index].repo_manifest_path.set(manifest_path);
     let _ = slot.versions[index].local_manifest_path.set(manifest_path);
     let _ = slot.versions[index].version.set(version);
+    let _ = slot.versions[index].compatibility.set(
+        manifest
+            .compatibility
+            .as_str()
+            .unwrap_or("serviceos.bootstore.v1"),
+    );
     let _ = slot.versions[index]
-        .compatibility
-        .set(manifest.compatibility.as_str().unwrap_or("serviceos.bootstore.v1"));
-    let _ = slot.versions[index].category.set(slot.package_name.as_str().unwrap_or("PACKAGE"));
-    let _ = slot.versions[index].summary.set(slot.package_name.as_str().unwrap_or("PACKAGE"));
+        .category
+        .set(slot.package_name.as_str().unwrap_or("PACKAGE"));
+    let _ = slot.versions[index]
+        .summary
+        .set(slot.package_name.as_str().unwrap_or("PACKAGE"));
     slot.versions[index].trust_state = trust_state;
     slot.versions[index].occupied = true;
     sort_package_versions(slot);
     Ok(())
 }
 
-pub(crate) fn persist_journal_state(storage_handle: rt::Handle, journal: JournalState) -> rt::Result<()> {
+pub(crate) fn persist_journal_state(
+    storage_handle: rt::Handle,
+    journal: JournalState,
+) -> rt::Result<()> {
     let mut text = rt::FixedLogBuffer::<256>::new();
     let _ = write!(&mut text, "version=1\n");
     if journal.pending_action != JOURNAL_NONE {
@@ -332,10 +365,17 @@ pub(crate) fn persist_journal_state(storage_handle: rt::Handle, journal: Journal
             journal.manifest_path.as_str().unwrap_or(""),
         );
     }
-    write_storage_file(storage_handle, "state/packages/journal.cfg", text.as_bytes())
+    write_storage_file(
+        storage_handle,
+        "state/packages/journal.cfg",
+        text.as_bytes(),
+    )
 }
 
-pub(crate) fn load_journal_state(storage_handle: rt::Handle, journal: &mut JournalState) -> rt::Result<()> {
+pub(crate) fn load_journal_state(
+    storage_handle: rt::Handle,
+    journal: &mut JournalState,
+) -> rt::Result<()> {
     let (blob, len) = match rt::storage_open(storage_handle, "state/packages/journal.cfg") {
         Ok(value) => value,
         Err(rt::Error::NotFound) => return Ok(()),
@@ -351,7 +391,10 @@ pub(crate) fn load_journal_state(storage_handle: rt::Handle, journal: &mut Journ
             continue;
         };
         let mut parts = payload.split('|');
-        journal.pending_action = parts.next().and_then(|v| v.parse::<u32>().ok()).unwrap_or(JOURNAL_NONE);
+        journal.pending_action = parts
+            .next()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(JOURNAL_NONE);
         journal.service_id = parts
             .next()
             .and_then(|v| v.parse::<u32>().ok())
@@ -400,7 +443,11 @@ pub(crate) fn ensure_parent_directories(storage_handle: rt::Handle, path: &str) 
     }
 }
 
-pub(crate) fn write_storage_file(storage_handle: rt::Handle, path: &str, bytes: &[u8]) -> rt::Result<()> {
+pub(crate) fn write_storage_file(
+    storage_handle: rt::Handle,
+    path: &str,
+    bytes: &[u8],
+) -> rt::Result<()> {
     ensure_parent_directories(storage_handle, path)?;
     let mut parent = rt::FixedLogBuffer::<INSTALL_PATH_MAX>::new();
     let name = split_parent_path(path, &mut parent)?;
@@ -410,7 +457,12 @@ pub(crate) fn write_storage_file(storage_handle: rt::Handle, path: &str, bytes: 
     let mut offset = 0usize;
     while offset < bytes.len() {
         let chunk_len = (bytes.len() - offset).min((rt::IPC_MAX_WORDS - 3) * 8);
-        let _ = rt::storage_write(file, offset, bytes.len(), &bytes[offset..offset + chunk_len])?;
+        let _ = rt::storage_write(
+            file,
+            offset,
+            bytes.len(),
+            &bytes[offset..offset + chunk_len],
+        )?;
         offset += chunk_len;
     }
     let _ = rt::storage_blob_close(file);
@@ -442,7 +494,10 @@ pub(crate) fn validate_package_state(
     package_count: usize,
 ) -> rt::Result<u32> {
     let mut repaired = 0u32;
-    for slot in packages[..package_count].iter_mut().filter(|slot| slot.occupied) {
+    for slot in packages[..package_count]
+        .iter_mut()
+        .filter(|slot| slot.occupied)
+    {
         for index in 0..slot.version_count {
             if let Ok(path) = slot.versions[index].local_manifest_path.as_str() {
                 if !path.is_empty() && rt::storage_open(storage_handle, path).is_err() {
@@ -470,7 +525,10 @@ pub(crate) fn garbage_collect_packages(
     package_count: usize,
 ) -> rt::Result<u32> {
     let mut collected = 0u32;
-    for slot in packages[..package_count].iter_mut().filter(|slot| slot.occupied) {
+    for slot in packages[..package_count]
+        .iter_mut()
+        .filter(|slot| slot.occupied)
+    {
         for index in 0..slot.version_count {
             if slot.active == Some(index) || slot.rollback == Some(index) {
                 continue;
@@ -520,7 +578,9 @@ fn recursive_remove(storage_handle: rt::Handle, path: &str) -> rt::Result<()> {
                     let _ = rt::storage_directory_remove(dir, entry);
                     let _ = rt::handle_close(dir);
                 }
-                rt::StorageEntryKind::Directory => recursive_remove(storage_handle, child.as_str())?,
+                rt::StorageEntryKind::Directory => {
+                    recursive_remove(storage_handle, child.as_str())?
+                }
             }
         }
         let mut parent = rt::FixedLogBuffer::<INSTALL_PATH_MAX>::new();
@@ -532,7 +592,10 @@ fn recursive_remove(storage_handle: rt::Handle, path: &str) -> rt::Result<()> {
     Ok(())
 }
 
-pub(crate) fn install_root_path(package: &str, version: &str) -> rt::Result<rt::FixedLogBuffer<INSTALL_PATH_MAX>> {
+pub(crate) fn install_root_path(
+    package: &str,
+    version: &str,
+) -> rt::Result<rt::FixedLogBuffer<INSTALL_PATH_MAX>> {
     let mut path = rt::FixedLogBuffer::<INSTALL_PATH_MAX>::new();
     let _ = write!(&mut path, "state/packages/install/{}/{}/", package, version);
     Ok(path)
@@ -547,7 +610,12 @@ pub(crate) fn local_installed_content_path(
     remote_path: &str,
 ) -> rt::Result<rt::FixedLogBuffer<INSTALL_PATH_MAX>> {
     let mut path = rt::FixedLogBuffer::<INSTALL_PATH_MAX>::new();
-    let _ = write!(&mut path, "{}root/{}", install_root, remote_path.trim_start_matches('/'));
+    let _ = write!(
+        &mut path,
+        "{}root/{}",
+        install_root,
+        remote_path.trim_start_matches('/')
+    );
     Ok(path)
 }
 
@@ -555,7 +623,8 @@ pub(crate) fn local_installed_manifest_path(install_root: &str) -> rt::Result<In
     let mut path = InlinePath::empty();
     let mut text = rt::FixedLogBuffer::<INSTALL_PATH_MAX>::new();
     let _ = write!(&mut text, "{}package.pkg", install_root);
-    path.set(text.as_str()).map_err(|_| rt::Error::InvalidArgument)?;
+    path.set(text.as_str())
+        .map_err(|_| rt::Error::InvalidArgument)?;
     Ok(path)
 }
 
@@ -567,7 +636,10 @@ pub(crate) fn local_install_root_from_manifest(
     Ok(parent)
 }
 
-pub(crate) fn join_path(left: &str, right: &str) -> rt::Result<rt::FixedLogBuffer<INSTALL_PATH_MAX>> {
+pub(crate) fn join_path(
+    left: &str,
+    right: &str,
+) -> rt::Result<rt::FixedLogBuffer<INSTALL_PATH_MAX>> {
     let mut out = rt::FixedLogBuffer::<INSTALL_PATH_MAX>::new();
     let _ = out.write_str(left.trim_end_matches('/'));
     let _ = out.write_str("/");
@@ -613,7 +685,10 @@ pub(crate) fn serialize_package_manifest(
         "package={}\nversion={}\ncompat={}\nservice={}\nservice_manifest={}\nactivation={}\n",
         manifest.package.as_str().unwrap_or("package"),
         manifest.version.as_str().unwrap_or("0.0.0"),
-        manifest.compatibility.as_str().unwrap_or("serviceos.bootstore.v1"),
+        manifest
+            .compatibility
+            .as_str()
+            .unwrap_or("serviceos.bootstore.v1"),
         service_name(manifest.service_id),
         manifest.service_manifest.as_str().unwrap_or(""),
         match manifest.activation {

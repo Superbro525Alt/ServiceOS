@@ -14,34 +14,48 @@ pub(crate) fn handle_request(
     message: &RawMessage,
 ) -> rt::Result<()> {
     match message.tag {
-        x if x == PackageTag::ListRequest as u32 => handle_list_request(packages, *package_count, message),
-        x if x == PackageTag::InfoRequest as u32 => handle_info_request(packages, *package_count, message),
-        x if x == PackageTag::HistoryRequest as u32 => handle_history_request(packages, *package_count, message),
-        x if x == PackageTag::CatalogRequest as u32 => handle_catalog_request(packages, *package_count, message),
+        x if x == PackageTag::ListRequest as u32 => {
+            handle_list_request(packages, *package_count, message)
+        }
+        x if x == PackageTag::InfoRequest as u32 => {
+            handle_info_request(packages, *package_count, message)
+        }
+        x if x == PackageTag::HistoryRequest as u32 => {
+            handle_history_request(packages, *package_count, message)
+        }
+        x if x == PackageTag::CatalogRequest as u32 => {
+            handle_catalog_request(packages, *package_count, message)
+        }
         x if x == PackageTag::RepositoryListRequest as u32 => {
             handle_repository_list_request(repos, *repo_count, message)
         }
-        x if x == PackageTag::RepositoryAddRequest as u32 => crate::repositories::handle_repository_add_request(
-            storage_handle,
-            log_handle,
-            repos,
-            repo_count,
-            message,
-        ),
-        x if x == PackageTag::RepositorySyncRequest as u32 => crate::repositories::handle_repository_sync_request(
-            storage_handle,
-            network_handle,
-            log_handle,
-            repos,
-            *repo_count,
-            packages,
-            package_count,
-            message,
-        ),
+        x if x == PackageTag::RepositoryAddRequest as u32 => {
+            crate::repositories::handle_repository_add_request(
+                storage_handle,
+                log_handle,
+                repos,
+                repo_count,
+                message,
+            )
+        }
+        x if x == PackageTag::RepositorySyncRequest as u32 => {
+            crate::repositories::handle_repository_sync_request(
+                storage_handle,
+                network_handle,
+                log_handle,
+                repos,
+                *repo_count,
+                packages,
+                package_count,
+                message,
+            )
+        }
         x if x == PackageTag::ProvenanceRequest as u32 => {
             handle_provenance_request(repos, packages, *package_count, message)
         }
-        x if x == PackageTag::PolicyRequest as u32 => handle_policy_request(packages, *package_count, message),
+        x if x == PackageTag::PolicyRequest as u32 => {
+            handle_policy_request(packages, *package_count, message)
+        }
         x if x == PackageTag::PolicySetRequest as u32 => {
             handle_policy_set_request(storage_handle, packages, *package_count, message)
         }
@@ -118,7 +132,11 @@ fn handle_list_request(
     reply.words[0] = PackageStatus::End as u32 as u64;
 
     let index = message.words[0] as usize;
-    if let Some(slot) = packages[..package_count].get(index).copied().filter(|slot| slot.occupied) {
+    if let Some(slot) = packages[..package_count]
+        .get(index)
+        .copied()
+        .filter(|slot| slot.occupied)
+    {
         reply.words[0] = PackageStatus::Ok as u32 as u64;
         reply.words[1] = slot.service_id as u32 as u64;
         reply.words[2] = package_flags(&slot) as u64;
@@ -225,11 +243,21 @@ fn handle_catalog_request(
     reply.word_count = 7;
     reply.words[0] = PackageStatus::End as u32 as u64;
     let index = message.words[0] as usize;
-    if let Some(slot) = packages[..package_count].get(index).copied().filter(|slot| slot.occupied) {
+    if let Some(slot) = packages[..package_count]
+        .get(index)
+        .copied()
+        .filter(|slot| slot.occupied)
+    {
         let latest = latest_version_index(&slot);
         let latest_text = version_bytes(&slot, latest);
-        let category = slot.versions[latest.unwrap_or(0)].category.as_str().unwrap_or("SERVICE");
-        let summary = slot.versions[latest.unwrap_or(0)].summary.as_str().unwrap_or("PACKAGE");
+        let category = slot.versions[latest.unwrap_or(0)]
+            .category
+            .as_str()
+            .unwrap_or("SERVICE");
+        let summary = slot.versions[latest.unwrap_or(0)]
+            .summary
+            .as_str()
+            .unwrap_or("PACKAGE");
         reply.words[0] = PackageStatus::Ok as u32 as u64;
         reply.words[1] = slot.service_id as u32 as u64;
         reply.words[2] = package_flags(&slot) as u64;
@@ -262,7 +290,11 @@ fn handle_repository_list_request(
     reply.word_count = 8;
     reply.words[0] = PackageStatus::End as u32 as u64;
     let index = message.words[0] as usize;
-    if let Some(repo) = repos[..repo_count].get(index).copied().filter(|repo| repo.occupied) {
+    if let Some(repo) = repos[..repo_count]
+        .get(index)
+        .copied()
+        .filter(|repo| repo.occupied)
+    {
         let name = repo.name.as_str().unwrap_or("");
         let url = repo.url.as_str().unwrap_or("");
         reply.words[0] = PackageStatus::Ok as u32 as u64;
@@ -306,7 +338,12 @@ fn handle_provenance_request(
             active_manifest_path(&slot.versions[version_index])
         } else {
             latest
-                .and_then(|version_index| slot.versions[version_index].repo_manifest_path.as_str().ok())
+                .and_then(|version_index| {
+                    slot.versions[version_index]
+                        .repo_manifest_path
+                        .as_str()
+                        .ok()
+                })
                 .unwrap_or("")
         };
         reply.words[0] = PackageStatus::Ok as u32 as u64;

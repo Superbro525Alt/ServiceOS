@@ -34,7 +34,11 @@ mod imp {
         for nibble in 0..16 {
             let shift = 60 - nibble * 4;
             let digit = ((value >> shift) & 0xf) as u8;
-            out[2 + nibble] = if digit < 10 { b'0' + digit } else { b'a' + digit - 10 };
+            out[2 + nibble] = if digit < 10 {
+                b'0' + digit
+            } else {
+                b'a' + digit - 10
+            };
         }
         out
     }
@@ -205,12 +209,11 @@ serviceos_aarch64_fatal_vector:
     }
 
     fn handle_user_fault(context: &mut SavedUserContext) -> u64 {
-        let fault_type = serviceos_kernel_core::fault::fault_type_for_exception(
-            &ExceptionDetail::PageFault {
+        let fault_type =
+            serviceos_kernel_core::fault::fault_type_for_exception(&ExceptionDetail::PageFault {
                 fault_address: context.far_el1,
                 error_code: context.esr_el1,
-            },
-        );
+            });
         if let Some(_handler) = serviceos_kernel_core::fault::lookup_fault_handler(&fault_type) {
             let endpoint = _handler.endpoint;
             if let Some(tasks) = system() {
@@ -279,7 +282,7 @@ serviceos_aarch64_fatal_vector:
                 }
                 1
             }
-            serviceos_kernel_core::syscall::            SyscallAction::ExitCurrentThread { status } => {
+            serviceos_kernel_core::syscall::SyscallAction::ExitCurrentThread { status } => {
                 trace_sync(b'x', status, 0, 0);
                 user::mark_current_thread_exited(status);
                 if let Some(tasks) = system() {

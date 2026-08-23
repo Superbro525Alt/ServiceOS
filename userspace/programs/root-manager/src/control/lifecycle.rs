@@ -1,5 +1,5 @@
-use serviceos_userspace_runtime as rt;
 use rt::{ControlTag, LifecycleEvent, RawMessage, TaskStateCode};
+use serviceos_userspace_runtime as rt;
 
 use crate::state::ServiceSlot;
 

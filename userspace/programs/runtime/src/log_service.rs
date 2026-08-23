@@ -1,8 +1,8 @@
 use crate::{
-    channel_call, channel_create, channel_receive_blocking, channel_send, domain_from_word,
-    event_from_word, handle_close, service_id_from_word, severity_from_word, Error, Handle,
-    LogDomain, LogEvent, LogQueryStatus, LogRecord, LogSeverity, LogStatus, LogTag, RawMessage,
-    Result, ServiceId, LOG_FILTER_ANY, rights,
+    Error, Handle, LOG_FILTER_ANY, LogDomain, LogEvent, LogQueryStatus, LogRecord, LogSeverity,
+    LogStatus, LogTag, RawMessage, Result, ServiceId, channel_call, channel_create,
+    channel_receive_blocking, channel_send, domain_from_word, event_from_word, handle_close,
+    rights, service_id_from_word, severity_from_word,
 };
 
 pub fn send_log_record(

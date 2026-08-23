@@ -1,12 +1,12 @@
-use serviceos_abi::{IPC_MAX_HANDLES, IPC_MAX_WORDS};
-use serviceos_userspace_runtime as rt;
 use rt::{
     ControlTag, PermissionPolicyState, RawMessage, SecurityStatus, SecurityTag, ServiceId,
     ServiceImageId, rights,
 };
+use serviceos_abi::{IPC_MAX_HANDLES, IPC_MAX_WORDS};
+use serviceos_userspace_runtime as rt;
 
 use crate::{
-    state::{ServiceSlot, MAX_SERVICE_SLOTS},
+    state::{MAX_SERVICE_SLOTS, ServiceSlot},
     util::{find_slot_index, find_slot_index_checked},
 };
 
@@ -22,11 +22,18 @@ pub(super) fn launch_program(
 ) -> rt::Result<rt::Handle> {
     let bootstrap = rt::channel_create()?;
     let task_handle = rt::service_spawn(image_id, bootstrap_authority, bootstrap.second)?;
-    let task_view =
-        rt::handle_duplicate(task_handle, rights::READ | rights::DUPLICATE | rights::TRANSFER)?;
+    let task_view = rt::handle_duplicate(
+        task_handle,
+        rights::READ | rights::DUPLICATE | rights::TRANSFER,
+    )?;
 
     let mut startup = RawMessage::empty(ControlTag::Startup as u32);
-    populate_startup_message(&mut startup, startup_words, startup_handles, startup_handle_rights)?;
+    populate_startup_message(
+        &mut startup,
+        startup_words,
+        startup_handles,
+        startup_handle_rights,
+    )?;
     let mut handle_index = startup.handle_count as usize;
     append_launch_grants(
         slots,
@@ -57,13 +64,26 @@ pub(super) fn launch_program_from_image(
 ) -> rt::Result<rt::Handle> {
     let bootstrap = rt::channel_create()?;
     let task_handle = rt::task_spawn_image(image_handle, bootstrap_authority, bootstrap.second)?;
-    let task_view =
-        rt::handle_duplicate(task_handle, rights::READ | rights::DUPLICATE | rights::TRANSFER)?;
+    let task_view = rt::handle_duplicate(
+        task_handle,
+        rights::READ | rights::DUPLICATE | rights::TRANSFER,
+    )?;
 
     let mut startup = RawMessage::empty(ControlTag::Startup as u32);
-    populate_startup_message(&mut startup, startup_words, startup_handles, startup_handle_rights)?;
+    populate_startup_message(
+        &mut startup,
+        startup_words,
+        startup_handles,
+        startup_handle_rights,
+    )?;
     let mut handle_index = startup.handle_count as usize;
-    append_dynamic_launch_grants(slots, service_count, caller, &mut startup, &mut handle_index)?;
+    append_dynamic_launch_grants(
+        slots,
+        service_count,
+        caller,
+        &mut startup,
+        &mut handle_index,
+    )?;
     startup.handle_count = handle_index as u32;
 
     rt::channel_send(bootstrap.first, &startup)?;
@@ -91,7 +111,10 @@ pub(super) fn launch_is_authorized(caller: ServiceId, image_id: ServiceImageId) 
 }
 
 pub(super) fn launch_image_is_authorized(caller: ServiceId) -> bool {
-    matches!(caller, ServiceId::Shell | ServiceId::Runtime | ServiceId::Developer)
+    matches!(
+        caller,
+        ServiceId::Shell | ServiceId::Runtime | ServiceId::Developer
+    )
 }
 
 pub(super) fn launch_policy_allows(
@@ -103,7 +126,9 @@ pub(super) fn launch_policy_allows(
         return true;
     };
     let security = &slots[index];
-    if security.phase != crate::state::ServicePhase::Ready || security.public_handle == rt::INVALID_HANDLE {
+    if security.phase != crate::state::ServicePhase::Ready
+        || security.public_handle == rt::INVALID_HANDLE
+    {
         return true;
     }
 
@@ -190,45 +215,100 @@ fn append_launch_grants(
     match image_id {
         ServiceImageId::SettingsApp => {
             append_service_launch_handle(
-                slots, service_count, ServiceId::Config, rights::SEND | rights::TRANSFER, startup, handle_index,
+                slots,
+                service_count,
+                ServiceId::Config,
+                rights::SEND | rights::TRANSFER,
+                startup,
+                handle_index,
             )?;
             append_service_launch_handle(
-                slots, service_count, ServiceId::Network, rights::SEND | rights::TRANSFER, startup, handle_index,
+                slots,
+                service_count,
+                ServiceId::Network,
+                rights::SEND | rights::TRANSFER,
+                startup,
+                handle_index,
             )?;
             append_service_launch_handle(
-                slots, service_count, ServiceId::Audio, rights::SEND | rights::TRANSFER, startup, handle_index,
+                slots,
+                service_count,
+                ServiceId::Audio,
+                rights::SEND | rights::TRANSFER,
+                startup,
+                handle_index,
             )?;
             append_service_launch_handle(
-                slots, service_count, ServiceId::Security, rights::SEND | rights::TRANSFER, startup, handle_index,
+                slots,
+                service_count,
+                ServiceId::Security,
+                rights::SEND | rights::TRANSFER,
+                startup,
+                handle_index,
             )?;
             let _ = append_service_launch_handle(
-                slots, service_count, ServiceId::Runtime, rights::SEND | rights::TRANSFER, startup, handle_index,
+                slots,
+                service_count,
+                ServiceId::Runtime,
+                rights::SEND | rights::TRANSFER,
+                startup,
+                handle_index,
             );
         }
         ServiceImageId::FilesApp => {
             append_service_launch_handle(
-                slots, service_count, ServiceId::Storage, rights::SEND | rights::TRANSFER, startup, handle_index,
+                slots,
+                service_count,
+                ServiceId::Storage,
+                rights::SEND | rights::TRANSFER,
+                startup,
+                handle_index,
             )?;
         }
         ServiceImageId::MonitorApp => {
             append_service_launch_handle(
-                slots, service_count, ServiceId::Status, rights::SEND | rights::TRANSFER, startup, handle_index,
+                slots,
+                service_count,
+                ServiceId::Status,
+                rights::SEND | rights::TRANSFER,
+                startup,
+                handle_index,
             )?;
             append_service_launch_handle(
-                slots, service_count, ServiceId::Network, rights::SEND | rights::TRANSFER, startup, handle_index,
+                slots,
+                service_count,
+                ServiceId::Network,
+                rights::SEND | rights::TRANSFER,
+                startup,
+                handle_index,
             )?;
         }
         ServiceImageId::TerminalApp => {
             append_service_launch_handle(
-                slots, service_count, ServiceId::Terminal, rights::SEND | rights::TRANSFER, startup, handle_index,
+                slots,
+                service_count,
+                ServiceId::Terminal,
+                rights::SEND | rights::TRANSFER,
+                startup,
+                handle_index,
             )?;
             append_service_launch_handle(
-                slots, service_count, ServiceId::Clipboard, rights::SEND | rights::TRANSFER, startup, handle_index,
+                slots,
+                service_count,
+                ServiceId::Clipboard,
+                rights::SEND | rights::TRANSFER,
+                startup,
+                handle_index,
             )?;
         }
         ServiceImageId::SoftwareCenterApp => {
             append_service_launch_handle(
-                slots, service_count, ServiceId::Package, rights::SEND | rights::TRANSFER, startup, handle_index,
+                slots,
+                service_count,
+                ServiceId::Package,
+                rights::SEND | rights::TRANSFER,
+                startup,
+                handle_index,
             )?;
         }
         _ => {}
@@ -246,13 +326,28 @@ fn append_dynamic_launch_grants(
 ) -> rt::Result<()> {
     match caller {
         ServiceId::Shell => append_service_launch_handle(
-            slots, service_count, ServiceId::Console, rights::SEND | rights::TRANSFER, startup, handle_index,
+            slots,
+            service_count,
+            ServiceId::Console,
+            rights::SEND | rights::TRANSFER,
+            startup,
+            handle_index,
         ),
         ServiceId::Runtime => append_service_launch_handle(
-            slots, service_count, ServiceId::Runtime, rights::SEND | rights::TRANSFER, startup, handle_index,
+            slots,
+            service_count,
+            ServiceId::Runtime,
+            rights::SEND | rights::TRANSFER,
+            startup,
+            handle_index,
         ),
         ServiceId::Developer => append_service_launch_handle(
-            slots, service_count, ServiceId::Developer, rights::SEND | rights::TRANSFER, startup, handle_index,
+            slots,
+            service_count,
+            ServiceId::Developer,
+            rights::SEND | rights::TRANSFER,
+            startup,
+            handle_index,
         ),
         _ => Ok(()),
     }
@@ -270,10 +365,8 @@ fn append_service_launch_handle(
         return Err(rt::Error::BufferTooSmall);
     }
     let index = find_slot_index(slots, service_count, service_id)?;
-    let transferred = rt::handle_duplicate(
-        slots[index].public_handle,
-        rights_mask | rights::DUPLICATE,
-    )?;
+    let transferred =
+        rt::handle_duplicate(slots[index].public_handle, rights_mask | rights::DUPLICATE)?;
     startup.handles[*handle_index] = transferred;
     startup.handle_rights[*handle_index] = rights_mask & !rights::TRANSFER;
     *handle_index += 1;

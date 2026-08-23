@@ -1,11 +1,11 @@
-use serviceos_userspace_runtime as rt;
 use rt::ServiceId;
+use serviceos_userspace_runtime as rt;
 
-use crate::util::{write_output_linef, ShellOutput};
+use crate::util::{ShellOutput, write_output_linef};
 
 use super::parse::{
-    channel_name, parse_channel, parse_repo_trust, parse_ring, parse_usize, repo_sync_state_name,
-    ring_name, trust_mode_name, MAX_PACKAGE_TEXT,
+    MAX_PACKAGE_TEXT, channel_name, parse_channel, parse_repo_trust, parse_ring, parse_usize,
+    repo_sync_state_name, ring_name, trust_mode_name,
 };
 
 pub(super) fn cmd_pkg_repos(bootstrap: rt::Handle, output: ShellOutput) -> rt::Result<()> {
@@ -14,7 +14,8 @@ pub(super) fn cmd_pkg_repos(bootstrap: rt::Handle, output: ShellOutput) -> rt::R
     let mut url = [0u8; MAX_PACKAGE_TEXT];
     let mut index = 0usize;
 
-    while let Some(repo) = rt::package_repository_list(package_handle, index, &mut name, &mut url)? {
+    while let Some(repo) = rt::package_repository_list(package_handle, index, &mut name, &mut url)?
+    {
         let name_text =
             core::str::from_utf8(&name[..repo.name_len]).map_err(|_| rt::Error::InvalidArgument)?;
         let url_text =
@@ -57,10 +58,20 @@ where
     match parts.next() {
         Some("add") => {
             let Some(name) = parts.next() else {
-                return write_output_linef(output, format_args!("usage: pkg repo add <name> <url> [unsigned|pinned:<hex>] [stable|beta|canary] [production|preview|testing]"));
+                return write_output_linef(
+                    output,
+                    format_args!(
+                        "usage: pkg repo add <name> <url> [unsigned|pinned:<hex>] [stable|beta|canary] [production|preview|testing]"
+                    ),
+                );
             };
             let Some(url) = parts.next() else {
-                return write_output_linef(output, format_args!("usage: pkg repo add <name> <url> [unsigned|pinned:<hex>] [stable|beta|canary] [production|preview|testing]"));
+                return write_output_linef(
+                    output,
+                    format_args!(
+                        "usage: pkg repo add <name> <url> [unsigned|pinned:<hex>] [stable|beta|canary] [production|preview|testing]"
+                    ),
+                );
             };
             let trust = parts.next().unwrap_or("unsigned");
             let channel = parts.next().unwrap_or("stable");
@@ -71,7 +82,9 @@ where
             Some("all") | None => cmd_pkg_repo_sync(bootstrap, output, None),
             Some(index) => match parse_usize(index) {
                 Some(value) => cmd_pkg_repo_sync(bootstrap, output, Some(value)),
-                None => write_output_linef(output, format_args!("usage: pkg repo sync [all|index]")),
+                None => {
+                    write_output_linef(output, format_args!("usage: pkg repo sync [all|index]"))
+                }
             },
         },
         _ => write_output_linef(output, format_args!("usage: pkg repo <add|sync> ...")),
@@ -88,10 +101,16 @@ fn cmd_pkg_repo_add(
     ring_text: &str,
 ) -> rt::Result<()> {
     let Some((trust_mode, digest)) = parse_repo_trust(trust_text) else {
-        return write_output_linef(output, format_args!("trust must be unsigned or pinned:<hex-digest>"));
+        return write_output_linef(
+            output,
+            format_args!("trust must be unsigned or pinned:<hex-digest>"),
+        );
     };
     let Some(channel) = parse_channel(channel_text) else {
-        return write_output_linef(output, format_args!("channel must be stable, beta, or nightly"));
+        return write_output_linef(
+            output,
+            format_args!("channel must be stable, beta, or nightly"),
+        );
     };
     let Some(ring) = parse_ring(ring_text) else {
         return write_output_linef(output, format_args!("ring must be user, beta, or canary"));
@@ -121,5 +140,8 @@ fn cmd_pkg_repo_sync(
     let result = rt::package_repository_sync(package_handle, repo_index);
     let _ = rt::handle_close(package_handle);
     let info = result?;
-    write_output_linef(output, format_args!("synced={} failed={}", info.synced, info.failed))
+    write_output_linef(
+        output,
+        format_args!("synced={} failed={}", info.synced, info.failed),
+    )
 }

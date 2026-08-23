@@ -1,7 +1,7 @@
 use crate::{
-    channel_call, Error, Handle, PermissionPolicyState, RawMessage, Result, SecurityAuditInfo,
-    SecurityAuditKind, SecurityAppPolicyInfo, SecurityStatus, SecurityTag, ServiceId,
-    ServiceImageId,
+    Error, Handle, PermissionPolicyState, RawMessage, Result, SecurityAppPolicyInfo,
+    SecurityAuditInfo, SecurityAuditKind, SecurityStatus, SecurityTag, ServiceId, ServiceImageId,
+    channel_call,
 };
 
 pub fn security_lookup(bootstrap: Handle) -> Result<Handle> {
@@ -26,7 +26,11 @@ pub fn security_policy_list(
                 return Err(Error::BufferTooSmall);
             }
             let mut name = [0u8; 64];
-            crate::unpack_bytes(&response.words[6..response.word_count as usize], name_len, &mut name)?;
+            crate::unpack_bytes(
+                &response.words[6..response.word_count as usize],
+                name_len,
+                &mut name,
+            )?;
             Ok(Some(SecurityAppPolicyInfo {
                 image_id: image_id_from_word(response.words[1]),
                 permissions: response.words[2] as u32,
@@ -60,7 +64,11 @@ pub fn security_policy_info(
                 return Err(Error::BufferTooSmall);
             }
             let mut name = [0u8; 64];
-            crate::unpack_bytes(&response.words[6..response.word_count as usize], name_len, &mut name)?;
+            crate::unpack_bytes(
+                &response.words[6..response.word_count as usize],
+                name_len,
+                &mut name,
+            )?;
             Ok(SecurityAppPolicyInfo {
                 image_id: image_id_from_word(response.words[1]),
                 permissions: response.words[2] as u32,
@@ -114,7 +122,11 @@ pub fn security_audit_list(
             kind: security_audit_kind_from_word(response.words[2]),
             subject_image_id: image_id_from_word(response.words[3]),
             policy: permission_policy_state_from_word(response.words[4]),
-            detail: if response.word_count > 5 { response.words[5] } else { 0 },
+            detail: if response.word_count > 5 {
+                response.words[5]
+            } else {
+                0
+            },
         })),
         SecurityStatus::NotFound => Ok(None),
         SecurityStatus::Denied => Err(Error::PermissionDenied),
@@ -142,8 +154,12 @@ fn permission_policy_state_from_word(value: u64) -> PermissionPolicyState {
 fn security_audit_kind_from_word(value: u64) -> SecurityAuditKind {
     match value as u32 {
         x if x == SecurityAuditKind::LaunchDenied as u32 => SecurityAuditKind::LaunchDenied,
-        x if x == SecurityAuditKind::RuntimeApprovalRequested as u32 => SecurityAuditKind::RuntimeApprovalRequested,
-        x if x == SecurityAuditKind::RuntimeApprovalChanged as u32 => SecurityAuditKind::RuntimeApprovalChanged,
+        x if x == SecurityAuditKind::RuntimeApprovalRequested as u32 => {
+            SecurityAuditKind::RuntimeApprovalRequested
+        }
+        x if x == SecurityAuditKind::RuntimeApprovalChanged as u32 => {
+            SecurityAuditKind::RuntimeApprovalChanged
+        }
         _ => SecurityAuditKind::PolicyChanged,
     }
 }

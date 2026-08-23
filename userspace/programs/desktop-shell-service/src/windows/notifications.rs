@@ -34,7 +34,9 @@ pub(crate) fn post_notification(
     state.notification_deadline = rt::monotonic_now()?.saturating_add(NOTIFICATION_TIMEOUT_TICKS);
 
     let history_len = text.len().min(NOTIFICATION_HISTORY_TEXT_MAX);
-    let limit = state.notification_history_len.min(NOTIFICATION_HISTORY_MAX - 1);
+    let limit = state
+        .notification_history_len
+        .min(NOTIFICATION_HISTORY_MAX - 1);
     for index in (0..limit).rev() {
         state.notification_history[index + 1] = state.notification_history[index];
     }

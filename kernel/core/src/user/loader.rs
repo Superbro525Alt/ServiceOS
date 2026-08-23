@@ -1,6 +1,6 @@
 use crate::memory::{
     EarlyFrameAllocator, Frame, MappingFlags, PAGE_SIZE_BYTES, PageMapper, PhysicalAddress,
-    VirtualAddress, USER_SPACE_END,
+    USER_SPACE_END, VirtualAddress,
 };
 
 use super::{

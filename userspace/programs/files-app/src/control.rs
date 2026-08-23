@@ -1,6 +1,6 @@
-use serviceos_userspace_runtime as rt;
 use rt::{AppControlTag, AppKeyAction, AppPointerAction, RawMessage};
 use serviceos_desktop_ui as ui;
+use serviceos_userspace_runtime as rt;
 
 use crate::navigation::{
     clamp_view, ensure_selected_visible, navigate_parent, open_path_in_explorer, open_selected,
@@ -30,7 +30,9 @@ pub(crate) fn poll_control(
     loop {
         let mut message = RawMessage::empty(0);
         match rt::channel_receive_nonblocking(control_handle, &mut message) {
-            Ok(()) if message.tag == AppControlTag::FocusChanged as u32 && message.word_count > 0 => {
+            Ok(())
+                if message.tag == AppControlTag::FocusChanged as u32 && message.word_count > 0 =>
+            {
                 did_work = true;
                 state.focused = message.words[0] != 0;
                 changed = true;
@@ -66,7 +68,10 @@ pub(crate) fn poll_control(
             }
             Ok(()) if message.tag == AppControlTag::Key as u32 && message.word_count >= 2 => {
                 did_work = true;
-                if matches!(ui::decode_app_key_action(message.words[0]), Some(AppKeyAction::Down)) {
+                if matches!(
+                    ui::decode_app_key_action(message.words[0]),
+                    Some(AppKeyAction::Down)
+                ) {
                     changed |= handle_key_down(
                         state,
                         storage_handle,
@@ -86,7 +91,8 @@ pub(crate) fn poll_control(
                 )
                 .is_ok()
                 {
-                    changed |= open_path_in_explorer(state, storage_handle, &path[..requested]).is_ok();
+                    changed |=
+                        open_path_in_explorer(state, storage_handle, &path[..requested]).is_ok();
                 }
             }
             Ok(()) if message.tag == AppControlTag::Close as u32 => return Ok(ControlFlow::Exit),
@@ -135,7 +141,10 @@ fn handle_pointer_down(
 
     state.selected_index = index;
     ensure_selected_visible(state);
-    if matches!(state.entries[index].kind, crate::state::EntryKind::Parent | crate::state::EntryKind::Directory) {
+    if matches!(
+        state.entries[index].kind,
+        crate::state::EntryKind::Parent | crate::state::EntryKind::Directory
+    ) {
         open_selected(state, storage_handle)?;
     }
     Ok(true)

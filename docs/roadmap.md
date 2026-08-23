@@ -54,7 +54,7 @@
 |---|---|---|
 | &#x2705; | Storage / filesystem | Replace the current in-memory writable overlay with persistent writable backing |
 | &#x2705; | Storage / filesystem | Add writable storage and directory capabilities as first-class scoped authorities instead of broad ambient write access |
-| &#x2B1C; | Storage / filesystem | Extend the current mount inventory, composed namespace root, and relative directory-capability traversal into explicit mount mutation, broader namespace composition across multiple backends, and richer app-facing metadata/query protocols |
+| &#x2705; | Storage / filesystem | Extended the mount inventory, composed namespace root, and relative directory-capability traversal with explicit capability-gated mount/unmount mutation (busy-check, atomic table updates, mount table persisted across reboot), multi-backend composition (persistent block-backed plus in-memory temp instances under longest-prefix resolution), and stat/find metadata-query protocols |
 | &#x2705; | Storage / policy | Add broader user-home and storage policy, plus writable project/workspace directories and persistent build outputs |
 | &#x2705; | Configuration | Add namespaced service configuration trees, write and update policy, and schema validation and migration |
 | &#x2B1C; | Storage / indexing | Add file indexing, metadata queries, search primitives, and content discovery support for desktop and developer workflows |
@@ -85,7 +85,7 @@
 | &#x2B1C; | Platform / hardware follow-on | Add Raspberry Pi 5 framebuffer, graphical input, networking, writable boot-store, and audio backends behind the current `platform/aarch64/raspi5` contracts |
 | &#x2B1C; | Platform / hardware follow-on | Add Wi-Fi and Bluetooth controller backends behind the relevant `platform/<platform>` contracts as supported hardware targets expand |
 | &#x2B1C; | Platform / hardware follow-on | Expand Raspberry Pi 5 beyond the current serial-first bootstrap into the normal graphical and network-backed service graph |
-| &#x2B1C; | Platform / targets | Add `platform/aarch64/virt` or equivalent clean ARM virtual target to keep ARM bring-up separate from Pi-specific board quirks |
+| &#x2705; | Platform / targets | Add `platform/aarch64/virt` or equivalent clean ARM virtual target to keep ARM bring-up separate from Pi-specific board quirks |
 | &#x2B1C; | Platform / targets | Add a second x86 platform target and split the remaining x86 PC interrupt-controller details out of `arch/x86_64` if needed |
 | &#x2B1C; | Platform / targets | Add additional future-facing targets such as real x86 PC hardware and/or `riscv64/virt` once the current platform layering stabilizes |
 

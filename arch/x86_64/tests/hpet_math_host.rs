@@ -14,8 +14,8 @@
 mod hpet_math;
 
 use hpet_math::{
-    femtoseconds_to_nanoseconds, frequency_hz, periodic_fit_ticks, PeriodicFitError,
-    MAX_CLOCK_PERIOD_FS,
+    MAX_CLOCK_PERIOD_FS, PeriodicFitError, femtoseconds_to_nanoseconds, frequency_hz,
+    periodic_fit_ticks,
 };
 
 #[test]
@@ -40,7 +40,10 @@ fn frequency_hz_inverts_clock_period() {
 #[test]
 fn periodic_fit_accepts_clean_divisions_within_register_width() {
     // 1 ms (1e12 fs) on a 10 ns-tick counter = exactly 100_000 ticks
-    assert_eq!(periodic_fit_ticks(1_000_000_000_000, 10_000_000), Ok(100_000));
+    assert_eq!(
+        periodic_fit_ticks(1_000_000_000_000, 10_000_000),
+        Ok(100_000)
+    );
     // 1 us (1e9 fs) on the same counter = exactly 100 ticks
     assert_eq!(periodic_fit_ticks(1_000_000_000, 10_000_000), Ok(100));
     // 1 ms on a 1 fs-tick counter = 10^12 ticks: exceeds u32::MAX

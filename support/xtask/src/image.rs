@@ -27,15 +27,9 @@ pub fn ensure_virt_kernel_image(artifacts: &BuildArtifacts) -> Result<PathBuf, B
         .as_ref()
         .ok_or_else(|| "virt platform requires a kernel ELF binary".to_string())?;
     if !kernel_elf.exists() {
-        return Err(format!(
-            "virt kernel ELF is missing: {}",
-            kernel_elf.display()
-        )
-        .into());
+        return Err(format!("virt kernel ELF is missing: {}", kernel_elf.display()).into());
     }
-    let image_path = artifacts
-        .image_root
-        .join("serviceos-kernel.img");
+    let image_path = artifacts.image_root.join("serviceos-kernel.img");
     convert_elf_to_binary(kernel_elf, &image_path)?;
     Ok(image_path)
 }
@@ -65,10 +59,7 @@ fn create_virt_kernel_bundle(
         ),
     )?;
 
-    println!(
-        "Created QEMU virt kernel bundle at: {}",
-        boot_dir.display()
-    );
+    println!("Created QEMU virt kernel bundle at: {}", boot_dir.display());
     Ok(boot_dir.to_path_buf())
 }
 

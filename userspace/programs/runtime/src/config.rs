@@ -1,6 +1,6 @@
 use crate::{
-    channel_create, channel_receive_blocking, channel_send, handle_close, rights, ConfigKey,
-    ConfigStatus, ConfigTag, ConfigValueKind, Error, Handle, RawMessage, Result,
+    ConfigKey, ConfigStatus, ConfigTag, ConfigValueKind, Error, Handle, RawMessage, Result,
+    channel_create, channel_receive_blocking, channel_send, handle_close, rights,
 };
 
 pub fn config_read(config_handle: Handle, key: ConfigKey) -> Result<(ConfigValueKind, u64)> {

@@ -1,8 +1,8 @@
-use serviceos_userspace_runtime as rt;
 use rt::{
     DeveloperArtifactFormat, DeveloperJobState, DeveloperStatus, DeveloperTag, DeveloperTarget,
     DeveloperToolchainState, LogEvent, LogSeverity, RawMessage,
 };
+use serviceos_userspace_runtime as rt;
 
 use crate::{
     consts::{BUILDER_REPORT_TAG, MAX_JOBS},
@@ -41,16 +41,14 @@ pub(crate) fn handle_public_request(
         x if x == DeveloperTag::WorkspaceInfoRequest as u32 => {
             reply_workspace_info(catalog.workspaces, catalog.workspace_count, message)
         }
-        x if x == DeveloperTag::BuildRequest as u32 => {
-            handle_build_request(
-                bootstrap,
-                storage_handle,
-                log_handle,
-                catalog,
-                jobs,
-                message,
-            )
-        }
+        x if x == DeveloperTag::BuildRequest as u32 => handle_build_request(
+            bootstrap,
+            storage_handle,
+            log_handle,
+            catalog,
+            jobs,
+            message,
+        ),
         x if x == DeveloperTag::JobListRequest as u32 => reply_job_list(jobs, message),
         x if x == DeveloperTag::JobInfoRequest as u32 => reply_job_info(jobs, message),
         x if x == DeveloperTag::ArtifactOpenRequest as u32 => {
@@ -179,8 +177,7 @@ fn reply_workspace_info(
     {
         reply.words[0] = DeveloperStatus::Ok as u32 as u64;
         reply.words[1] = (index as u64) | ((workspace_target_mask(&workspace) as u64) << 32);
-        reply.words[2] =
-            (workspace.name.len as u64) | ((workspace.source_path.len as u64) << 32);
+        reply.words[2] = (workspace.name.len as u64) | ((workspace.source_path.len as u64) << 32);
         reply.words[3] =
             (workspace.toolchains[0] as u64) | ((workspace.toolchains[1] as u64) << 32);
         reply.words[4] =
@@ -426,7 +423,9 @@ fn handle_artifact_open_request(
     reply.words[0] = DeveloperStatus::NotFound as u32 as u64;
     let index = message.words[0] as usize;
     if let Some(job) = jobs.get(index).copied().filter(|job| {
-        job.occupied && job.state == DeveloperJobState::Succeeded && job.artifact_handle != rt::INVALID_HANDLE
+        job.occupied
+            && job.state == DeveloperJobState::Succeeded
+            && job.artifact_handle != rt::INVALID_HANDLE
     }) {
         let duplicated = duplicate_artifact_for_reply(job.artifact_handle)?;
         reply.words[0] = DeveloperStatus::Ok as u32 as u64;
@@ -464,9 +463,15 @@ pub(crate) fn poll_job_reports(log_handle: rt::Handle, jobs: &mut [JobSlot; MAX_
             Ok(()) if report.tag == BUILDER_REPORT_TAG && report.word_count >= 4 => {
                 let result = report.words[0] as u32;
                 job.format = match report.words[1] as u32 {
-                    x if x == DeveloperArtifactFormat::Elf64 as u32 => DeveloperArtifactFormat::Elf64,
-                    x if x == DeveloperArtifactFormat::Pe32Plus as u32 => DeveloperArtifactFormat::Pe32Plus,
-                    x if x == DeveloperArtifactFormat::MachO64 as u32 => DeveloperArtifactFormat::MachO64,
+                    x if x == DeveloperArtifactFormat::Elf64 as u32 => {
+                        DeveloperArtifactFormat::Elf64
+                    }
+                    x if x == DeveloperArtifactFormat::Pe32Plus as u32 => {
+                        DeveloperArtifactFormat::Pe32Plus
+                    }
+                    x if x == DeveloperArtifactFormat::MachO64 as u32 => {
+                        DeveloperArtifactFormat::MachO64
+                    }
                     _ => DeveloperArtifactFormat::ServiceOsFlat,
                 };
                 job.artifact_size = report.words[2] as usize;
@@ -520,7 +525,12 @@ pub(crate) fn poll_job_exits(log_handle: rt::Handle, jobs: &mut [JobSlot; MAX_JO
             continue;
         }
         match rt::task_status(job.task_handle) {
-            Ok(status) if matches!(status.state, rt::TaskStateCode::Exited | rt::TaskStateCode::Faulted) => {
+            Ok(status)
+                if matches!(
+                    status.state,
+                    rt::TaskStateCode::Exited | rt::TaskStateCode::Faulted
+                ) =>
+            {
                 let _ = rt::handle_close(job.task_handle);
                 job.task_handle = rt::INVALID_HANDLE;
                 if job.state == DeveloperJobState::Running {

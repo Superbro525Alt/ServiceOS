@@ -1,8 +1,8 @@
-use serviceos_userspace_runtime as rt;
 use rt::{
-    AudioEndpointStatusInfo, AudioEndpointState, AudioStreamDirection, AudioStreamInfo,
+    AudioEndpointState, AudioEndpointStatusInfo, AudioStreamDirection, AudioStreamInfo,
     AudioStreamState, ServiceId,
 };
+use serviceos_userspace_runtime as rt;
 
 use crate::util::{ShellOutput, write_output_linef};
 
@@ -21,7 +21,8 @@ where
         Some("streams") => cmd_audio_streams(bootstrap, output),
         Some("tone") => match (
             parts.next().and_then(|value| value.parse::<u32>().ok()),
-            parts.next()
+            parts
+                .next()
                 .and_then(|value| value.parse::<u32>().ok())
                 .or(Some(150)),
         ) {

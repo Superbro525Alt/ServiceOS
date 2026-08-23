@@ -86,10 +86,7 @@ serviceos_x86_64_kthread_entry:
     /// RCX, `to` in RDX, and RBX/RBP/RDI/RSI/R12-R15 are the callee-saved
     /// set that must survive the switch.
     #[unsafe(naked)]
-    pub unsafe extern "C" fn kernel_context_switch(
-        from: &mut KernelContext,
-        to: &KernelContext,
-    ) {
+    pub unsafe extern "C" fn kernel_context_switch(from: &mut KernelContext, to: &KernelContext) {
         core::arch::naked_asm!(
             "push rbx",
             "push rbp",

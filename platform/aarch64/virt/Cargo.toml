@@ -13,5 +13,8 @@ bench = false
 
 [dependencies]
 fdt = "0.2.0-alpha1"
+serviceos-abi = { path = "../../../shared/abi" }
 serviceos-kernel-core = { path = "../../../kernel/core" }
 serviceos-kernel-arch-aarch64 = { path = "../../../arch/aarch64" }
+spin = "0.9"
+virtio-drivers = { version = "0.13", default-features = false, features = ["alloc"] }

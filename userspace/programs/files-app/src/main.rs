@@ -6,14 +6,16 @@ mod navigation;
 mod render;
 mod state;
 
+use rt::{ControlTag, RawMessage};
 use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
-use rt::{ControlTag, RawMessage};
 
-use crate::control::{poll_control, ControlFlow};
+use crate::control::{ControlFlow, poll_control};
 use crate::navigation::{reload_directory, reopen_directory};
 use crate::render::render;
-use crate::state::{ExplorerEntry, ExplorerState, BUFFER_BYTES, BUFFER_HEIGHT, BUFFER_WIDTH, SURFACE_BUFFER_SLOTS};
+use crate::state::{
+    BUFFER_BYTES, BUFFER_HEIGHT, BUFFER_WIDTH, ExplorerEntry, ExplorerState, SURFACE_BUFFER_SLOTS,
+};
 
 rt::entry!(main);
 

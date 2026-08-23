@@ -21,9 +21,18 @@ pub(crate) fn compare_versions(left: &str, right: &str) -> Ordering {
 
 fn parse_version_triplet(value: &str) -> (u32, u32, u32) {
     let mut parts = value.split('.');
-    let major = parts.next().and_then(|part| part.parse::<u32>().ok()).unwrap_or(0);
-    let minor = parts.next().and_then(|part| part.parse::<u32>().ok()).unwrap_or(0);
-    let patch = parts.next().and_then(|part| part.parse::<u32>().ok()).unwrap_or(0);
+    let major = parts
+        .next()
+        .and_then(|part| part.parse::<u32>().ok())
+        .unwrap_or(0);
+    let minor = parts
+        .next()
+        .and_then(|part| part.parse::<u32>().ok())
+        .unwrap_or(0);
+    let patch = parts
+        .next()
+        .and_then(|part| part.parse::<u32>().ok())
+        .unwrap_or(0);
     (major, minor, patch)
 }
 
@@ -124,7 +133,11 @@ pub(crate) fn version_allowed(
     version: &PackageVersionSlot,
     repos: &[RepositorySlot; MAX_REPOSITORIES],
 ) -> bool {
-    let Some(repo) = repos.get(version.repo_index).copied().filter(|repo| repo.occupied) else {
+    let Some(repo) = repos
+        .get(version.repo_index)
+        .copied()
+        .filter(|repo| repo.occupied)
+    else {
         return false;
     };
     channel_rank(repo.channel) <= channel_rank(slot.channel)
@@ -165,7 +178,10 @@ pub(crate) fn find_repository_index(
         .find(|index| repos[*index].occupied && repos[*index].name.as_str().ok() == Some(name))
 }
 
-pub(crate) fn total_versions(packages: &[PackageSlot; MAX_PACKAGE_SLOTS], package_count: usize) -> usize {
+pub(crate) fn total_versions(
+    packages: &[PackageSlot; MAX_PACKAGE_SLOTS],
+    package_count: usize,
+) -> usize {
     packages[..package_count]
         .iter()
         .filter(|slot| slot.occupied)
@@ -214,7 +230,8 @@ pub(crate) fn parse_version_argument<'a>(
         version_len,
         buffer,
     )?;
-    let text = core::str::from_utf8(&buffer[..version_len]).map_err(|_| rt::Error::InvalidArgument)?;
+    let text =
+        core::str::from_utf8(&buffer[..version_len]).map_err(|_| rt::Error::InvalidArgument)?;
     Ok(Some(text))
 }
 

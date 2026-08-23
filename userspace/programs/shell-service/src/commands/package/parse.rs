@@ -1,5 +1,5 @@
-use serviceos_userspace_runtime as rt;
 use rt::{PackageChannel, PackageMaintenanceAction, PackageRepositoryTrustMode, PackageRing};
+use serviceos_userspace_runtime as rt;
 
 pub(super) const MAX_PACKAGE_TEXT: usize = 96;
 

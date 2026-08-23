@@ -73,7 +73,9 @@ unsafe impl Sync for ReflowWraps {}
 
 impl GlobalCells {
     pub(crate) const fn new() -> Self {
-        Self(UnsafeCell::new([[[Cell::blank(); MAX_COLS]; MAX_SCROLLBACK_LINES]; MAX_TABS]))
+        Self(UnsafeCell::new(
+            [[[Cell::blank(); MAX_COLS]; MAX_SCROLLBACK_LINES]; MAX_TABS],
+        ))
     }
 
     pub(crate) unsafe fn tab(&self, index: usize) -> &[[Cell; MAX_COLS]; MAX_SCROLLBACK_LINES] {
@@ -100,7 +102,9 @@ impl GlobalWraps {
 
 impl ReflowCells {
     pub(crate) const fn new() -> Self {
-        Self(UnsafeCell::new([[Cell::blank(); MAX_COLS]; MAX_SCROLLBACK_LINES]))
+        Self(UnsafeCell::new(
+            [[Cell::blank(); MAX_COLS]; MAX_SCROLLBACK_LINES],
+        ))
     }
 
     pub(crate) unsafe fn get(&self) -> &mut [[Cell; MAX_COLS]; MAX_SCROLLBACK_LINES] {

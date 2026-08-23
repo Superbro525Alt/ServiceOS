@@ -1,5 +1,5 @@
-use serviceos_userspace_runtime as rt;
 use rt::{RawMessage, TerminalStatus, TerminalTag};
+use serviceos_userspace_runtime as rt;
 
 use crate::{
     session::{handle_input_byte, initialize_session, release_session, unpack_bytes},
@@ -30,8 +30,10 @@ pub(crate) fn handle_public_request(
                 reply.words[3] = session.rows as u64;
                 reply.handle_count = 1;
                 reply.handles[0] = pair.second;
-                reply.handle_rights[0] =
-                    rt::rights::SEND | rt::rights::RECEIVE | rt::rights::DUPLICATE | rt::rights::TRANSFER;
+                reply.handle_rights[0] = rt::rights::SEND
+                    | rt::rights::RECEIVE
+                    | rt::rights::DUPLICATE
+                    | rt::rights::TRANSFER;
                 let _ = rt::channel_send(reply_handle, &reply);
                 let _ = rt::handle_close(pair.second);
             } else {
@@ -106,7 +108,11 @@ pub(crate) fn handle_session_message(
             }
             let len = message.words[0] as usize;
             let mut buffer = [0u8; MAX_INLINE_BYTES];
-            unpack_bytes(&message.words[1..message.word_count as usize], len, &mut buffer)?;
+            unpack_bytes(
+                &message.words[1..message.word_count as usize],
+                len,
+                &mut buffer,
+            )?;
             for byte in buffer[..len].iter().copied() {
                 handle_input_byte(bootstrap, session, byte)?;
             }

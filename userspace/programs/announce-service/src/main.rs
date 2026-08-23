@@ -1,10 +1,8 @@
 #![no_std]
 #![no_main]
 
+use rt::{ControlTag, LifecycleEvent, LogDomain, LogEvent, LogSeverity, RawMessage, ServiceId};
 use serviceos_userspace_runtime as rt;
-use rt::{
-    ControlTag, LifecycleEvent, LogDomain, LogEvent, LogSeverity, RawMessage, ServiceId,
-};
 
 const MAX_MESSAGE_BYTES: usize = 128;
 

@@ -3,8 +3,8 @@
 
 use core::fmt::Write;
 
-use serviceos_userspace_runtime as rt;
 use rt::{FixedLogBuffer, RawMessage};
+use serviceos_userspace_runtime as rt;
 
 rt::entry!(main);
 

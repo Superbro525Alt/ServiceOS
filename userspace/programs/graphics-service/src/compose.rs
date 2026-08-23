@@ -1,7 +1,7 @@
 use core::{ptr, slice};
 
-use serviceos_userspace_runtime as rt;
 use rt::DisplayPixelFormat;
+use serviceos_userspace_runtime as rt;
 
 use crate::types::{
     DEFAULT_BACKGROUND_RGB, DamageRect, MAX_FRAMEBUFFER_BYTES, SurfaceSlot, Surfaces,
@@ -218,7 +218,11 @@ fn draw_surface_clipped(
     if active_buffer(surface).is_some() {
         draw_surface_buffer(frame, output, surface, clip);
     }
-    for rect in surface.rects.iter().filter(|rect| rect.occupied && rect.visible) {
+    for rect in surface
+        .rects
+        .iter()
+        .filter(|rect| rect.occupied && rect.visible)
+    {
         draw_rect_impl(
             frame,
             output,
@@ -265,9 +269,17 @@ fn draw_surface_buffer(
     }
 
     let source_x = start_x.saturating_sub(surface.x.max(0) as usize)
-        + if surface.x < 0 { (-surface.x) as usize } else { 0 };
+        + if surface.x < 0 {
+            (-surface.x) as usize
+        } else {
+            0
+        };
     let source_y_base = start_y.saturating_sub(surface.y.max(0) as usize)
-        + if surface.y < 0 { (-surface.y) as usize } else { 0 };
+        + if surface.y < 0 {
+            (-surface.y) as usize
+        } else {
+            0
+        };
     let visible_width = end_x - start_x;
     let total_bytes = buffer.height as usize * buffer.stride_pixels as usize * 4;
     if buffer.mapped_ptr.is_null() || total_bytes == 0 {
@@ -289,7 +301,13 @@ fn draw_surface_buffer(
                 bytes[base + 2],
                 bytes[base + 3],
             ]);
-            write_pixel(frame, output, start_x + column, start_y + row_index, rgb & 0x00ff_ffff);
+            write_pixel(
+                frame,
+                output,
+                start_x + column,
+                start_y + row_index,
+                rgb & 0x00ff_ffff,
+            );
         }
     }
 }
@@ -433,10 +451,7 @@ fn framebuffer_slice(len: usize) -> &'static mut [u8] {
 
 fn base_framebuffer_slice(len: usize) -> &'static mut [u8] {
     unsafe {
-        core::slice::from_raw_parts_mut(
-            ptr::addr_of_mut!(BASE_FRAMEBUFFER_BYTES).cast::<u8>(),
-            len,
-        )
+        core::slice::from_raw_parts_mut(ptr::addr_of_mut!(BASE_FRAMEBUFFER_BYTES).cast::<u8>(), len)
     }
 }
 
@@ -455,8 +470,10 @@ fn clip_rect(
     if let Some(clip) = clip {
         start_x = start_x.max(clip.x.max(0) as usize);
         start_y = start_y.max(clip.y.max(0) as usize);
-        end_x = end_x.min(((clip.x + clip.width as i32).max(0) as usize).min(output.width as usize));
-        end_y = end_y.min(((clip.y + clip.height as i32).max(0) as usize).min(output.height as usize));
+        end_x =
+            end_x.min(((clip.x + clip.width as i32).max(0) as usize).min(output.width as usize));
+        end_y =
+            end_y.min(((clip.y + clip.height as i32).max(0) as usize).min(output.height as usize));
     }
     (start_x, start_y, end_x, end_y)
 }

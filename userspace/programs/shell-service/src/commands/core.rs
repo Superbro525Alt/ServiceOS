@@ -1,15 +1,15 @@
 use core::fmt::Write;
 
-use serviceos_userspace_runtime as rt;
 use rt::{
     ConfigKey, FixedLogBuffer, ManagerLookupPolicy, ManagerServiceInfo, ManagerServicePhase,
     ServiceId, ServiceImageId, StorageEntryKind, StorageMountKind,
 };
+use serviceos_userspace_runtime as rt;
 
 use crate::util::{
-    availability_name, config_key_name, config_value_text, manager_status_name, phase_name,
-    service_name, startup_name, write_log_record, write_output_linef, shell_output_write,
-    ShellOutput, MAX_CAT_CHUNK, MAX_LISTED_SERVICES, MAX_STORAGE_PATH,
+    MAX_CAT_CHUNK, MAX_LISTED_SERVICES, MAX_STORAGE_PATH, ShellOutput, availability_name,
+    config_key_name, config_value_text, manager_status_name, phase_name, service_name,
+    shell_output_write, startup_name, write_log_record, write_output_linef,
 };
 
 const MAX_SERVICE_LOOKUPS: usize = 8;
@@ -47,7 +47,11 @@ pub(crate) fn cmd_services(bootstrap: rt::Handle, output: ShellOutput) -> rt::Re
     Ok(())
 }
 
-pub(crate) fn cmd_service(bootstrap: rt::Handle, output: ShellOutput, service_id: ServiceId) -> rt::Result<()> {
+pub(crate) fn cmd_service(
+    bootstrap: rt::Handle,
+    output: ShellOutput,
+    service_id: ServiceId,
+) -> rt::Result<()> {
     let info = rt::manager_service_status(bootstrap, service_id)?;
     let template = rt::manager_service_template(bootstrap, service_id)?;
     write_output_linef(
@@ -146,7 +150,11 @@ pub(crate) fn cmd_service_revoke_lookup(
     )
 }
 
-pub(crate) fn cmd_restart(bootstrap: rt::Handle, output: ShellOutput, service_id: ServiceId) -> rt::Result<()> {
+pub(crate) fn cmd_restart(
+    bootstrap: rt::Handle,
+    output: ShellOutput,
+    service_id: ServiceId,
+) -> rt::Result<()> {
     rt::manager_restart_service(bootstrap, service_id)?;
     write_output_linef(
         output,
@@ -154,11 +162,7 @@ pub(crate) fn cmd_restart(bootstrap: rt::Handle, output: ShellOutput, service_id
     )
 }
 
-pub(crate) fn cmd_logs(
-    bootstrap: rt::Handle,
-    output: ShellOutput,
-    count: usize,
-) -> rt::Result<()> {
+pub(crate) fn cmd_logs(bootstrap: rt::Handle, output: ShellOutput, count: usize) -> rt::Result<()> {
     const MAX_LOG_QUERY_COUNT: usize = 32;
     let log_handle = rt::lookup_service(bootstrap, ServiceId::Log)?;
     let (oldest, next) = rt::log_query_info(log_handle)?;
@@ -199,8 +203,7 @@ pub(crate) fn cmd_logs_stream(
     count: usize,
 ) -> rt::Result<()> {
     let log_handle = rt::lookup_service(bootstrap, ServiceId::Log)?;
-    let subscription =
-        rt::log_subscribe(log_handle, rt::LogSeverity::Trace, None, None)?;
+    let subscription = rt::log_subscribe(log_handle, rt::LogSeverity::Trace, None, None)?;
     let _ = rt::handle_close(log_handle);
     for _ in 0..count {
         let record = rt::log_receive_record(subscription)?;
@@ -231,7 +234,11 @@ pub(crate) fn cmd_config(bootstrap: rt::Handle, output: ShellOutput) -> rt::Resu
         let (_, value) = rt::config_read(config_handle, key)?;
         write_output_linef(
             output,
-            format_args!("{} = {}", config_key_name(key), config_value_text(key, value)),
+            format_args!(
+                "{} = {}",
+                config_key_name(key),
+                config_value_text(key, value)
+            ),
         )?;
     }
     let _ = rt::handle_close(config_handle);
@@ -251,7 +258,11 @@ pub(crate) fn cmd_config_get(
     let _ = rt::handle_close(config_handle);
     write_output_linef(
         output,
-        format_args!("{} = {}", config_key_name(key), config_value_text(key, value)),
+        format_args!(
+            "{} = {}",
+            config_key_name(key),
+            config_value_text(key, value)
+        ),
     )
 }
 
@@ -269,7 +280,11 @@ pub(crate) fn cmd_config_set(
     let _ = rt::handle_close(config_handle);
     write_output_linef(
         output,
-        format_args!("updated {} = {}", config_key_name(key), config_value_text(key, value)),
+        format_args!(
+            "updated {} = {}",
+            config_key_name(key),
+            config_value_text(key, value)
+        ),
     )
 }
 
@@ -301,8 +316,8 @@ pub(crate) fn cmd_store_ls(
     while let Some((next_cursor, _, path_len)) =
         rt::storage_directory_read(listing_handle, cursor, &mut path_buffer)?
     {
-        let path =
-            core::str::from_utf8(&path_buffer[..path_len]).map_err(|_| rt::Error::InvalidArgument)?;
+        let path = core::str::from_utf8(&path_buffer[..path_len])
+            .map_err(|_| rt::Error::InvalidArgument)?;
         write_output_linef(output, format_args!("{path}"))?;
         cursor = next_cursor;
     }
@@ -326,6 +341,7 @@ pub(crate) fn cmd_store_mounts(bootstrap: rt::Handle, output: ShellOutput) -> rt
             StorageMountKind::Boot => "boot",
             StorageMountKind::Persistent => "persistent",
             StorageMountKind::Ephemeral => "ephemeral",
+            StorageMountKind::Temp => "temp",
         };
         let mount_path = if path.is_empty() { "/" } else { path };
         write_output_linef(
@@ -361,7 +377,10 @@ pub(crate) fn cmd_store_mkdir(
     let result = rt::storage_directory_create(parent_handle, name, StorageEntryKind::Directory);
     let _ = rt::handle_close(parent_handle);
     result?;
-    write_output_linef(output, format_args!("created directory {}", path.trim_end_matches('/')))
+    write_output_linef(
+        output,
+        format_args!("created directory {}", path.trim_end_matches('/')),
+    )
 }
 
 pub(crate) fn cmd_store_write<'a, I>(
@@ -401,7 +420,10 @@ where
     let result = rt::storage_write(file_handle, 0, bytes.len(), bytes);
     let _ = rt::storage_blob_close(file_handle);
     let _ = result?;
-    write_output_linef(output, format_args!("wrote {} bytes to {}", bytes.len(), path))
+    write_output_linef(
+        output,
+        format_args!("wrote {} bytes to {}", bytes.len(), path),
+    )
 }
 
 pub(crate) fn cmd_store_rm(
@@ -419,7 +441,10 @@ pub(crate) fn cmd_store_rm(
     let result = rt::storage_directory_remove(parent_handle, name);
     let _ = rt::handle_close(parent_handle);
     result?;
-    write_output_linef(output, format_args!("removed {}", path.trim_end_matches('/')))
+    write_output_linef(
+        output,
+        format_args!("removed {}", path.trim_end_matches('/')),
+    )
 }
 
 pub(crate) fn cmd_cat(bootstrap: rt::Handle, output: ShellOutput, path: &str) -> rt::Result<()> {
@@ -437,8 +462,7 @@ pub(crate) fn cmd_cat(bootstrap: rt::Handle, output: ShellOutput, path: &str) ->
         if read == 0 {
             break;
         }
-        let text =
-            core::str::from_utf8(&buffer[..read]).map_err(|_| rt::Error::InvalidArgument)?;
+        let text = core::str::from_utf8(&buffer[..read]).map_err(|_| rt::Error::InvalidArgument)?;
         shell_output_write(output, text)?;
         offset += read;
     }
@@ -455,10 +479,7 @@ fn open_parent_directory(
     if parent.is_empty() {
         return rt::handle_duplicate(
             root_directory,
-            rt::rights::SEND
-                | rt::rights::RECEIVE
-                | rt::rights::DUPLICATE
-                | rt::rights::TRANSFER,
+            rt::rights::SEND | rt::rights::RECEIVE | rt::rights::DUPLICATE | rt::rights::TRANSFER,
         );
     }
     rt::storage_directory_open_path(root_directory, parent.trim_matches('/'), writable)

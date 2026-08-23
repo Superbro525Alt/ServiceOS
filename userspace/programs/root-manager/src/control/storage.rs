@@ -1,8 +1,8 @@
-use serviceos_bundle::{parse_manifest, BOOT_STORE_PATH_MAX};
+use serviceos_bundle::{BOOT_STORE_PATH_MAX, parse_manifest};
 use serviceos_userspace_runtime as rt;
 
 use crate::{
-    state::{ServiceSlot, MAX_MANIFEST_BYTES, MAX_SERVICE_SLOTS},
+    state::{MAX_MANIFEST_BYTES, MAX_SERVICE_SLOTS, ServiceSlot},
     util::find_slot_index,
 };
 
@@ -49,6 +49,7 @@ pub(super) fn unpack_path<'a>(
     path_len: usize,
     path_bytes: &'a mut [u8; BOOT_STORE_PATH_MAX],
 ) -> rt::Result<&'a str> {
-    crate::util::unpack_bytes(words, path_len, path_bytes).map_err(|_| rt::Error::InvalidArgument)?;
+    crate::util::unpack_bytes(words, path_len, path_bytes)
+        .map_err(|_| rt::Error::InvalidArgument)?;
     core::str::from_utf8(&path_bytes[..path_len]).map_err(|_| rt::Error::InvalidArgument)
 }

@@ -111,16 +111,43 @@ pub fn render_window_state(
         STATUS_WARN,
         true,
     )?;
-    rt::surface_set_rect(surface, 6, maximize_x + 3, WINDOW_BUTTON_TOP + 3, 6, 6, BG_PANEL, true)?;
-    rt::surface_set_label(surface, 14, minimize_x + 3, WINDOW_BUTTON_TOP + 2, BG_PANEL, "_")?;
-    rt::surface_set_label(surface, 15, close_x + 3, WINDOW_BUTTON_TOP + 2, BG_PANEL, "X")?;
+    rt::surface_set_rect(
+        surface,
+        6,
+        maximize_x + 3,
+        WINDOW_BUTTON_TOP + 3,
+        6,
+        6,
+        BG_PANEL,
+        true,
+    )?;
+    rt::surface_set_label(
+        surface,
+        14,
+        minimize_x + 3,
+        WINDOW_BUTTON_TOP + 2,
+        BG_PANEL,
+        "_",
+    )?;
+    rt::surface_set_label(
+        surface,
+        15,
+        close_x + 3,
+        WINDOW_BUTTON_TOP + 2,
+        BG_PANEL,
+        "X",
+    )?;
     for (index, line) in lines.iter().copied().enumerate() {
         rt::surface_set_label(
             surface,
             (index + 1 + 4) as u32,
             12,
             PANEL_LINE_START_Y + (index as i32 * PANEL_LINE_STEP),
-            if index == 0 { TEXT_PRIMARY } else { TEXT_SECONDARY },
+            if index == 0 {
+                TEXT_PRIMARY
+            } else {
+                TEXT_SECONDARY
+            },
             line,
         )?;
     }
@@ -134,7 +161,9 @@ pub fn render_panel(
     title: &str,
     lines: &[&str],
 ) -> rt::Result<()> {
-    render_window_state(surface, width, height, BG_PANEL, ACCENT_DIM, title, lines, true)
+    render_window_state(
+        surface, width, height, BG_PANEL, ACCENT_DIM, title, lines, true,
+    )
 }
 
 pub fn render_panel_uniform(
@@ -145,7 +174,16 @@ pub fn render_panel_uniform(
     lines: &[&str],
     color: u32,
 ) -> rt::Result<()> {
-    rt::surface_set_rect(surface, 1, 0, TITLEBAR_HEIGHT as i32, width, height.saturating_sub(TITLEBAR_HEIGHT), BG_PANEL, true)?;
+    rt::surface_set_rect(
+        surface,
+        1,
+        0,
+        TITLEBAR_HEIGHT as i32,
+        width,
+        height.saturating_sub(TITLEBAR_HEIGHT),
+        BG_PANEL,
+        true,
+    )?;
     rt::surface_set_rect(surface, 0, 0, 0, width, TITLEBAR_HEIGHT, ACCENT_DIM, true)?;
     rt::surface_set_label(surface, 0, 10, 9, TEXT_PRIMARY, title)?;
     for (index, line) in lines.iter().copied().enumerate() {
@@ -169,7 +207,16 @@ pub fn render_status_panel(
     title: &str,
     lines: &[(&str, u32)],
 ) -> rt::Result<()> {
-    rt::surface_set_rect(surface, 7, 0, 24, width, height.saturating_sub(24), BG_PANEL, true)?;
+    rt::surface_set_rect(
+        surface,
+        7,
+        0,
+        24,
+        width,
+        height.saturating_sub(24),
+        BG_PANEL,
+        true,
+    )?;
     rt::surface_set_rect(surface, 0, 0, 0, width, 24, ACCENT_DIM, true)?;
     rt::surface_set_label(surface, 0, 8, 8, TEXT_PRIMARY, title)?;
     for (index, (line, color)) in lines.iter().copied().enumerate() {
@@ -191,8 +238,26 @@ pub fn render_cursor(surface: rt::Handle, size: u32) -> rt::Result<()> {
     rt::surface_clear_scene(surface)?;
     rt::surface_set_rect(surface, 0, 0, 0, 2, size, CURSOR_OUTLINE, true)?;
     rt::surface_set_rect(surface, 1, 0, 0, size, 2, CURSOR_OUTLINE, true)?;
-    rt::surface_set_rect(surface, 2, 1, 1, 1, size.saturating_sub(2), CURSOR_FILL, true)?;
-    rt::surface_set_rect(surface, 3, 1, 1, size.saturating_sub(2), 1, CURSOR_FILL, true)?;
+    rt::surface_set_rect(
+        surface,
+        2,
+        1,
+        1,
+        1,
+        size.saturating_sub(2),
+        CURSOR_FILL,
+        true,
+    )?;
+    rt::surface_set_rect(
+        surface,
+        3,
+        1,
+        1,
+        size.saturating_sub(2),
+        1,
+        CURSOR_FILL,
+        true,
+    )?;
     rt::surface_set_rect(surface, 4, 3, 3, 2, 6, CURSOR_OUTLINE, true)?;
     rt::surface_set_rect(surface, 5, 4, 4, 1, 5, CURSOR_FILL, true)?;
     Ok(())

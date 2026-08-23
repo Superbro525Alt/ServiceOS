@@ -112,7 +112,21 @@ pub fn draw_window_titlebar_rgba8888(
         6,
         BG_PANEL,
     );
-    rt::draw_text_rgba8888(frame, stride_pixels, minimize_x + 3, WINDOW_BUTTON_TOP + 2, BG_PANEL, "_");
-    rt::draw_text_rgba8888(frame, stride_pixels, close_x + 3, WINDOW_BUTTON_TOP + 2, BG_PANEL, "X");
+    rt::draw_text_rgba8888(
+        frame,
+        stride_pixels,
+        minimize_x + 3,
+        WINDOW_BUTTON_TOP + 2,
+        BG_PANEL,
+        "_",
+    );
+    rt::draw_text_rgba8888(
+        frame,
+        stride_pixels,
+        close_x + 3,
+        WINDOW_BUTTON_TOP + 2,
+        BG_PANEL,
+        "X",
+    );
     rt::draw_text_rgba8888(frame, stride_pixels, 10, 9, TEXT_PRIMARY, title);
 }

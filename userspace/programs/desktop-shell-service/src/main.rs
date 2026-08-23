@@ -13,8 +13,8 @@ mod windows;
 pub(crate) use palette::{palette_action_label, palette_matches};
 pub(crate) use state::*;
 
-use serviceos_userspace_runtime as rt;
 use rt::{ControlTag, DesktopAppId, RawMessage, ServiceId, ServiceImageId};
+use serviceos_userspace_runtime as rt;
 
 rt::entry!(main);
 
@@ -93,7 +93,10 @@ fn main() -> u64 {
             AppSlot::new(DesktopAppId::Files, ServiceImageId::FilesApp),
             AppSlot::new(DesktopAppId::Monitor, ServiceImageId::MonitorApp),
             AppSlot::new(DesktopAppId::Terminal, ServiceImageId::TerminalApp),
-            AppSlot::new(DesktopAppId::SoftwareCenter, ServiceImageId::SoftwareCenterApp),
+            AppSlot::new(
+                DesktopAppId::SoftwareCenter,
+                ServiceImageId::SoftwareCenterApp,
+            ),
         ],
         focused_app: None,
         active_workspace: 1,

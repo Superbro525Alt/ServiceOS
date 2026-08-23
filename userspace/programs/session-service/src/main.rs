@@ -1,11 +1,11 @@
 #![no_std]
 #![no_main]
 
-use serviceos_userspace_runtime as rt;
 use rt::{
     ControlTag, DesktopInputAction, InputButton, InputEventKind, LifecycleEvent, LogDomain,
     LogEvent, LogSeverity, RawMessage, ServiceId, SessionInputSource, SessionStatus, SessionTag,
 };
+use serviceos_userspace_runtime as rt;
 
 const SESSION_ID: u32 = 1;
 const MOD_SHIFT: u32 = 1 << 0;
@@ -281,10 +281,14 @@ fn poll_input(
                 pending_pointer_move = true;
             }
             x if x == InputEventKind::PointerDelta as u32 => {
-                state.pointer_x =
-                    clamp_axis(state.pointer_x.saturating_add(event.value0), state.output_width);
-                state.pointer_y =
-                    clamp_axis(state.pointer_y.saturating_add(event.value1), state.output_height);
+                state.pointer_x = clamp_axis(
+                    state.pointer_x.saturating_add(event.value0),
+                    state.output_width,
+                );
+                state.pointer_y = clamp_axis(
+                    state.pointer_y.saturating_add(event.value1),
+                    state.output_height,
+                );
                 pending_pointer_move = true;
             }
             _ => {
@@ -366,12 +370,12 @@ fn process_input_event(
             if event.value0 != 0 {
                 if state.modifiers & MOD_CTRL == 0 {
                     if let Some(ch) = keycode_to_text(event.code, state.modifiers) {
-                    tolerate_input_backpressure(rt::desktop_key_input_async(
-                        desktop_handle,
-                        DesktopInputAction::TextInput,
-                        ch as u32,
-                        state.modifiers,
-                    ))?;
+                        tolerate_input_backpressure(rt::desktop_key_input_async(
+                            desktop_handle,
+                            DesktopInputAction::TextInput,
+                            ch as u32,
+                            state.modifiers,
+                        ))?;
                     }
                 }
             }
@@ -384,7 +388,10 @@ fn process_input_event(
     Ok(())
 }
 
-fn desktop_handle(bootstrap: rt::Handle, state: &mut SessionState) -> rt::Result<Option<rt::Handle>> {
+fn desktop_handle(
+    bootstrap: rt::Handle,
+    state: &mut SessionState,
+) -> rt::Result<Option<rt::Handle>> {
     if state.desktop_handle != rt::INVALID_HANDLE {
         return Ok(Some(state.desktop_handle));
     }
@@ -400,8 +407,7 @@ fn desktop_handle(bootstrap: rt::Handle, state: &mut SessionState) -> rt::Result
 
 fn lookup_output_size(bootstrap: rt::Handle) -> rt::Result<(u32, u32)> {
     let graphics_handle = rt::lookup_service(bootstrap, ServiceId::Graphics)?;
-    let output = rt::graphics_output_status(graphics_handle, 0)?
-        .ok_or(rt::Error::NotFound)?;
+    let output = rt::graphics_output_status(graphics_handle, 0)?.ok_or(rt::Error::NotFound)?;
     let _ = rt::handle_close(graphics_handle);
     Ok((output.width, output.height))
 }
@@ -506,12 +512,12 @@ fn keycode_to_text(key_code: u32, modifiers: u32) -> Option<char> {
 fn poll_lifecycle(bootstrap: rt::Handle) -> rt::Result<bool> {
     let mut message = RawMessage::empty(0);
     match rt::channel_receive_nonblocking(bootstrap, &mut message) {
-        Ok(()) if message.tag == ControlTag::Lifecycle as u32 && message.word_count > 0 => Ok(
-            matches!(
+        Ok(()) if message.tag == ControlTag::Lifecycle as u32 && message.word_count > 0 => {
+            Ok(matches!(
                 lifecycle_event_from_word(message.words[0]),
                 LifecycleEvent::Restarting | LifecycleEvent::Stopped
-            ),
-        ),
+            ))
+        }
         Ok(()) => Ok(false),
         Err(rt::Error::QueueEmpty) => Ok(false),
         Err(error) => Err(error),

@@ -1,21 +1,24 @@
-use serviceos_userspace_runtime as rt;
 use rt::{
     ControlTag, DesktopAppId, DesktopDragMode, DesktopInputAction, DesktopStatus, DesktopTag,
     DesktopWindowAction, LifecycleEvent, RawMessage,
 };
+use serviceos_userspace_runtime as rt;
 
 use crate::{
+    DesktopState, SESSION_ID,
     input::{focus_next_app, handle_input},
     windows::{
         close_app, encode_window_page, focus_app, focused_surface_id, launch_or_focus_app,
-        maximize_app, minimize_app, move_app, open_path_in_files, post_notification, resize_app,
-        restore_app, running_app_count, switch_workspace, move_focused_to_workspace,
+        maximize_app, minimize_app, move_app, move_focused_to_workspace, open_path_in_files,
+        post_notification, resize_app, restore_app, running_app_count, switch_workspace,
     },
-    DesktopState, SESSION_ID,
 };
 
 pub(crate) fn coalescible_pointer_move(request: &RawMessage) -> Option<(i32, i32, i32)> {
-    if request.tag != DesktopTag::InputRequest as u32 || request.word_count < 4 || request.handle_count != 0 {
+    if request.tag != DesktopTag::InputRequest as u32
+        || request.word_count < 4
+        || request.handle_count != 0
+    {
         return None;
     }
     match desktop_input_action_from_word(request.words[0]) {
@@ -149,34 +152,36 @@ pub(crate) fn handle_request(state: &mut DesktopState, request: &RawMessage) -> 
             let action = desktop_window_action_from_word(request.words[0]);
             let app_id = desktop_app_from_word(request.words[1]);
             let result = match action {
-                Some(DesktopWindowAction::Focus) => {
-                    app_id.ok_or(rt::Error::NotFound).and_then(|app| focus_app(state, app))
-                }
+                Some(DesktopWindowAction::Focus) => app_id
+                    .ok_or(rt::Error::NotFound)
+                    .and_then(|app| focus_app(state, app)),
                 Some(DesktopWindowAction::Close) => app_id
                     .ok_or(rt::Error::NotFound)
                     .and_then(|app| close_app(state, app).map(|_| 0)),
-                Some(DesktopWindowAction::Minimize) => {
-                    app_id.ok_or(rt::Error::NotFound).and_then(|app| minimize_app(state, app))
+                Some(DesktopWindowAction::Minimize) => app_id
+                    .ok_or(rt::Error::NotFound)
+                    .and_then(|app| minimize_app(state, app)),
+                Some(DesktopWindowAction::Restore) => app_id
+                    .ok_or(rt::Error::NotFound)
+                    .and_then(|app| restore_app(state, app)),
+                Some(DesktopWindowAction::Move) => {
+                    app_id.ok_or(rt::Error::NotFound).and_then(|app| {
+                        move_app(
+                            state,
+                            app,
+                            request.words[2] as i64 as i32,
+                            request.words[3] as i64 as i32,
+                        )
+                    })
                 }
-                Some(DesktopWindowAction::Restore) => {
-                    app_id.ok_or(rt::Error::NotFound).and_then(|app| restore_app(state, app))
-                }
-                Some(DesktopWindowAction::Move) => app_id.ok_or(rt::Error::NotFound).and_then(|app| {
-                    move_app(
-                        state,
-                        app,
-                        request.words[2] as i64 as i32,
-                        request.words[3] as i64 as i32,
-                    )
-                }),
                 Some(DesktopWindowAction::Resize) => {
                     app_id.ok_or(rt::Error::NotFound).and_then(|app| {
                         resize_app(state, app, request.words[2] as u32, request.words[3] as u32)
                     })
                 }
-                Some(DesktopWindowAction::Maximize) => {
-                    app_id.ok_or(rt::Error::NotFound).and_then(|app| maximize_app(state, app))
-                }
+                Some(DesktopWindowAction::Maximize) => app_id
+                    .ok_or(rt::Error::NotFound)
+                    .and_then(|app| maximize_app(state, app)),
                 Some(DesktopWindowAction::FocusNext) => focus_next_app(state),
                 None => Err(rt::Error::NotFound),
             };
@@ -260,10 +265,14 @@ pub(crate) fn handle_request(state: &mut DesktopState, request: &RawMessage) -> 
                 .take(state.notification_history_len)
                 .nth(index)
             {
-                reply.word_count = 5 + pack_bytes(&entry.text[..entry.text_len], &mut reply.words[5..])?;
+                reply.word_count =
+                    5 + pack_bytes(&entry.text[..entry.text_len], &mut reply.words[5..])?;
                 reply.words[0] = DesktopStatus::Ok as u32 as u64;
                 reply.words[1] = entry.sequence as u64;
-                reply.words[2] = entry.source_app.map(|value| value as u32 as u64).unwrap_or(0);
+                reply.words[2] = entry
+                    .source_app
+                    .map(|value| value as u32 as u64)
+                    .unwrap_or(0);
                 reply.words[3] = u64::from(entry.actionable);
                 reply.words[4] = entry.text_len as u64;
             } else {
@@ -281,8 +290,12 @@ pub(crate) fn handle_request(state: &mut DesktopState, request: &RawMessage) -> 
             let action = request.words[0] as u32;
             let workspace = request.words.get(1).copied().unwrap_or(1) as u32;
             let result = match action {
-                x if x == rt::DesktopWorkspaceAction::Status as u32 => Ok(focused_surface_id(state)),
-                x if x == rt::DesktopWorkspaceAction::Switch as u32 => switch_workspace(state, workspace),
+                x if x == rt::DesktopWorkspaceAction::Status as u32 => {
+                    Ok(focused_surface_id(state))
+                }
+                x if x == rt::DesktopWorkspaceAction::Switch as u32 => {
+                    switch_workspace(state, workspace)
+                }
                 x if x == rt::DesktopWorkspaceAction::MoveFocused as u32 => {
                     move_focused_to_workspace(state, workspace)
                 }
@@ -297,7 +310,9 @@ pub(crate) fn handle_request(state: &mut DesktopState, request: &RawMessage) -> 
                     reply.words[2] = crate::WORKSPACE_COUNT as u64;
                     reply.words[3] = surface_id as u64;
                 }
-                Err(rt::Error::PermissionDenied) => reply.words[0] = DesktopStatus::Denied as u32 as u64,
+                Err(rt::Error::PermissionDenied) => {
+                    reply.words[0] = DesktopStatus::Denied as u32 as u64
+                }
                 Err(rt::Error::NotFound) => reply.words[0] = DesktopStatus::NotFound as u32 as u64,
                 Err(_) => reply.words[0] = DesktopStatus::Busy as u32 as u64,
             }
@@ -412,7 +427,9 @@ fn desktop_input_action_from_word(value: u64) -> Option<DesktopInputAction> {
         x if x == DesktopInputAction::KeyDown as u32 => Some(DesktopInputAction::KeyDown),
         x if x == DesktopInputAction::KeyUp as u32 => Some(DesktopInputAction::KeyUp),
         x if x == DesktopInputAction::TextInput as u32 => Some(DesktopInputAction::TextInput),
-        x if x == DesktopInputAction::PointerScroll as u32 => Some(DesktopInputAction::PointerScroll),
+        x if x == DesktopInputAction::PointerScroll as u32 => {
+            Some(DesktopInputAction::PointerScroll)
+        }
         _ => None,
     }
 }
@@ -420,12 +437,12 @@ fn desktop_input_action_from_word(value: u64) -> Option<DesktopInputAction> {
 pub(crate) fn poll_lifecycle(bootstrap: rt::Handle) -> rt::Result<bool> {
     let mut message = RawMessage::empty(0);
     match rt::channel_receive_nonblocking(bootstrap, &mut message) {
-        Ok(()) if message.tag == ControlTag::Lifecycle as u32 && message.word_count > 0 => Ok(
-            matches!(
+        Ok(()) if message.tag == ControlTag::Lifecycle as u32 && message.word_count > 0 => {
+            Ok(matches!(
                 lifecycle_event_from_word(message.words[0]),
                 LifecycleEvent::Restarting | LifecycleEvent::Stopped
-            ),
-        ),
+            ))
+        }
         Ok(()) => Ok(false),
         Err(rt::Error::QueueEmpty) => Ok(false),
         Err(error) => Err(error),

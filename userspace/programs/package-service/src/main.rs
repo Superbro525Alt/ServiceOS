@@ -13,16 +13,16 @@ pub(crate) use util::*;
 
 use core::{cmp::Ordering, fmt::Write, str};
 
+use rt::{
+    ControlTag, IPC_MAX_WORDS, LifecycleEvent, LogDomain, LogEvent, LogSeverity, PackageChannel,
+    PackageMaintenanceAction, PackageRepositorySyncState, PackageRepositoryTrustMode, PackageRing,
+    PackageStatus, PackageTag, PackageTrustState, RawMessage, ServiceId,
+};
 use serviceos_bundle::{
-    parse_manifest, parse_package_manifest, BOOT_STORE_PATH_MAX, InlinePath, PackageManifest,
-    ServiceManifest, ServiceStartupMode,
+    BOOT_STORE_PATH_MAX, InlinePath, PackageManifest, ServiceManifest, ServiceStartupMode,
+    parse_manifest, parse_package_manifest,
 };
 use serviceos_userspace_runtime as rt;
-use rt::{
-    ControlTag, LifecycleEvent, LogDomain, LogEvent, LogSeverity, PackageChannel,
-    PackageMaintenanceAction, PackageRepositorySyncState, PackageRepositoryTrustMode, PackageRing,
-    PackageStatus, PackageTag, PackageTrustState, RawMessage, ServiceId, IPC_MAX_WORDS,
-};
 
 rt::entry!(main);
 
@@ -67,7 +67,13 @@ fn main() -> u64 {
     let mut repo_count = 1usize;
     let _ = storage::load_persisted_repositories(storage_handle, repos, &mut repo_count);
     for repo_index in 1..repo_count {
-        let _ = storage::load_repo_feed_cache(storage_handle, repos, repo_index, packages, &mut package_count);
+        let _ = storage::load_repo_feed_cache(
+            storage_handle,
+            repos,
+            repo_index,
+            packages,
+            &mut package_count,
+        );
     }
     let _ = storage::load_journal_state(storage_handle, journal);
     let _ = storage::load_installed_state(storage_handle, repos, packages, &mut package_count);

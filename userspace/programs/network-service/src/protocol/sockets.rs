@@ -1,13 +1,10 @@
-use smoltcp::{
-    iface::SocketSet,
-    socket::tcp,
-};
+use smoltcp::{iface::SocketSet, socket::tcp};
 
-use serviceos_userspace_runtime as rt;
 use rt::{
-    LogEvent, LogSeverity, NetworkSocketKind, NetworkSocketState, NetworkSocketTag,
-    NetworkStatus, RawMessage,
+    LogEvent, LogSeverity, NetworkSocketKind, NetworkSocketState, NetworkSocketTag, NetworkStatus,
+    RawMessage,
 };
+use serviceos_userspace_runtime as rt;
 
 use crate::{
     consts::{MAX_SOCKET_INLINE_BYTES, MAX_TCP_SOCKETS},
@@ -100,7 +97,8 @@ pub(crate) fn handle_socket_request(
                             slot.rx_bytes = slot.rx_bytes.saturating_add(count as u64);
                             reply.words[0] = NetworkStatus::Ok as u32 as u64;
                             reply.words[1] = count as u64;
-                            let packed = pack_inline_bytes(&buffer[..count], &mut reply.words[2..])?;
+                            let packed =
+                                pack_inline_bytes(&buffer[..count], &mut reply.words[2..])?;
                             reply.word_count = 2 + packed;
                         }
                         Err(_) => {

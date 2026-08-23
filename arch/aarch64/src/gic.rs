@@ -117,18 +117,13 @@ mod imp {
         write_register(sgi_base, GICD_IGROUPR, u32::MAX);
         let priority_register_index = TIMER_PPI_INTID / 4;
         let priority_shift = (TIMER_PPI_INTID % 4) * 8;
-        let priority_address =
-            GICD_IPRIORITYR + u64::from(priority_register_index) * 4;
+        let priority_address = GICD_IPRIORITYR + u64::from(priority_register_index) * 4;
         write_register(
             sgi_base,
             priority_address,
             TIMER_PPI_PRIORITY << priority_shift,
         );
-        write_register(
-            sgi_base,
-            GICD_ISENABLER,
-            1 << (TIMER_PPI_INTID % 32),
-        );
+        write_register(sgi_base, GICD_ISENABLER, 1 << (TIMER_PPI_INTID % 32));
     }
 
     fn configure_spi_defaults(base: PhysicalAddress) {
@@ -187,11 +182,7 @@ mod imp {
         configure_sgi_ppi_frame(config.redistributor_base);
         configure_spi_defaults(config.distributor_base);
 
-        write_register(
-            config.distributor_base,
-            GICD_CTLR,
-            CTLR_ENABLE_GRP1_NS,
-        );
+        write_register(config.distributor_base, GICD_CTLR, CTLR_ENABLE_GRP1_NS);
         if !distributor_wait_rwp(config.distributor_base) {
             return Err(GicInitError::DistributorWriteTimeout);
         }

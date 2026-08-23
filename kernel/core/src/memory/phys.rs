@@ -199,16 +199,19 @@ impl EarlyFrameAllocator {
         if index + 1 < self.reclaimed_count
             && self.reclaimed[index].end_frame_exclusive == self.reclaimed[index + 1].start_frame
         {
-            self.reclaimed[index].end_frame_exclusive = self.reclaimed[index + 1].end_frame_exclusive;
+            self.reclaimed[index].end_frame_exclusive =
+                self.reclaimed[index + 1].end_frame_exclusive;
             self.remove_reclaimed(index + 1);
         }
     }
 
     /// Fold the region at `index` into its left neighbour when contiguous.
     fn absorb_left(&mut self, index: usize) {
-        if index > 0 && self.reclaimed[index - 1].end_frame_exclusive == self.reclaimed[index].start_frame
+        if index > 0
+            && self.reclaimed[index - 1].end_frame_exclusive == self.reclaimed[index].start_frame
         {
-            self.reclaimed[index - 1].end_frame_exclusive = self.reclaimed[index].end_frame_exclusive;
+            self.reclaimed[index - 1].end_frame_exclusive =
+                self.reclaimed[index].end_frame_exclusive;
             self.remove_reclaimed(index);
         }
     }
@@ -361,14 +364,13 @@ mod tests {
 
     #[test]
     fn misaligned_and_pool_overflow_frees_are_counted() {
-        let mut allocator = EarlyFrameAllocator::from_boot_context(&boot_context(&[
-            BootMemoryRegion {
+        let mut allocator =
+            EarlyFrameAllocator::from_boot_context(&boot_context(&[BootMemoryRegion {
                 start: PhysicalAddress::new(0x1000),
                 end: PhysicalAddress::new(0x2000),
                 kind: BootMemoryRegionKind::Usable,
-            },
-        ]))
-        .expect("allocator");
+            }]))
+            .expect("allocator");
 
         assert!(!allocator.free_4kib(PhysicalAddress::new(0x1801)));
 

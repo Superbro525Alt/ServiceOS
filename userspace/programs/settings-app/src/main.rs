@@ -6,13 +6,15 @@ mod render;
 mod security;
 mod state;
 
+use rt::ControlTag;
 use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
-use rt::ControlTag;
 
-use crate::control::{cleanup_audio, poll_control, ControlFlow};
+use crate::control::{ControlFlow, cleanup_audio, poll_control};
 use crate::render::render;
-use crate::state::{AppState, BUFFER_BYTES, BUFFER_HEIGHT, BUFFER_WIDTH, NOTE_MAX_BYTES, SURFACE_BUFFER_SLOTS};
+use crate::state::{
+    AppState, BUFFER_BYTES, BUFFER_HEIGHT, BUFFER_WIDTH, NOTE_MAX_BYTES, SURFACE_BUFFER_SLOTS,
+};
 
 rt::entry!(main);
 
@@ -22,7 +24,10 @@ fn main() -> u64 {
     if rt::channel_receive_blocking(bootstrap, &mut startup).is_err() {
         return 0xf001;
     }
-    if startup.tag != ControlTag::Startup as u32 || startup.handle_count < 6 || startup.word_count < 4 {
+    if startup.tag != ControlTag::Startup as u32
+        || startup.handle_count < 6
+        || startup.word_count < 4
+    {
         return 0xf002;
     }
 

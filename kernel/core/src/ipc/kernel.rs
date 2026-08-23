@@ -183,7 +183,10 @@ impl IpcKernel {
         })();
 
         if let Err(error) = outcome {
-            for handle in transferred_capabilities.iter().take(transferred_capability_count) {
+            for handle in transferred_capabilities
+                .iter()
+                .take(transferred_capability_count)
+            {
                 let _ = receiver_space.close(*handle);
             }
             return Err(error);
@@ -193,8 +196,9 @@ impl IpcKernel {
             Some(transfer) => match receiver_space.accept_transfer(transfer) {
                 Ok(handle) => Some(handle),
                 Err(error) => {
-                    for handle in
-                        transferred_capabilities.iter().take(transferred_capability_count)
+                    for handle in transferred_capabilities
+                        .iter()
+                        .take(transferred_capability_count)
                     {
                         let _ = receiver_space.close(*handle);
                     }

@@ -53,12 +53,7 @@ impl KernelContext {
 ///
 /// This sets up the context so that when `kernel_context_switch` is called
 /// to switch to this thread, it will start executing at the given entry point.
-pub fn init_kernel_thread_context(
-    ctx: &mut KernelContext,
-    entry: u64,
-    stack_top: u64,
-    arg: u64,
-) {
+pub fn init_kernel_thread_context(ctx: &mut KernelContext, entry: u64, stack_top: u64, arg: u64) {
     // Set up a minimal stack frame that looks like we're returning from a function call
     // Stack layout (growing downward):
     // [arg]           <- stack_top - 8

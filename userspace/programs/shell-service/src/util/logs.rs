@@ -1,8 +1,8 @@
 use serviceos_userspace_runtime as rt;
 
 use crate::util::{
-    domain_name, event_name, format_ipv4, format_mac, service_name, severity_name, unpack_mac,
-    write_output_linef, ShellOutput,
+    ShellOutput, domain_name, event_name, format_ipv4, format_mac, service_name, severity_name,
+    unpack_mac, write_output_linef,
 };
 
 pub(crate) fn write_log_record(output: ShellOutput, record: rt::LogRecord) -> rt::Result<()> {

@@ -9,6 +9,28 @@ use serviceos_kernel_core::memory::PhysicalAddress;
 use crate::uart::UartDescriptor;
 
 const MAX_MEMORY_RANGES: usize = 8;
+pub const MAX_VIRTIO_MMIO_DEVICES: usize = 32;
+
+const VIRTIO_MMIO_COMPATIBLE: &str = "virtio,mmio";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VirtioMmioDevice {
+    pub base: PhysicalAddress,
+    pub size: usize,
+    pub irq: u32,
+}
+
+impl VirtioMmioDevice {
+    pub const EMPTY: Self = Self {
+        base: PhysicalAddress::new(0),
+        size: 0,
+        irq: 0,
+    };
+
+    pub const fn is_populated(&self) -> bool {
+        self.size > 0 && self.base.as_u64() != 0
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DeviceTreeStatus {
@@ -64,6 +86,8 @@ pub struct DeviceTreeBootInfo<'boot> {
     pub memory_map_truncated: bool,
     pub stdout_uart: Option<UartDescriptor<'boot>>,
     pub interrupt_controller: Option<InterruptControllerRegions>,
+    pub virtio_mmio_devices: [VirtioMmioDevice; MAX_VIRTIO_MMIO_DEVICES],
+    pub virtio_mmio_count: usize,
 }
 
 pub const fn status() -> DeviceTreeStatus {
@@ -180,6 +204,42 @@ pub fn parse(dtb_ptr: *const u8) -> Result<DeviceTreeBootInfo<'static>, DeviceTr
         None
     };
 
+    let mut virtio_mmio_devices = [VirtioMmioDevice::EMPTY; MAX_VIRTIO_MMIO_DEVICES];
+    let mut virtio_mmio_count = 0usize;
+    for (_, node) in root.all_nodes() {
+        let Some(compatible) = node.property::<Compatible>() else {
+            continue;
+        };
+        if !compatible.compatible_with(VIRTIO_MMIO_COMPATIBLE) {
+            continue;
+        }
+        let Some(reg) = node.property::<Reg>() else {
+            continue;
+        };
+        let Some(Ok(entry)) = reg.iter::<u64, u64>().next() else {
+            continue;
+        };
+        let irq = node
+            .raw_property("interrupts")
+            .and_then(|property| {
+                property
+                    .value
+                    .get(4..8)
+                    .or_else(|| property.value.get(..4))
+            })
+            .map(parse_be_u32)
+            .unwrap_or(0);
+        if virtio_mmio_count == virtio_mmio_devices.len() {
+            break;
+        }
+        virtio_mmio_devices[virtio_mmio_count] = VirtioMmioDevice {
+            base: PhysicalAddress::new(entry.address),
+            size: entry.len as usize,
+            irq,
+        };
+        virtio_mmio_count += 1;
+    }
+
     let interrupt_controller = (|| {
         for (_, node) in root.all_nodes() {
             let Some(compatible) = node.property::<Compatible>() else {
@@ -199,9 +259,7 @@ pub fn parse(dtb_ptr: *const u8) -> Result<DeviceTreeBootInfo<'static>, DeviceTr
             let regions = InterruptControllerRegions {
                 distributor: MemoryRange {
                     start: PhysicalAddress::new(distributor.address),
-                    end: PhysicalAddress::new(
-                        distributor.address.saturating_add(distributor.len),
-                    ),
+                    end: PhysicalAddress::new(distributor.address.saturating_add(distributor.len)),
                 },
                 redistributors: MemoryRange {
                     start: PhysicalAddress::new(redistributors.address),
@@ -230,7 +288,13 @@ pub fn parse(dtb_ptr: *const u8) -> Result<DeviceTreeBootInfo<'static>, DeviceTr
         memory_map_truncated,
         stdout_uart,
         interrupt_controller,
+        virtio_mmio_devices,
+        virtio_mmio_count,
     })
+}
+
+fn parse_be_u32(value: &[u8]) -> u32 {
+    u32::from_be_bytes([value[0], value[1], value[2], value[3]])
 }
 
 fn parent_path(path: &str) -> Option<&str> {

@@ -1,10 +1,10 @@
 use crate::{
-    channel_receive_blocking, channel_send, manager_availability_from_word,
+    Error, Handle, IPC_MAX_HANDLES, IPC_MAX_WORDS, ManagerAction, ManagerGraphStatusInfo,
+    ManagerLookupPolicy, ManagerServiceInfo, ManagerServiceLookupInfo, ManagerServiceStatusInfo,
+    ManagerServiceTemplateInfo, ManagerStatus, ManagerTag, RawMessage, Result, ServiceId,
+    ServiceImageId, channel_receive_blocking, channel_send, manager_availability_from_word,
     manager_lookup_policy_from_word, manager_phase_from_word, manager_startup_from_word,
-    manager_status_from_word, pack_bytes, Error, Handle, IPC_MAX_HANDLES, IPC_MAX_WORDS,
-    ManagerAction, ManagerGraphStatusInfo, ManagerLookupPolicy, ManagerServiceInfo,
-    ManagerServiceLookupInfo, ManagerServiceStatusInfo, ManagerServiceTemplateInfo, ManagerStatus,
-    ManagerTag, RawMessage, Result, ServiceId, ServiceImageId, rights, service_id_from_word,
+    manager_status_from_word, pack_bytes, rights, service_id_from_word,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -328,12 +328,16 @@ pub fn manager_launch_stored_program_with_payload(
 ) -> Result<Handle> {
     let path_bytes = path.as_bytes();
     let packed_len = path_bytes.len().div_ceil(8);
-    if startup_words.len() + 2 + packed_len > IPC_MAX_WORDS || startup_handles.len() > IPC_MAX_HANDLES {
+    if startup_words.len() + 2 + packed_len > IPC_MAX_WORDS
+        || startup_handles.len() > IPC_MAX_HANDLES
+    {
         return Err(Error::BufferTooSmall);
     }
 
     let mut request = RawMessage::empty(ManagerTag::LaunchStoredImageRequest as u32);
-    request.word_count = 2 + startup_words.len() as u32 + pack_bytes(path_bytes, &mut request.words[2 + startup_words.len()..])?;
+    request.word_count = 2
+        + startup_words.len() as u32
+        + pack_bytes(path_bytes, &mut request.words[2 + startup_words.len()..])?;
     request.words[0] = startup_words.len() as u64;
     request.words[1] = path_bytes.len() as u64;
     for (index, word) in startup_words.iter().copied().enumerate() {

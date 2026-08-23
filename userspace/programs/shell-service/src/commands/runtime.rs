@@ -1,5 +1,5 @@
-use serviceos_userspace_runtime as rt;
 use rt::{RuntimeKind, RuntimeRunState, RuntimeWorkloadKind, ServiceId};
+use serviceos_userspace_runtime as rt;
 
 use crate::util::{ShellOutput, shell_output_write, write_output_linef};
 
@@ -131,11 +131,7 @@ fn cmd_runtime_create(
     )
 }
 
-fn cmd_runtime_inspect(
-    bootstrap: rt::Handle,
-    output: ShellOutput,
-    env_id: u32,
-) -> rt::Result<()> {
+fn cmd_runtime_inspect(bootstrap: rt::Handle, output: ShellOutput, env_id: u32) -> rt::Result<()> {
     let runtime_handle = match lookup_runtime_service(bootstrap, output)? {
         Some(handle) => handle,
         None => return Ok(()),
@@ -143,8 +139,14 @@ fn cmd_runtime_inspect(
     let env = rt::runtime_env_status(runtime_handle, env_id)?;
     let _ = rt::handle_close(runtime_handle);
     write_output_linef(output, format_args!("env{}", env.env_id))?;
-    write_output_linef(output, format_args!("  kind={}", runtime_kind_name(env.kind)))?;
-    write_output_linef(output, format_args!("  state={}", runtime_env_state_name(env.state)))?;
+    write_output_linef(
+        output,
+        format_args!("  kind={}", runtime_kind_name(env.kind)),
+    )?;
+    write_output_linef(
+        output,
+        format_args!("  state={}", runtime_env_state_name(env.state)),
+    )?;
     write_output_linef(
         output,
         format_args!("  caps={}", capability_summary(env.capabilities)),
@@ -154,11 +156,7 @@ fn cmd_runtime_inspect(
     write_output_linef(output, format_args!("  runs={}", env.active_runs))
 }
 
-fn cmd_runtime_mounts(
-    bootstrap: rt::Handle,
-    output: ShellOutput,
-    env_id: u32,
-) -> rt::Result<()> {
+fn cmd_runtime_mounts(bootstrap: rt::Handle, output: ShellOutput, env_id: u32) -> rt::Result<()> {
     let runtime_handle = match lookup_runtime_service(bootstrap, output)? {
         Some(handle) => handle,
         None => return Ok(()),
@@ -184,11 +182,7 @@ fn cmd_runtime_mounts(
     }
 }
 
-fn cmd_runtime_vars(
-    bootstrap: rt::Handle,
-    output: ShellOutput,
-    env_id: u32,
-) -> rt::Result<()> {
+fn cmd_runtime_vars(bootstrap: rt::Handle, output: ShellOutput, env_id: u32) -> rt::Result<()> {
     let runtime_handle = match lookup_runtime_service(bootstrap, output)? {
         Some(handle) => handle,
         None => return Ok(()),
@@ -199,8 +193,7 @@ fn cmd_runtime_vars(
     while let Some((key_len, value_len)) =
         rt::runtime_env_var(runtime_handle, env_id, index, &mut key, &mut value)?
     {
-        let key =
-            core::str::from_utf8(&key[..key_len]).map_err(|_| rt::Error::InvalidArgument)?;
+        let key = core::str::from_utf8(&key[..key_len]).map_err(|_| rt::Error::InvalidArgument)?;
         let value =
             core::str::from_utf8(&value[..value_len]).map_err(|_| rt::Error::InvalidArgument)?;
         write_output_linef(output, format_args!("{}={}", key, value))?;
@@ -407,11 +400,7 @@ fn cmd_runtime_launch(
     }
 }
 
-fn cmd_runtime_destroy(
-    bootstrap: rt::Handle,
-    output: ShellOutput,
-    env_id: u32,
-) -> rt::Result<()> {
+fn cmd_runtime_destroy(bootstrap: rt::Handle, output: ShellOutput, env_id: u32) -> rt::Result<()> {
     let runtime_handle = match lookup_runtime_service(bootstrap, output)? {
         Some(handle) => handle,
         None => return Ok(()),

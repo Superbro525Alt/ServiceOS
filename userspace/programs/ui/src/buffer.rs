@@ -61,7 +61,9 @@ impl<const N: usize> SurfaceBuffers<N> {
     pub fn current(&mut self) -> (u32, &mut rt::MappedMemory) {
         (
             self.front as u32,
-            self.mapped[self.front].as_mut().expect("surface buffer slot mapped"),
+            self.mapped[self.front]
+                .as_mut()
+                .expect("surface buffer slot mapped"),
         )
     }
 

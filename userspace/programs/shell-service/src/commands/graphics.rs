@@ -1,9 +1,9 @@
-use serviceos_userspace_runtime as rt;
 use rt::ServiceId;
+use serviceos_userspace_runtime as rt;
 
 use crate::util::{
-    display_backend_name, display_state_name, pixel_format_name, session_input_source_name,
-    write_output_linef, ShellOutput,
+    ShellOutput, display_backend_name, display_state_name, pixel_format_name,
+    session_input_source_name, write_output_linef,
 };
 
 pub(crate) fn cmd_gfx<'a, I>(

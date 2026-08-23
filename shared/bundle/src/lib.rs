@@ -27,7 +27,10 @@ pub enum BootStoreError {
     InvalidDataRange,
     CapacityExceeded,
     /// The whole store image exceeds [`BOOT_STORE_MAX_BYTES`].
-    Oversize { size: usize, max: usize },
+    Oversize {
+        size: usize,
+        max: usize,
+    },
     InvalidManifest,
 }
 

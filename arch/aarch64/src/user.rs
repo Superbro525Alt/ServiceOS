@@ -543,7 +543,6 @@ serviceos_aarch64_lower_el_sync:
         Ok(())
     }
 
-
     pub fn run_thread(thread_id: ThreadId) -> Result<(), UserLaunchError> {
         let (page_table_root, context_ptr) = {
             let mut runtime = USER_THREADS.lock();
@@ -654,11 +653,10 @@ mod imp {
     pub fn run_thread(_thread_id: ThreadId) -> Result<(), UserLaunchError> {
         Err(UserLaunchError::Unsupported)
     }
-
 }
 
 pub use imp::{
-    SavedUserContext, UserLaunchError, initialize, map_memory_object, prepare_address_space, register_address_space,
-    register_thread_launch, release_address_space, release_thread_runtime, run_thread,
-    translate_address, unmap_memory_range, update_memory_protection,
+    SavedUserContext, UserLaunchError, initialize, map_memory_object, prepare_address_space,
+    register_address_space, register_thread_launch, release_address_space, release_thread_runtime,
+    run_thread, translate_address, unmap_memory_range, update_memory_protection,
 };

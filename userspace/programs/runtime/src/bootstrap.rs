@@ -1,6 +1,6 @@
 use crate::{
-    channel_receive_blocking, channel_send, rights, ControlTag, Error, Handle, LookupStatus,
-    RawMessage, Result, ServiceId,
+    ControlTag, Error, Handle, LookupStatus, RawMessage, Result, ServiceId,
+    channel_receive_blocking, channel_send, rights,
 };
 
 pub fn register_service(bootstrap: Handle, service_id: ServiceId, public: Handle) -> Result<()> {

@@ -15,8 +15,7 @@ use serviceos_kernel_arch_aarch64::{
     cpu,
     gic::{self, GicConfig, GicInitError},
     mmu::{ActivePageTable, MmioRegion},
-    timer as kernel_timer,
-    traps, user,
+    timer as kernel_timer, traps, user,
 };
 use serviceos_kernel_core::{
     Kernel,
@@ -27,12 +26,7 @@ use serviceos_kernel_core::{
     task::{ExecutionState, SchedulerError, TaskRole, ThreadId, ThreadMode},
     user::{self as kernel_user, SpawnError, TaskExitStatus},
 };
-use serviceos_platform_raspi5::{
-    boot,
-    dtb::InterruptControllerRegions,
-    timer,
-    uart,
-};
+use serviceos_platform_raspi5::{boot, dtb::InterruptControllerRegions, timer, uart};
 use serviceos_userspace_catalog::BOOT_STORE_IMAGE;
 use spin::Once;
 
@@ -224,8 +218,10 @@ extern "C" fn serviceos_raspi5_entry(dtb_ptr: usize) -> ! {
         }
     }
 
-    let mut mapper = match ActivePageTable::initialize(&boot_state.boot_info, &mmio_regions[..mmio_region_count])
-    {
+    let mut mapper = match ActivePageTable::initialize(
+        &boot_state.boot_info,
+        &mmio_regions[..mmio_region_count],
+    ) {
         Ok(mapper) => mapper,
         Err(error) => panic_with_error("memory", error),
     };
@@ -509,9 +505,7 @@ fn run_userspace_executor(
             return Ok(());
         }
 
-        if hardware_ticks
-            && (kernel.tasks().consume_preemption() || snapshot.preemption_pending)
-        {
+        if hardware_ticks && (kernel.tasks().consume_preemption() || snapshot.preemption_pending) {
             let _ = scheduler.preempt_current_if_needed()?;
             continue;
         }

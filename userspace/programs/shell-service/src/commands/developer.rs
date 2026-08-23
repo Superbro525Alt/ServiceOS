@@ -1,7 +1,9 @@
 use core::fmt::Write;
 
+use rt::{
+    DeveloperArtifactFormat, DeveloperJobState, DeveloperTarget, DeveloperToolchainState, ServiceId,
+};
 use serviceos_userspace_runtime as rt;
-use rt::{DeveloperArtifactFormat, DeveloperJobState, DeveloperTarget, DeveloperToolchainState, ServiceId};
 
 use crate::util::{ShellOutput, shell_output_write, write_output_linef};
 
@@ -36,7 +38,9 @@ where
             parts.next().and_then(parse_u32),
             parts.next().and_then(parse_target),
         ) {
-            (Some(workspace_id), Some(target)) => cmd_build(bootstrap, output, workspace_id, target),
+            (Some(workspace_id), Some(target)) => {
+                cmd_build(bootstrap, output, workspace_id, target)
+            }
             _ => write_output_linef(
                 output,
                 format_args!("usage: dev build <workspace-id> <native|linux|windows|macos>"),
@@ -102,10 +106,22 @@ fn cmd_toolchain(bootstrap: rt::Handle, output: ShellOutput, toolchain_id: u32) 
     let name = core::str::from_utf8(&name[..name_len]).map_err(|_| rt::Error::InvalidArgument)?;
     let sdk_root =
         core::str::from_utf8(&sdk_root[..sdk_len]).map_err(|_| rt::Error::InvalidArgument)?;
-    write_output_linef(output, format_args!("toolchain{} {}", toolchain.toolchain_id, name))?;
-    write_output_linef(output, format_args!("  target={}", target_name(toolchain.target)))?;
-    write_output_linef(output, format_args!("  state={}", toolchain_state_name(toolchain.state)))?;
-    write_output_linef(output, format_args!("  format={}", format_name(toolchain.format)))?;
+    write_output_linef(
+        output,
+        format_args!("toolchain{} {}", toolchain.toolchain_id, name),
+    )?;
+    write_output_linef(
+        output,
+        format_args!("  target={}", target_name(toolchain.target)),
+    )?;
+    write_output_linef(
+        output,
+        format_args!("  state={}", toolchain_state_name(toolchain.state)),
+    )?;
+    write_output_linef(
+        output,
+        format_args!("  format={}", format_name(toolchain.format)),
+    )?;
     write_output_linef(output, format_args!("  sdk-root={}", sdk_root))
 }
 
@@ -143,15 +159,22 @@ fn cmd_workspace(bootstrap: rt::Handle, output: ShellOutput, workspace_id: u32) 
     };
     let mut name = [0u8; MAX_NAME];
     let mut source = [0u8; MAX_PATH];
-    let workspace = rt::developer_workspace_status(developer, workspace_id, &mut name, &mut source)?;
+    let workspace =
+        rt::developer_workspace_status(developer, workspace_id, &mut name, &mut source)?;
     let _ = rt::handle_close(developer);
     let name = core::str::from_utf8(&name[..workspace.name_len as usize])
         .map_err(|_| rt::Error::InvalidArgument)?;
     let source = core::str::from_utf8(&source[..workspace.source_path_len as usize])
         .map_err(|_| rt::Error::InvalidArgument)?;
-    write_output_linef(output, format_args!("workspace{} {}", workspace.workspace_id, name))?;
+    write_output_linef(
+        output,
+        format_args!("workspace{} {}", workspace.workspace_id, name),
+    )?;
     write_output_linef(output, format_args!("  source={}", source))?;
-    write_output_linef(output, format_args!("  targets={}", target_mask_name(workspace.target_mask)))?;
+    write_output_linef(
+        output,
+        format_args!("  targets={}", target_mask_name(workspace.target_mask)),
+    )?;
     write_output_linef(
         output,
         format_args!(
@@ -180,7 +203,12 @@ fn cmd_build(
             let _ = rt::handle_close(relay.second);
             write_output_linef(
                 output,
-                format_args!("started build job{} workspace={} target={}", job_id, workspace_id, target_name(target)),
+                format_args!(
+                    "started build job{} workspace={} target={}",
+                    job_id,
+                    workspace_id,
+                    target_name(target)
+                ),
             )?;
             let mut buffer = [0u8; MAX_OUTPUT_CHUNK];
             let mut name = [0u8; MAX_NAME];
@@ -206,12 +234,15 @@ fn cmd_build(
                 let job = rt::developer_job_status(developer, job_id, &mut name)?;
                 if matches!(
                     job.state,
-                    DeveloperJobState::Succeeded | DeveloperJobState::Failed | DeveloperJobState::Unsupported
+                    DeveloperJobState::Succeeded
+                        | DeveloperJobState::Failed
+                        | DeveloperJobState::Unsupported
                 ) {
                     let _ = rt::handle_close(relay.first);
                     let _ = rt::handle_close(developer);
-                    let artifact_name = core::str::from_utf8(&name[..job.artifact_name_len as usize])
-                        .map_err(|_| rt::Error::InvalidArgument)?;
+                    let artifact_name =
+                        core::str::from_utf8(&name[..job.artifact_name_len as usize])
+                            .map_err(|_| rt::Error::InvalidArgument)?;
                     return write_output_linef(
                         output,
                         format_args!(
@@ -236,7 +267,10 @@ fn cmd_build(
             let _ = rt::handle_close(developer);
             write_output_linef(
                 output,
-                format_args!("target {} is not locally supported yet", target_name(target)),
+                format_args!(
+                    "target {} is not locally supported yet",
+                    target_name(target)
+                ),
             )
         }
         Err(error) => {
@@ -282,7 +316,8 @@ fn cmd_artifact(bootstrap: rt::Handle, output: ShellOutput, job_id: u32) -> rt::
         None => return Ok(()),
     };
     let mut name = [0u8; MAX_NAME];
-    let (artifact, size, format, name_len) = rt::developer_artifact_open(developer, job_id, &mut name)?;
+    let (artifact, size, format, name_len) =
+        rt::developer_artifact_open(developer, job_id, &mut name)?;
     let _ = rt::handle_close(developer);
     let artifact_name =
         core::str::from_utf8(&name[..name_len]).map_err(|_| rt::Error::InvalidArgument)?;
@@ -301,13 +336,7 @@ fn cmd_artifact(bootstrap: rt::Handle, output: ShellOutput, job_id: u32) -> rt::
     )?;
     let hex = hex_bytes(&header[..preview_len]);
     let hex = core::str::from_utf8(hex.as_bytes()).map_err(|_| rt::Error::InvalidArgument)?;
-    write_output_linef(
-        output,
-        format_args!(
-            "  magic={}",
-            hex,
-        ),
-    )
+    write_output_linef(output, format_args!("  magic={}", hex,))
 }
 
 fn cmd_save_artifact(

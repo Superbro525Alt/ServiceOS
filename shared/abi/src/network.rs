@@ -212,9 +212,7 @@ impl TcpSegmentHeader {
             src_port: u16::from_be_bytes([segment[0], segment[1]]),
             dst_port: u16::from_be_bytes([segment[2], segment[3]]),
             sequence: u32::from_be_bytes([segment[4], segment[5], segment[6], segment[7]]),
-            acknowledgment: u32::from_be_bytes([
-                segment[8], segment[9], segment[10], segment[11],
-            ]),
+            acknowledgment: u32::from_be_bytes([segment[8], segment[9], segment[10], segment[11]]),
             flags: segment[13],
             window: u16::from_be_bytes([segment[14], segment[15]]),
         })
@@ -302,11 +300,7 @@ pub fn udp_checksum(src_ip: [u8; 4], dst_ip: [u8; 4], datagram: &[u8]) -> u16 {
         sum = (sum & 0xffff) + (sum >> 16);
     }
     let checksum = !(sum as u16);
-    if checksum == 0 {
-        0xffff
-    } else {
-        checksum
-    }
+    if checksum == 0 { 0xffff } else { checksum }
 }
 
 /// Reference TCP state transitions for the contract's coarse socket states,
@@ -327,7 +321,7 @@ pub fn tcp_reference_transition(
     state: NetworkSocketState,
     event: TcpSegmentEvent,
 ) -> NetworkSocketState {
-    use NetworkSocketState::{Closing, Closed, Connecting, Established, Failed};
+    use NetworkSocketState::{Closed, Closing, Connecting, Established, Failed};
     use TcpSegmentEvent::{Ack, Fin, Rst, Syn, SynAck};
     match (state, event) {
         // Handshake progress: a SYN opens a connection, SYNACK/ACK completes it.
@@ -415,7 +409,10 @@ mod tests {
         );
         // A computation that lands on zero is transmitted as 0xffff, never 0.
         // proto 0x11 + length 2 + data 0xffec folds to 0xffff -> ~0 = 0.
-        assert_eq!(udp_checksum([0, 0, 0, 0], [0, 0, 0, 0], &[0xff, 0xec]), 0xffff);
+        assert_eq!(
+            udp_checksum([0, 0, 0, 0], [0, 0, 0, 0], &[0xff, 0xec]),
+            0xffff
+        );
     }
 
     #[test]
@@ -473,7 +470,10 @@ mod tests {
         );
         assert_eq!(tcp_reference_transition(S::Connecting, Ack), S::Established);
         // Data phase holds until teardown.
-        assert_eq!(tcp_reference_transition(S::Established, Ack), S::Established);
+        assert_eq!(
+            tcp_reference_transition(S::Established, Ack),
+            S::Established
+        );
         // FIN starts graceful close; RST aborts straight to Closed.
         assert_eq!(tcp_reference_transition(S::Established, Fin), S::Closing);
         assert_eq!(tcp_reference_transition(S::Closing, Ack), S::Closing);

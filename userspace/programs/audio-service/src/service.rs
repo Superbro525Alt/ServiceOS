@@ -1,7 +1,5 @@
+use rt::{AudioEndpointState, ControlTag, LogEvent, LogSeverity, RawMessage, ServiceId};
 use serviceos_userspace_runtime as rt;
-use rt::{
-    AudioEndpointState, ControlTag, LogEvent, LogSeverity, RawMessage, ServiceId,
-};
 
 use crate::{
     consts::MAX_AUDIO_STREAMS,
@@ -62,7 +60,8 @@ pub(crate) fn run() -> u64 {
             Err(_) => return 0xfa06,
         };
         if let Some(stopped_slot) = update_stream_expiry(endpoint, &mut streams)
-            && (endpoint.state == AudioEndpointState::Idle || streams[stopped_slot].frequency_hz == 0)
+            && (endpoint.state == AudioEndpointState::Idle
+                || streams[stopped_slot].frequency_hz == 0)
         {
             let _ = emit_log(
                 log_handle,
@@ -94,7 +93,9 @@ pub(crate) fn run() -> u64 {
             match rt::channel_receive_nonblocking(streams[slot].control_handle, &mut request) {
                 Ok(()) => {
                     had_work = true;
-                    if handle_stream_request(slot, &request, audio_handle, log_handle, &mut streams).is_err() {
+                    if handle_stream_request(slot, &request, audio_handle, log_handle, &mut streams)
+                        .is_err()
+                    {
                         return 0xfa09;
                     }
                 }

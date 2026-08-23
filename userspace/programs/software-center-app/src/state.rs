@@ -1,5 +1,5 @@
-use serviceos_userspace_runtime as rt;
 use rt::ServiceId;
+use serviceos_userspace_runtime as rt;
 
 pub(crate) const MAX_ENTRIES: usize = 24;
 pub(crate) const MAX_CATEGORY_BYTES: usize = 24;
@@ -116,7 +116,9 @@ pub(crate) struct AppState {
 }
 
 pub(crate) fn selected_entry(state: &AppState) -> Option<CatalogEntry> {
-    state.entries[..state.entry_count].get(state.selected_index).copied()
+    state.entries[..state.entry_count]
+        .get(state.selected_index)
+        .copied()
 }
 
 pub(crate) fn installed_count(state: &AppState) -> usize {

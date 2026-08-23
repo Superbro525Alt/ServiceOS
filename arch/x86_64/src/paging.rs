@@ -231,15 +231,13 @@ impl PageMapper for ActivePageTable {
         }
         let page: Page<Size4KiB> = Page::from_start_address(VirtAddr::new(page_start.as_u64()))
             .map_err(|_| MappingError::AddressAlignment)?;
-        cpu::with_write_protect_disabled(|| {
-            match self.inner.unmap(page) {
-                Ok((_frame, flush)) => {
-                    flush.flush();
-                    Ok(())
-                }
-                Err(UnmapError::PageNotMapped) => Ok(()),
-                Err(_) => Err(MappingError::Unsupported),
+        cpu::with_write_protect_disabled(|| match self.inner.unmap(page) {
+            Ok((_frame, flush)) => {
+                flush.flush();
+                Ok(())
             }
+            Err(UnmapError::PageNotMapped) => Ok(()),
+            Err(_) => Err(MappingError::Unsupported),
         })
     }
 
@@ -320,15 +318,13 @@ impl PageMapper for OwnedPageTable {
         }
         let page: Page<Size4KiB> = Page::from_start_address(VirtAddr::new(page_start.as_u64()))
             .map_err(|_| MappingError::AddressAlignment)?;
-        cpu::with_write_protect_disabled(|| {
-            match self.inner.unmap(page) {
-                Ok((_frame, flush)) => {
-                    flush.flush();
-                    Ok(())
-                }
-                Err(UnmapError::PageNotMapped) => Ok(()),
-                Err(_) => Err(MappingError::Unsupported),
+        cpu::with_write_protect_disabled(|| match self.inner.unmap(page) {
+            Ok((_frame, flush)) => {
+                flush.flush();
+                Ok(())
             }
+            Err(UnmapError::PageNotMapped) => Ok(()),
+            Err(_) => Err(MappingError::Unsupported),
         })
     }
 

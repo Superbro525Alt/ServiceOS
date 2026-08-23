@@ -5,7 +5,7 @@ mod repos;
 
 use serviceos_userspace_runtime as rt;
 
-use crate::util::{parse_service_name, write_output_linef, ShellOutput};
+use crate::util::{ShellOutput, parse_service_name, write_output_linef};
 
 pub(crate) fn cmd_pkg<'a, I>(
     bootstrap: rt::Handle,
@@ -25,7 +25,9 @@ where
             None => write_output_linef(output, format_args!("usage: pkg info <name>")),
         },
         Some("install") => match parts.next().and_then(parse_service_name) {
-            Some(service_id) => mutate::cmd_pkg_install(bootstrap, output, service_id, parts.next()),
+            Some(service_id) => {
+                mutate::cmd_pkg_install(bootstrap, output, service_id, parts.next())
+            }
             None => write_output_linef(output, format_args!("usage: pkg install <name> [version]")),
         },
         Some("update") => match parts.next().and_then(parse_service_name) {
@@ -68,7 +70,9 @@ where
             ),
         },
         Some("ring") => match (parts.next().and_then(parse_service_name), parts.next()) {
-            (Some(service_id), Some(ring)) => mutate::cmd_pkg_ring(bootstrap, output, service_id, ring),
+            (Some(service_id), Some(ring)) => {
+                mutate::cmd_pkg_ring(bootstrap, output, service_id, ring)
+            }
             _ => write_output_linef(
                 output,
                 format_args!("usage: pkg ring <name> <production|preview|testing>"),

@@ -1,11 +1,11 @@
 use core::{fmt::Write, str};
 
+use rt::{FixedLogBuffer, ServiceId};
 use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
-use rt::{FixedLogBuffer, ServiceId};
 
 use crate::{
-    state::{GraphStatus, ServicePhase, ServiceSlot, MAX_SERVICE_SLOTS},
+    state::{GraphStatus, MAX_SERVICE_SLOTS, ServicePhase, ServiceSlot},
     util::{find_slot_index_checked, service_name},
 };
 
@@ -77,24 +77,27 @@ pub(crate) fn update(
         return Ok(());
     }
 
-    let Some(graphics_handle) = ready_service_handle(slots, service_count, ServiceId::Graphics) else {
+    let Some(graphics_handle) = ready_service_handle(slots, service_count, ServiceId::Graphics)
+    else {
         return Ok(());
     };
 
     if !boot_ui.active {
-        let output = rt::graphics_output_status(graphics_handle, 0)?.unwrap_or(rt::GraphicsOutputStatusInfo {
-            index: 0,
-            backend: rt::DisplayOutputBackend::Unknown,
-            state: rt::DisplayOutputState::Connected,
-            pixel_format: rt::DisplayPixelFormat::Unknown,
-            width: 1280,
-            height: 800,
-            stride: 1280,
-            bytes_per_pixel: 4,
-            byte_len: 0,
-            present_count: 0,
-            surface_count: 0,
-        });
+        let output = rt::graphics_output_status(graphics_handle, 0)?.unwrap_or(
+            rt::GraphicsOutputStatusInfo {
+                index: 0,
+                backend: rt::DisplayOutputBackend::Unknown,
+                state: rt::DisplayOutputState::Connected,
+                pixel_format: rt::DisplayPixelFormat::Unknown,
+                width: 1280,
+                height: 800,
+                stride: 1280,
+                bytes_per_pixel: 4,
+                byte_len: 0,
+                present_count: 0,
+                surface_count: 0,
+            },
+        );
         let x = ((output.width.saturating_sub(BOOT_SURFACE_WIDTH)) / 2) as i32;
         let y = ((output.height.saturating_sub(BOOT_SURFACE_HEIGHT)) / 2) as i32;
         let (_, surface_handle) = rt::graphics_surface_create(
@@ -202,8 +205,22 @@ fn render(boot_ui: &mut BootUi, snapshot: BootSnapshot) -> rt::Result<()> {
         PANEL_LINE,
     );
 
-    rt::draw_text_rgba8888(frame, BOOT_SURFACE_WIDTH as usize, 28, 22, TEXT_MUTED, "SERVICEOS");
-    rt::draw_text_rgba8888(frame, BOOT_SURFACE_WIDTH as usize, PANEL_X as i32 + 18, PANEL_Y as i32 + 11, TEXT_PRIMARY, "STARTING ESSENTIAL SERVICES");
+    rt::draw_text_rgba8888(
+        frame,
+        BOOT_SURFACE_WIDTH as usize,
+        28,
+        22,
+        TEXT_MUTED,
+        "SERVICEOS",
+    );
+    rt::draw_text_rgba8888(
+        frame,
+        BOOT_SURFACE_WIDTH as usize,
+        PANEL_X as i32 + 18,
+        PANEL_Y as i32 + 11,
+        TEXT_PRIMARY,
+        "STARTING ESSENTIAL SERVICES",
+    );
 
     let ready = snapshot.ready;
     let total = snapshot.total.max(1);
@@ -225,7 +242,10 @@ fn render(boot_ui: &mut BootUi, snapshot: BootSnapshot) -> rt::Result<()> {
     let _ = write!(
         &mut current,
         "Current: {}",
-        snapshot.pending_service.map(service_name).unwrap_or("Finalizing desktop")
+        snapshot
+            .pending_service
+            .map(service_name)
+            .unwrap_or("Finalizing desktop")
     );
     rt::draw_text_rgba8888(
         frame,
@@ -272,23 +292,18 @@ fn render(boot_ui: &mut BootUi, snapshot: BootSnapshot) -> rt::Result<()> {
         percent_text.as_str(),
     );
 
-    draw_chip(
-        frame,
-        26,
-        CHIP_Y,
-        118,
-        22,
-        READY,
-        "READY",
-        ready,
-    );
+    draw_chip(frame, 26, CHIP_Y, 118, 22, READY, "READY", ready);
     draw_chip(
         frame,
         154,
         CHIP_Y,
         118,
         22,
-        if snapshot.blocked_services == 0 { PANEL_LINE } else { WARN },
+        if snapshot.blocked_services == 0 {
+            PANEL_LINE
+        } else {
+            WARN
+        },
         "BLOCKED",
         snapshot.blocked_services,
     );
@@ -298,7 +313,11 @@ fn render(boot_ui: &mut BootUi, snapshot: BootSnapshot) -> rt::Result<()> {
         CHIP_Y,
         126,
         22,
-        if snapshot.degraded_services == 0 { PANEL_LINE } else { WARN },
+        if snapshot.degraded_services == 0 {
+            PANEL_LINE
+        } else {
+            WARN
+        },
         "DEGRADED",
         snapshot.degraded_services,
     );
@@ -343,7 +362,11 @@ fn draw_chip(
         BOOT_SURFACE_WIDTH as usize,
         x as i32 + 10,
         y as i32 + 7,
-        if color == READY || color == WARN { BG } else { TEXT_SECONDARY },
+        if color == READY || color == WARN {
+            BG
+        } else {
+            TEXT_SECONDARY
+        },
         text.as_str(),
     );
 }
@@ -383,7 +406,9 @@ fn desktop_ready(slots: &[ServiceSlot; MAX_SERVICE_SLOTS], service_count: usize)
 fn total_boot_services(slots: &[ServiceSlot; MAX_SERVICE_SLOTS], service_count: usize) -> u32 {
     slots[..service_count]
         .iter()
-        .filter(|slot| slot.occupied && slot.manifest.startup == serviceos_bundle::ServiceStartupMode::Eager)
+        .filter(|slot| {
+            slot.occupied && slot.manifest.startup == serviceos_bundle::ServiceStartupMode::Eager
+        })
         .count() as u32
 }
 

@@ -1,10 +1,13 @@
-use serviceos_userspace_runtime as rt;
 use rt::{ConsoleTag, RawMessage};
+use serviceos_userspace_runtime as rt;
 
 use crate::input::write_session_bytes;
-use crate::state::{begin_input_session, reset_input_state, Session, MAX_SESSIONS};
+use crate::state::{MAX_SESSIONS, Session, begin_input_session, reset_input_state};
 
-pub(crate) fn handle_session_message(session: &mut Session, message: &RawMessage) -> rt::Result<()> {
+pub(crate) fn handle_session_message(
+    session: &mut Session,
+    message: &RawMessage,
+) -> rt::Result<()> {
     match message.tag {
         x if x == ConsoleTag::SessionWriteText as u32 => {
             if message.word_count < 1 {

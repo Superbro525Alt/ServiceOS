@@ -1,11 +1,11 @@
 #![no_std]
 #![no_main]
 
-use serviceos_userspace_runtime as rt;
 use rt::{
-    ConfigKey, ControlTag, KernelEventKind, LifecycleEvent, LogDomain, LogEvent, LogQueryStatus,
-    LogSeverity, LogStatus, LogTag, RawMessage, ServiceId, StorageEntryKind, LOG_FILTER_ANY,
+    ConfigKey, ControlTag, KernelEventKind, LOG_FILTER_ANY, LifecycleEvent, LogDomain, LogEvent,
+    LogQueryStatus, LogSeverity, LogStatus, LogTag, RawMessage, ServiceId, StorageEntryKind,
 };
+use serviceos_userspace_runtime as rt;
 
 const MAX_LOG_RECORDS: usize = 64;
 const MAX_SUBSCRIBERS: usize = 8;
@@ -120,7 +120,13 @@ fn main() -> u64 {
     let mut last_persist_tick = rt::monotonic_now().unwrap_or(0);
 
     if let Some(file_handle) = persistence {
-        let _ = load_records(file_handle, &mut records, &mut record_count, &mut next_slot, &mut sequence);
+        let _ = load_records(
+            file_handle,
+            &mut records,
+            &mut record_count,
+            &mut next_slot,
+            &mut sequence,
+        );
     }
     if let Ok((oldest, next)) = rt::kernel_event_query_info() {
         next_kernel_sequence = if next == 0 { oldest } else { oldest.max(1) };
@@ -195,7 +201,9 @@ fn main() -> u64 {
                 || now.saturating_sub(last_persist_tick) >= PERSIST_FLUSH_TICKS)
         {
             if let Some(file_handle) = persistence {
-                if persist_records(file_handle, &records, record_count, next_slot, sequence).is_err() {
+                if persist_records(file_handle, &records, record_count, next_slot, sequence)
+                    .is_err()
+                {
                     return 0xf10a;
                 }
             }
@@ -553,7 +561,12 @@ fn persist_records(
     let mut offset = 0usize;
     while offset < buffer.len() {
         let chunk_len = (buffer.len() - offset).min(MAX_WRITE_CHUNK);
-        let _ = rt::storage_write(file_handle, offset, buffer.len(), &buffer[offset..offset + chunk_len])?;
+        let _ = rt::storage_write(
+            file_handle,
+            offset,
+            buffer.len(),
+            &buffer[offset..offset + chunk_len],
+        )?;
         offset += chunk_len;
     }
     Ok(())
@@ -573,7 +586,9 @@ fn oldest_sequence(next_sequence: u64, record_count: usize) -> u64 {
     if record_count == 0 {
         0
     } else {
-        next_sequence.saturating_sub(record_count as u64).saturating_add(1)
+        next_sequence
+            .saturating_sub(record_count as u64)
+            .saturating_add(1)
     }
 }
 
@@ -701,7 +716,9 @@ fn event_from_word(value: u64) -> LogEvent {
         x if x == LogEvent::AudioStreamStopped as u32 => LogEvent::AudioStreamStopped,
         x if x == LogEvent::AudioStreamClosed as u32 => LogEvent::AudioStreamClosed,
         x if x == LogEvent::RuntimeEnvironmentCreated as u32 => LogEvent::RuntimeEnvironmentCreated,
-        x if x == LogEvent::RuntimeEnvironmentDestroyed as u32 => LogEvent::RuntimeEnvironmentDestroyed,
+        x if x == LogEvent::RuntimeEnvironmentDestroyed as u32 => {
+            LogEvent::RuntimeEnvironmentDestroyed
+        }
         x if x == LogEvent::RuntimeLaunchStarted as u32 => LogEvent::RuntimeLaunchStarted,
         x if x == LogEvent::RuntimeLaunchExited as u32 => LogEvent::RuntimeLaunchExited,
         x if x == LogEvent::RuntimeMappedRead as u32 => LogEvent::RuntimeMappedRead,
@@ -712,7 +729,9 @@ fn event_from_word(value: u64) -> LogEvent {
         x if x == LogEvent::DeveloperArtifactOpened as u32 => LogEvent::DeveloperArtifactOpened,
         x if x == LogEvent::PackageRepositoryAdded as u32 => LogEvent::PackageRepositoryAdded,
         x if x == LogEvent::PackageRepositorySynced as u32 => LogEvent::PackageRepositorySynced,
-        x if x == LogEvent::PackageRepositorySyncFailed as u32 => LogEvent::PackageRepositorySyncFailed,
+        x if x == LogEvent::PackageRepositorySyncFailed as u32 => {
+            LogEvent::PackageRepositorySyncFailed
+        }
         x if x == LogEvent::PackageRepairCompleted as u32 => LogEvent::PackageRepairCompleted,
         x if x == LogEvent::PackageGarbageCollected as u32 => LogEvent::PackageGarbageCollected,
         x if x == LogEvent::SecurityPolicyChanged as u32 => LogEvent::SecurityPolicyChanged,

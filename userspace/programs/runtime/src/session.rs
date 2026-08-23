@@ -1,7 +1,7 @@
 use crate::{
+    Error, Handle, RawMessage, Result, SessionStatus, SessionStatusInfo, SessionTag,
     channel_create, channel_receive_blocking, channel_send, handle_close, rights,
-    session_input_source_from_word, session_status_error, session_status_from_word, Error, Handle,
-    RawMessage, Result, SessionStatus, SessionStatusInfo, SessionTag,
+    session_input_source_from_word, session_status_error, session_status_from_word,
 };
 
 pub fn session_list(session_handle: Handle, ids: &mut [u32]) -> Result<usize> {
@@ -33,7 +33,10 @@ pub fn session_list(session_handle: Handle, ids: &mut [u32]) -> Result<usize> {
     Ok(count)
 }
 
-pub fn session_status(service_handle: Handle, session_id: u32) -> Result<Option<SessionStatusInfo>> {
+pub fn session_status(
+    service_handle: Handle,
+    session_id: u32,
+) -> Result<Option<SessionStatusInfo>> {
     let reply = channel_create()?;
     let mut request = RawMessage::empty(SessionTag::StatusRequest as u32);
     request.word_count = 1;

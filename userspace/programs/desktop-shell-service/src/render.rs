@@ -1,16 +1,16 @@
 use core::{array, fmt::Write, str};
 
+use rt::FixedLogBuffer;
 use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
-use rt::FixedLogBuffer;
 
 use crate::{
+    CLIPBOARD_HISTORY_LINES, CURSOR_SIZE, CURSOR_Z_ORDER, DesktopState, DesktopStatusSnapshot,
+    HISTORY_HEIGHT, HISTORY_WIDTH, LAUNCHER_HEIGHT, LAUNCHER_WIDTH, OVERLAY_RESULT_MAX,
+    OverlayMode, PALETTE_BUFFER_BYTES, PALETTE_HEIGHT, PALETTE_WIDTH, STATUS_PANEL_HEIGHT,
+    STATUS_PANEL_WIDTH, SWITCHER_HEIGHT, SWITCHER_WIDTH, TOPBAR_HEIGHT, WORKSPACE_COUNT,
     palette_action_label, palette_matches,
     windows::{app_title, launcher_line, running_app_count, visible_on_workspace},
-    DesktopState, DesktopStatusSnapshot, OverlayMode, CLIPBOARD_HISTORY_LINES, CURSOR_SIZE,
-    CURSOR_Z_ORDER, HISTORY_HEIGHT, HISTORY_WIDTH, LAUNCHER_HEIGHT, LAUNCHER_WIDTH, OVERLAY_RESULT_MAX,
-    PALETTE_BUFFER_BYTES, PALETTE_HEIGHT, PALETTE_WIDTH, STATUS_PANEL_HEIGHT, STATUS_PANEL_WIDTH, SWITCHER_HEIGHT,
-    SWITCHER_WIDTH, TOPBAR_HEIGHT, WORKSPACE_COUNT,
 };
 
 pub(crate) fn render_desktop(state: &mut DesktopState) -> rt::Result<()> {
@@ -59,8 +59,7 @@ fn render_topbar(state: &DesktopState, status_snapshot: DesktopStatusSnapshot) -
     let _ = write!(
         &mut space_buf,
         "SPACE {}/{}",
-        status_snapshot.active_workspace,
-        WORKSPACE_COUNT
+        status_snapshot.active_workspace, WORKSPACE_COUNT
     );
     let space_text = str::from_utf8(space_buf.as_bytes()).unwrap_or("SPACE ?");
 
@@ -117,8 +116,7 @@ fn render_status_surface(
     let _ = write!(
         &mut space_buf,
         "SPACE {}/{}",
-        status_snapshot.active_workspace,
-        WORKSPACE_COUNT
+        status_snapshot.active_workspace, WORKSPACE_COUNT
     );
     let space_text = str::from_utf8(space_buf.as_bytes()).unwrap_or("SPACE ?");
 
@@ -135,11 +133,19 @@ fn render_status_surface(
     let network_text = str::from_utf8(network_buf.as_bytes()).unwrap_or("NET OFFLINE");
 
     let mut service_buf = FixedLogBuffer::<32>::new();
-    let _ = write!(&mut service_buf, "SERVICES {}", status_snapshot.tracked_services);
+    let _ = write!(
+        &mut service_buf,
+        "SERVICES {}",
+        status_snapshot.tracked_services
+    );
     let service_text = str::from_utf8(service_buf.as_bytes()).unwrap_or("SERVICES ?");
 
     let mut notif_buf = FixedLogBuffer::<32>::new();
-    let _ = write!(&mut notif_buf, "NOTICES {}", status_snapshot.notification_count);
+    let _ = write!(
+        &mut notif_buf,
+        "NOTICES {}",
+        status_snapshot.notification_count
+    );
     let notif_text = str::from_utf8(notif_buf.as_bytes()).unwrap_or("NOTICES ?");
 
     ui::render_status_panel(
@@ -285,17 +291,44 @@ fn render_palette_overlay(state: &mut DesktopState) -> rt::Result<()> {
     let _ = write!(
         &mut line0,
         "QUERY {}",
-        if query.is_empty() { "TYPE TO SEARCH" } else { query }
+        if query.is_empty() {
+            "TYPE TO SEARCH"
+        } else {
+            query
+        }
     );
-    rt::draw_text_rgba8888(bytes, PALETTE_WIDTH as usize, 12, 42, ui::TEXT_PRIMARY, line0.as_str());
+    rt::draw_text_rgba8888(
+        bytes,
+        PALETTE_WIDTH as usize,
+        12,
+        42,
+        ui::TEXT_PRIMARY,
+        line0.as_str(),
+    );
 
     if count == 0 {
-        rt::draw_text_rgba8888(bytes, PALETTE_WIDTH as usize, 12, 56, ui::TEXT_SECONDARY, "NO MATCHES");
+        rt::draw_text_rgba8888(
+            bytes,
+            PALETTE_WIDTH as usize,
+            12,
+            56,
+            ui::TEXT_SECONDARY,
+            "NO MATCHES",
+        );
     } else {
         for index in 0..count {
-            let prefix = if index == state.overlay_selection { "> " } else { "  " };
+            let prefix = if index == state.overlay_selection {
+                "> "
+            } else {
+                "  "
+            };
             let mut line = FixedLogBuffer::<64>::new();
-            let _ = write!(&mut line, "{}{}", prefix, palette_action_label(results[index]));
+            let _ = write!(
+                &mut line,
+                "{}{}",
+                prefix,
+                palette_action_label(results[index])
+            );
             rt::draw_text_rgba8888(
                 bytes,
                 PALETTE_WIDTH as usize,
@@ -329,7 +362,11 @@ fn render_notification_overlay(state: &DesktopState) -> rt::Result<()> {
         if count == lines.len() {
             break;
         }
-        let prefix = if count == state.overlay_selection { "> " } else { "  " };
+        let prefix = if count == state.overlay_selection {
+            "> "
+        } else {
+            "  "
+        };
         let text = str::from_utf8(&entry.text[..entry.text_len]).unwrap_or("NOTICE");
         let _ = write!(&mut lines[count], "{}{}", prefix, text);
         count += 1;
@@ -364,7 +401,11 @@ fn render_clipboard_overlay(state: &DesktopState) -> rt::Result<()> {
     for index in 0..CLIPBOARD_HISTORY_LINES {
         match rt::clipboard_history_entry(state.clipboard_service_handle, index as u32) {
             Ok(entry) => {
-                let prefix = if index == state.overlay_selection { "> " } else { "  " };
+                let prefix = if index == state.overlay_selection {
+                    "> "
+                } else {
+                    "  "
+                };
                 let text = str::from_utf8(&entry.bytes[..entry.len as usize]).unwrap_or("CLIP");
                 let _ = write!(&mut lines[count], "{}{}", prefix, text);
                 count += 1;
@@ -399,7 +440,16 @@ fn render_overlay_panel<const N: usize>(
 ) -> rt::Result<()> {
     rt::surface_set_fill(surface, ui::BG_PANEL)?;
     rt::surface_clear_scene(surface)?;
-    rt::surface_set_rect(surface, 0, 0, 0, width, ui::TITLEBAR_HEIGHT, ui::ACCENT_DIM, true)?;
+    rt::surface_set_rect(
+        surface,
+        0,
+        0,
+        0,
+        width,
+        ui::TITLEBAR_HEIGHT,
+        ui::ACCENT_DIM,
+        true,
+    )?;
     rt::surface_set_label(surface, 0, 10, 9, ui::TEXT_PRIMARY, title)?;
     for (index, line) in lines.iter().enumerate() {
         rt::surface_set_label(

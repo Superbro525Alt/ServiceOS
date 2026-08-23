@@ -1,5 +1,5 @@
-use serviceos_userspace_runtime as rt;
 use rt::{ConsoleTag, LogEvent, RawMessage};
+use serviceos_userspace_runtime as rt;
 
 use crate::format::{
     domain_from_word, domain_name, event_from_word, event_name, format_ipv4, format_mac,
@@ -7,7 +7,7 @@ use crate::format::{
 };
 use crate::input::render_session_line;
 use crate::session::handle_session_open;
-use crate::state::{active_session, BootProgress, Session, MAX_SESSIONS};
+use crate::state::{BootProgress, MAX_SESSIONS, Session, active_session};
 
 pub(crate) fn handle_public_message(
     sessions: &mut [Session; MAX_SESSIONS],

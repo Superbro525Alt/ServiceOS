@@ -62,12 +62,8 @@ pub fn memory_write(handle: Handle, offset: usize, bytes: &[u8]) -> Result<usize
 }
 
 pub fn memory_map(handle: Handle, writable: bool) -> Result<*mut u8> {
-    syscall2(
-        SyscallNumber::MemoryMap,
-        handle as u64,
-        u64::from(writable),
-    )
-    .map(|value| value as *mut u8)
+    syscall2(SyscallNumber::MemoryMap, handle as u64, u64::from(writable))
+        .map(|value| value as *mut u8)
 }
 
 pub fn memory_info(handle: Handle) -> Result<MemoryObjectInfo> {

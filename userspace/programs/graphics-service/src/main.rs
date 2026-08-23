@@ -6,8 +6,8 @@ mod logging;
 mod requests;
 mod types;
 
-use serviceos_userspace_runtime as rt;
 use rt::{ControlTag, LogEvent, LogSeverity, RawMessage, ServiceId};
+use serviceos_userspace_runtime as rt;
 
 use crate::{
     compose::{compose_and_present, compose_damage_and_present, cursor_present},
@@ -124,7 +124,9 @@ fn main() -> u64 {
                         }
                         result
                     }
-                    DirtyState::Full { .. } => compose_and_present(output_handle, output, &surfaces),
+                    DirtyState::Full { .. } => {
+                        compose_and_present(output_handle, output, &surfaces)
+                    }
                     DirtyState::Clean => Ok(()),
                 };
                 if result.is_err() {

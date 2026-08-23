@@ -1,7 +1,9 @@
-use serviceos_userspace_runtime as rt;
 use rt::{PackageMaintenanceAction, ServiceId};
+use serviceos_userspace_runtime as rt;
 
-use crate::util::{printable_version, service_name, write_output_linef, ShellOutput, MAX_VERSION_BYTES};
+use crate::util::{
+    MAX_VERSION_BYTES, ShellOutput, printable_version, service_name, write_output_linef,
+};
 
 use super::parse::{channel_name, maintenance_action_name, parse_channel, parse_ring, ring_name};
 
@@ -15,7 +17,10 @@ pub(super) fn cmd_pkg_install(
     let result = rt::package_install(package_handle, service_id, version);
     let _ = rt::handle_close(package_handle);
     result?;
-    write_output_linef(output, format_args!("installed {}", service_name(service_id)))
+    write_output_linef(
+        output,
+        format_args!("installed {}", service_name(service_id)),
+    )
 }
 
 pub(super) fn cmd_pkg_update(
@@ -52,7 +57,10 @@ pub(super) fn cmd_pkg_rollback(
     let result = rt::package_rollback(package_handle, service_id);
     let _ = rt::handle_close(package_handle);
     result?;
-    write_output_linef(output, format_args!("rolled back {}", service_name(service_id)))
+    write_output_linef(
+        output,
+        format_args!("rolled back {}", service_name(service_id)),
+    )
 }
 
 pub(super) fn cmd_pkg_pin(
@@ -69,12 +77,20 @@ pub(super) fn cmd_pkg_pin(
         service_id,
         existing.channel,
         existing.ring,
-        if version == "none" { None } else { Some(version) },
+        if version == "none" {
+            None
+        } else {
+            Some(version)
+        },
     )?;
     let _ = rt::handle_close(package_handle);
     write_output_linef(
         output,
-        format_args!("pinned {} to {}", service_name(service_id), printable_version(version)),
+        format_args!(
+            "pinned {} to {}",
+            service_name(service_id),
+            printable_version(version)
+        ),
     )
 }
 
@@ -85,7 +101,10 @@ pub(super) fn cmd_pkg_channel(
     channel_text: &str,
 ) -> rt::Result<()> {
     let Some(channel) = parse_channel(channel_text) else {
-        return write_output_linef(output, format_args!("channel must be stable, beta, or canary"));
+        return write_output_linef(
+            output,
+            format_args!("channel must be stable, beta, or canary"),
+        );
     };
     let package_handle = rt::lookup_service(bootstrap, ServiceId::Package)?;
     let mut pinned = [0u8; MAX_VERSION_BYTES];
@@ -102,7 +121,11 @@ pub(super) fn cmd_pkg_channel(
     let _ = rt::handle_close(package_handle);
     write_output_linef(
         output,
-        format_args!("set {} channel to {}", service_name(service_id), channel_name(channel)),
+        format_args!(
+            "set {} channel to {}",
+            service_name(service_id),
+            channel_name(channel)
+        ),
     )
 }
 
@@ -133,7 +156,11 @@ pub(super) fn cmd_pkg_ring(
     let _ = rt::handle_close(package_handle);
     write_output_linef(
         output,
-        format_args!("set {} ring to {}", service_name(service_id), ring_name(ring)),
+        format_args!(
+            "set {} ring to {}",
+            service_name(service_id),
+            ring_name(ring)
+        ),
     )
 }
 

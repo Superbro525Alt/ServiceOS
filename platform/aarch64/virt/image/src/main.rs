@@ -9,35 +9,32 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use serviceos_abi::{BootstrapPlatform, ControlTag, ServiceImageId};
+use serviceos_abi::{BootstrapPlatform, ControlTag, ServiceImageId, bootstrap_resource};
 use serviceos_bundle::BootStore;
 use serviceos_kernel_arch_aarch64::{
     cpu,
     gic::{self, GicConfig, GicInitError},
     mmu::{ActivePageTable, MmioRegion},
-    timer as kernel_timer,
-    traps, user,
+    timer as kernel_timer, traps, user,
 };
 
 use serviceos_kernel_core::{
     Kernel,
     capability::{CapabilityError, CapabilityRights, TransferMode},
     ipc::{self, IpcError, MessageTag, OutgoingMessage},
-    object::ObjectId,
+    object::{KernelObjectRef, ObjectId},
     syscall,
-    task::{ExecutionState, SchedulerError, TaskRole, ThreadId, ThreadMode},
+    task::{self, ExecutionState, SchedulerError, TaskRole, ThreadId, ThreadMode},
     user::{self as kernel_user, SpawnError, TaskExitStatus},
 };
 use serviceos_platform_virt::{
-    boot,
-    dtb::InterruptControllerRegions,
-    timer,
-    uart,
+    block, boot, dtb::InterruptControllerRegions, framebuffer, input, net, timer, uart,
 };
 use serviceos_userspace_catalog::BOOT_STORE_IMAGE;
 use spin::Once;
 
 const TIMER_TICK_HZ: u64 = 100;
+const MAX_MMIO_REGIONS: usize = 40;
 
 static HARDWARE_TICKS: AtomicBool = AtomicBool::new(false);
 
@@ -120,7 +117,6 @@ enum BootstrapError {
     MissingBootStore,
     UserRun(user::UserLaunchError),
 }
-
 impl From<SpawnError> for BootstrapError {
     fn from(error: SpawnError) -> Self {
         Self::RootSpawn(error)
@@ -221,7 +217,7 @@ extern "C" fn serviceos_virt_entry(dtb_ptr: usize) -> ! {
     let mut mmio_regions = [MmioRegion {
         base: PhysicalAddress::new(0),
         size: 0,
-    }; 3];
+    }; MAX_MMIO_REGIONS];
     let mut mmio_region_count = 0usize;
     if let Some(descriptor) = boot_state.summary.uart {
         mmio_regions[mmio_region_count] = MmioRegion {
@@ -239,9 +235,34 @@ extern "C" fn serviceos_virt_entry(dtb_ptr: usize) -> ! {
             mmio_region_count += 1;
         }
     }
-
-    let mut mapper = match ActivePageTable::initialize(&boot_state.boot_info, &mmio_regions[..mmio_region_count])
+    for device in boot_state.summary.virtio_mmio_devices[..boot_state.summary.virtio_mmio_count]
+        .iter()
+        .copied()
+        .filter(|device| device.is_populated())
     {
+        if mmio_region_count == mmio_regions.len() {
+            break;
+        }
+        log(
+            "virtio",
+            format_args!(
+                "mmio-slot base={:#x} size={} irq={}",
+                device.base.as_u64(),
+                device.size,
+                device.irq,
+            ),
+        );
+        mmio_regions[mmio_region_count] = MmioRegion {
+            base: device.base,
+            size: device.size,
+        };
+        mmio_region_count += 1;
+    }
+
+    let mut mapper = match ActivePageTable::initialize(
+        &boot_state.boot_info,
+        &mmio_regions[..mmio_region_count],
+    ) {
         Ok(mapper) => mapper,
         Err(error) => panic_with_error("memory", error),
     };
@@ -258,6 +279,80 @@ extern "C" fn serviceos_virt_entry(dtb_ptr: usize) -> ! {
     syscall::register_debug_log_writer(debug_log_writer);
     syscall::register_debug_console_reader(uart::try_read_byte);
     syscall::register_debug_console_writer(uart::write_bytes);
+
+    let virtio_devices =
+        &boot_state.summary.virtio_mmio_devices[..boot_state.summary.virtio_mmio_count];
+    let bootstrap_block = block::initialize(virtio_devices)
+        .map(|backend| kernel.objects().registry().create_block_device(backend));
+    let bootstrap_network = net::initialize(virtio_devices)
+        .map(|backend| kernel.objects().registry().create_packet_interface(backend));
+    let bootstrap_display = framebuffer::initialize(virtio_devices)
+        .map(|backend| kernel.objects().registry().create_display_output(backend));
+    let bootstrap_input = input::initialize(virtio_devices)
+        .map(|backend| kernel.objects().registry().create_input_source(backend));
+
+    if let Some(summary) = block::bringup_summary() {
+        log(
+            "storage",
+            format_args!(
+                "block-backend={:?} mmio-base={:#x} irq={} blocks={} block-size={} writable={}",
+                summary.backend,
+                summary.mmio_base,
+                summary.irq,
+                summary.block_count,
+                summary.block_size,
+                summary.writable,
+            ),
+        );
+    } else {
+        log_line("storage", "no virtio-blk device detected");
+    }
+    if let Some(summary) = net::bringup_summary() {
+        log(
+            "network",
+            format_args!(
+                "backend={:?} mmio-base={:#x} irq={} mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} mtu={}",
+                summary.backend,
+                summary.mmio_base,
+                summary.irq,
+                summary.mac[0],
+                summary.mac[1],
+                summary.mac[2],
+                summary.mac[3],
+                summary.mac[4],
+                summary.mac[5],
+                summary.mtu,
+            ),
+        );
+    } else {
+        log_line("network", "no virtio-net device detected");
+    }
+    if let Some(summary) = framebuffer::bringup_summary() {
+        log(
+            "display",
+            format_args!(
+                "backend=virtio-gpu mmio-base={:#x} {}x{} stride-bytes={} bytes={}",
+                summary.mmio_base,
+                summary.width,
+                summary.height,
+                summary.stride_bytes,
+                summary.byte_len,
+            ),
+        );
+    } else {
+        log_line("display", "no virtio-gpu device detected");
+    }
+    if let Some(summary) = input::bringup_summary() {
+        log(
+            "input",
+            format_args!(
+                "backend={:?} keyboards={} pointers={}",
+                summary.backend, summary.keyboard_devices, summary.pointer_devices,
+            ),
+        );
+    } else {
+        log_line("input", "no virtio-input device detected");
+    }
 
     log_memory_summary(&boot_state.boot_info);
     log(
@@ -290,7 +385,13 @@ extern "C" fn serviceos_virt_entry(dtb_ptr: usize) -> ! {
     }
     log_line("bootstrap", "starting serial-first userspace graph");
 
-    let summary = match launch_root_manager(&kernel) {
+    let summary = match launch_root_manager(
+        &kernel,
+        bootstrap_block,
+        bootstrap_network,
+        bootstrap_display,
+        bootstrap_input,
+    ) {
         Ok(summary) => summary,
         Err(error) => panic_with_error("bootstrap", error),
     };
@@ -303,9 +404,7 @@ extern "C" fn serviceos_virt_entry(dtb_ptr: usize) -> ! {
         .registry()
         .lookup(ObjectId(summary.root_thread.0))
         .and_then(|object| object.thread().map(|thread| thread.snapshot()));
-    if root_thread_state.is_none()
-        && matches!(summary.exit_status, TaskExitStatus::Running)
-    {
+    if root_thread_state.is_none() && matches!(summary.exit_status, TaskExitStatus::Running) {
         panic_with_error("bootstrap", BootstrapError::MissingRootThread);
     }
 
@@ -331,10 +430,7 @@ extern "C" fn serviceos_virt_entry(dtb_ptr: usize) -> ! {
             "userspace",
             format_args!(
                 "root-thread mode={:?} state={:?} wait={:?} wake={:?}",
-                state.mode,
-                state.execution_state,
-                state.wait_target,
-                state.last_wake_reason,
+                state.mode, state.execution_state, state.wait_target, state.last_wake_reason,
             ),
         );
     }
@@ -345,6 +441,24 @@ extern "C" fn serviceos_virt_entry(dtb_ptr: usize) -> ! {
     cpu::wait_forever()
 }
 
+fn transfer_bootstrap_object(
+    bootstrap_task: &serviceos_kernel_core::task::TaskObject,
+    object: Option<KernelObjectRef>,
+    rights: CapabilityRights,
+) -> Result<Option<serviceos_kernel_core::capability::PreparedTransfer>, BootstrapError> {
+    let Some(object) = object else {
+        return Ok(None);
+    };
+    let handle = bootstrap_task
+        .capability_space()
+        .install(object, rights, None)?;
+    Ok(Some(bootstrap_task.capability_space().prepare_transfer(
+        handle,
+        rights,
+        TransferMode::Move,
+    )?))
+}
+
 #[panic_handler]
 fn panic(info: &PanicInfo<'_>) -> ! {
     log("panic", format_args!("{info}"));
@@ -353,7 +467,13 @@ fn panic(info: &PanicInfo<'_>) -> ! {
 
 use serviceos_kernel_core::memory::PhysicalAddress;
 
-fn launch_root_manager(kernel: &Kernel<'_>) -> Result<RootBootstrapSummary, BootstrapError> {
+fn launch_root_manager(
+    kernel: &Kernel<'_>,
+    bootstrap_block: Option<KernelObjectRef>,
+    bootstrap_network: Option<KernelObjectRef>,
+    bootstrap_display: Option<KernelObjectRef>,
+    bootstrap_input: Option<KernelObjectRef>,
+) -> Result<RootBootstrapSummary, BootstrapError> {
     let ipc_kernel = ipc::kernel().ok_or(BootstrapError::MissingBootStore)?;
     let bootstrap_task = kernel
         .objects()
@@ -409,22 +529,67 @@ fn launch_root_manager(kernel: &Kernel<'_>) -> Result<RootBootstrapSummary, Boot
         CapabilityRights::bootstrap(),
         TransferMode::Move,
     )?;
+    let block_transfer = transfer_bootstrap_object(
+        bootstrap_task,
+        bootstrap_block,
+        CapabilityRights::block_device(),
+    )?;
+    let network_transfer = transfer_bootstrap_object(
+        bootstrap_task,
+        bootstrap_network,
+        CapabilityRights::packet_interface(),
+    )?;
+    let display_transfer = transfer_bootstrap_object(
+        bootstrap_task,
+        bootstrap_display,
+        CapabilityRights::display_output(),
+    )?;
+    let input_transfer = transfer_bootstrap_object(
+        bootstrap_task,
+        bootstrap_input,
+        CapabilityRights::input_source(),
+    )?;
 
     let root = kernel_user::spawn_builtin_task(
         ServiceImageId::RootManager as u32,
         TaskRole::SystemService,
         Some(root_bootstrap_transfer),
     )?;
-    let startup = OutgoingMessage::new(
+    let mut bootstrap_resource_flags = 0u64;
+    if block_transfer.is_some() {
+        bootstrap_resource_flags |= bootstrap_resource::BLOCK;
+    }
+    if network_transfer.is_some() {
+        bootstrap_resource_flags |= bootstrap_resource::NETWORK;
+    }
+    if display_transfer.is_some() {
+        bootstrap_resource_flags |= bootstrap_resource::DISPLAY;
+    }
+    if input_transfer.is_some() {
+        bootstrap_resource_flags |= bootstrap_resource::INPUT;
+    }
+    let mut startup = OutgoingMessage::new(
         MessageTag(ControlTag::Startup as u32),
         &[
             boot_store_bytes.len() as u64,
-            BootstrapPlatform::Raspi5 as u32 as u64,
-            0,
+            BootstrapPlatform::QemuVirtio as u32 as u64,
+            bootstrap_resource_flags,
         ],
     )?
     .add_transfer(boot_store_transfer)?
     .add_transfer(bootstrap_authority_transfer)?;
+    if let Some(block_transfer) = block_transfer {
+        startup = startup.add_transfer(block_transfer)?;
+    }
+    if let Some(network_transfer) = network_transfer {
+        startup = startup.add_transfer(network_transfer)?;
+    }
+    if let Some(display_transfer) = display_transfer {
+        startup = startup.add_transfer(display_transfer)?;
+    }
+    if let Some(input_transfer) = input_transfer {
+        startup = startup.add_transfer(input_transfer)?;
+    }
     ipc_kernel.send(
         bootstrap_task.capability_space(),
         kernel_bootstrap_handle,
@@ -440,11 +605,13 @@ fn launch_root_manager(kernel: &Kernel<'_>) -> Result<RootBootstrapSummary, Boot
         .thread
         .thread()
         .ok_or_else(|| {
-            log("bootstrap", format_args!("DBG spawn: thread object missing"));
+            log(
+                "bootstrap",
+                format_args!("DBG spawn: thread object missing"),
+            );
             BootstrapError::MissingRootThread
         })?
         .id();
-
 
     let _ = kernel.tasks().scheduler().yield_current()?;
     run_userspace_executor(kernel, root_task)?;
@@ -504,6 +671,7 @@ fn run_userspace_executor(
         let scheduler = kernel.tasks().scheduler();
         let snapshot = scheduler.snapshot();
         let current = snapshot.current;
+        poll_device_events();
         log(
             "executor",
             format_args!(
@@ -548,9 +716,7 @@ fn run_userspace_executor(
             return Ok(());
         }
 
-        if hardware_ticks
-            && (kernel.tasks().consume_preemption() || snapshot.preemption_pending)
-        {
+        if hardware_ticks && (kernel.tasks().consume_preemption() || snapshot.preemption_pending) {
             let _ = scheduler.preempt_current_if_needed()?;
             continue;
         }
@@ -558,7 +724,10 @@ fn run_userspace_executor(
         let Some(thread_object) = kernel.objects().registry().lookup(ObjectId(thread_id.0)) else {
             log(
                 "executor",
-                format_args!("DBG lookup-failed tid={} run={} blk={}", thread_id.0, snapshot.runnable_threads, snapshot.blocked_threads),
+                format_args!(
+                    "DBG lookup-failed tid={} run={} blk={}",
+                    thread_id.0, snapshot.runnable_threads, snapshot.blocked_threads
+                ),
             );
             return Err(BootstrapError::MissingRootThread);
         };
@@ -570,7 +739,6 @@ fn run_userspace_executor(
             return Err(BootstrapError::MissingRootThread);
         };
 
-
         if thread_state.mode == ThreadMode::User
             && thread_state.execution_state == ExecutionState::Running
         {
@@ -578,6 +746,15 @@ fn run_userspace_executor(
         } else {
             let _ = scheduler.yield_current()?;
         }
+    }
+}
+
+fn poll_device_events() {
+    input::poll_ready_sources();
+    if let Some(manager) = serviceos_kernel_core::network::manager() {
+        manager.poll_ready(|object_id| {
+            let _ = task::notify_packet_ready(ObjectId(object_id));
+        });
     }
 }
 
@@ -638,7 +815,6 @@ fn panic_with_error(scope: &str, error: impl fmt::Debug) -> ! {
     log(scope, format_args!("bring-up failed: {error:?}"));
     cpu::wait_forever()
 }
-
 
 fn log_line(scope: &str, message: &str) {
     log(scope, format_args!("{message}"));

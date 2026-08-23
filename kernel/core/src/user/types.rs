@@ -41,12 +41,10 @@ pub struct UserArchHooks {
     pub release_address_space: fn(AddressSpaceId),
     pub map_memory_object:
         fn(AddressSpaceId, VirtualAddress, &[PhysicalAddress], bool) -> Result<(), MappingError>,
-    pub unmap_memory_range:
-        fn(AddressSpaceId, VirtualAddress, usize) -> Result<(), MappingError>,
+    pub unmap_memory_range: fn(AddressSpaceId, VirtualAddress, usize) -> Result<(), MappingError>,
     pub update_memory_protection:
         fn(AddressSpaceId, VirtualAddress, usize, MappingFlags) -> Result<(), MappingError>,
-    pub translate_address:
-        fn(AddressSpaceId, VirtualAddress) -> Option<PhysicalAddress>,
+    pub translate_address: fn(AddressSpaceId, VirtualAddress) -> Option<PhysicalAddress>,
 }
 
 #[derive(Clone)]

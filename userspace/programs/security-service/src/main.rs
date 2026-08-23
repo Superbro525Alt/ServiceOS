@@ -3,11 +3,12 @@
 
 use core::{fmt::Write, str};
 
-use serviceos_userspace_runtime as rt;
 use rt::{
-    app_permission, ControlTag, LifecycleEvent, LogDomain, LogEvent, LogSeverity, PermissionPolicyState,
+    ControlTag, LifecycleEvent, LogDomain, LogEvent, LogSeverity, PermissionPolicyState,
     RawMessage, SecurityAuditKind, SecurityStatus, SecurityTag, ServiceId, ServiceImageId,
+    app_permission,
 };
+use serviceos_userspace_runtime as rt;
 
 const MAX_POLICIES: usize = 8;
 const MAX_AUDIT: usize = 24;
@@ -251,7 +252,12 @@ fn handle_request(
             let index = request.words[0] as usize;
             let mut reply = RawMessage::empty(SecurityTag::AuditListReply as u32);
             reply.word_count = 6;
-            if let Some(entry) = audits.iter().filter(|entry| entry.occupied).nth(index).copied() {
+            if let Some(entry) = audits
+                .iter()
+                .filter(|entry| entry.occupied)
+                .nth(index)
+                .copied()
+            {
                 reply.words[0] = SecurityStatus::Ok as u32 as u64;
                 reply.words[1] = entry.sequence as u64;
                 reply.words[2] = entry.kind as u32 as u64;
@@ -388,7 +394,11 @@ fn persist_policy_state(
     let mut bytes = [0u8; MAX_STATE_BYTES];
     let mut buffer = rt::FixedLogBuffer::<MAX_STATE_BYTES>::new();
     for (index, state) in policy_states.iter().copied().enumerate() {
-        let _ = writeln!(&mut buffer, "{}={}", POLICIES[index].image_id as u32, state as u32);
+        let _ = writeln!(
+            &mut buffer,
+            "{}={}",
+            POLICIES[index].image_id as u32, state as u32
+        );
     }
     let total = buffer.as_bytes().len().min(bytes.len());
     bytes[..total].copy_from_slice(&buffer.as_bytes()[..total]);
@@ -441,12 +451,12 @@ fn ensure_directory(
 fn poll_lifecycle(bootstrap: rt::Handle) -> rt::Result<bool> {
     let mut message = RawMessage::empty(0);
     match rt::channel_receive_nonblocking(bootstrap, &mut message) {
-        Ok(()) if message.tag == ControlTag::Lifecycle as u32 && message.word_count > 0 => Ok(
-            matches!(
+        Ok(()) if message.tag == ControlTag::Lifecycle as u32 && message.word_count > 0 => {
+            Ok(matches!(
                 lifecycle_event_from_word(message.words[0]),
                 LifecycleEvent::Restarting | LifecycleEvent::Stopped
-            ),
-        ),
+            ))
+        }
         Ok(()) => Ok(false),
         Err(rt::Error::QueueEmpty) => Ok(false),
         Err(error) => Err(error),

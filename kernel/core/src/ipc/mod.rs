@@ -16,7 +16,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        capability::{CapabilityError, CapabilityHandle, CapabilityRights, CapabilitySpace, TransferMode},
+        capability::{
+            CapabilityError, CapabilityHandle, CapabilityRights, CapabilitySpace, TransferMode,
+        },
         object::{KernelObjectRef, ObjectRegistry},
     };
 

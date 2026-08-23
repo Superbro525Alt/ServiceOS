@@ -1,10 +1,9 @@
 use crate::{
-    channel_call, network_config_mode_from_word, network_config_state_from_word,
-    network_socket_kind_from_word, network_socket_state_from_word, network_status_error,
-    network_status_from_word, pack_bytes, packet_backend_from_word, packet_link_state_from_word,
-    unpack_bytes, unpack_mac, Error, Handle,
-    NetworkInterfaceStatusInfo, NetworkSocketInfo, NetworkSocketKind, NetworkSocketTag,
-    NetworkStatus, NetworkTag, RawMessage, Result, IPC_MAX_WORDS,
+    Error, Handle, IPC_MAX_WORDS, NetworkInterfaceStatusInfo, NetworkSocketInfo, NetworkSocketKind,
+    NetworkSocketTag, NetworkStatus, NetworkTag, RawMessage, Result, channel_call,
+    network_config_mode_from_word, network_config_state_from_word, network_socket_kind_from_word,
+    network_socket_state_from_word, network_status_error, network_status_from_word, pack_bytes,
+    packet_backend_from_word, packet_link_state_from_word, unpack_bytes, unpack_mac,
 };
 
 pub fn network_interface_count(network_handle: Handle) -> Result<usize> {
@@ -59,11 +58,7 @@ pub fn network_interface_status(
     }))
 }
 
-pub fn network_resolve(
-    network_handle: Handle,
-    name: &str,
-    addresses: &mut [u32],
-) -> Result<usize> {
+pub fn network_resolve(network_handle: Handle, name: &str, addresses: &mut [u32]) -> Result<usize> {
     let name_bytes = name.as_bytes();
     let max_inline_bytes = (IPC_MAX_WORDS.saturating_sub(1)) * 8;
     if name_bytes.len() > max_inline_bytes {
@@ -239,7 +234,11 @@ pub fn network_socket_receive(socket_handle: Handle, buffer: &mut [u8]) -> Resul
         return Err(network_status_error(status));
     }
     let count = response.words[1] as usize;
-    unpack_bytes(&response.words[2..response.word_count as usize], count, buffer)?;
+    unpack_bytes(
+        &response.words[2..response.word_count as usize],
+        count,
+        buffer,
+    )?;
     Ok(count)
 }
 

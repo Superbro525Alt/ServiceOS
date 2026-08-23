@@ -1,6 +1,6 @@
-use serviceos_userspace_runtime as rt;
 use rt::{DesktopAppId, ServiceImageId};
 use serviceos_desktop_ui as ui;
+use serviceos_userspace_runtime as rt;
 
 pub(crate) const SESSION_ID: u32 = 1;
 pub(crate) const APP_COUNT: usize = 5;

@@ -2,9 +2,9 @@ use super::*;
 
 pub(crate) fn recompute_layout(state: &mut TerminalState) {
     let content_width = state.width.saturating_sub((CONTENT_PADDING_X as u32) * 2);
-    let content_height = state
-        .height
-        .saturating_sub(ui::TITLEBAR_HEIGHT + TAB_STRIP_HEIGHT as u32 + (CONTENT_PADDING_Y as u32) * 2 + 4);
+    let content_height = state.height.saturating_sub(
+        ui::TITLEBAR_HEIGHT + TAB_STRIP_HEIGHT as u32 + (CONTENT_PADDING_Y as u32) * 2 + 4,
+    );
     state.columns = ((content_width as usize) / CELL_WIDTH).clamp(20, MAX_COLS);
     state.rows = ((content_height as usize) / CELL_HEIGHT).clamp(8, MAX_SCROLLBACK_LINES);
     for tab in state.tabs.iter_mut().filter(|tab| tab.occupied) {
@@ -127,7 +127,10 @@ pub(crate) fn focus_previous_tab(state: &mut TerminalState) {
 }
 
 pub(crate) fn active_tab_mut(state: &mut TerminalState) -> Option<&mut TerminalTab> {
-    state.tabs.get_mut(state.active_tab).filter(|tab| tab.occupied)
+    state
+        .tabs
+        .get_mut(state.active_tab)
+        .filter(|tab| tab.occupied)
 }
 
 pub(crate) fn active_tab_ref(state: &TerminalState) -> Option<&TerminalTab> {

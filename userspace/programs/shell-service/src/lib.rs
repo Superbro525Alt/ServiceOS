@@ -3,10 +3,10 @@
 pub mod commands;
 pub mod util;
 
-use serviceos_userspace_runtime as rt;
 use rt::{LogEvent, LogSeverity, ServiceId};
+use serviceos_userspace_runtime as rt;
 
-pub use util::{shell_output_write, write_output_linef, ShellOutput, HELP_TEXT};
+pub use util::{HELP_TEXT, ShellOutput, shell_output_write, write_output_linef};
 
 pub const MAX_LINE_BYTES: usize = 128;
 pub const SHELL_PROMPT: &str = "serviceos> ";
@@ -29,10 +29,6 @@ pub fn execute_command_with_source(
     commands::execute_command(bootstrap, output, line)
 }
 
-pub fn execute_command(
-    bootstrap: rt::Handle,
-    output: ShellOutput,
-    line: &str,
-) -> rt::Result<()> {
+pub fn execute_command(bootstrap: rt::Handle, output: ShellOutput, line: &str) -> rt::Result<()> {
     execute_command_with_source(bootstrap, ServiceId::Shell, output, line)
 }

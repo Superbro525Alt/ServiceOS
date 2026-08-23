@@ -1,9 +1,9 @@
+use rt::{ServiceId, ServiceImageId};
 use serviceos_bundle::{
     BOOT_STORE_INDEX_TEXT_MAX, BOOT_STORE_MANIFEST_TEXT_MAX, RestartPolicy, ServiceAvailability,
     ServiceManifest, ServiceStartupMode,
 };
 use serviceos_userspace_runtime as rt;
-use rt::{ServiceId, ServiceImageId};
 
 pub(crate) const MAX_SERVICE_SLOTS: usize = 16;
 pub(crate) const MAX_INDEX_BYTES: usize = BOOT_STORE_INDEX_TEXT_MAX;

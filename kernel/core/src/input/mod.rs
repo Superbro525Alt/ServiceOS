@@ -10,7 +10,7 @@ mod tests {
     use ::core::sync::atomic::{AtomicUsize, Ordering};
     use alloc::sync::Arc;
     use alloc::vec;
-use alloc::vec::Vec;
+    use alloc::vec::Vec;
     use serviceos_abi::{InputEventInfo, InputSourceBackend, InputSourceInfo, input_capability};
     use spin::Mutex;
 
@@ -165,7 +165,9 @@ use alloc::vec::Vec;
     #[test]
     fn blocking_receive_reports_empty_when_no_wakeup_raced() {
         initialize();
-        let backend = Arc::new(ScriptedBackend::new(vec![Err(InputSourceError::QueueEmpty)]));
+        let backend = Arc::new(ScriptedBackend::new(vec![Err(
+            InputSourceError::QueueEmpty,
+        )]));
         let source = InputSourceObject::new(backend.clone());
         let core = manager().expect("input core initialized");
         let registered: Arc<dyn InputBackend> = backend.clone();
@@ -201,10 +203,7 @@ use alloc::vec::Vec;
     #[test]
     fn poll_ready_notifies_while_events_remain_pending() {
         initialize();
-        let backend = Arc::new(ScriptedBackend::new(vec![
-            push_event(9),
-            push_event(9),
-        ]));
+        let backend = Arc::new(ScriptedBackend::new(vec![push_event(9), push_event(9)]));
         let core = manager().expect("input core initialized");
         let registered: Arc<dyn InputBackend> = backend.clone();
         assert!(core.register_test_source_for_latch(PENDING_SOURCE_OBJECT_ID, registered));
@@ -223,4 +222,3 @@ use alloc::vec::Vec;
         assert!(core.latch_peek(&latched), "notification must latch wakeup");
     }
 }
-

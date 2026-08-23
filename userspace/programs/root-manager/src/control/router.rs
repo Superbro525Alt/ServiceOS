@@ -1,7 +1,7 @@
-use serviceos_userspace_runtime as rt;
 use rt::{ControlTag, ManagerTag, RawMessage};
+use serviceos_userspace_runtime as rt;
 
-use crate::state::{BootstrapResources, GraphStatus, ServiceSlot, MAX_SERVICE_SLOTS};
+use crate::state::{BootstrapResources, GraphStatus, MAX_SERVICE_SLOTS, ServiceSlot};
 
 use super::{
     activation::{handle_activate_request, handle_deactivate_request},
@@ -10,8 +10,8 @@ use super::{
     },
     lookup::{
         handle_graph_status_request, handle_list_services_request, handle_lookup_request,
-        handle_service_lookup_list_request, handle_service_lookup_policy_set_request,
-        handle_service_action_request, handle_service_status_request,
+        handle_service_action_request, handle_service_lookup_list_request,
+        handle_service_lookup_policy_set_request, handle_service_status_request,
         handle_service_template_request,
     },
 };
@@ -32,17 +32,15 @@ pub(crate) fn pump_control_channels(
 
         let mut message = RawMessage::empty(0);
         match rt::channel_receive_nonblocking(slots[index].control_handle, &mut message) {
-            Ok(()) => {
-                handle_control_message(
-                    slots,
-                    service_count,
-                    index,
-                    bootstrap_authority,
-                    bootstrap_resources,
-                    graph_status,
-                    &message,
-                )?
-            }
+            Ok(()) => handle_control_message(
+                slots,
+                service_count,
+                index,
+                bootstrap_authority,
+                bootstrap_resources,
+                graph_status,
+                &message,
+            )?,
             Err(rt::Error::QueueEmpty) => {}
             Err(error) => return Err(error),
         }
@@ -93,16 +91,14 @@ fn handle_control_message(
                 0,
             );
         }
-        x if x == ControlTag::LookupRequest as u32 => {
-            handle_lookup_request(
-                slots,
-                service_count,
-                service_index,
-                bootstrap_authority,
-                bootstrap_resources,
-                message,
-            )?
-        }
+        x if x == ControlTag::LookupRequest as u32 => handle_lookup_request(
+            slots,
+            service_count,
+            service_index,
+            bootstrap_authority,
+            bootstrap_resources,
+            message,
+        )?,
         x if x == ManagerTag::ListServicesRequest as u32 => {
             handle_list_services_request(slots, *service_count, service_index, message)?
         }
@@ -116,7 +112,12 @@ fn handle_control_message(
             if message.word_count < 1 {
                 return Err(rt::Error::InvalidArgument);
             }
-            handle_service_template_request(slots, *service_count, service_index, message.words[0])?;
+            handle_service_template_request(
+                slots,
+                *service_count,
+                service_index,
+                message.words[0],
+            )?;
         }
         x if x == ManagerTag::ServiceGraphStatusRequest as u32 => {
             handle_graph_status_request(slots, service_index, graph_status, *service_count)?;

@@ -4,10 +4,9 @@ use crate::{
     DeveloperArtifactFormat, DeveloperJobState, DeveloperStatus, DeveloperTarget,
     DeveloperToolchainState, DisplayOutputBackend, DisplayOutputState, DisplayPixelFormat, Error,
     GraphicsStatus, LogDomain, LogEvent, LogSeverity, ManagerAvailability, ManagerLookupPolicy,
-    ManagerServicePhase, ManagerStartupMode, ManagerStatus, NetworkConfigMode,
-    NetworkConfigState, NetworkSocketKind,
-    NetworkSocketState, NetworkStatus, PacketInterfaceBackend, PacketInterfaceLinkState,
-    PackageStatus, RuntimeEnvState, RuntimeKind, RuntimeRunState, RuntimeStatus,
+    ManagerServicePhase, ManagerStartupMode, ManagerStatus, NetworkConfigMode, NetworkConfigState,
+    NetworkSocketKind, NetworkSocketState, NetworkStatus, PackageStatus, PacketInterfaceBackend,
+    PacketInterfaceLinkState, RuntimeEnvState, RuntimeKind, RuntimeRunState, RuntimeStatus,
     RuntimeWorkloadKind, SecurityAuditKind, ServiceId, SessionInputSource, SessionStatus,
 };
 
@@ -123,7 +122,9 @@ pub(crate) fn event_from_word(value: u64) -> LogEvent {
         x if x == LogEvent::AudioStreamStopped as u32 => LogEvent::AudioStreamStopped,
         x if x == LogEvent::AudioStreamClosed as u32 => LogEvent::AudioStreamClosed,
         x if x == LogEvent::RuntimeEnvironmentCreated as u32 => LogEvent::RuntimeEnvironmentCreated,
-        x if x == LogEvent::RuntimeEnvironmentDestroyed as u32 => LogEvent::RuntimeEnvironmentDestroyed,
+        x if x == LogEvent::RuntimeEnvironmentDestroyed as u32 => {
+            LogEvent::RuntimeEnvironmentDestroyed
+        }
         x if x == LogEvent::RuntimeLaunchStarted as u32 => LogEvent::RuntimeLaunchStarted,
         x if x == LogEvent::RuntimeLaunchExited as u32 => LogEvent::RuntimeLaunchExited,
         x if x == LogEvent::RuntimeMappedRead as u32 => LogEvent::RuntimeMappedRead,
@@ -565,7 +566,9 @@ pub(crate) fn unpack_u32_pair(value: u64) -> (u32, u32) {
 
 pub(crate) fn display_backend_from_word(value: u64) -> DisplayOutputBackend {
     match value as u32 {
-        x if x == DisplayOutputBackend::BootFramebuffer as u32 => DisplayOutputBackend::BootFramebuffer,
+        x if x == DisplayOutputBackend::BootFramebuffer as u32 => {
+            DisplayOutputBackend::BootFramebuffer
+        }
         _ => DisplayOutputBackend::Unknown,
     }
 }

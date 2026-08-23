@@ -1,11 +1,11 @@
 #![no_std]
 #![no_main]
 
-use serviceos_userspace_runtime as rt;
 use rt::{
     ConfigKey, ControlTag, LifecycleEvent, LogDomain, LogEvent, LogSeverity, ManagerServicePhase,
     RawMessage, ServiceId, StatusHealth, StatusResult, StatusTag,
 };
+use serviceos_userspace_runtime as rt;
 
 const MAX_BANNER_BYTES: usize = 128;
 const MAX_STATUS_SERVICES: usize = 24;
@@ -315,7 +315,11 @@ fn handle_request(
             reply.words[1] = u64::MAX;
             let mut visible_index = 0usize;
             let mut emitted = 0usize;
-            for entry in entries[..*entry_count].iter().copied().filter(|entry| entry.occupied) {
+            for entry in entries[..*entry_count]
+                .iter()
+                .copied()
+                .filter(|entry| entry.occupied)
+            {
                 if visible_index < page_start {
                     visible_index += 1;
                     continue;
@@ -389,7 +393,12 @@ fn seed_from_manager(
     let mut no_subscribers = [Subscriber::empty(); 0];
     for service in services[..count].iter().copied() {
         let info = rt::manager_service_status(bootstrap, service.service_id)?;
-        let (detail_kind, detail0, detail1) = manager_detail(info.phase, info.blocked_dependency, info.next_restart_tick, info.last_exit);
+        let (detail_kind, detail0, detail1) = manager_detail(
+            info.phase,
+            info.blocked_dependency,
+            info.next_restart_tick,
+            info.last_exit,
+        );
         update_entry(
             entries,
             entry_count,
@@ -486,7 +495,11 @@ fn manager_detail(
             blocked_dependency as u32 as u64,
             0,
         ),
-        ManagerServicePhase::Backoff => (rt::status_detail_kind::RESTART_BACKOFF, next_restart_tick, 0),
+        ManagerServicePhase::Backoff => (
+            rt::status_detail_kind::RESTART_BACKOFF,
+            next_restart_tick,
+            0,
+        ),
         ManagerServicePhase::Degraded | ManagerServicePhase::Exited => {
             (rt::status_detail_kind::LIFECYCLE, last_exit, 0)
         }

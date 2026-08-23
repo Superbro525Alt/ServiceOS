@@ -14,8 +14,7 @@ use serviceos_kernel_arch_x86_64::{
     interrupts::{self, TIMER_TICK_HZ},
     kthread,
     paging::ActivePageTable,
-    smp,
-    user,
+    smp, user,
 };
 use serviceos_kernel_core::{Kernel, syscall, user as kernel_user};
 use serviceos_platform_qemu_virtio::{audio, block, boot, display, input, network, serial};

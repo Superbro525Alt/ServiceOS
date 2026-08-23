@@ -1,5 +1,5 @@
-use serviceos_userspace_runtime as rt;
 use rt::{ControlTag, LifecycleEvent, RawMessage};
+use serviceos_userspace_runtime as rt;
 
 pub(crate) fn poll_lifecycle(bootstrap: rt::Handle) -> rt::Result<bool> {
     let mut message = RawMessage::empty(0);

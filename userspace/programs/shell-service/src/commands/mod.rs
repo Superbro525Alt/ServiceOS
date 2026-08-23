@@ -11,8 +11,7 @@ mod security;
 use serviceos_userspace_runtime as rt;
 
 use crate::util::{
-    parse_service_name, shell_output_write, write_output_linef, HELP_TEXT,
-    ShellOutput,
+    HELP_TEXT, ShellOutput, parse_service_name, shell_output_write, write_output_linef,
 };
 
 pub(crate) fn execute_command(
@@ -56,30 +55,31 @@ pub(crate) fn execute_command(
             Some(service_id) => core::cmd_restart(bootstrap, output, service_id),
             None => write_output_linef(output, format_args!("usage: restart <name>")),
         },
-        "logs" => {
-            match parts.next() {
-                Some("stream") => {
-                    let count = parts
-                        .next()
-                        .and_then(|value| value.parse::<usize>().ok())
-                        .unwrap_or(12);
-                    core::cmd_logs_stream(bootstrap, output, count)
-                }
-                maybe_count => {
-                    let count = maybe_count
-                        .and_then(|value| value.parse::<usize>().ok())
-                        .unwrap_or(12);
-                    core::cmd_logs(bootstrap, output, count)
-                }
+        "logs" => match parts.next() {
+            Some("stream") => {
+                let count = parts
+                    .next()
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .unwrap_or(12);
+                core::cmd_logs_stream(bootstrap, output, count)
             }
-        }
+            maybe_count => {
+                let count = maybe_count
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .unwrap_or(12);
+                core::cmd_logs(bootstrap, output, count)
+            }
+        },
         "config" => match parts.next() {
             None => core::cmd_config(bootstrap, output),
             Some("get") => match parts.next() {
                 Some(key) => core::cmd_config_get(bootstrap, output, key),
                 None => write_output_linef(output, format_args!("usage: config get <key>")),
             },
-            Some("set") => match (parts.next(), parts.next().and_then(|value| value.parse::<u64>().ok())) {
+            Some("set") => match (
+                parts.next(),
+                parts.next().and_then(|value| value.parse::<u64>().ok()),
+            ) {
                 (Some(key), Some(value)) => core::cmd_config_set(bootstrap, output, key, value),
                 _ => write_output_linef(output, format_args!("usage: config set <key> <value>")),
             },
@@ -94,13 +94,18 @@ pub(crate) fn execute_command(
             },
             Some("write") => match parts.next() {
                 Some(path) => core::cmd_store_write(bootstrap, output, path, parts),
-                None => write_output_linef(output, format_args!("usage: store write <path> <text>")),
+                None => {
+                    write_output_linef(output, format_args!("usage: store write <path> <text>"))
+                }
             },
             Some("rm") => match parts.next() {
                 Some(path) => core::cmd_store_rm(bootstrap, output, path),
                 None => write_output_linef(output, format_args!("usage: store rm <path>")),
             },
-            _ => write_output_linef(output, format_args!("usage: store <ls|mounts|mkdir|write|rm> ...")),
+            _ => write_output_linef(
+                output,
+                format_args!("usage: store <ls|mounts|mkdir|write|rm> ..."),
+            ),
         },
         "cat" => match parts.next() {
             Some(path) => core::cmd_cat(bootstrap, output, path),
@@ -116,7 +121,10 @@ pub(crate) fn execute_command(
                     .unwrap_or(8);
                 core::cmd_status_watch(bootstrap, output, count)
             }
-            _ => write_output_linef(output, format_args!("usage: status [services|watch [count]]")),
+            _ => write_output_linef(
+                output,
+                format_args!("usage: status [services|watch [count]]"),
+            ),
         },
         "net" => network::cmd_net(bootstrap, output, parts),
         "audio" => audio::cmd_audio(bootstrap, output, parts),

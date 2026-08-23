@@ -1,12 +1,12 @@
 use core::{fmt::Write, str};
 
+use rt::{ConfigKey, FixedLogBuffer};
 use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
-use rt::{ConfigKey, FixedLogBuffer};
 
 use crate::security::{
-    audit_kind_name, first_actionable_runtime, image_name, policy_name, runtime_env_state_name,
-    security_policy_count, PermissionSummary, RuntimeCapSummary,
+    PermissionSummary, RuntimeCapSummary, audit_kind_name, first_actionable_runtime, image_name,
+    policy_name, runtime_env_state_name, security_policy_count,
 };
 use crate::state::*;
 
@@ -137,12 +137,23 @@ fn draw_system_page(
             PIXEL_STRIDE,
             12,
             70 + (index as i32 * 10),
-            if index == 0 { ui::TEXT_PRIMARY } else { ui::TEXT_SECONDARY },
+            if index == 0 {
+                ui::TEXT_PRIMARY
+            } else {
+                ui::TEXT_SECONDARY
+            },
             line,
         );
     }
 
-    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, NOTE_FIELD_X0, 106, ui::TEXT_MUTED, "NOTE");
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        NOTE_FIELD_X0,
+        106,
+        ui::TEXT_MUTED,
+        "NOTE",
+    );
     ui::fill_rgba8888_rect(
         bytes,
         PIXEL_STRIDE,
@@ -152,9 +163,20 @@ fn draw_system_page(
         NOTE_FIELD_Y0.max(0) as usize,
         (NOTE_FIELD_X1 - NOTE_FIELD_X0).max(0) as usize,
         (NOTE_FIELD_Y1 - NOTE_FIELD_Y0).max(0) as usize,
-        if editing_note { ui::ACCENT } else { ui::ACCENT_DIM },
+        if editing_note {
+            ui::ACCENT
+        } else {
+            ui::ACCENT_DIM
+        },
     );
-    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, NOTE_FIELD_X0 + 8, NOTE_FIELD_Y0 + 7, ui::BG_PANEL, note_text);
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        NOTE_FIELD_X0 + 8,
+        NOTE_FIELD_Y0 + 7,
+        ui::BG_PANEL,
+        note_text,
+    );
 
     draw_button(
         bytes,
@@ -204,7 +226,13 @@ fn draw_security_page(
     let mut line0 = FixedLogBuffer::<64>::new();
     if let Some(policy) = policy {
         let name = str::from_utf8(&policy.name[..policy.name_len as usize]).unwrap_or("?");
-        let _ = write!(&mut line0, "APP {} ({}/{})", name, policy_index + 1, policy_count);
+        let _ = write!(
+            &mut line0,
+            "APP {} ({}/{})",
+            name,
+            policy_index + 1,
+            policy_count
+        );
     } else {
         let _ = write!(&mut line0, "APP no registered policies");
     }
@@ -214,8 +242,16 @@ fn draw_security_page(
     let mut line3 = FixedLogBuffer::<64>::new();
     if let Some(policy) = policy {
         let _ = write!(&mut line1, "POLICY {}", policy_name(policy.policy));
-        let _ = write!(&mut line2, "PERMS {}", PermissionSummary(policy.permissions));
-        let _ = write!(&mut line3, "SENSITIVE {}", PermissionSummary(policy.sensitive_permissions));
+        let _ = write!(
+            &mut line2,
+            "PERMS {}",
+            PermissionSummary(policy.permissions)
+        );
+        let _ = write!(
+            &mut line3,
+            "SENSITIVE {}",
+            PermissionSummary(policy.sensitive_permissions)
+        );
     } else {
         let _ = write!(&mut line1, "POLICY unavailable");
         let _ = write!(&mut line2, "PERMS -");
@@ -273,7 +309,11 @@ fn draw_security_page(
             PIXEL_STRIDE,
             12,
             70 + (index as i32 * 12),
-            if index == 0 { ui::TEXT_PRIMARY } else { ui::TEXT_SECONDARY },
+            if index == 0 {
+                ui::TEXT_PRIMARY
+            } else {
+                ui::TEXT_SECONDARY
+            },
             line,
         );
     }
@@ -288,7 +328,14 @@ fn draw_security_page(
         ui::TEXT_MUTED,
         str::from_utf8(line4.as_bytes()).unwrap_or("RUNTIME"),
     );
-    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, 12, 200, ui::TEXT_MUTED, "RUNTIME ACTIONS");
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        12,
+        200,
+        ui::TEXT_MUTED,
+        "RUNTIME ACTIONS",
+    );
     rt::draw_text_rgba8888(
         bytes,
         PIXEL_STRIDE,
@@ -307,7 +354,11 @@ fn draw_tabs(bytes: &mut [u8], page: SettingsPage) {
         TAB_Y0,
         TAB_SYSTEM_X1,
         TAB_Y1,
-        if page == SettingsPage::System { ui::ACCENT } else { ui::ACCENT_DIM },
+        if page == SettingsPage::System {
+            ui::ACCENT
+        } else {
+            ui::ACCENT_DIM
+        },
         "SYSTEM",
         ui::TEXT_PRIMARY,
     );
@@ -317,7 +368,11 @@ fn draw_tabs(bytes: &mut [u8], page: SettingsPage) {
         TAB_Y0,
         TAB_SECURITY_X1,
         TAB_Y1,
-        if page == SettingsPage::Security { ui::ACCENT } else { ui::ACCENT_DIM },
+        if page == SettingsPage::Security {
+            ui::ACCENT
+        } else {
+            ui::ACCENT_DIM
+        },
         "SECURITY",
         ui::TEXT_PRIMARY,
     );

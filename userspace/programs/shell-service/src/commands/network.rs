@@ -1,5 +1,5 @@
-use serviceos_userspace_runtime as rt;
 use rt::{NetworkSocketInfo, NetworkSocketKind, NetworkSocketState, ServiceId};
+use serviceos_userspace_runtime as rt;
 
 use crate::util::{
     ShellOutput, format_ipv4, format_mac, link_state_name, network_config_mode_name,
@@ -159,7 +159,10 @@ fn cmd_net_resolve(bootstrap: rt::Handle, output: ShellOutput, target: &str) -> 
         return write_output_linef(output, format_args!("no result"));
     }
     for address in addresses.iter().copied().take(count) {
-        write_output_linef(output, format_args!("{} -> {}", target, format_ipv4(address)))?;
+        write_output_linef(
+            output,
+            format_args!("{} -> {}", target, format_ipv4(address)),
+        )?;
     }
     Ok(())
 }
@@ -178,7 +181,9 @@ fn cmd_net_ping(bootstrap: rt::Handle, output: ShellOutput, target: &str) -> rt:
                 elapsed_ms,
             ),
         ),
-        Err(rt::Error::QueueEmpty) => write_output_linef(output, format_args!("ping {} timed out", target)),
+        Err(rt::Error::QueueEmpty) => {
+            write_output_linef(output, format_args!("ping {} timed out", target))
+        }
         Err(rt::Error::NotFound) => {
             write_output_linef(output, format_args!("ping target not found: {}", target))
         }
@@ -226,8 +231,7 @@ fn http_fetch(
     let _ = write!(
         &mut request,
         "GET {} HTTP/1.0\r\nHost: {}\r\nUser-Agent: serviceos-shell\r\nConnection: close\r\n\r\n",
-        request_path,
-        host,
+        request_path, host,
     );
     let bytes = request.as_bytes();
     let _ = rt::network_socket_send(socket_handle, bytes)?;
@@ -240,15 +244,18 @@ fn http_fetch(
             Ok(count) if count > 0 => {
                 received_any = true;
                 last_progress = rt::monotonic_now()?;
-                let text =
-                    core::str::from_utf8(&buffer[..count]).map_err(|_| rt::Error::InvalidArgument)?;
+                let text = core::str::from_utf8(&buffer[..count])
+                    .map_err(|_| rt::Error::InvalidArgument)?;
                 shell_output_write(output, text)?;
             }
             Ok(_) => {}
             Err(rt::Error::Busy) => {}
             Err(rt::Error::NotFound) => {
                 let status = rt::network_socket_status(socket_handle)?;
-                if matches!(status.state, NetworkSocketState::Closed | NetworkSocketState::Failed) {
+                if matches!(
+                    status.state,
+                    NetworkSocketState::Closed | NetworkSocketState::Failed
+                ) {
                     break;
                 }
             }
@@ -256,7 +263,10 @@ fn http_fetch(
         }
 
         let status = rt::network_socket_status(socket_handle)?;
-        if matches!(status.state, NetworkSocketState::Closed | NetworkSocketState::Failed) {
+        if matches!(
+            status.state,
+            NetworkSocketState::Closed | NetworkSocketState::Failed
+        ) {
             break;
         }
         if rt::monotonic_now()?.saturating_sub(last_progress) >= HTTP_READ_TIMEOUT_TICKS {

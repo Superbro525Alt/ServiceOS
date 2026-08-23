@@ -1,7 +1,6 @@
 use crate::{
-    channel_call, channel_send, handle_close, pack_bytes, unpack_bytes, Error, Handle,
-    RawMessage, Result, StorageEntryKind, StorageMountKind, StorageStatus, StorageTag,
-    IPC_MAX_WORDS,
+    Error, Handle, IPC_MAX_WORDS, RawMessage, Result, StorageEntryKind, StorageMountKind,
+    StorageStatus, StorageTag, channel_call, channel_send, handle_close, pack_bytes, unpack_bytes,
 };
 
 #[derive(Clone, Copy)]
@@ -58,7 +57,11 @@ pub fn storage_read(blob_handle: Handle, offset: usize, buffer: &mut [u8]) -> Re
             if byte_len > requested || byte_len > buffer.len() {
                 return Err(Error::BufferTooSmall);
             }
-            unpack_bytes(&response.words[3..response.word_count as usize], byte_len, buffer)?;
+            unpack_bytes(
+                &response.words[3..response.word_count as usize],
+                byte_len,
+                buffer,
+            )?;
             Ok(byte_len)
         }
         x if x == StorageStatus::InvalidOffset as u32 => Err(Error::InvalidArgument),
@@ -106,7 +109,11 @@ pub fn storage_list(
     }
 
     let path_len = response.words[2] as usize;
-    unpack_bytes(&response.words[3..response.word_count as usize], path_len, path_buffer)?;
+    unpack_bytes(
+        &response.words[3..response.word_count as usize],
+        path_len,
+        path_buffer,
+    )?;
     Ok(Some((status, path_len)))
 }
 
@@ -169,7 +176,11 @@ pub fn storage_list_directory(
         _ => return Err(Error::InvalidArgument),
     };
     let path_len = response.words[3] as usize;
-    unpack_bytes(&response.words[4..response.word_count as usize], path_len, path_buffer)?;
+    unpack_bytes(
+        &response.words[4..response.word_count as usize],
+        path_len,
+        path_buffer,
+    )?;
     Ok(Some((next_cursor, entry_kind, path_len)))
 }
 
@@ -294,7 +305,12 @@ pub fn storage_directory_open_file(
     }
 }
 
-pub fn storage_write(blob_handle: Handle, offset: usize, total_len: usize, bytes: &[u8]) -> Result<usize> {
+pub fn storage_write(
+    blob_handle: Handle,
+    offset: usize,
+    total_len: usize,
+    bytes: &[u8],
+) -> Result<usize> {
     let max_inline_bytes = (IPC_MAX_WORDS.saturating_sub(3)) * 8;
     if bytes.len() > max_inline_bytes {
         return Err(Error::BufferTooSmall);

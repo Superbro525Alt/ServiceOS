@@ -46,10 +46,7 @@ pub enum PeriodicFitError {
 /// Comparator delta implementing `interval_fs` on a counter ticking every
 /// `clock_period_fs`, requiring an exact ("clean") fit into the 32-bit
 /// comparator register.
-pub fn periodic_fit_ticks(
-    interval_fs: u64,
-    clock_period_fs: u32,
-) -> Result<u32, PeriodicFitError> {
+pub fn periodic_fit_ticks(interval_fs: u64, clock_period_fs: u32) -> Result<u32, PeriodicFitError> {
     if clock_period_fs == 0 {
         return Err(PeriodicFitError::InexactDivision);
     }

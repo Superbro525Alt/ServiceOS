@@ -7,7 +7,8 @@ pub(crate) const MAX_TCP_SOCKETS: usize = 2;
 pub(crate) const TCP_SOCKET_BUFFER_BYTES: usize = 1024;
 pub(crate) const PING_IDENTIFIER: u16 = 0x534f;
 pub(crate) const EPHEMERAL_PORT_BASE: u16 = 49_152;
-pub(crate) const MAX_SOCKET_INLINE_BYTES: usize = (serviceos_userspace_runtime::IPC_MAX_WORDS - 2) * 8;
+pub(crate) const MAX_SOCKET_INLINE_BYTES: usize =
+    (serviceos_userspace_runtime::IPC_MAX_WORDS - 2) * 8;
 
 pub(crate) const MAX_UDP_SOCKETS: usize = 4;
 pub(crate) const UDP_DATAGRAM_BUFFER_BYTES: usize = 2048;

@@ -3,7 +3,7 @@ use core::{
     fmt::{self, Write},
 };
 
-use crate::{debug_log, Error, Result, SyscallNumber};
+use crate::{Error, Result, SyscallNumber, debug_log};
 
 pub fn write_log(domain: &str, message: &str) -> Result<()> {
     let mut buffer = FixedLogBuffer::<192>::new();

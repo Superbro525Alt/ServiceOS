@@ -2,12 +2,18 @@ use super::*;
 use crate::render::render_desktop;
 
 fn clear_pending_resize(state: &mut DesktopState, app_id: DesktopAppId) {
-    if state.pending_resize.is_some_and(|pending| pending.app_id == app_id) {
+    if state
+        .pending_resize
+        .is_some_and(|pending| pending.app_id == app_id)
+    {
         state.pending_resize = None;
     }
 }
 
-pub(crate) fn launch_or_focus_app(state: &mut DesktopState, app_id: DesktopAppId) -> rt::Result<u32> {
+pub(crate) fn launch_or_focus_app(
+    state: &mut DesktopState,
+    app_id: DesktopAppId,
+) -> rt::Result<u32> {
     let Some(index) = app_slot_index(&state.apps, app_id) else {
         return Err(rt::Error::NotFound);
     };
@@ -204,7 +210,10 @@ pub(crate) fn restore_app(state: &mut DesktopState, app_id: DesktopAppId) -> rt:
         let restore_x = state.apps[index].window.restore_x;
         let restore_y = state.apps[index].window.restore_y;
         let restore_width = state.apps[index].window.restore_width.max(WINDOW_MIN_WIDTH);
-        let restore_height = state.apps[index].window.restore_height.max(WINDOW_MIN_HEIGHT);
+        let restore_height = state.apps[index]
+            .window
+            .restore_height
+            .max(WINDOW_MIN_HEIGHT);
         state.apps[index].window.x =
             clamp_window_x(state.chrome.output_width, restore_width, restore_x);
         state.apps[index].window.y =
@@ -244,10 +253,7 @@ pub(crate) fn maximize_app(state: &mut DesktopState, app_id: DesktopAppId) -> rt
     state.apps[index].window.minimized = false;
     state.apps[index].window.x = PANEL_MARGIN as i32;
     state.apps[index].window.y = (TOPBAR_HEIGHT + PANEL_MARGIN) as i32;
-    state.apps[index].window.width = state
-        .chrome
-        .output_width
-        .saturating_sub(PANEL_MARGIN * 2);
+    state.apps[index].window.width = state.chrome.output_width.saturating_sub(PANEL_MARGIN * 2);
     state.apps[index].window.height = state
         .chrome
         .output_height
@@ -263,7 +269,12 @@ pub(crate) fn maximize_app(state: &mut DesktopState, app_id: DesktopAppId) -> rt
     focus_app_internal(state, app_id, true, true)
 }
 
-pub(crate) fn move_app(state: &mut DesktopState, app_id: DesktopAppId, x: i32, y: i32) -> rt::Result<u32> {
+pub(crate) fn move_app(
+    state: &mut DesktopState,
+    app_id: DesktopAppId,
+    x: i32,
+    y: i32,
+) -> rt::Result<u32> {
     let Some(index) = app_slot_index(&state.apps, app_id) else {
         return Err(rt::Error::NotFound);
     };
@@ -273,8 +284,11 @@ pub(crate) fn move_app(state: &mut DesktopState, app_id: DesktopAppId, x: i32, y
     state.apps[index].window.maximized = false;
     state.apps[index].window.x =
         clamp_window_x(state.chrome.output_width, state.apps[index].window.width, x);
-    state.apps[index].window.y =
-        clamp_window_y(state.chrome.output_height, state.apps[index].window.height, y);
+    state.apps[index].window.y = clamp_window_y(
+        state.chrome.output_height,
+        state.apps[index].window.height,
+        y,
+    );
     rt::surface_set_geometry_async(
         state.apps[index].window.surface_handle,
         state.apps[index].window.x,
@@ -305,7 +319,8 @@ pub(crate) fn resize_app(
     );
     let height = height.clamp(
         WINDOW_MIN_HEIGHT,
-        state.chrome
+        state
+            .chrome
             .output_height
             .saturating_sub(TOPBAR_HEIGHT + PANEL_MARGIN),
     );
@@ -313,8 +328,11 @@ pub(crate) fn resize_app(
     state.apps[index].window.height = height;
     state.apps[index].window.x =
         clamp_window_x(state.chrome.output_width, width, state.apps[index].window.x);
-    state.apps[index].window.y =
-        clamp_window_y(state.chrome.output_height, height, state.apps[index].window.y);
+    state.apps[index].window.y = clamp_window_y(
+        state.chrome.output_height,
+        height,
+        state.apps[index].window.y,
+    );
     apply_window_geometry(&state.apps[index])?;
     let control_handle = state.apps[index].window.control_handle;
     if control_handle != rt::INVALID_HANDLE {
@@ -323,7 +341,12 @@ pub(crate) fn resize_app(
     render_desktop(state)?;
     let _ = emit_text_log(
         "desktop",
-        format_args!("window resized app={} size={}x{}", app_title(app_id), width, height),
+        format_args!(
+            "window resized app={} size={}x{}",
+            app_title(app_id),
+            width,
+            height
+        ),
     );
     Ok(state.apps[index].window.surface_id)
 }
@@ -349,14 +372,18 @@ pub(crate) fn close_app(state: &mut DesktopState, app_id: DesktopAppId) -> rt::R
 
 pub(crate) fn refresh_apps(state: &mut DesktopState) -> rt::Result<()> {
     let mut changed = false;
-    let mut pending_fault_notice: Option<(DesktopAppId, FixedLogBuffer<MAX_NOTIFICATION_BYTES>)> = None;
+    let mut pending_fault_notice: Option<(DesktopAppId, FixedLogBuffer<MAX_NOTIFICATION_BYTES>)> =
+        None;
     let mut exited_app_to_clear: Option<DesktopAppId> = None;
     for index in 0..state.apps.len() {
         if !state.apps[index].running || state.apps[index].task_handle == rt::INVALID_HANDLE {
             continue;
         }
         let status = rt::task_status(state.apps[index].task_handle)?;
-        if !matches!(status.state, rt::TaskStateCode::Exited | rt::TaskStateCode::Faulted) {
+        if !matches!(
+            status.state,
+            rt::TaskStateCode::Exited | rt::TaskStateCode::Faulted
+        ) {
             continue;
         }
         let exited_app = state.apps[index].app_id;

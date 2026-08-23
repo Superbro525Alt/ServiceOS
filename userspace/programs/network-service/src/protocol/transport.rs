@@ -2,13 +2,11 @@ use smoltcp::{
     iface::{Interface, SocketHandle, SocketSet},
     phy::Device,
     socket::{dhcpv4, dns, icmp},
-    wire::{
-        DnsQueryType, Icmpv4Packet, Icmpv4Repr, IpAddress, IpCidr, Ipv4Address, Ipv4Cidr,
-    },
+    wire::{DnsQueryType, Icmpv4Packet, Icmpv4Repr, IpAddress, IpCidr, Ipv4Address, Ipv4Cidr},
 };
 
-use serviceos_userspace_runtime as rt;
 use rt::{LogEvent, LogSeverity, NetworkConfigMode, NetworkConfigState};
+use serviceos_userspace_runtime as rt;
 
 use crate::{
     config::parse_ipv4,
@@ -37,7 +35,11 @@ pub(crate) fn drive_dynamic_ipv4(
                     address: configured.address.address(),
                     prefix_len: configured.address.prefix_len(),
                     gateway: configured.router.unwrap_or(Ipv4Address::UNSPECIFIED),
-                    dns_server: configured.dns_servers.first().copied().unwrap_or(config.dns_server),
+                    dns_server: configured
+                        .dns_servers
+                        .first()
+                        .copied()
+                        .unwrap_or(config.dns_server),
                 };
                 *dhcp_started_at = rt::monotonic_now().unwrap_or(*dhcp_started_at);
                 apply_interface_runtime(iface, *runtime_state);
@@ -68,13 +70,20 @@ pub(crate) fn drive_dynamic_ipv4(
                     sockets.get_mut::<dns::Socket>(dns_handle),
                     runtime_state.dns_server,
                 );
-                let _ = emit_log(log_handle, LogSeverity::Warn, LogEvent::NetworkLeaseChanged, 0, 0);
+                let _ = emit_log(
+                    log_handle,
+                    LogSeverity::Warn,
+                    LogEvent::NetworkLeaseChanged,
+                    0,
+                    0,
+                );
             }
         }
     }
 
     if runtime_state.state == NetworkConfigState::Pending
-        && rt::monotonic_now()?.saturating_sub(*dhcp_started_at) >= config.dhcp_acquire_timeout_ticks
+        && rt::monotonic_now()?.saturating_sub(*dhcp_started_at)
+            >= config.dhcp_acquire_timeout_ticks
     {
         *runtime_state = InterfaceRuntimeState::static_config(*config);
         apply_interface_runtime(iface, *runtime_state);
@@ -131,7 +140,10 @@ pub(crate) fn resolve_target(
     let start_ticks = rt::monotonic_now()?;
     loop {
         let _ = iface.poll(now_instant(), device, sockets);
-        match sockets.get_mut::<dns::Socket>(dns_handle).get_query_result(query) {
+        match sockets
+            .get_mut::<dns::Socket>(dns_handle)
+            .get_query_result(query)
+        {
             Ok(addresses) => {
                 for address in addresses {
                     let IpAddress::Ipv4(ipv4) = address;
@@ -144,7 +156,9 @@ pub(crate) fn resolve_target(
         }
 
         if rt::monotonic_now()?.saturating_sub(start_ticks) >= timeout_ticks {
-            sockets.get_mut::<dns::Socket>(dns_handle).cancel_query(query);
+            sockets
+                .get_mut::<dns::Socket>(dns_handle)
+                .cancel_query(query);
             return Ok(None);
         }
 
@@ -174,7 +188,12 @@ pub(crate) fn perform_ping(
             return Ok(None);
         }
 
-        let payload = [0x53, 0x4f, (*next_sequence >> 8) as u8, *next_sequence as u8];
+        let payload = [
+            0x53,
+            0x4f,
+            (*next_sequence >> 8) as u8,
+            *next_sequence as u8,
+        ];
         let icmp_repr = Icmpv4Repr::EchoRequest {
             ident: PING_IDENTIFIER,
             seq_no: *next_sequence,
@@ -205,8 +224,7 @@ pub(crate) fn perform_ping(
             } = reply
             {
                 if ident == PING_IDENTIFIER && seq_no == sequence {
-                    let elapsed_ms =
-                        ticks_to_millis(rt::monotonic_now()?).saturating_sub(start_ms);
+                    let elapsed_ms = ticks_to_millis(rt::monotonic_now()?).saturating_sub(start_ms);
                     return Ok(Some(elapsed_ms));
                 }
             }
@@ -239,7 +257,9 @@ pub(crate) fn apply_interface_runtime(iface: &mut Interface, runtime_state: Inte
     crate::device::set_local_ipv4(runtime_state.address);
     let _ = iface.routes_mut().remove_default_ipv4_route();
     if runtime_state.gateway != Ipv4Address::UNSPECIFIED {
-        let _ = iface.routes_mut().add_default_ipv4_route(runtime_state.gateway);
+        let _ = iface
+            .routes_mut()
+            .add_default_ipv4_route(runtime_state.gateway);
     }
 }
 

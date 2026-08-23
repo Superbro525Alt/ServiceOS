@@ -1,8 +1,8 @@
 use core::char;
 
+use rt::PermissionPolicyState;
 use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
-use rt::PermissionPolicyState;
 
 use crate::render::render;
 use crate::security::{first_actionable_runtime, security_policy_count, update_policy};
@@ -30,16 +30,23 @@ pub(crate) fn poll_control(
     loop {
         let mut message = rt::RawMessage::empty(0);
         match rt::channel_receive_nonblocking(control_handle, &mut message) {
-            Ok(()) if message.tag == rt::AppControlTag::FocusChanged as u32 && message.word_count > 0 => {
+            Ok(())
+                if message.tag == rt::AppControlTag::FocusChanged as u32
+                    && message.word_count > 0 =>
+            {
                 state.focused = message.words[0] != 0;
                 changed = true;
             }
-            Ok(()) if message.tag == rt::AppControlTag::Resize as u32 && message.word_count >= 2 => {
+            Ok(())
+                if message.tag == rt::AppControlTag::Resize as u32 && message.word_count >= 2 =>
+            {
                 state.width = message.words[0] as u32;
                 state.height = message.words[1] as u32;
                 changed = true;
             }
-            Ok(()) if message.tag == rt::AppControlTag::Pointer as u32 && message.word_count >= 4 => {
+            Ok(())
+                if message.tag == rt::AppControlTag::Pointer as u32 && message.word_count >= 4 =>
+            {
                 let action = ui::decode_app_pointer_action(message.words[0]);
                 let x = message.words[1] as i64 as i32;
                 let y = message.words[2] as i64 as i32;
@@ -55,12 +62,17 @@ pub(crate) fn poll_control(
                 }
             }
             Ok(()) if message.tag == rt::AppControlTag::Key as u32 && message.word_count >= 2 => {
-                if matches!(ui::decode_app_key_action(message.words[0]), Some(rt::AppKeyAction::Down)) {
+                if matches!(
+                    ui::decode_app_key_action(message.words[0]),
+                    Some(rt::AppKeyAction::Down)
+                ) {
                     changed |= handle_key_down(security_handle, state, message.words[1] as u32)?;
                 }
             }
             Ok(()) if message.tag == rt::AppControlTag::Text as u32 && message.word_count > 0 => {
-                if state.editing_note && let Some(ch) = char::from_u32(message.words[0] as u32) {
+                if state.editing_note
+                    && let Some(ch) = char::from_u32(message.words[0] as u32)
+                {
                     if ch == '\n' {
                         state.editing_note = false;
                         changed = true;
@@ -68,14 +80,17 @@ pub(crate) fn poll_control(
                         let mut scratch = [0u8; 4];
                         let bytes = ch.encode_utf8(&mut scratch).as_bytes();
                         if state.note_len + bytes.len() <= NOTE_MAX_BYTES {
-                            state.note[state.note_len..state.note_len + bytes.len()].copy_from_slice(bytes);
+                            state.note[state.note_len..state.note_len + bytes.len()]
+                                .copy_from_slice(bytes);
                             state.note_len += bytes.len();
                             changed = true;
                         }
                     }
                 }
             }
-            Ok(()) if message.tag == rt::AppControlTag::Close as u32 => return Ok(ControlFlow::Exit),
+            Ok(()) if message.tag == rt::AppControlTag::Close as u32 => {
+                return Ok(ControlFlow::Exit);
+            }
             Ok(()) => {}
             Err(rt::Error::QueueEmpty) => break,
             Err(error) => return Err(error),
@@ -150,11 +165,19 @@ fn handle_pointer_down(
         return Ok(true);
     }
     if x >= SEC_ALLOW_X0 && x < SEC_ALLOW_X1 && y >= SEC_ACTION_Y0 && y < SEC_ACTION_Y1 {
-        update_policy(security_handle, state.selected_policy_index, PermissionPolicyState::Allowed)?;
+        update_policy(
+            security_handle,
+            state.selected_policy_index,
+            PermissionPolicyState::Allowed,
+        )?;
         return Ok(true);
     }
     if x >= SEC_BLOCK_X0 && x < SEC_BLOCK_X1 && y >= SEC_ACTION_Y0 && y < SEC_ACTION_Y1 {
-        update_policy(security_handle, state.selected_policy_index, PermissionPolicyState::Blocked)?;
+        update_policy(
+            security_handle,
+            state.selected_policy_index,
+            PermissionPolicyState::Blocked,
+        )?;
         return Ok(true);
     }
     if x >= SEC_DEFAULT_X0 && x < SEC_DEFAULT_X1 && y >= SEC_ACTION_Y0 && y < SEC_ACTION_Y1 {
@@ -167,13 +190,21 @@ fn handle_pointer_down(
     }
     if x >= SEC_APPROVE_X0 && x < SEC_APPROVE_X1 && y >= SEC_RUNTIME_Y0 && y < SEC_RUNTIME_Y1 {
         if let Some(runtime) = first_actionable_runtime(runtime_handle)? {
-            rt::runtime_env_decide(runtime_handle, runtime.env_id, PermissionPolicyState::Allowed)?;
+            rt::runtime_env_decide(
+                runtime_handle,
+                runtime.env_id,
+                PermissionPolicyState::Allowed,
+            )?;
         }
         return Ok(true);
     }
     if x >= SEC_DENY_X0 && x < SEC_DENY_X1 && y >= SEC_RUNTIME_Y0 && y < SEC_RUNTIME_Y1 {
         if let Some(runtime) = first_actionable_runtime(runtime_handle)? {
-            rt::runtime_env_decide(runtime_handle, runtime.env_id, PermissionPolicyState::Blocked)?;
+            rt::runtime_env_decide(
+                runtime_handle,
+                runtime.env_id,
+                PermissionPolicyState::Blocked,
+            )?;
         }
         return Ok(true);
     }

@@ -26,21 +26,28 @@ pub(crate) fn load_boot_catalog(
     let index_text =
         core::str::from_utf8(&index_buffer[..loaded]).map_err(|_| rt::Error::InvalidArgument)?;
     let mut count = 0usize;
-    for line in index_text.lines().map(|line| line.trim()).filter(|line| !line.is_empty()) {
+    for line in index_text
+        .lines()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty())
+    {
         let (manifest_handle, manifest_len) = rt::storage_open(storage_handle, line)?;
         let mut manifest_buffer = [0u8; MAX_PACKAGE_BYTES];
         let requested = manifest_len.min(manifest_buffer.len());
         let loaded = rt::storage_read_all(manifest_handle, &mut manifest_buffer, requested)?;
         let _ = rt::storage_blob_close(manifest_handle);
-        let manifest =
-            parse_package_manifest(&manifest_buffer[..loaded]).map_err(|_| rt::Error::InvalidArgument)?;
+        let manifest = parse_package_manifest(&manifest_buffer[..loaded])
+            .map_err(|_| rt::Error::InvalidArgument)?;
         let latest = add_or_update_version(
             packages,
             &mut count,
             manifest.service_id,
             manifest.package.as_str().unwrap_or("package"),
             manifest.version.as_str().unwrap_or("0.0.0"),
-            manifest.compatibility.as_str().unwrap_or("serviceos.bootstore.v1"),
+            manifest
+                .compatibility
+                .as_str()
+                .unwrap_or("serviceos.bootstore.v1"),
             line,
             "",
             manifest.package.as_str().unwrap_or("SYSTEM"),
@@ -207,7 +214,10 @@ pub(crate) fn sync_repository(
     if repo_index >= repos.len() || !repos[repo_index].occupied || repos[repo_index].builtin {
         return Ok(PackageStatus::NotFound);
     }
-    let url = repos[repo_index].url.as_str().map_err(|_| rt::Error::InvalidArgument)?;
+    let url = repos[repo_index]
+        .url
+        .as_str()
+        .map_err(|_| rt::Error::InvalidArgument)?;
     let mut bytes = [0u8; MAX_FEED_BYTES];
     let loaded = match http_fetch_text(network_handle, url, &mut bytes) {
         Ok(len) => len,
@@ -240,7 +250,11 @@ pub(crate) fn sync_repository(
                     repo_index as u64,
                     digest,
                 );
-                crate::storage::persist_repositories(storage_handle, repos, count_repositories(repos))?;
+                crate::storage::persist_repositories(
+                    storage_handle,
+                    repos,
+                    count_repositories(repos),
+                )?;
                 return Ok(PackageStatus::VerificationFailed);
             }
         }
@@ -301,10 +315,23 @@ pub(crate) fn handle_repository_add_request(
             total,
             &mut bytes,
         )?;
-        let name = core::str::from_utf8(&bytes[..name_len]).map_err(|_| rt::Error::InvalidArgument)?;
-        let url =
-            core::str::from_utf8(&bytes[name_len..name_len + url_len]).map_err(|_| rt::Error::InvalidArgument)?;
-        add_repository(storage_handle, log_handle, repos, repo_count, name, url, trust_mode, channel, ring, enabled, pinned_digest)?
+        let name =
+            core::str::from_utf8(&bytes[..name_len]).map_err(|_| rt::Error::InvalidArgument)?;
+        let url = core::str::from_utf8(&bytes[name_len..name_len + url_len])
+            .map_err(|_| rt::Error::InvalidArgument)?;
+        add_repository(
+            storage_handle,
+            log_handle,
+            repos,
+            repo_count,
+            name,
+            url,
+            trust_mode,
+            channel,
+            ring,
+            enabled,
+            pinned_digest,
+        )?
     };
     send_status_reply(reply_handle, PackageTag::RepositoryAddReply, status)
 }
@@ -400,9 +427,15 @@ pub(crate) fn parse_feed_catalog(
             continue;
         };
         let mut parts = payload.split('|');
-        let Some(package) = parts.next() else { continue };
-        let Some(service) = parts.next().and_then(service_id_from_name) else { continue };
-        let Some(version) = parts.next() else { continue };
+        let Some(package) = parts.next() else {
+            continue;
+        };
+        let Some(service) = parts.next().and_then(service_id_from_name) else {
+            continue;
+        };
+        let Some(version) = parts.next() else {
+            continue;
+        };
         let compatibility = parts.next().unwrap_or("serviceos.bootstore.v1");
         let manifest_path = parts.next().unwrap_or("");
         let category = parts.next().unwrap_or("SERVICE");
@@ -435,7 +468,10 @@ pub(crate) fn remove_versions_for_repo(
     package_count: usize,
     repo_index: usize,
 ) {
-    for slot in packages[..package_count].iter_mut().filter(|slot| slot.occupied) {
+    for slot in packages[..package_count]
+        .iter_mut()
+        .filter(|slot| slot.occupied)
+    {
         let mut new_versions = [PackageVersionSlot::empty(); MAX_PACKAGE_VERSIONS];
         let mut new_count = 0usize;
         for index in 0..slot.version_count {
@@ -501,8 +537,7 @@ fn http_fetch_into(
     let _ = write!(
         &mut request,
         "GET {} HTTP/1.0\r\nHost: {}\r\nUser-Agent: serviceos-package\r\nConnection: close\r\n\r\n",
-        path,
-        host,
+        path, host,
     );
     let _ = rt::network_socket_send(socket_handle, request.as_bytes())?;
 
@@ -566,7 +601,11 @@ fn wait_for_socket_established(socket_handle: rt::Handle, timeout_ticks: u64) ->
 
 fn parse_http_url(
     url: &str,
-) -> rt::Result<(rt::FixedLogBuffer<REPO_NAME_MAX>, u16, rt::FixedLogBuffer<REPO_URL_MAX>)> {
+) -> rt::Result<(
+    rt::FixedLogBuffer<REPO_NAME_MAX>,
+    u16,
+    rt::FixedLogBuffer<REPO_URL_MAX>,
+)> {
     let Some(rest) = url.strip_prefix("http://") else {
         return Err(rt::Error::InvalidArgument);
     };
@@ -577,7 +616,8 @@ fn parse_http_url(
     let (host, port) = match authority.split_once(':') {
         Some((host, port)) => (
             host,
-            port.parse::<u16>().map_err(|_| rt::Error::InvalidArgument)?,
+            port.parse::<u16>()
+                .map_err(|_| rt::Error::InvalidArgument)?,
         ),
         None => (authority, 80),
     };
@@ -614,7 +654,8 @@ pub(crate) fn join_repo_url(
 }
 
 fn find_http_header_end(bytes: &[u8]) -> Option<usize> {
-    bytes.windows(4)
+    bytes
+        .windows(4)
         .position(|window| window == b"\r\n\r\n")
         .map(|index| index + 4)
 }

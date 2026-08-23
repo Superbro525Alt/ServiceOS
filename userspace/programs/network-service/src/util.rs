@@ -1,17 +1,16 @@
 use smoltcp::time::Instant;
 use smoltcp::wire::Ipv4Address;
 
-use serviceos_userspace_runtime as rt;
 use rt::{ControlTag, LifecycleEvent, LogEvent, LogSeverity, RawMessage, ServiceId};
+use serviceos_userspace_runtime as rt;
 
 pub(crate) fn decode_inline_text<'a>(
     words: &[u64],
     length: usize,
     buffer: &'a mut [u8],
 ) -> rt::Result<&'a str> {
-    decode_inline_bytes(words, length, buffer).and_then(|bytes| {
-        core::str::from_utf8(bytes).map_err(|_| rt::Error::InvalidArgument)
-    })
+    decode_inline_bytes(words, length, buffer)
+        .and_then(|bytes| core::str::from_utf8(bytes).map_err(|_| rt::Error::InvalidArgument))
 }
 
 pub(crate) fn decode_inline_bytes<'a>(

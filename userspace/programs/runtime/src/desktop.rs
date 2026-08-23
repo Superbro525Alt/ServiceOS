@@ -1,10 +1,10 @@
 use crate::{
+    DesktopAppId, DesktopAppInfo, DesktopDragMode, DesktopInputAction, DesktopNotificationInfo,
+    DesktopShellStatusInfo, DesktopStatus, DesktopTag, DesktopWindowAction, DesktopWindowInfo,
+    DesktopWorkspaceAction, DesktopWorkspaceInfo, Error, Handle, IPC_MAX_WORDS, RawMessage, Result,
     channel_call, channel_create, channel_receive_blocking, channel_send, desktop_app_id_from_word,
     desktop_drag_mode_from_word, desktop_status_error, desktop_status_from_word, handle_close,
-    pack_bytes, rights, unpack_bytes, unpack_i32_pair, unpack_u32_pair, DesktopAppId, DesktopAppInfo,
-    DesktopDragMode, DesktopInputAction, DesktopNotificationInfo, DesktopShellStatusInfo,
-    DesktopStatus, DesktopTag, DesktopWindowAction, DesktopWindowInfo, DesktopWorkspaceAction,
-    DesktopWorkspaceInfo, Error, Handle, IPC_MAX_WORDS, RawMessage, Result,
+    pack_bytes, rights, unpack_bytes, unpack_i32_pair, unpack_u32_pair,
 };
 
 pub fn desktop_status(desktop_handle: Handle) -> Result<DesktopShellStatusInfo> {
@@ -306,7 +306,11 @@ pub fn desktop_notification_history(
             }
             let len = response.words[4] as usize;
             let mut text = [0u8; 64];
-            unpack_bytes(&response.words[5..response.word_count as usize], len, &mut text)?;
+            unpack_bytes(
+                &response.words[5..response.word_count as usize],
+                len,
+                &mut text,
+            )?;
             Ok(DesktopNotificationInfo {
                 sequence: response.words[1] as u32,
                 source_app: desktop_app_id_from_word(response.words[2]).ok(),
@@ -406,8 +410,7 @@ pub fn desktop_pointer_input(
     x: i32,
     y: i32,
 ) -> Result<u32> {
-    desktop_input_request(desktop_handle, action, x, y, 0, true)
-        .map(|surface| surface.unwrap_or(0))
+    desktop_input_request(desktop_handle, action, x, y, 0, true).map(|surface| surface.unwrap_or(0))
 }
 
 pub fn desktop_pointer_input_async(

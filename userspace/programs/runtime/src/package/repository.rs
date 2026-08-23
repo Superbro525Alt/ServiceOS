@@ -1,12 +1,12 @@
 use crate::{
+    Error, Handle, IPC_MAX_WORDS, PackageChannel, PackageRepositoryInfo, PackageRepositorySyncInfo,
+    PackageRepositoryTrustMode, PackageRing, PackageStatus, PackageTag, RawMessage, Result,
+    pack_bytes,
     package::common::{
         package_channel_from_word, package_repo_sync_state_from_word, package_ring_from_word,
         package_trust_mode_from_word, send_request,
     },
-    pack_bytes, package_status_error, package_status_from_word, unpack_bytes, Error, Handle,
-    PackageChannel, PackageRepositoryInfo,
-    PackageRepositorySyncInfo, PackageRepositoryTrustMode, PackageRing, PackageStatus, PackageTag,
-    RawMessage, Result, IPC_MAX_WORDS,
+    package_status_error, package_status_from_word, unpack_bytes,
 };
 
 pub fn package_repository_list(
@@ -120,7 +120,10 @@ pub fn package_repository_sync(
     }
 
     let status = package_status_from_word(response.words[0]);
-    if !matches!(status, PackageStatus::Ok | PackageStatus::Busy | PackageStatus::Offline) {
+    if !matches!(
+        status,
+        PackageStatus::Ok | PackageStatus::Busy | PackageStatus::Offline
+    ) {
         return Err(package_status_error(status));
     }
 

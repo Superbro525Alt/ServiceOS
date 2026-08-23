@@ -1,7 +1,7 @@
 use core::fmt::Write;
 
-use serviceos_userspace_runtime as rt;
 use rt::{LifecycleEvent, LogDomain, LogEvent, LogSeverity, ServiceId};
+use serviceos_userspace_runtime as rt;
 
 pub(crate) fn service_id_from_word(value: u64) -> ServiceId {
     match value as u32 {

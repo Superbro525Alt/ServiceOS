@@ -229,6 +229,17 @@ pub(crate) fn send_builder_log(output_handle: rt::Handle, text: &str) {
     let _ = rt::text_relay_write(output_handle, text);
 }
 
+pub(crate) fn create_memory_from_bytes(bytes: &[u8]) -> rt::Result<rt::Handle> {
+    let memory = rt::memory_create(bytes.len(), true)?;
+    match rt::memory_write(memory, 0, bytes) {
+        Ok(_) => Ok(memory),
+        Err(error) => {
+            let _ = rt::handle_close(memory);
+            Err(error)
+        }
+    }
+}
+
 pub(crate) fn duplicate_artifact_for_reply(handle: rt::Handle) -> rt::Result<rt::Handle> {
     rt::handle_duplicate(handle, rights::READ | rights::DUPLICATE | rights::TRANSFER)
 }

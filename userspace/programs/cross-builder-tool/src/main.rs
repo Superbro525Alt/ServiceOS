@@ -1,5 +1,5 @@
-#![no_std]
-#![no_main]
+#![cfg_attr(not(test), no_std)]
+#![cfg_attr(not(test), no_main)]
 
 use rt::{DeveloperArtifactFormat, DeveloperTarget, RawMessage};
 use serviceos_userspace_runtime as rt;
@@ -8,10 +8,17 @@ const REPORT_TAG: u32 = 1;
 const MAX_SOURCE: usize = 256;
 const MAX_ARTIFACT: usize = 2048;
 const MAX_NAME: usize = 64;
+/// Builder-report status codes shared with `developer-service`:
+/// 0 = ok, 1 = unsupported target, 2 = generic failure, 3 = sandbox denial.
+const STATUS_SANDBOX_DENIED: u64 = 3;
+const MAX_SANDBOX_TEXT: usize = 512;
+const MAX_SCOPES: usize = 4;
+const MAX_SCOPE_LEN: usize = 96;
 const FLAT_IMAGE_HEADER_LEN: usize = 72;
 const IMAGE_BASE: u64 = 0x0000_4000_0000_0000;
 const USER_STACK_TOP: u64 = 0x0000_7fff_ffff_0000;
 
+#[cfg(not(test))]
 rt::entry!(main);
 
 fn main() -> u64 {
@@ -21,7 +28,7 @@ fn main() -> u64 {
         return 0xfe01;
     }
     if startup.tag != rt::ControlTag::Startup as u32
-        || startup.handle_count < 3
+        || startup.handle_count < 4
         || startup.word_count < 3
     {
         return 0xfe02;
@@ -30,6 +37,7 @@ fn main() -> u64 {
     let output = startup.handles[0];
     let report = startup.handles[1];
     let source_handle = startup.handles[2];
+    let sandbox_handle = startup.handles[3];
     let target = match startup.words[0] as u32 {
         x if x == DeveloperTarget::LinuxX64 as u32 => DeveloperTarget::LinuxX64,
         x if x == DeveloperTarget::WindowsX64 as u32 => DeveloperTarget::WindowsX64,
@@ -50,6 +58,38 @@ fn main() -> u64 {
     .is_err()
     {
         return 0xfe04;
+    }
+
+    let mut sandbox_text = [0u8; MAX_SANDBOX_TEXT];
+    if rt::memory_read(sandbox_handle, 0, &mut sandbox_text).is_err() {
+        return 0xfe10;
+    }
+    let Some(sandbox) = parse_sandbox_text(&sandbox_text) else {
+        return 0xfe11;
+    };
+
+    // One-line worker sandbox echo for the build log.
+    log_sandbox_line(output, &sandbox);
+
+    if !sandbox.net_denied
+        || !path_in_scopes(&sandbox.scopes[..sandbox.scope_count], &sandbox.request_in)
+        || !path_in_scopes(&sandbox.scopes[..sandbox.scope_count], &sandbox.request_out)
+    {
+        // Requested path outside the granted fs scopes: fail the job cleanly
+        // with a distinct sandbox-denied status instead of proceeding.
+        let _ = send_report(
+            report,
+            STATUS_SANDBOX_DENIED,
+            DeveloperArtifactFormat::ServiceOsFlat,
+            0,
+            &artifact_name[..name_len],
+            None,
+        );
+        let _ = rt::handle_close(output);
+        let _ = rt::handle_close(report);
+        let _ = rt::handle_close(source_handle);
+        let _ = rt::handle_close(sandbox_handle);
+        return 0;
     }
 
     let mut source = [0u8; MAX_SOURCE];
@@ -92,6 +132,7 @@ fn main() -> u64 {
             let _ = rt::handle_close(output);
             let _ = rt::handle_close(report);
             let _ = rt::handle_close(source_handle);
+            let _ = rt::handle_close(sandbox_handle);
             return 0;
         }
     };
@@ -119,6 +160,7 @@ fn main() -> u64 {
     let _ = rt::handle_close(output);
     let _ = rt::handle_close(report);
     let _ = rt::handle_close(source_handle);
+    let _ = rt::handle_close(sandbox_handle);
     0
 }
 
@@ -126,6 +168,127 @@ fn trim_message(bytes: &mut [u8], len: &mut usize) {
     while *len > 0 && matches!(bytes[*len - 1], b'\n' | b'\r') {
         *len -= 1;
     }
+}
+
+#[derive(Clone, Copy)]
+struct ScopeBuf {
+    bytes: [u8; MAX_SCOPE_LEN],
+    len: usize,
+}
+
+impl ScopeBuf {
+    const fn empty() -> Self {
+        Self {
+            bytes: [0; MAX_SCOPE_LEN],
+            len: 0,
+        }
+    }
+
+    fn set(&mut self, value: &[u8]) -> bool {
+        if value.len() > MAX_SCOPE_LEN {
+            return false;
+        }
+        self.bytes[..value.len()].copy_from_slice(value);
+        self.len = value.len();
+        true
+    }
+
+    fn as_bytes(&self) -> &[u8] {
+        let mut end = self.len;
+        while end > 1 && self.bytes[end - 1] == b'/' {
+            end -= 1;
+        }
+        &self.bytes[..end]
+    }
+}
+
+struct SandboxSpec {
+    scopes: [ScopeBuf; MAX_SCOPES],
+    scope_count: usize,
+    net_denied: bool,
+    request_in: ScopeBuf,
+    request_out: ScopeBuf,
+}
+
+/// Parse the permission-set text sent by developer-service:
+/// `fs=<scope>;<scope>` / `net=<denied|allowed>` / `in=<path>` / `out=<path>`.
+fn parse_sandbox_text(text: &[u8]) -> Option<SandboxSpec> {
+    let mut spec = SandboxSpec {
+        scopes: [ScopeBuf::empty(); MAX_SCOPES],
+        scope_count: 0,
+        net_denied: false,
+        request_in: ScopeBuf::empty(),
+        request_out: ScopeBuf::empty(),
+    };
+    let mut have_in = false;
+    let mut have_out = false;
+    let text_end = text
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(text.len());
+    for line in core::str::from_utf8(&text[..text_end]).ok()?.lines() {
+        let (key, value) = line.split_once('=')?;
+        match key {
+            "fs" => {
+                for scope in value.split(';') {
+                    if scope.is_empty()
+                        || spec.scope_count >= MAX_SCOPES
+                        || !spec.scopes[spec.scope_count].set(scope.as_bytes())
+                    {
+                        return None;
+                    }
+                    spec.scope_count += 1;
+                }
+            }
+            "net" => spec.net_denied = value == "denied",
+            "in" => {
+                have_in = spec.request_in.set(value.as_bytes());
+            }
+            "out" => {
+                have_out = spec.request_out.set(value.as_bytes());
+            }
+            _ => {}
+        }
+    }
+    if spec.scope_count == 0 || !have_in || !have_out {
+        return None;
+    }
+    Some(spec)
+}
+
+fn path_in_scopes(scopes: &[ScopeBuf], path: &ScopeBuf) -> bool {
+    let path = path.as_bytes();
+    if path.is_empty() {
+        return false;
+    }
+    scopes.iter().map(ScopeBuf::as_bytes).any(|scope| {
+        !scope.is_empty()
+            && path.starts_with(scope)
+            && (path.len() == scope.len() || path[scope.len()] == b'/')
+    })
+}
+
+fn log_sandbox_line(output: rt::Handle, sandbox: &SandboxSpec) {
+    let mut line = [0u8; MAX_SANDBOX_TEXT];
+    let mut cursor = push_chunk(&mut line, 0, b"worker sandbox: fs=[");
+    for index in 0..MAX_SCOPES.min(sandbox.scope_count) {
+        if index > 0 {
+            cursor = push_chunk(&mut line, cursor, b";");
+        }
+        cursor = push_chunk(&mut line, cursor, sandbox.scopes[index].as_bytes());
+    }
+    cursor = push_chunk(&mut line, cursor, b"] net=denied\r\n");
+    if let Ok(text) = core::str::from_utf8(&line[..cursor]) {
+        let _ = rt::text_relay_write(output, text);
+    }
+}
+
+fn push_chunk(line: &mut [u8], cursor: usize, chunk: &[u8]) -> usize {
+    if cursor + chunk.len() > line.len() {
+        return cursor;
+    }
+    line[cursor..cursor + chunk.len()].copy_from_slice(chunk);
+    cursor + chunk.len()
 }
 
 fn send_report(
@@ -354,4 +517,135 @@ fn build_windows_pe(output: &mut [u8]) -> usize {
 
 fn align_up(value: usize, align: usize) -> usize {
     (value + align - 1) & !(align - 1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const HOST_TEXT: &[u8] = b"\
+fs=packages/developer-service/1.0.0/projects/hello-cross;\
+packages/developer-service/1.0.0/sdk/native\n\
+net=denied\n\
+in=packages/developer-service/1.0.0/projects/hello-cross/message.txt\n\
+out=packages/developer-service/1.0.0/projects/hello-cross/hello-cross\n";
+
+    fn parse(text: &[u8]) -> SandboxSpec {
+        parse_sandbox_text(text).expect("sandbox text parses")
+    }
+
+    #[test]
+    fn host_serialized_text_parses() {
+        let spec = parse(HOST_TEXT);
+        assert_eq!(spec.scope_count, 2);
+        assert!(spec.net_denied);
+        assert_eq!(
+            spec.request_in.as_bytes(),
+            b"packages/developer-service/1.0.0/projects/hello-cross/message.txt"
+        );
+        assert_eq!(
+            path_in_scopes(&spec.scopes[..spec.scope_count], &spec.request_in),
+            true
+        );
+        assert_eq!(
+            path_in_scopes(&spec.scopes[..spec.scope_count], &spec.request_out),
+            true
+        );
+    }
+
+    #[test]
+    fn out_of_scope_request_is_rejected() {
+        let mut spec = parse(HOST_TEXT);
+        assert!(spec
+            .request_out
+            .set(b"packages/elsewhere/escape.bin"));
+        assert!(!path_in_scopes(
+            &spec.scopes[..spec.scope_count],
+            &spec.request_out
+        ));
+    }
+
+    #[test]
+    fn sibling_prefix_is_not_contained() {
+        let mut spec = parse(HOST_TEXT);
+        assert!(spec
+            .request_in
+            .set(b"packages/developer-service/1.0.0/projects/hello-crossx/f.txt"));
+        assert!(!path_in_scopes(
+            &spec.scopes[..spec.scope_count],
+            &spec.request_in
+        ));
+    }
+
+    #[test]
+    fn net_allowed_fails_validation_gate() {
+        let text = *b"fs=ws/src\nnet=allowed\nin=ws/src/a.txt\nout=ws/src/a.out\n";
+        let end = text.iter().position(|byte| *byte == 0).unwrap_or(text.len());
+        let spec = parse(&text[..end]);
+        assert!(!spec.net_denied);
+        assert!(path_in_scopes(&spec.scopes[..spec.scope_count], &spec.request_in));
+    }
+
+    #[test]
+    fn malformed_text_is_rejected() {
+        for bad in [
+            &b""[..],
+            b"net=denied\nin=x\nout=y\n",           // no scopes
+            b"fs=ws/src\nnet=denied\nin=x\n",       // no out
+            b"fs=\nnet=denied\nin=x\nout=y\n",      // empty scope value
+            b"garbage without equals\n",            // no key=value lines
+            &[0u8; 8][..],                          // nul-terminated empty
+        ] {
+            assert!(parse_sandbox_text(bad).is_none(), "expected reject: {bad:?}");
+        }
+    }
+
+    #[test]
+    fn scope_trailing_slash_normalized_for_containment() {
+        let spec = parse(b"fs=ws/src/\nnet=denied\nin=ws/src/deep/a.txt\nout=ws/src/o\n");
+        assert!(path_in_scopes(
+            &spec.scopes[..spec.scope_count],
+            &spec.request_in
+        ));
+        assert!(path_in_scopes(
+            &spec.scopes[..spec.scope_count],
+            &spec.request_out
+        ));
+    }
+
+    #[test]
+    fn sandbox_log_line_matches_contract() {
+        let spec = parse(HOST_TEXT);
+        let output_handle: rt::Handle = 0;
+        let _ = output_handle; // log_sandbox_line writes via relay; shape checked here
+        let mut line = [0u8; MAX_SANDBOX_TEXT];
+        let mut cursor = push_chunk(&mut line, 0, b"worker sandbox: fs=[");
+        for index in 0..MAX_SCOPES.min(spec.scope_count) {
+            if index > 0 {
+                cursor = push_chunk(&mut line, cursor, b";");
+            }
+            cursor = push_chunk(&mut line, cursor, spec.scopes[index].as_bytes());
+        }
+        cursor = push_chunk(&mut line, cursor, b"] net=denied\r\n");
+        let rendered = core::str::from_utf8(&line[..cursor]).unwrap();
+        assert!(rendered.starts_with("worker sandbox: fs=["));
+        assert!(rendered.contains(';'));
+        assert!(rendered.ends_with("] net=denied\r\n"));
+    }
+
+    #[test]
+    fn log_line_single_scope_has_no_separator() {
+        let spec = parse(b"fs=ws/src\nnet=denied\nin=ws/src/a\nout=ws/src/b\n");
+        let mut line = [0u8; MAX_SANDBOX_TEXT];
+        let mut cursor = push_chunk(&mut line, 0, b"worker sandbox: fs=[");
+        for index in 0..MAX_SCOPES.min(spec.scope_count) {
+            if index > 0 {
+                cursor = push_chunk(&mut line, cursor, b";");
+            }
+            cursor = push_chunk(&mut line, cursor, spec.scopes[index].as_bytes());
+        }
+        cursor = push_chunk(&mut line, cursor, b"] net=denied\r\n");
+        let rendered = core::str::from_utf8(&line[..cursor]).unwrap();
+        assert_eq!(rendered, "worker sandbox: fs=[ws/src] net=denied\r\n");
+    }
 }

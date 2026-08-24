@@ -6,10 +6,11 @@ use serviceos_userspace_runtime as rt;
 
 use crate::{
     consts::{BUILDER_REPORT_TAG, MAX_JOBS},
+    sandbox,
     types::{JobSlot, ToolchainSlot, WorkspaceSlot},
     util::{
-        allocate_job, duplicate_artifact_for_reply, emit_log, load_source_into_memory,
-        send_builder_log, target_slot_index, workspace_target_mask,
+        allocate_job, create_memory_from_bytes, duplicate_artifact_for_reply, emit_log,
+        load_source_into_memory, send_builder_log, target_slot_index, workspace_target_mask,
     },
 };
 
@@ -265,6 +266,36 @@ fn handle_build_request(
         return Ok(());
     }
 
+    // Capability manifest: explicit fs scope prefixes derived from the
+    // workspace descriptor plus the toolchain SDK root; network is always
+    // denied. The requested read/write paths must fit inside the scopes
+    // before any worker spawns.
+    let permission = sandbox::derive_permission_set(&workspace, &toolchain);
+    let artifact_out = sandbox::workspace_output_path(&workspace);
+    if !sandbox::validate_job_paths(
+        &permission,
+        workspace.source_path.as_bytes(),
+        artifact_out.as_bytes(),
+    ) {
+        reply.words[0] = DeveloperStatus::Denied as u32 as u64;
+        let _ = emit_log(
+            log_handle,
+            LogSeverity::Warn,
+            LogEvent::DeveloperBuildFailed,
+            workspace_id as u64,
+            sandbox::BUILDER_STATUS_SANDBOX_DENIED,
+        );
+        let _ = rt::channel_send(reply_handle, &reply);
+        let _ = rt::handle_close(reply_handle);
+        let _ = rt::handle_close(output_handle);
+        return Ok(());
+    }
+    let decision = sandbox::decision_for(
+        &permission,
+        workspace.source_path.as_bytes(),
+        artifact_out.as_bytes(),
+    );
+
     let job_id = match allocate_job(jobs) {
         Ok(index) => index,
         Err(_) => {
@@ -279,6 +310,26 @@ fn handle_build_request(
     let (source_memory, source_len) = match load_source_into_memory(storage_handle, &workspace) {
         Ok(source) => source,
         Err(_) => {
+            reply.words[0] = DeveloperStatus::Busy as u32 as u64;
+            let _ = rt::channel_send(reply_handle, &reply);
+            let _ = rt::handle_close(reply_handle);
+            let _ = rt::handle_close(output_handle);
+            return Ok(());
+        }
+    };
+
+    let mut sandbox_text = [0u8; sandbox::SANDBOX_TEXT_MAX];
+    let sandbox_memory = match sandbox::serialize_permission_text(
+        &permission,
+        workspace.source_path.as_bytes(),
+        artifact_out.as_bytes(),
+        &mut sandbox_text,
+    )
+    .and_then(|len| create_memory_from_bytes(&sandbox_text[..len]))
+    {
+        Ok(memory) => memory,
+        Err(_) => {
+            let _ = rt::handle_close(source_memory);
             reply.words[0] = DeveloperStatus::Busy as u32 as u64;
             let _ = rt::channel_send(reply_handle, &reply);
             let _ = rt::handle_close(reply_handle);
@@ -304,6 +355,10 @@ fn handle_build_request(
             handle: source_memory,
             rights: rt::rights::READ | rt::rights::DUPLICATE | rt::rights::TRANSFER,
         },
+        rt::StartupHandle {
+            handle: sandbox_memory,
+            rights: rt::rights::READ | rt::rights::DUPLICATE | rt::rights::TRANSFER,
+        },
     ];
     let mut startup_words = [0u64; rt::IPC_MAX_WORDS];
     startup_words[0] = target as u32 as u64;
@@ -320,6 +375,7 @@ fn handle_build_request(
     let _ = rt::handle_close(output_handle);
     let _ = rt::handle_close(report.second);
     let _ = rt::handle_close(source_memory);
+    let _ = rt::handle_close(sandbox_memory);
 
     match task_handle {
         Ok(task_handle) => {
@@ -334,6 +390,7 @@ fn handle_build_request(
                 artifact_handle: rt::INVALID_HANDLE,
                 task_handle,
                 report_handle: report.first,
+                sandbox: decision,
             };
             reply.words[0] = DeveloperStatus::Ok as u32 as u64;
             reply.words[1] = job_id as u64;
@@ -500,6 +557,17 @@ pub(crate) fn poll_job_reports(log_handle: rt::Handle, jobs: &mut [JobSlot; MAX_
                         LogEvent::DeveloperBuildFailed,
                         job_id as u64,
                         1,
+                    );
+                } else if result == sandbox::BUILDER_STATUS_SANDBOX_DENIED as u32 {
+                    job.state = DeveloperJobState::Failed;
+                    let _ = emit_log(
+                        log_handle,
+                        LogSeverity::Warn,
+                        LogEvent::DeveloperBuildFailed,
+                        job_id as u64,
+                        ((u64::from(job.sandbox.allowed)) << 32)
+                            | ((job.sandbox.scope_count.min(0xFF) as u64) << 8)
+                            | sandbox::BUILDER_STATUS_SANDBOX_DENIED,
                     );
                 } else {
                     job.state = DeveloperJobState::Failed;

@@ -1,7 +1,10 @@
 use rt::{DeveloperArtifactFormat, DeveloperJobState, DeveloperTarget, DeveloperToolchainState};
 use serviceos_userspace_runtime as rt;
 
-use crate::consts::{MAX_NAME, MAX_PATH};
+use crate::{
+    consts::{MAX_NAME, MAX_PATH},
+    sandbox::SandboxDecision,
+};
 
 #[derive(Clone, Copy)]
 pub(crate) struct FixedBytes<const N: usize> {
@@ -87,6 +90,7 @@ pub(crate) struct JobSlot {
     pub(crate) artifact_handle: rt::Handle,
     pub(crate) task_handle: rt::Handle,
     pub(crate) report_handle: rt::Handle,
+    pub(crate) sandbox: SandboxDecision,
 }
 
 impl JobSlot {
@@ -102,6 +106,10 @@ impl JobSlot {
             artifact_handle: rt::INVALID_HANDLE,
             task_handle: rt::INVALID_HANDLE,
             report_handle: rt::INVALID_HANDLE,
+            sandbox: SandboxDecision {
+                allowed: false,
+                scope_count: 0,
+            },
         }
     }
 }

@@ -2,6 +2,8 @@
 #![no_main]
 
 mod operations;
+#[allow(dead_code)]
+mod ops_model;
 mod repositories;
 mod requests;
 mod state;
@@ -76,6 +78,22 @@ fn main() -> u64 {
         );
     }
     let _ = storage::load_journal_state(storage_handle, journal);
+    let recovery = if ops_model::journal_is_stale(journal.pending_action) {
+        // Stale operation journal from an interrupted run: surface it to
+        // operators (Warn-level log) and keep it queryable via maintenance
+        // replies until it is resumed or discarded explicitly.
+        let _ = emit_package_event(
+            log_handle,
+            LogSeverity::Warn,
+            LogEvent::PackageRepairCompleted,
+            journal.pending_action as u64,
+            journal.service_id as u32 as u64,
+        );
+        Some(*journal)
+    } else {
+        None
+    };
+    set_recovery_state(recovery);
     let _ = storage::load_installed_state(storage_handle, repos, packages, &mut package_count);
 
     let public = match rt::channel_create() {

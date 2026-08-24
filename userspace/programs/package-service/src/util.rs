@@ -86,21 +86,48 @@ pub(crate) fn pack_provenance_flags(
     trust as u32 | ((channel as u32) << 8) | ((ring as u32) << 16) | (package_flags << 24)
 }
 
+pub(crate) fn resolve_source_index(
+    repos: &[RepositorySlot; MAX_REPOSITORIES],
+    repo_count: usize,
+    source: Option<&str>,
+) -> Result<Option<usize>, PackageStatus> {
+    let Some(name) = source else {
+        return Ok(None);
+    };
+    let index = find_repository_index(repos, repo_count, name).ok_or(PackageStatus::NotFound)?;
+    if !repos[index].enabled {
+        return Err(PackageStatus::Denied);
+    }
+    Ok(Some(index))
+}
+
 pub(crate) fn select_install_target(
     slot: &PackageSlot,
     repos: &[RepositorySlot; MAX_REPOSITORIES],
+    _repo_count: usize,
     explicit_version: Option<&str>,
+    resolved_source: Option<usize>,
 ) -> rt::Result<usize> {
     if let Some(version) = explicit_version {
-        return find_version_by_name(slot, version).ok_or(rt::Error::NotFound);
+        let index = find_version_by_name(slot, version).ok_or(rt::Error::NotFound)?;
+        let entry = &slot.versions[index];
+        if !ops_model::source_permits(resolved_source, entry.repo_index, entry.occupied) {
+            return Err(rt::Error::NotFound);
+        }
+        return Ok(index);
     }
-    if let Ok(pin) = slot.pin_version.as_str() {
-        if !pin.is_empty() {
-            return find_version_by_name(slot, pin).ok_or(rt::Error::NotFound);
+    if resolved_source.is_none() {
+        if let Ok(pin) = slot.pin_version.as_str() {
+            if !pin.is_empty() {
+                return find_version_by_name(slot, pin).ok_or(rt::Error::NotFound);
+            }
         }
     }
     for index in (0..slot.version_count).rev() {
-        if version_allowed(slot, &slot.versions[index], repos) {
+        let entry = &slot.versions[index];
+        if ops_model::source_permits(resolved_source, entry.repo_index, entry.occupied)
+            && version_allowed(slot, entry, repos)
+        {
             return Ok(index);
         }
     }
@@ -110,17 +137,20 @@ pub(crate) fn select_install_target(
 pub(crate) fn select_update_target(
     slot: &PackageSlot,
     repos: &[RepositorySlot; MAX_REPOSITORIES],
+    repo_count: usize,
     explicit_version: Option<&str>,
+    resolved_source: Option<usize>,
 ) -> rt::Result<Option<usize>> {
     let Some(current) = slot.installed else {
         return Ok(None);
     };
-    let target = select_install_target(slot, repos, explicit_version)?;
+    let target = select_install_target(slot, repos, repo_count, explicit_version, resolved_source)?;
     if target == current {
         Ok(None)
     } else if compare_versions(version_text(slot, target), version_text(slot, current))
         == Ordering::Greater
         || explicit_version.is_some()
+        || resolved_source.is_some()
     {
         Ok(Some(target))
     } else {
@@ -243,9 +273,38 @@ pub(crate) fn send_status_reply(
     let mut reply = RawMessage::empty(tag as u32);
     reply.word_count = 1;
     reply.words[0] = status as u32 as u64;
-    let result = rt::channel_send(reply_handle, &reply);
+    // Reply-send failures must not tear the service down; the requesting
+    // client owns its wait timeout/hangup handling.
+    let _ = rt::channel_send(reply_handle, &reply);
     let _ = rt::handle_close(reply_handle);
-    result
+    Ok(())
+}
+
+/// Operation reply with progress and summary payload appended. Extra words
+/// are ignored by clients using the plain status wrappers.
+/// Layout: [status, steps_done, steps_total, packed_progress,
+///          aux0, aux1] where install/update use aux1 = trigger code and
+/// rollback uses aux0 = previous version, aux1 = restored version.
+pub(crate) fn send_operation_reply(
+    reply_handle: rt::Handle,
+    tag: PackageTag,
+    status: PackageStatus,
+    progress: &ops_model::ProgressTracker,
+    aux0: u64,
+    aux1: u64,
+) -> rt::Result<()> {
+    let mut reply = RawMessage::empty(tag as u32);
+    reply.word_count = 6;
+    reply.words[0] = status as u32 as u64;
+    reply.words[1] = progress.step as u64;
+    reply.words[2] = progress.total_steps as u64;
+    reply.words[3] = progress.pack();
+    reply.words[4] = aux0;
+    reply.words[5] = aux1;
+    // See send_status_reply: never propagate reply-send failures.
+    let _ = rt::channel_send(reply_handle, &reply);
+    let _ = rt::handle_close(reply_handle);
+    Ok(())
 }
 
 pub(crate) fn encode_version_text(version: &str) -> u64 {

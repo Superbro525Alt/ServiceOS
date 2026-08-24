@@ -60,7 +60,9 @@ pub(crate) fn handle_request(
             handle_policy_set_request(storage_handle, packages, *package_count, message)
         }
         x if x == PackageTag::MaintenanceRequest as u32 => handle_maintenance_request(
+            bootstrap,
             storage_handle,
+            network_handle,
             log_handle,
             repos,
             *repo_count,
@@ -442,11 +444,14 @@ fn handle_policy_set_request(
     send_status_reply(reply_handle, PackageTag::PolicySetReply, status)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_maintenance_request(
+    bootstrap: rt::Handle,
     storage_handle: rt::Handle,
+    network_handle: Option<rt::Handle>,
     log_handle: rt::Handle,
-    _repos: &[RepositorySlot; MAX_REPOSITORIES],
-    _repo_count: usize,
+    repos: &[RepositorySlot; MAX_REPOSITORIES],
+    repo_count: usize,
     packages: &mut [PackageSlot; MAX_PACKAGE_SLOTS],
     package_count: usize,
     journal: &mut JournalState,
@@ -456,30 +461,80 @@ fn handle_maintenance_request(
         return Ok(());
     }
     let reply_handle = message.handles[0];
-    let action = maintenance_action_from_word(message.words[0]);
-    let (status, repaired, collected) = match action {
-        PackageMaintenanceAction::Validate => (
-            PackageStatus::Ok,
-            crate::storage::validate_package_state(storage_handle, packages, package_count)?,
-            0,
-        ),
-        PackageMaintenanceAction::Repair => {
-            let mut repaired =
-                crate::storage::validate_package_state(storage_handle, packages, package_count)?;
-            if journal.pending_action != JOURNAL_NONE {
-                journal.pending_action = JOURNAL_NONE;
-                crate::storage::persist_journal_state(storage_handle, *journal)?;
-                repaired = repaired.saturating_add(1);
+    let raw_action = message.words[0];
+
+    // Recovery is an extension to the maintenance actions agreed between the
+    // package service and the shell: it resumes or discards a stale journal
+    // entry left by an interrupted install/update/rollback.
+    let (mut status, mut repaired, mut collected, mut outcome) = (
+        PackageStatus::Ok,
+        0u32,
+        0u32,
+        ops_model::RECOVERY_OUTCOME_NONE,
+    );
+    let mut handled = false;
+    if raw_action == ops_model::MAINTENANCE_ACTION_RECOVER {
+        handled = true;
+        let (recover_status, recover_outcome) = recover_interrupted_operation(
+            bootstrap,
+            storage_handle,
+            network_handle,
+            log_handle,
+            repos,
+            repo_count,
+            packages,
+            package_count,
+            journal,
+        );
+        status = recover_status;
+        outcome = recover_outcome;
+        repaired = u32::from(outcome != ops_model::RECOVERY_OUTCOME_NONE);
+    }
+
+    if !handled {
+        let action = maintenance_action_from_word(raw_action);
+        let result = match action {
+            PackageMaintenanceAction::Validate => {
+                let repaired = crate::storage::validate_package_state(
+                    storage_handle,
+                    packages,
+                    package_count,
+                )?;
+                (PackageStatus::Ok, repaired, 0)
             }
-            (PackageStatus::Ok, repaired, 0)
-        }
-        PackageMaintenanceAction::GarbageCollect => (
-            PackageStatus::Ok,
-            crate::storage::validate_package_state(storage_handle, packages, package_count)?,
-            crate::storage::garbage_collect_packages(storage_handle, packages, package_count)?,
-        ),
-    };
-    crate::storage::persist_installed_state(storage_handle, packages, package_count)?;
+            PackageMaintenanceAction::Repair => {
+                let mut repaired = crate::storage::validate_package_state(
+                    storage_handle,
+                    packages,
+                    package_count,
+                )?;
+                if journal.pending_action != JOURNAL_NONE {
+                    *journal = JournalState::empty();
+                    crate::storage::persist_journal_state(storage_handle, *journal)?;
+                    repaired = repaired.saturating_add(1);
+                }
+                (PackageStatus::Ok, repaired, 0)
+            }
+            PackageMaintenanceAction::GarbageCollect => {
+                let repaired = crate::storage::validate_package_state(
+                    storage_handle,
+                    packages,
+                    package_count,
+                )?;
+                let collected = crate::storage::garbage_collect_packages(
+                    storage_handle,
+                    packages,
+                    package_count,
+                )?;
+                (PackageStatus::Ok, repaired, collected)
+            }
+        };
+        status = result.0;
+        repaired = result.1;
+        collected = result.2;
+        crate::storage::persist_installed_state(storage_handle, packages, package_count)?;
+    }
+
     let _ = emit_package_event(
         log_handle,
         LogSeverity::Info,
@@ -491,12 +546,111 @@ fn handle_maintenance_request(
         repaired as u64,
         collected as u64,
     );
+    // Extended reply layout:
+    // [status, repaired, collected, pending_action, service_id,
+    //  journaled_version, stale_at_boot, recovery_outcome, name_len,
+    //  <package-name bytes>]
+    let stale_at_boot = recovery_state()
+        .map(|entry| entry.pending_action)
+        .unwrap_or(JOURNAL_NONE);
+    let journaled_version = encode_version_text(journal.version.as_str().unwrap_or(""));
+    let package_name_slot = find_package_slot(packages, journal.service_id, package_count);
+    let package_name = package_name_slot
+        .and_then(|index| packages[index].package_name.as_str().ok())
+        .unwrap_or("");
     let mut reply = RawMessage::empty(PackageTag::MaintenanceReply as u32);
-    reply.word_count = 3;
     reply.words[0] = status as u32 as u64;
     reply.words[1] = repaired as u64;
     reply.words[2] = collected as u64;
+    reply.words[3] = journal.pending_action as u64;
+    reply.words[4] = journal.service_id as u32 as u64;
+    reply.words[5] = journaled_version;
+    reply.words[6] = stale_at_boot as u64;
+    reply.words[7] = outcome;
+    reply.words[8] = package_name.len() as u64;
+    reply.word_count = 9 + pack_bytes(package_name.as_bytes(), &mut reply.words[9..])?;
     let _ = rt::channel_send(reply_handle, &reply);
     let _ = rt::handle_close(reply_handle);
     Ok(())
+}
+
+/// Resume-or-discard flow for a stale operation journal detected at startup.
+/// Resumable actions (install/update/rollback) retry the recorded target
+/// activation; anything else is discarded so the next operation starts from
+/// a clean journal. A failed resume also discards, reporting the failure.
+#[allow(clippy::too_many_arguments)]
+fn recover_interrupted_operation(
+    bootstrap: rt::Handle,
+    storage_handle: rt::Handle,
+    network_handle: Option<rt::Handle>,
+    log_handle: rt::Handle,
+    repos: &[RepositorySlot; MAX_REPOSITORIES],
+    repo_count: usize,
+    packages: &mut [PackageSlot; MAX_PACKAGE_SLOTS],
+    package_count: usize,
+    journal: &mut JournalState,
+) -> (PackageStatus, u64) {
+    if journal.pending_action == JOURNAL_NONE {
+        return (PackageStatus::NoChange, ops_model::RECOVERY_OUTCOME_NONE);
+    }
+    let action = journal.pending_action;
+    let resumable = matches!(action, JOURNAL_INSTALL | JOURNAL_UPDATE | JOURNAL_ROLLBACK);
+    let completion_event = match action {
+        JOURNAL_INSTALL => LogEvent::PackageInstalled,
+        JOURNAL_UPDATE => LogEvent::PackageUpdated,
+        _ => LogEvent::PackageRolledBack,
+    };
+    if resumable {
+        let service_id = journal.service_id;
+        let mut version_buffer = [0u8; BOOT_STORE_PATH_MAX];
+        let version_text_copied = copy_into(
+            &mut version_buffer,
+            journal.version.as_str().unwrap_or("").as_bytes(),
+        )
+        .unwrap_or(0);
+        let version_name = core::str::from_utf8(&version_buffer[..version_text_copied]).ok();
+        let slot_index = find_package_slot(packages, service_id, package_count);
+        let target = slot_index.and_then(|index| {
+            version_name.and_then(|name| find_version_by_name(&packages[index], name))
+        });
+        if let Some(index) = slot_index {
+            if let Some(target) = target {
+                let mut progress =
+                    ops_model::ProgressTracker::new(crate::operations::OPERATION_TOTAL_STEPS);
+                progress.complete_step();
+                let mut auto_restored = false;
+                let status = crate::operations::activate_package_version(
+                    bootstrap,
+                    storage_handle,
+                    network_handle,
+                    log_handle,
+                    repos,
+                    repo_count,
+                    &mut packages[index],
+                    target,
+                    completion_event,
+                    &mut progress,
+                    &mut auto_restored,
+                );
+                if status == PackageStatus::Ok {
+                    let _ = crate::storage::persist_installed_state(
+                        storage_handle,
+                        packages,
+                        package_count,
+                    );
+                    *journal = JournalState::empty();
+                    let _ = crate::storage::persist_journal_state(storage_handle, *journal);
+                    return (PackageStatus::Ok, ops_model::RECOVERY_OUTCOME_RESUMED);
+                }
+            }
+        }
+    }
+    // Discard path: nothing resumable or resume failed; restore a clean
+    // journal so subsequent operations are not blocked by stale state.
+    *journal = JournalState::empty();
+    let _ = crate::storage::persist_journal_state(storage_handle, *journal);
+    (
+        PackageStatus::Interrupted,
+        ops_model::RECOVERY_OUTCOME_RESUME_FAILED,
+    )
 }

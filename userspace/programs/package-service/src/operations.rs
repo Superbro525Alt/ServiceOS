@@ -1,5 +1,11 @@
 use super::*;
 
+pub(crate) const OPERATION_TOTAL_STEPS: u32 = 5;
+
+fn optional_text<'a>(text: &'a str) -> Option<&'a str> {
+    if text.is_empty() { None } else { Some(text) }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_install_request(
     bootstrap: rt::Handle,
@@ -19,15 +25,63 @@ pub(crate) fn handle_install_request(
     let reply_handle = message.handles[0];
     let service_id = service_id_from_word(message.words[0]);
     let mut version_buffer = [0u8; BOOT_STORE_PATH_MAX];
-    let version = parse_version_argument(message, &mut version_buffer)?;
-    let status = if let Some(index) = find_package_slot(packages, service_id, package_count) {
-        let target = select_install_target(&packages[index], repos, version)?;
+    let argument = parse_version_argument(message, &mut version_buffer)?.unwrap_or("");
+    let (version_part, source_name) = ops_model::split_version_source(argument);
+    let mut progress = ops_model::ProgressTracker::new(OPERATION_TOTAL_STEPS);
+    let resolved_source = match resolve_source_index(repos, repo_count, source_name) {
+        Ok(value) => value,
+        Err(status) => {
+            return send_operation_reply(
+                reply_handle,
+                PackageTag::InstallReply,
+                status,
+                &progress,
+                0,
+                ops_model::TRIGGER_OPERATOR,
+            );
+        }
+    };
+    if let Some(index) = find_package_slot(packages, service_id, package_count) {
+        let previous = packages[index]
+            .installed
+            .map(|current| encode_version_text(version_text(&packages[index], current)))
+            .unwrap_or(0);
+        let target = match select_install_target(
+            &packages[index],
+            repos,
+            repo_count,
+            optional_text(version_part),
+            resolved_source,
+        ) {
+            Ok(target) => target,
+            Err(_) => {
+                return send_operation_reply(
+                    reply_handle,
+                    PackageTag::InstallReply,
+                    PackageStatus::NotFound,
+                    &progress,
+                    0,
+                    ops_model::TRIGGER_OPERATOR,
+                );
+            }
+        };
         journal.pending_action = JOURNAL_INSTALL;
         journal.service_id = service_id;
         journal.version = InlinePath::empty();
         let _ = journal.version.set(version_text(&packages[index], target));
         journal.manifest_path = InlinePath::empty();
-        crate::storage::persist_journal_state(storage_handle, *journal)?;
+        if crate::storage::persist_journal_state(storage_handle, *journal).is_err() {
+            return send_operation_reply(
+                reply_handle,
+                PackageTag::InstallReply,
+                PackageStatus::Busy,
+                &progress,
+                0,
+                ops_model::TRIGGER_OPERATOR,
+            );
+        }
+        progress.complete_step();
+        let mut auto_restored = false;
         let status = activate_package_version(
             bootstrap,
             storage_handle,
@@ -38,18 +92,41 @@ pub(crate) fn handle_install_request(
             &mut packages[index],
             target,
             LogEvent::PackageInstalled,
+            &mut progress,
+            &mut auto_restored,
         );
         if status == PackageStatus::Ok {
+            progress.enter_phase(ops_model::PROGRESS_PHASE_PERSIST);
             let _ =
                 crate::storage::persist_installed_state(storage_handle, packages, package_count);
+            progress.complete_step();
             *journal = JournalState::empty();
             let _ = crate::storage::persist_journal_state(storage_handle, *journal);
         }
-        status
+        send_operation_reply(
+            reply_handle,
+            PackageTag::InstallReply,
+            status,
+            &progress,
+            previous,
+            if auto_restored {
+                ops_model::TRIGGER_AUTO_RESTORE
+            } else {
+                ops_model::TRIGGER_OPERATOR
+            },
+        )?;
+        Ok(())
     } else {
-        PackageStatus::NotFound
-    };
-    send_status_reply(reply_handle, PackageTag::InstallReply, status)
+        send_operation_reply(
+            reply_handle,
+            PackageTag::InstallReply,
+            PackageStatus::NotFound,
+            &progress,
+            0,
+            ops_model::TRIGGER_OPERATOR,
+        )?;
+        Ok(())
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -71,13 +148,49 @@ pub(crate) fn handle_update_request(
     let reply_handle = message.handles[0];
     let service_id = service_id_from_word(message.words[0]);
     let mut version_buffer = [0u8; BOOT_STORE_PATH_MAX];
-    let version = parse_version_argument(message, &mut version_buffer)?;
+    let argument = parse_version_argument(message, &mut version_buffer)?.unwrap_or("");
+    let (version_part, source_name) = ops_model::split_version_source(argument);
+    let mut progress = ops_model::ProgressTracker::new(OPERATION_TOTAL_STEPS);
+    let resolved_source = match resolve_source_index(repos, repo_count, source_name) {
+        Ok(value) => value,
+        Err(status) => {
+            return send_operation_reply(
+                reply_handle,
+                PackageTag::UpdateReply,
+                status,
+                &progress,
+                0,
+                ops_model::TRIGGER_OPERATOR,
+            );
+        }
+    };
     let status = if let Some(index) = find_package_slot(packages, service_id, package_count) {
-        let current = packages[index].installed;
-        if current.is_none() {
+        let previous = packages[index]
+            .installed
+            .map(|current| encode_version_text(version_text(&packages[index], current)))
+            .unwrap_or(0);
+        if packages[index].installed.is_none() {
             PackageStatus::NotInstalled
         } else {
-            let target = select_update_target(&packages[index], repos, version)?;
+            let target = match select_update_target(
+                &packages[index],
+                repos,
+                repo_count,
+                optional_text(version_part),
+                resolved_source,
+            ) {
+                Ok(target) => target,
+                Err(_) => {
+                    return send_operation_reply(
+                        reply_handle,
+                        PackageTag::UpdateReply,
+                        PackageStatus::NotFound,
+                        &progress,
+                        0,
+                        ops_model::TRIGGER_OPERATOR,
+                    );
+                }
+            };
             match target {
                 None => PackageStatus::NoChange,
                 Some(target) => {
@@ -86,7 +199,18 @@ pub(crate) fn handle_update_request(
                     journal.version = InlinePath::empty();
                     let _ = journal.version.set(version_text(&packages[index], target));
                     journal.manifest_path = InlinePath::empty();
-                    crate::storage::persist_journal_state(storage_handle, *journal)?;
+                    if crate::storage::persist_journal_state(storage_handle, *journal).is_err() {
+                        return send_operation_reply(
+                            reply_handle,
+                            PackageTag::UpdateReply,
+                            PackageStatus::Busy,
+                            &progress,
+                            0,
+                            ops_model::TRIGGER_OPERATOR,
+                        );
+                    }
+                    progress.complete_step();
+                    let mut auto_restored = false;
                     let status = activate_package_version(
                         bootstrap,
                         storage_handle,
@@ -97,24 +221,47 @@ pub(crate) fn handle_update_request(
                         &mut packages[index],
                         target,
                         LogEvent::PackageUpdated,
+                        &mut progress,
+                        &mut auto_restored,
                     );
                     if status == PackageStatus::Ok {
+                        progress.enter_phase(ops_model::PROGRESS_PHASE_PERSIST);
                         let _ = crate::storage::persist_installed_state(
                             storage_handle,
                             packages,
                             package_count,
                         );
+                        progress.complete_step();
                         *journal = JournalState::empty();
                         let _ = crate::storage::persist_journal_state(storage_handle, *journal);
                     }
-                    status
+                    send_operation_reply(
+                        reply_handle,
+                        PackageTag::UpdateReply,
+                        status,
+                        &progress,
+                        previous,
+                        if auto_restored {
+                            ops_model::TRIGGER_AUTO_RESTORE
+                        } else {
+                            ops_model::TRIGGER_OPERATOR
+                        },
+                    )?;
+                    return Ok(());
                 }
             }
         }
     } else {
         PackageStatus::NotFound
     };
-    send_status_reply(reply_handle, PackageTag::UpdateReply, status)
+    send_operation_reply(
+        reply_handle,
+        PackageTag::UpdateReply,
+        status,
+        &progress,
+        0,
+        ops_model::TRIGGER_OPERATOR,
+    )
 }
 
 pub(crate) fn handle_remove_request(
@@ -139,7 +286,13 @@ pub(crate) fn handle_remove_request(
             journal.version = InlinePath::empty();
             let _ = journal.version.set(version_text(slot, active));
             journal.manifest_path = InlinePath::empty();
-            crate::storage::persist_journal_state(storage_handle, *journal)?;
+            if crate::storage::persist_journal_state(storage_handle, *journal).is_err() {
+                return send_status_reply(
+                    reply_handle,
+                    PackageTag::RemoveReply,
+                    PackageStatus::Busy,
+                );
+            }
             match rt::manager_deactivate_service(bootstrap, slot.service_id) {
                 Ok(()) => {
                     slot.rollback = Some(active);
@@ -190,15 +343,35 @@ pub(crate) fn handle_rollback_request(
     }
     let reply_handle = message.handles[0];
     let service_id = service_id_from_word(message.words[0]);
-    let status = if let Some(index) = find_package_slot(packages, service_id, package_count) {
+    let mut progress = ops_model::ProgressTracker::new(OPERATION_TOTAL_STEPS);
+    if let Some(index) = find_package_slot(packages, service_id, package_count) {
         let slot = &mut packages[index];
         if let Some(target) = slot.rollback {
+            // Capture the rollback summary before activation mutates the
+            // slot: previous = currently active version, next = the version
+            // being rolled back to.
+            let previous_text = slot
+                .active
+                .map(|active| encode_version_text(version_text(slot, active)))
+                .unwrap_or(0);
+            let target_text = encode_version_text(version_text(slot, target));
             journal.pending_action = JOURNAL_ROLLBACK;
             journal.service_id = service_id;
             journal.version = InlinePath::empty();
             let _ = journal.version.set(version_text(slot, target));
             journal.manifest_path = InlinePath::empty();
-            crate::storage::persist_journal_state(storage_handle, *journal)?;
+            if crate::storage::persist_journal_state(storage_handle, *journal).is_err() {
+                return send_operation_reply(
+                    reply_handle,
+                    PackageTag::RollbackReply,
+                    PackageStatus::Busy,
+                    &progress,
+                    0,
+                    0,
+                );
+            }
+            progress.complete_step();
+            let mut auto_restored = false;
             let status = activate_package_version(
                 bootstrap,
                 storage_handle,
@@ -209,9 +382,12 @@ pub(crate) fn handle_rollback_request(
                 slot,
                 target,
                 LogEvent::PackageRolledBack,
+                &mut progress,
+                &mut auto_restored,
             );
             if status == PackageStatus::Ok {
                 let previous = slot.active;
+                progress.enter_phase(ops_model::PROGRESS_PHASE_PERSIST);
                 slot.active = Some(target);
                 slot.installed = Some(target);
                 slot.rollback = previous;
@@ -220,21 +396,43 @@ pub(crate) fn handle_rollback_request(
                     packages,
                     package_count,
                 );
+                progress.complete_step();
                 *journal = JournalState::empty();
                 let _ = crate::storage::persist_journal_state(storage_handle, *journal);
             }
-            status
+            send_operation_reply(
+                reply_handle,
+                PackageTag::RollbackReply,
+                status,
+                &progress,
+                previous_text,
+                target_text,
+            )?;
         } else {
-            PackageStatus::NoRollback
+            send_operation_reply(
+                reply_handle,
+                PackageTag::RollbackReply,
+                PackageStatus::NoRollback,
+                &progress,
+                0,
+                0,
+            )?;
         }
     } else {
-        PackageStatus::NotFound
-    };
-    send_status_reply(reply_handle, PackageTag::RollbackReply, status)
+        send_operation_reply(
+            reply_handle,
+            PackageTag::RollbackReply,
+            PackageStatus::NotFound,
+            &progress,
+            0,
+            0,
+        )?;
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
-fn activate_package_version(
+pub(crate) fn activate_package_version(
     bootstrap: rt::Handle,
     storage_handle: rt::Handle,
     network_handle: Option<rt::Handle>,
@@ -244,17 +442,22 @@ fn activate_package_version(
     slot: &mut PackageSlot,
     target: usize,
     event: LogEvent,
+    progress: &mut ops_model::ProgressTracker,
+    auto_restored: &mut bool,
 ) -> PackageStatus {
     if target >= slot.version_count {
         return PackageStatus::NotFound;
     }
 
+    progress.enter_phase(ops_model::PROGRESS_PHASE_MATERIALIZE);
     let materialized =
         ensure_version_materialized(storage_handle, network_handle, slot, target, repos);
     if materialized != PackageStatus::Ok {
         return materialized;
     }
+    progress.complete_step();
 
+    progress.enter_phase(ops_model::PROGRESS_PHASE_VERIFY);
     let manifest_path = active_manifest_path(&slot.versions[target]);
     let manifest = match load_manifest_from_storage_path(storage_handle, manifest_path) {
         Ok(manifest) => manifest,
@@ -269,7 +472,9 @@ fn activate_package_version(
         Ok(false) => return PackageStatus::IntegrityFailed,
         Err(_) => return PackageStatus::IntegrityFailed,
     }
+    progress.complete_step();
 
+    progress.enter_phase(ops_model::PROGRESS_PHASE_ACTIVATE);
     let previous = slot.active;
     match rt::manager_activate_service(bootstrap, manifest.service_manifest.as_str().unwrap_or(""))
     {
@@ -288,6 +493,7 @@ fn activate_package_version(
                 slot.service_id as u32 as u64,
                 encode_version_text(version_text(slot, target)),
             );
+            progress.complete_step();
             PackageStatus::Ok
         }
         Err(_) => {
@@ -310,6 +516,7 @@ fn activate_package_version(
                     slot.installed = Some(previous);
                     slot.active = Some(previous);
                     slot.rollback = Some(target);
+                    *auto_restored = true;
                 }
             }
             PackageStatus::Busy

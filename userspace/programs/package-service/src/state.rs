@@ -19,11 +19,9 @@ pub(crate) const REPO_URL_MAX: usize = 88;
 pub(crate) const INSTALL_PATH_MAX: usize = BOOT_STORE_PATH_MAX;
 pub(crate) const HTTP_TIMEOUT_TICKS: u64 = 600;
 pub(crate) const HTTP_CHUNK_BYTES: usize = (IPC_MAX_WORDS - 2) * 8;
-pub(crate) const JOURNAL_NONE: u32 = 0;
-pub(crate) const JOURNAL_INSTALL: u32 = 1;
-pub(crate) const JOURNAL_UPDATE: u32 = 2;
-pub(crate) const JOURNAL_REMOVE: u32 = 3;
-pub(crate) const JOURNAL_ROLLBACK: u32 = 4;
+pub(crate) use crate::ops_model::{
+    JOURNAL_INSTALL, JOURNAL_NONE, JOURNAL_REMOVE, JOURNAL_ROLLBACK, JOURNAL_UPDATE,
+};
 
 #[derive(Clone, Copy)]
 pub(crate) struct PackageVersionSlot {
@@ -150,3 +148,16 @@ pub(crate) static mut REPOSITORY_SLOTS: [RepositorySlot; MAX_REPOSITORIES] =
 pub(crate) static mut PACKAGE_SLOTS: [PackageSlot; MAX_PACKAGE_SLOTS] =
     [PackageSlot::empty(); MAX_PACKAGE_SLOTS];
 pub(crate) static mut JOURNAL_SLOT: JournalState = JournalState::empty();
+static mut RECOVERY_STATE: Option<JournalState> = None;
+
+/// Journal entry observed as stale during startup (interrupted operation),
+/// kept for maintenance/recovery reporting until resumed or discarded.
+pub(crate) fn set_recovery_state(recovery: Option<JournalState>) {
+    unsafe {
+        RECOVERY_STATE = recovery;
+    }
+}
+
+pub(crate) fn recovery_state() -> Option<JournalState> {
+    unsafe { RECOVERY_STATE }
+}

@@ -25,14 +25,18 @@ where
             None => write_output_linef(output, format_args!("usage: pkg info <name>")),
         },
         Some("install") => match parts.next().and_then(parse_service_name) {
-            Some(service_id) => {
-                mutate::cmd_pkg_install(bootstrap, output, service_id, parts.next())
-            }
-            None => write_output_linef(output, format_args!("usage: pkg install <name> [version]")),
+            Some(service_id) => mutate::cmd_pkg_install(bootstrap, output, service_id, parts),
+            None => write_output_linef(
+                output,
+                format_args!("usage: pkg install <name> [version] [@source] [--yes]"),
+            ),
         },
         Some("update") => match parts.next().and_then(parse_service_name) {
-            Some(service_id) => mutate::cmd_pkg_update(bootstrap, output, service_id, parts.next()),
-            None => write_output_linef(output, format_args!("usage: pkg update <name> [version]")),
+            Some(service_id) => mutate::cmd_pkg_update(bootstrap, output, service_id, parts),
+            None => write_output_linef(
+                output,
+                format_args!("usage: pkg update <name> [version] [@source] [--yes]"),
+            ),
         },
         Some("remove") => match parts.next().and_then(parse_service_name) {
             Some(service_id) => mutate::cmd_pkg_remove(bootstrap, output, service_id),
@@ -84,6 +88,7 @@ where
         Some("repair") => {
             mutate::cmd_pkg_maintenance(bootstrap, output, rt::PackageMaintenanceAction::Repair)
         }
+        Some("recover") => mutate::cmd_pkg_recover(bootstrap, output),
         Some("gc") => mutate::cmd_pkg_maintenance(
             bootstrap,
             output,
@@ -92,7 +97,7 @@ where
         _ => write_output_linef(
             output,
             format_args!(
-                "usage: pkg <list|catalog|repos|repo|info|install|update|remove|rollback|history|provenance|policy|pin|channel|ring|verify|repair|gc> ..."
+                "usage: pkg <list|catalog|repos|repo|info|install|update|remove|rollback|history|provenance|policy|pin|channel|ring|verify|repair|recover|gc> ..."
             ),
         ),
     }

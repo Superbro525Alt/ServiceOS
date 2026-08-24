@@ -112,18 +112,19 @@ pkg repos: list configured package repositories\r\n\
 pkg repo add <name> <url> [trust] [channel] [ring]: register a network package repository\r\n\
 pkg repo sync [all|index]: fetch repository metadata through package-service\r\n\
 pkg info <name>: inspect one package\r\n\
-pkg install <name> [version]: activate a package\r\n\
-pkg update <name> [version]: switch to a newer package version\r\n\
-pkg remove <name>: deactivate a package\r\n\
-pkg rollback <name>: restore the prior active version\r\n\
+ pkg install <name> [version] [@source] [--yes]: activate a package from a chosen source\r\n\
+ pkg update <name> [version] [@source] [--yes]: switch to a newer package version\r\n\
+ pkg remove <name>: deactivate a package\r\n\
+ pkg rollback <name>: restore the prior active version (prints the rollback summary)\r\n\
 pkg history <name>: show current and rollback versions\r\n\
 pkg provenance <name>: inspect package source and trust state\r\n\
 pkg policy <name>: inspect package channel/ring/pin policy\r\n\
 pkg pin <name> <version|none>: pin or unpin a package version\r\n\
 pkg channel <name> <stable|beta|canary>: set package update channel\r\n\
 pkg ring <name> <production|preview|testing>: set staged rollout ring\r\n\
-pkg verify: validate installed package state\r\n\
-pkg repair: repair interrupted or broken package state\r\n\
+ pkg verify: validate installed package state (also shows operation-journal status)\r\n\
+ pkg repair: repair interrupted or broken package state\r\n\
+ pkg recover: resume or discard an interrupted install/update/rollback\r\n\
 pkg gc: garbage-collect old package artifacts\r\n\
 run sysinfo: launch a transient tool\r\n\
 run image <path>: launch a flat image resource through the manager loader path\r\n";

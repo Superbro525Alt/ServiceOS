@@ -3,6 +3,11 @@ name = "serviceos-package-service"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "serviceos_package_service"
+path = "src/lib.rs"
+test = true
+
 [[bin]]
 name = "serviceos-package-service"
 path = "src/main.rs"

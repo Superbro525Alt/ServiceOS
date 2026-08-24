@@ -30,6 +30,7 @@ members = [
     "posix-host-tool",
     "cross-builder-tool",
     "sysinfo-tool",
+    "account-service",
 ]
 
 [profile.dev]

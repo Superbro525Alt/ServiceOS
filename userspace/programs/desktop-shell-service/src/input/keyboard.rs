@@ -57,6 +57,17 @@ pub(super) fn handle_key_input(
             return Ok(focused_surface_id(state));
         }
 
+        if modifiers & MOD_ALT != 0 && key_code == KEY_M {
+            if state.overlay_mode == OverlayMode::Media {
+                state.overlay_mode = OverlayMode::None;
+                state.overlay_selection = 0;
+            } else {
+                state.overlay_mode = OverlayMode::Media;
+                state.overlay_selection = 0;
+            }
+            return Ok(focused_surface_id(state));
+        }
+
         if state.overlay_mode == OverlayMode::CommandPalette {
             return overlays::handle_palette_key(state, key_code);
         }
@@ -65,6 +76,9 @@ pub(super) fn handle_key_input(
         }
         if state.overlay_mode == OverlayMode::ClipboardHistory {
             return overlays::handle_clipboard_overlay_key(state, key_code);
+        }
+        if state.overlay_mode == OverlayMode::Media {
+            return overlays::handle_media_overlay_key(state, key_code);
         }
     }
 

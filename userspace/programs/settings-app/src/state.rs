@@ -1,6 +1,7 @@
 use serviceos_userspace_runtime as rt;
 
 pub(crate) const NOTE_MAX_BYTES: usize = 24;
+pub(crate) const SETTINGS_PCM_STREAMS_MAX: usize = 4;
 pub(crate) const BUFFER_WIDTH: u32 = 1024;
 pub(crate) const BUFFER_HEIGHT: u32 = 768;
 pub(crate) const BUFFER_BYTES: usize = BUFFER_WIDTH as usize * BUFFER_HEIGHT as usize * 4;
@@ -63,4 +64,16 @@ pub(crate) struct AppState {
     pub(crate) selected_policy_index: usize,
     pub(crate) note: [u8; NOTE_MAX_BYTES],
     pub(crate) note_len: usize,
+}
+
+pub(crate) fn settings_pcm_stream_info() -> rt::AudioStreamInfo {
+    rt::AudioStreamInfo {
+        slot: 0,
+        direction: rt::AudioStreamDirection::Playback,
+        state: rt::AudioStreamState::Closed,
+        session_id: 0,
+        endpoint_index: 0,
+        frequency_hz: 0,
+        remaining_ticks: 0,
+    }
 }

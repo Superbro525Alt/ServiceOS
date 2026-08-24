@@ -1,6 +1,7 @@
 use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
 
+use crate::media::{MEDIA_OVERLAY_HEIGHT, MEDIA_OVERLAY_WIDTH};
 use crate::state::{
     CURSOR_SIZE, CURSOR_Z_ORDER, Chrome, HISTORY_HEIGHT, HISTORY_WIDTH, LAUNCHER_WIDTH,
     PALETTE_HEIGHT, PALETTE_WIDTH, PANEL_MARGIN, SESSION_ID, STATUS_PANEL_HEIGHT,
@@ -100,6 +101,17 @@ pub(crate) fn create_chrome(
         ui::BG_PANEL,
         false,
     )?;
+    let (_, media_handle) = rt::graphics_surface_create(
+        graphics_handle,
+        SESSION_ID,
+        ((output_width.saturating_sub(MEDIA_OVERLAY_WIDTH)) / 2) as i32,
+        72,
+        MEDIA_OVERLAY_WIDTH,
+        MEDIA_OVERLAY_HEIGHT,
+        CURSOR_Z_ORDER - 3,
+        ui::BG_PANEL,
+        false,
+    )?;
     let (_, cursor_handle) = rt::graphics_surface_create(
         graphics_handle,
         SESSION_ID,
@@ -122,6 +134,7 @@ pub(crate) fn create_chrome(
         palette_handle,
         notifications_handle,
         clipboard_handle,
+        media_handle,
         cursor_handle,
         output_width,
         output_height,
@@ -137,6 +150,7 @@ pub(crate) fn show_chrome(chrome: &Chrome) -> rt::Result<()> {
     rt::surface_set_visibility(chrome.palette_handle, false)?;
     rt::surface_set_visibility(chrome.notifications_handle, false)?;
     rt::surface_set_visibility(chrome.clipboard_handle, false)?;
+    rt::surface_set_visibility(chrome.media_handle, false)?;
     rt::surface_set_visibility(chrome.cursor_handle, true)?;
     Ok(())
 }

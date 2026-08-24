@@ -18,13 +18,14 @@ pub(crate) fn palette_matches(
         PaletteAction::Launch(DesktopAppId::SoftwareCenter),
         PaletteAction::ShowNotifications,
         PaletteAction::ShowClipboardHistory,
+        PaletteAction::ShowMedia,
         PaletteAction::SwitchWorkspace(1),
         PaletteAction::SwitchWorkspace(2),
         PaletteAction::SwitchWorkspace(3),
         PaletteAction::SwitchWorkspace(4),
         PaletteAction::FocusNext,
     ];
-    let mut ranked = [(PaletteAction::ShowNotifications, 0u32); 12];
+    let mut ranked = [(PaletteAction::ShowNotifications, 0u32); 13];
     let mut ranked_len = 0usize;
     for action in actions {
         let label = palette_action_label(action);
@@ -88,6 +89,7 @@ pub(crate) fn palette_action_label(action: PaletteAction) -> &'static str {
         PaletteAction::Launch(DesktopAppId::SoftwareCenter) => "Open Software Center",
         PaletteAction::ShowNotifications => "Show Notification History",
         PaletteAction::ShowClipboardHistory => "Show Clipboard History",
+        PaletteAction::ShowMedia => "Show Media and Volume",
         PaletteAction::SwitchWorkspace(1) => "Switch to Workspace 1",
         PaletteAction::SwitchWorkspace(2) => "Switch to Workspace 2",
         PaletteAction::SwitchWorkspace(3) => "Switch to Workspace 3",

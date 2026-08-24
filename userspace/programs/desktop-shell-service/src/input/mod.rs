@@ -10,7 +10,7 @@ use serviceos_userspace_runtime as rt;
 use crate::{
     APP_COUNT, CLIPBOARD_HISTORY_LINES, ContentCapture, DesktopState, DragState, HitTarget, KEY_1,
     KEY_2, KEY_3, KEY_4, KEY_5, KEY_BACKSPACE, KEY_DOWN, KEY_ENTER, KEY_ESC, KEY_F4, KEY_LEFT_ALT,
-    KEY_N, KEY_RIGHT_ALT, KEY_SPACE, KEY_TAB, KEY_UP, KEY_V, MOD_ALT, MOD_CTRL, MOD_SHIFT,
+    KEY_M, KEY_N, KEY_RIGHT_ALT, KEY_SPACE, KEY_TAB, KEY_UP, KEY_V, MOD_ALT, MOD_CTRL, MOD_SHIFT,
     OVERLAY_RESULT_MAX, OverlayMode, PANEL_MARGIN, PaletteAction, RESIZE_GRIP_SIZE, ResizeEdges,
     TOPBAR_HEIGHT, WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH, WindowState, palette_matches,
     render::{render_desktop, render_overlays_only, sync_cursor},
@@ -114,6 +114,9 @@ pub(crate) fn handle_input(
                 }
             }
         }
+    }
+    if state.pending_media_refresh.take() && state.overlay_mode == OverlayMode::Media {
+        render_overlays_only(state)?;
     }
     Ok(result)
 }

@@ -4,6 +4,7 @@
 mod chrome;
 mod input;
 mod logging;
+mod media;
 mod palette;
 mod render;
 mod requests;
@@ -47,6 +48,8 @@ fn main() -> u64 {
     };
     let clipboard_service_handle =
         rt::lookup_service(bootstrap, ServiceId::Clipboard).unwrap_or(rt::INVALID_HANDLE);
+    let audio_service_handle =
+        rt::lookup_service(bootstrap, ServiceId::Audio).unwrap_or(rt::INVALID_HANDLE);
 
     let output = match rt::graphics_output_status(graphics_handle, 0) {
         Ok(Some(output)) => output,
@@ -85,6 +88,7 @@ fn main() -> u64 {
         network_handle,
         system_status_handle,
         clipboard_service_handle,
+        audio_service_handle,
         chrome,
         palette_buffers,
         palette_presenter,
@@ -124,6 +128,9 @@ fn main() -> u64 {
         overlay_selection: 0,
         palette_query: [0; PALETTE_QUERY_MAX],
         palette_query_len: 0,
+        master_volume: media::MASTER_VOLUME_DEFAULT,
+        master_muted: false,
+        pending_media_refresh: rt::PendingFlag::new(),
     };
 
     if render::render_desktop(&mut state).is_err() {
@@ -246,6 +253,11 @@ fn main() -> u64 {
                     return 0xfe12;
                 }
                 state.next_status_refresh = now.saturating_add(STATUS_REFRESH_TICKS);
+                if state.overlay_mode == OverlayMode::Media {
+                    if render::render_overlays_only(&mut state).is_err() {
+                        return 0xfe1a;
+                    }
+                }
             }
         }
 

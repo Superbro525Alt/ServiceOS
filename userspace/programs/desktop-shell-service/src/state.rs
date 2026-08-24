@@ -2,6 +2,8 @@ use rt::{DesktopAppId, ServiceImageId};
 use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
 
+use crate::media::{MASTER_VOLUME_DEFAULT, MEDIA_OVERLAY_HEIGHT, MEDIA_OVERLAY_WIDTH};
+
 pub(crate) const SESSION_ID: u32 = 1;
 pub(crate) const APP_COUNT: usize = 5;
 pub(crate) const APP_PAGE_SIZE: usize = 4;
@@ -50,6 +52,7 @@ pub(crate) const KEY_ENTER: u32 = 28;
 pub(crate) const KEY_SPACE: u32 = 57;
 pub(crate) const KEY_V: u32 = 47;
 pub(crate) const KEY_N: u32 = 49;
+pub(crate) const KEY_M: u32 = 50;
 pub(crate) const KEY_UP: u32 = 103;
 pub(crate) const KEY_DOWN: u32 = 108;
 pub(crate) const KEY_LEFT_ALT: u32 = 56;
@@ -71,6 +74,7 @@ pub(crate) struct Chrome {
     pub(crate) palette_handle: rt::Handle,
     pub(crate) notifications_handle: rt::Handle,
     pub(crate) clipboard_handle: rt::Handle,
+    pub(crate) media_handle: rt::Handle,
     pub(crate) cursor_handle: rt::Handle,
     pub(crate) output_width: u32,
     pub(crate) output_height: u32,
@@ -161,6 +165,7 @@ pub(crate) enum OverlayMode {
     CommandPalette,
     Notifications,
     ClipboardHistory,
+    Media,
 }
 
 #[derive(Clone, Copy)]
@@ -278,6 +283,7 @@ pub(crate) struct DesktopState {
     pub(crate) network_handle: rt::Handle,
     pub(crate) system_status_handle: rt::Handle,
     pub(crate) clipboard_service_handle: rt::Handle,
+    pub(crate) audio_service_handle: rt::Handle,
     pub(crate) chrome: Chrome,
     pub(crate) palette_buffers: ui::SurfaceBuffers<PALETTE_BUFFER_SLOTS>,
     pub(crate) palette_presenter: ui::FirstPresentSurface,
@@ -308,6 +314,9 @@ pub(crate) struct DesktopState {
     pub(crate) overlay_selection: usize,
     pub(crate) palette_query: [u8; PALETTE_QUERY_MAX],
     pub(crate) palette_query_len: usize,
+    pub(crate) master_volume: u8,
+    pub(crate) master_muted: bool,
+    pub(crate) pending_media_refresh: rt::PendingFlag,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -315,6 +324,7 @@ pub(crate) enum PaletteAction {
     Launch(DesktopAppId),
     ShowNotifications,
     ShowClipboardHistory,
+    ShowMedia,
     SwitchWorkspace(u32),
     FocusNext,
 }

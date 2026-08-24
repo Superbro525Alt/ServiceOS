@@ -50,6 +50,13 @@ name = "serviceos-abi"
 version = "0.1.0"
 
 [[package]]
+name = "serviceos-account-service"
+version = "0.1.0"
+dependencies = [
+ "serviceos-userspace-runtime",
+]
+
+[[package]]
 name = "serviceos-announce-service"
 version = "0.1.0"
 dependencies = [

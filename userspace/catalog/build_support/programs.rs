@@ -196,4 +196,11 @@ pub(crate) const PROGRAMS: &[Program] = &[
         service_path: "tools/cross-builder-tool/program.img",
         service_id: 0,
     },
+    Program {
+        package: "serviceos-account-service",
+        bin_name: "serviceos-account-service",
+        image_id: 28,
+        service_path: "services/account-service/program.img",
+        service_id: 0,
+    },
 ];

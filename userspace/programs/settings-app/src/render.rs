@@ -121,6 +121,13 @@ fn draw_system_page(
     } else {
         let _ = write!(&mut audio_line, "AUDIO UNAVAILABLE");
     }
+    let mut pcm_streams = [settings_pcm_stream_info(); SETTINGS_PCM_STREAMS_MAX];
+    let pcm_listed = rt::audio_stream_list(audio_handle, &mut pcm_streams).unwrap_or(0);
+    let pcm_active = pcm_streams[..pcm_listed]
+        .iter()
+        .filter(|stream| stream.state == rt::AudioStreamState::Active)
+        .count();
+    let _ = write!(&mut audio_line, " PCM {}/{}", pcm_active, pcm_listed);
 
     for (index, line) in [
         str::from_utf8(line0.as_bytes()).unwrap_or("SYSTEM OVERVIEW"),

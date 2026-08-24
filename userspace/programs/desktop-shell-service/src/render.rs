@@ -9,6 +9,7 @@ use crate::{
     HISTORY_HEIGHT, HISTORY_WIDTH, LAUNCHER_HEIGHT, LAUNCHER_WIDTH, OVERLAY_RESULT_MAX,
     OverlayMode, PALETTE_BUFFER_BYTES, PALETTE_HEIGHT, PALETTE_WIDTH, STATUS_PANEL_HEIGHT,
     STATUS_PANEL_WIDTH, SWITCHER_HEIGHT, SWITCHER_WIDTH, TOPBAR_HEIGHT, WORKSPACE_COUNT,
+    media::{MEDIA_LINE_COUNT, MEDIA_OVERLAY_HEIGHT, MEDIA_OVERLAY_WIDTH},
     palette_action_label, palette_matches,
     windows::{app_title, launcher_line, running_app_count, visible_on_workspace},
 };
@@ -224,11 +225,13 @@ fn render_overlays(state: &mut DesktopState) -> rt::Result<()> {
     let show_palette = state.overlay_mode == OverlayMode::CommandPalette;
     let show_notifications = state.overlay_mode == OverlayMode::Notifications;
     let show_clipboard = state.overlay_mode == OverlayMode::ClipboardHistory;
+    let show_media = state.overlay_mode == OverlayMode::Media;
 
     rt::surface_set_visibility(state.chrome.switcher_handle, show_switcher)?;
     rt::surface_set_visibility(state.chrome.palette_handle, show_palette)?;
     rt::surface_set_visibility(state.chrome.notifications_handle, show_notifications)?;
     rt::surface_set_visibility(state.chrome.clipboard_handle, show_clipboard)?;
+    rt::surface_set_visibility(state.chrome.media_handle, show_media)?;
 
     if show_switcher {
         render_switcher_overlay(state)?;
@@ -241,6 +244,9 @@ fn render_overlays(state: &mut DesktopState) -> rt::Result<()> {
     }
     if show_clipboard {
         render_clipboard_overlay(state)?;
+    }
+    if show_media {
+        render_media_overlay(state)?;
     }
     Ok(())
 }
@@ -427,6 +433,25 @@ fn render_clipboard_overlay(state: &DesktopState) -> rt::Result<()> {
         HISTORY_WIDTH,
         HISTORY_HEIGHT,
         "CLIPBOARD HISTORY",
+        &lines[..count],
+    )
+}
+
+fn render_media_overlay(state: &mut DesktopState) -> rt::Result<()> {
+    let snapshot = crate::media::sample_media(state.audio_service_handle);
+    let mut lines: [FixedLogBuffer<48>; MEDIA_LINE_COUNT] =
+        array::from_fn(|_| FixedLogBuffer::new());
+    let count = crate::media::write_media_lines(
+        &snapshot,
+        state.master_volume,
+        state.master_muted,
+        &mut lines,
+    );
+    render_overlay_panel(
+        state.chrome.media_handle,
+        MEDIA_OVERLAY_WIDTH,
+        MEDIA_OVERLAY_HEIGHT,
+        "MEDIA",
         &lines[..count],
     )
 }

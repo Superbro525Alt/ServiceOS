@@ -133,6 +133,53 @@ pub(super) fn handle_clipboard_overlay_key(
     }
 }
 
+pub(super) fn handle_media_overlay_key(state: &mut DesktopState, key_code: u32) -> rt::Result<u32> {
+    match key_code {
+        KEY_UP | KEY_DOWN => {
+            let delta = if key_code == KEY_UP {
+                crate::media::MEDIA_VOLUME_STEP
+            } else {
+                -crate::media::MEDIA_VOLUME_STEP
+            };
+            let next = crate::media::step_volume(state.master_volume, delta);
+            match crate::media::request_master_volume(
+                state.audio_service_handle,
+                next,
+                state.master_muted,
+            ) {
+                Ok((applied_volume, applied_muted)) => {
+                    state.master_volume = applied_volume;
+                    state.master_muted = applied_muted;
+                }
+                Err(_) => {
+                    post_notification(state, None, false, b"audio service rejected volume change")?;
+                }
+            }
+            state.pending_media_refresh.set();
+            Ok(focused_surface_id(state))
+        }
+        KEY_SPACE => {
+            let muted = !state.master_muted;
+            match crate::media::request_master_volume(
+                state.audio_service_handle,
+                state.master_volume,
+                muted,
+            ) {
+                Ok((applied_volume, applied_muted)) => {
+                    state.master_volume = applied_volume;
+                    state.master_muted = applied_muted;
+                }
+                Err(_) => {
+                    post_notification(state, None, false, b"audio service rejected mute change")?;
+                }
+            }
+            state.pending_media_refresh.set();
+            Ok(focused_surface_id(state))
+        }
+        _ => Ok(focused_surface_id(state)),
+    }
+}
+
 fn perform_palette_action(state: &mut DesktopState, action: PaletteAction) -> rt::Result<u32> {
     match action {
         PaletteAction::Launch(app_id) => {
@@ -144,6 +191,10 @@ fn perform_palette_action(state: &mut DesktopState, action: PaletteAction) -> rt
         }
         PaletteAction::ShowClipboardHistory => {
             state.overlay_mode = OverlayMode::ClipboardHistory;
+            Ok(focused_surface_id(state))
+        }
+        PaletteAction::ShowMedia => {
+            state.overlay_mode = OverlayMode::Media;
             Ok(focused_surface_id(state))
         }
         PaletteAction::SwitchWorkspace(workspace_id) => switch_workspace(state, workspace_id),

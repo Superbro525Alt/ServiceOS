@@ -5,7 +5,20 @@ use rt::{
     ControlTag, DesktopInputAction, InputButton, InputEventKind, LifecycleEvent, LogDomain,
     LogEvent, LogSeverity, RawMessage, ServiceId, SessionInputSource, SessionStatus, SessionTag,
 };
+use serviceos_session_service::{
+    FocusError as RegistryFocusError, InputDecision, MAX_SESSIONS, NO_SEAT, RegisterError,
+    SessionKind, SessionRegistry, SwitchError,
+};
 use serviceos_userspace_runtime as rt;
+
+// Local extension tags continuing the shared SessionTag range (0x980..):
+// the shared ABI crate is unchanged; these are session-service-owned ops.
+const SWITCH_ACTIVE_REQUEST: u32 = 0x986;
+const SWITCH_ACTIVE_REPLY: u32 = 0x987;
+const CURRENT_SESSION_REQUEST: u32 = 0x988;
+const CURRENT_SESSION_REPLY: u32 = 0x989;
+const REGISTER_SESSION_REQUEST: u32 = 0x98a;
+const REGISTER_SESSION_REPLY: u32 = 0x98b;
 
 const SESSION_ID: u32 = 1;
 const MOD_SHIFT: u32 = 1 << 0;
@@ -55,8 +68,7 @@ fn main() -> u64 {
     };
 
     let mut state = SessionState {
-        focused_surface: 0,
-        surface_count_hint: 0,
+        registry: SessionRegistry::boot(),
         input_source: if input_info.capabilities == 0 {
             SessionInputSource::ServiceControl
         } else {
@@ -112,8 +124,13 @@ fn main() -> u64 {
             }
         }
 
-        let allow_input_wait = !did_work && state.input_source == SessionInputSource::Hardware;
-        match poll_input(bootstrap, &mut state, allow_input_wait) {
+        // Isolation policy: only the active session's desktop receives
+        // kernel input; other turns drain-and-drop so queues never stall.
+        let decision = state.registry.classify_input();
+        let allow_input_wait = !did_work
+            && state.input_source == SessionInputSource::Hardware
+            && matches!(decision, InputDecision::RouteToDesktop(_));
+        match poll_input(bootstrap, &mut state, allow_input_wait, decision) {
             Ok(processed_input) => did_work |= processed_input,
             Err(_) => return 0xfd0b,
         }
@@ -129,8 +146,7 @@ fn main() -> u64 {
 }
 
 struct SessionState {
-    focused_surface: u32,
-    surface_count_hint: u32,
+    registry: SessionRegistry,
     input_source: SessionInputSource,
     input_handle: rt::Handle,
     desktop_handle: rt::Handle,
@@ -152,11 +168,17 @@ fn handle_request(
                 return Ok(());
             }
             let reply_handle = request.handles[0];
+            let mut ids = [0u32; MAX_SESSIONS];
+            let count = state.registry.list_ids(&mut ids);
             let mut reply = RawMessage::empty(SessionTag::ListReply as u32);
-            reply.word_count = 3;
+            reply.word_count = (3 + count) as u32;
             reply.words[0] = SessionStatus::Ok as u32 as u64;
-            reply.words[1] = 1;
-            reply.words[2] = SESSION_ID as u64;
+            reply.words[1] = count as u64;
+            for (index, id) in ids.iter().enumerate().take(count) {
+                reply.words[2 + index] = *id as u64;
+            }
+            // Trailing field: current active session id.
+            reply.words[2 + count] = state.registry.current_id() as u64;
             let _ = rt::channel_send(reply_handle, &reply);
             let _ = rt::handle_close(reply_handle);
         }
@@ -166,15 +188,21 @@ fn handle_request(
             }
             let reply_handle = request.handles[0];
             let mut reply = RawMessage::empty(SessionTag::StatusReply as u32);
-            reply.word_count = 5;
-            if request.words[0] as u32 != SESSION_ID {
-                reply.words[0] = SessionStatus::NotFound as u32 as u64;
-            } else {
-                reply.words[0] = SessionStatus::Ok as u32 as u64;
-                reply.words[1] = SESSION_ID as u64;
-                reply.words[2] = state.input_source as u32 as u64;
-                reply.words[3] = state.focused_surface as u64;
-                reply.words[4] = state.surface_count_hint as u64;
+            reply.word_count = 7;
+            match state.registry.status(request.words[0] as u32) {
+                None => {
+                    reply.words[0] = SessionStatus::NotFound as u32 as u64;
+                }
+                Some(snapshot) => {
+                    reply.words[0] = SessionStatus::Ok as u32 as u64;
+                    reply.words[1] = snapshot.id as u64;
+                    reply.words[2] = state.input_source as u32 as u64;
+                    reply.words[3] = snapshot.focused_surface as u64;
+                    reply.words[4] = snapshot.surface_count_hint as u64;
+                    // Trailing fields: active flag and bound seat sentinel.
+                    reply.words[5] = snapshot.active as u64;
+                    reply.words[6] = snapshot.seat.map_or(NO_SEAT as u64, |seat| seat as u64);
+                }
             }
             let _ = rt::channel_send(reply_handle, &reply);
             let _ = rt::handle_close(reply_handle);
@@ -189,25 +217,123 @@ fn handle_request(
             let mut reply = RawMessage::empty(SessionTag::FocusReply as u32);
             reply.word_count = 2;
 
-            if session_id != SESSION_ID {
-                reply.words[0] = SessionStatus::NotFound as u32 as u64;
-                reply.words[1] = 0;
-            } else {
-                state.focused_surface = surface_id;
-                if surface_id != 0 {
-                    state.surface_count_hint = state.surface_count_hint.max(1);
+            match state.registry.focus_request(session_id, surface_id) {
+                Ok(focused) => {
+                    reply.words[0] = SessionStatus::Ok as u32 as u64;
+                    reply.words[1] = focused as u64;
+                    let _ = emit_log(
+                        log_handle,
+                        LogSeverity::Info,
+                        LogEvent::SessionFocusChanged,
+                        session_id as u64,
+                        state
+                            .registry
+                            .status(session_id)
+                            .map(|s| s.focused_surface)
+                            .unwrap_or(0) as u64,
+                    );
                 }
-                reply.words[0] = SessionStatus::Ok as u32 as u64;
-                reply.words[1] = state.focused_surface as u64;
-                let _ = emit_log(
-                    log_handle,
-                    LogSeverity::Info,
-                    LogEvent::SessionFocusChanged,
-                    SESSION_ID as u64,
-                    state.focused_surface as u64,
-                );
+                Err(error) => {
+                    reply.words[0] = focus_error_status(error) as u32 as u64;
+                    reply.words[1] = 0;
+                }
             }
 
+            let _ = rt::channel_send(reply_handle, &reply);
+            let _ = rt::handle_close(reply_handle);
+        }
+        x if x == SWITCH_ACTIVE_REQUEST as u32 => {
+            if request.word_count < 1 || request.handle_count < 1 {
+                return Ok(());
+            }
+            let reply_handle = request.handles[0];
+            let target = request.words[0] as u32;
+            let mut reply = RawMessage::empty(SWITCH_ACTIVE_REPLY);
+            reply.word_count = 3;
+            match state.registry.switch_active(target) {
+                Ok(record) => {
+                    // Clean input-route handoff: drop the cached desktop
+                    // channel so the next routed event rebinds under the
+                    // incoming session's ownership.
+                    detach_desktop_route(state);
+                    reply.words[0] = SessionStatus::Ok as u32 as u64;
+                    reply.words[1] = record.from as u64;
+                    reply.words[2] = record.to as u64;
+                    let _ = emit_log(
+                        log_handle,
+                        LogSeverity::Info,
+                        LogEvent::SessionFocusChanged,
+                        record.from as u64,
+                        record.to as u64,
+                    );
+                }
+                Err(SwitchError::UnknownTarget) => {
+                    reply.words[0] = SessionStatus::NotFound as u32 as u64;
+                    reply.words[1] = 0;
+                    reply.words[2] = 0;
+                }
+                Err(SwitchError::AlreadyActive) => {
+                    reply.words[0] = SessionStatus::Busy as u32 as u64;
+                    reply.words[1] = 0;
+                    reply.words[2] = 0;
+                }
+            }
+            let _ = rt::channel_send(reply_handle, &reply);
+            let _ = rt::handle_close(reply_handle);
+        }
+        x if x == CURRENT_SESSION_REQUEST as u32 => {
+            if request.handle_count < 1 {
+                return Ok(());
+            }
+            let reply_handle = request.handles[0];
+            let mut reply = RawMessage::empty(CURRENT_SESSION_REPLY);
+            reply.word_count = 3;
+            match state.registry.current() {
+                Some((id, seat)) => {
+                    reply.words[0] = SessionStatus::Ok as u32 as u64;
+                    reply.words[1] = id as u64;
+                    reply.words[2] = seat.map_or(NO_SEAT as u64, |seat| seat as u64);
+                }
+                None => {
+                    reply.words[0] = SessionStatus::NotFound as u32 as u64;
+                    reply.words[1] = 0;
+                    reply.words[2] = NO_SEAT as u64;
+                }
+            }
+            let _ = rt::channel_send(reply_handle, &reply);
+            let _ = rt::handle_close(reply_handle);
+        }
+        x if x == REGISTER_SESSION_REQUEST as u32 => {
+            if request.word_count < 2 || request.handle_count < 1 {
+                return Ok(());
+            }
+            let reply_handle = request.handles[0];
+            let requested_id = request.words[0] as u32;
+            let seat_word = request.words[1] as u32;
+            let kind = session_kind_hint(request);
+            let mut reply = RawMessage::empty(REGISTER_SESSION_REPLY);
+            reply.word_count = 2;
+            match state.registry.register(requested_id, seat_word, kind) {
+                Ok(id) => {
+                    reply.words[0] = SessionStatus::Ok as u32 as u64;
+                    reply.words[1] = id as u64;
+                    let _ = emit_log(
+                        log_handle,
+                        LogSeverity::Info,
+                        LogEvent::SessionReady,
+                        id as u64,
+                        seat_word as u64,
+                    );
+                }
+                Err(RegisterError::CapacityExceeded) => {
+                    reply.words[0] = SessionStatus::Busy as u32 as u64;
+                    reply.words[1] = 0;
+                }
+                Err(RegisterError::IdInUse | RegisterError::SeatInUse) => {
+                    reply.words[0] = SessionStatus::Denied as u32 as u64;
+                    reply.words[1] = 0;
+                }
+            }
             let _ = rt::channel_send(reply_handle, &reply);
             let _ = rt::handle_close(reply_handle);
         }
@@ -215,6 +341,30 @@ fn handle_request(
     }
 
     Ok(())
+}
+
+fn session_kind_hint(_request: &RawMessage) -> SessionKind {
+    // Registration currently defaults to graphical sessions; operator-kind
+    // tagging arrives with login/session-ownership work (roadmap S10).
+    SessionKind::Graphical
+}
+
+fn focus_error_status(error: RegistryFocusError) -> SessionStatus {
+    match error {
+        RegistryFocusError::UnknownSession => SessionStatus::NotFound,
+        RegistryFocusError::InactiveSession | RegistryFocusError::ForeignSurface => {
+            SessionStatus::Denied
+        }
+    }
+}
+
+/// Tear down the cached desktop route so input forwarding stops until the
+/// route is re-resolved for the newly active session.
+fn detach_desktop_route(state: &mut SessionState) {
+    if state.desktop_handle != rt::INVALID_HANDLE {
+        let _ = rt::handle_close(state.desktop_handle);
+        state.desktop_handle = rt::INVALID_HANDLE;
+    }
 }
 
 /// Wakeup-driven receive: parks the thread in the kernel until the device IRQ
@@ -239,7 +389,9 @@ fn poll_input(
     bootstrap: rt::Handle,
     state: &mut SessionState,
     allow_wait: bool,
+    decision: InputDecision,
 ) -> rt::Result<bool> {
+    let routing = matches!(decision, InputDecision::RouteToDesktop(_));
     let mut processed = false;
     let mut pending_pointer_move = false;
     let mut remaining = MAX_INPUT_EVENTS_PER_TURN;
@@ -274,6 +426,11 @@ fn poll_input(
             }
             Err(error) => return Err(error),
         };
+        if !routing {
+            // Isolation: event consumed but never forwarded to any desktop.
+            remaining = remaining.saturating_sub(1);
+            continue;
+        }
         match event.kind {
             x if x == InputEventKind::PointerMotion as u32 => {
                 state.pointer_x = scale_input_axis(event.value0, state.output_width);
@@ -551,3 +708,6 @@ fn emit_log(
         arg1,
     )
 }
+
+#[cfg(test)]
+fn main() {}

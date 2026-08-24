@@ -6,6 +6,11 @@ edition = "2024"
 [dependencies]
 serviceos-userspace-runtime = { path = "../runtime" }
 
+[lib]
+name = "serviceos_session_service"
+path = "src/lib.rs"
+test = true
+
 [[bin]]
 name = "serviceos-session-service"
 path = "src/main.rs"

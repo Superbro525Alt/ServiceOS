@@ -11,6 +11,7 @@ use serviceos_userspace_runtime as rt;
 
 use crate::{
     consts::MAX_TCP_LISTENERS,
+    firewall::{Direction, FirewallState, Proto},
     types::{TcpListenerSlot, TcpTransportSlot},
     util::{emit_log, ipv4_to_u32},
 };
@@ -20,7 +21,6 @@ use crate::{
 /// Inactive slots never touch their socket. When an inbound handshake lands
 /// on that handle the connection is adopted by the matching transport slot
 /// and the listener goes to pending-re-arm until another slot frees up.
-
 /// Handle SocketListenRequest: words[0] = NetworkSocketKind (TcpStream),
 /// words[1] = pack_listen_params(local_port, backlog). The reply carries a
 /// listener control handle speaking Status/Accept/Close.
@@ -177,6 +177,7 @@ pub(crate) fn pump_listeners(
     transports: &mut [TcpTransportSlot; crate::consts::MAX_TCP_SOCKETS],
     tcp_handles: [SocketHandle; crate::consts::MAX_TCP_SOCKETS],
     sockets: &mut SocketSet<'_>,
+    firewall: &mut FirewallState,
 ) -> rt::Result<()> {
     for listener_index in 0..listeners.len() {
         if !listeners[listener_index].active {
@@ -222,7 +223,8 @@ pub(crate) fn pump_listeners(
             continue;
         }
 
-        let session = rt::channel_create()?;
+        // Firewall gate: inspect the inbound peer before adopting it. A deny
+        // aborts the handshake and re-arms the listener.
         let endpoints = {
             let socket = sockets.get_mut::<tcp::Socket>(socket_handle);
             match (socket.remote_endpoint(), socket.local_endpoint()) {
@@ -235,10 +237,24 @@ pub(crate) fn pump_listeners(
             }
         };
         let Some((remote_address, remote_port, local_port)) = endpoints else {
-            let _ = rt::handle_close(session.first);
-            let _ = rt::handle_close(session.second);
             continue;
         };
+        if !firewall.decide(Direction::Inbound, Proto::Tcp, local_port, remote_port) {
+            sockets.get_mut::<tcp::Socket>(socket_handle).abort();
+            listeners[listener_index].socket_handle = None;
+            let _ = rt::write_logf(
+                "network",
+                format_args!(
+                    "firewall deny inbound tcp local={} remote={}:{}",
+                    local_port,
+                    ipv4_to_u32(remote_address),
+                    remote_port
+                ),
+            );
+            continue;
+        }
+
+        let session = rt::channel_create()?;
         let now = rt::monotonic_now().unwrap_or(0);
         transports[transport_index] = TcpTransportSlot {
             active: true,

@@ -12,6 +12,7 @@ use serviceos_userspace_runtime as rt;
 
 use crate::{
     consts::{EPHEMERAL_PORT_BASE, MAX_SOCKET_INLINE_BYTES, MAX_UDP_SOCKETS},
+    firewall::{Direction, FirewallState, Proto},
     types::UdpDatagramSlot,
     util::{decode_inline_bytes, emit_log, ipv4_to_u32, pack_inline_bytes},
 };
@@ -116,6 +117,7 @@ pub(crate) fn handle_datagram_request(
     sockets: &mut SocketSet<'_>,
     slot: &mut UdpDatagramSlot,
     request: &RawMessage,
+    firewall: &mut FirewallState,
 ) -> rt::Result<()> {
     if request.handle_count < 1 {
         return Ok(());
@@ -162,11 +164,13 @@ pub(crate) fn handle_datagram_request(
             }
             reply
         }
-        x if x == NetworkSocketTag::SendToRequest as u32 => send_datagram(sockets, slot, request),
+        x if x == NetworkSocketTag::SendToRequest as u32 => {
+            send_datagram(sockets, slot, request, firewall)
+        }
         x if x == NetworkSocketTag::ReceiveRequest as u32
             || x == NetworkSocketTag::ReceiveFromRequest as u32 =>
         {
-            let reply = receive_datagram(sockets, slot, request)?;
+            let reply = receive_datagram(sockets, slot, request, firewall)?;
             let _ = rt::channel_send(reply_handle, &reply);
             let _ = rt::handle_close(reply_handle);
             return Ok(());
@@ -194,6 +198,7 @@ fn send_datagram(
     sockets: &mut SocketSet<'_>,
     slot: &mut UdpDatagramSlot,
     request: &RawMessage,
+    firewall: &mut FirewallState,
 ) -> RawMessage {
     let mut reply = RawMessage::empty(NetworkSocketTag::SendToReply as u32);
     reply.word_count = 2;
@@ -231,6 +236,20 @@ fn send_datagram(
         reply.words[1] = 0;
         return reply;
     };
+    if !firewall.decide(Direction::Outbound, Proto::Udp, slot.local_port, port) {
+        let _ = rt::write_logf(
+            "network",
+            format_args!(
+                "firewall deny outbound udp local={} remote={}:{}",
+                slot.local_port,
+                crate::util::ipv4_to_u32(crate::util::u32_to_ipv4(address_be)),
+                port
+            ),
+        );
+        reply.words[0] = NetworkStatus::Denied as u32 as u64;
+        reply.words[1] = 0;
+        return reply;
+    }
     let socket = sockets.get_mut::<udp::Socket>(socket_handle);
     match socket.send_slice(payload, endpoint) {
         Ok(()) => {
@@ -251,6 +270,7 @@ fn receive_datagram(
     sockets: &mut SocketSet<'_>,
     slot: &mut UdpDatagramSlot,
     request: &RawMessage,
+    firewall: &mut FirewallState,
 ) -> rt::Result<RawMessage> {
     let mut reply = RawMessage::empty(NetworkSocketTag::ReceiveFromReply as u32);
     reply.word_count = 3;
@@ -266,12 +286,29 @@ fn receive_datagram(
     let socket = sockets.get_mut::<udp::Socket>(socket_handle);
     match socket.recv_slice(&mut buffer[..read_len]) {
         Ok((count, metadata)) => {
+            let IpAddress::Ipv4(remote) = metadata.endpoint.addr;
+            let source_be = u32::from_be_bytes(remote.octets());
+            if !firewall.decide(Direction::Inbound, Proto::Udp, slot.local_port, metadata.endpoint.port)
+            {
+                // Consume-and-drop: the datagram is counted as filtered.
+                let _ = rt::write_logf(
+                    "network",
+                    format_args!(
+                        "firewall deny inbound udp local={} remote={}:{}",
+                        slot.local_port,
+                        source_be,
+                        metadata.endpoint.port
+                    ),
+                );
+                reply.words[0] = NetworkStatus::Busy as u32 as u64;
+                reply.words[1] = 0;
+                reply.words[2] = 0;
+                return Ok(reply);
+            }
             slot.last_activity_ticks = rt::monotonic_now().unwrap_or(slot.last_activity_ticks);
             slot.rx_bytes = slot.rx_bytes.saturating_add(count as u64);
             reply.words[0] = NetworkStatus::Ok as u32 as u64;
             reply.words[1] = count as u64;
-            let IpAddress::Ipv4(remote) = metadata.endpoint.addr;
-            let source_be = u32::from_be_bytes(remote.octets());
             reply.words[2] = rt::pack_ipv4_endpoint(source_be, metadata.endpoint.port);
             let packed = pack_inline_bytes(&buffer[..count], &mut reply.words[3..])?;
             reply.word_count = 3 + packed;

@@ -1,18 +1,17 @@
 use smoltcp::{
     iface::{Interface, SocketHandle, SocketSet},
     phy::Device,
-    socket::{dhcpv4, dns, icmp},
-    wire::{DnsQueryType, Icmpv4Packet, Icmpv4Repr, IpAddress, IpCidr, Ipv4Address, Ipv4Cidr},
+    socket::{dhcpv4, icmp},
+    wire::{Icmpv4Packet, Icmpv4Repr, IpAddress, IpCidr, Ipv4Address, Ipv4Cidr},
 };
 
 use rt::{LogEvent, LogSeverity, NetworkConfigMode, NetworkConfigState};
 use serviceos_userspace_runtime as rt;
 
 use crate::{
-    config::parse_ipv4,
     consts::PING_IDENTIFIER,
     device::KernelPacketDevice,
-    types::{HostEntry, InterfaceRuntimeState, NetworkConfig},
+    types::{InterfaceRuntimeState, NetworkConfig},
     util::{emit_log, ipv4_to_u32, now_instant, ticks_to_millis},
 };
 
@@ -24,7 +23,6 @@ pub(crate) fn drive_dynamic_ipv4(
     iface: &mut Interface,
     sockets: &mut SocketSet<'_>,
     dhcp_handle: SocketHandle,
-    dns_handle: SocketHandle,
 ) -> rt::Result<()> {
     if let Some(event) = sockets.get_mut::<dhcpv4::Socket>(dhcp_handle).poll() {
         match event {
@@ -43,10 +41,6 @@ pub(crate) fn drive_dynamic_ipv4(
                 };
                 *dhcp_started_at = rt::monotonic_now().unwrap_or(*dhcp_started_at);
                 apply_interface_runtime(iface, *runtime_state);
-                update_dns_servers(
-                    sockets.get_mut::<dns::Socket>(dns_handle),
-                    runtime_state.dns_server,
-                );
                 let _ = emit_log(
                     log_handle,
                     LogSeverity::Info,
@@ -66,10 +60,6 @@ pub(crate) fn drive_dynamic_ipv4(
                 *runtime_state = InterfaceRuntimeState::pending_dynamic();
                 *dhcp_started_at = rt::monotonic_now().unwrap_or(*dhcp_started_at);
                 apply_interface_runtime(iface, *runtime_state);
-                update_dns_servers(
-                    sockets.get_mut::<dns::Socket>(dns_handle),
-                    runtime_state.dns_server,
-                );
                 let _ = emit_log(
                     log_handle,
                     LogSeverity::Warn,
@@ -87,10 +77,6 @@ pub(crate) fn drive_dynamic_ipv4(
     {
         *runtime_state = InterfaceRuntimeState::static_config(*config);
         apply_interface_runtime(iface, *runtime_state);
-        update_dns_servers(
-            sockets.get_mut::<dns::Socket>(dns_handle),
-            runtime_state.dns_server,
-        );
         let _ = emit_log(
             log_handle,
             LogSeverity::Warn,
@@ -108,62 +94,6 @@ pub(crate) fn drive_dynamic_ipv4(
     }
 
     Ok(())
-}
-
-pub(crate) fn resolve_target(
-    target: &str,
-    hosts: &[HostEntry],
-    timeout_ticks: u64,
-    iface: &mut Interface,
-    device: &mut KernelPacketDevice,
-    sockets: &mut SocketSet<'_>,
-    dns_handle: SocketHandle,
-) -> rt::Result<Option<Ipv4Address>> {
-    if let Some(address) = parse_ipv4(target) {
-        return Ok(Some(address));
-    }
-    if let Some(address) = hosts
-        .iter()
-        .find(|entry| entry.name_len != 0 && entry.matches(target))
-        .map(|entry| entry.address)
-    {
-        return Ok(Some(address));
-    }
-
-    let query = {
-        let socket = sockets.get_mut::<dns::Socket>(dns_handle);
-        match socket.start_query(iface.context(), target, DnsQueryType::A) {
-            Ok(handle) => handle,
-            Err(_) => return Ok(None),
-        }
-    };
-    let start_ticks = rt::monotonic_now()?;
-    loop {
-        let _ = iface.poll(now_instant(), device, sockets);
-        match sockets
-            .get_mut::<dns::Socket>(dns_handle)
-            .get_query_result(query)
-        {
-            Ok(addresses) => {
-                for address in addresses {
-                    let IpAddress::Ipv4(ipv4) = address;
-                    return Ok(Some(ipv4));
-                }
-                return Ok(None);
-            }
-            Err(dns::GetQueryResultError::Pending) => {}
-            Err(_) => return Ok(None),
-        }
-
-        if rt::monotonic_now()?.saturating_sub(start_ticks) >= timeout_ticks {
-            sockets
-                .get_mut::<dns::Socket>(dns_handle)
-                .cancel_query(query);
-            return Ok(None);
-        }
-
-        rt::yield_current()?;
-    }
 }
 
 pub(crate) fn perform_ping(
@@ -261,13 +191,4 @@ pub(crate) fn apply_interface_runtime(iface: &mut Interface, runtime_state: Inte
             .routes_mut()
             .add_default_ipv4_route(runtime_state.gateway);
     }
-}
-
-pub(crate) fn update_dns_servers(socket: &mut dns::Socket<'_>, server: Ipv4Address) {
-    let servers = dns_server_list(server);
-    socket.update_servers(&servers);
-}
-
-fn dns_server_list(server: Ipv4Address) -> [IpAddress; 1] {
-    [IpAddress::Ipv4(server)]
 }

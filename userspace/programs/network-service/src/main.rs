@@ -1,18 +1,22 @@
-#![no_std]
-#![no_main]
+#![cfg_attr(not(test), no_std)]
+#![cfg_attr(not(test), no_main)]
 
 use smoltcp::{
     iface::{Config as IfaceConfig, Interface, SocketSet, SocketStorage},
-    socket::{dhcpv4, dns, icmp, tcp, udp},
+    socket::{dhcpv4, icmp, tcp, udp},
     wire::{EthernetAddress, HardwareAddress},
 };
 
 use rt::{ControlTag, LogEvent, LogSeverity, NetworkConfigState, RawMessage, ServiceId};
 use serviceos_userspace_runtime as rt;
 
+mod cache;
 mod config;
 mod consts;
 mod device;
+mod dnsmsg;
+mod dnsresolv;
+mod firewall;
 mod protocol;
 mod types;
 mod util;
@@ -20,12 +24,14 @@ mod util;
 rt::entry!(run);
 
 use crate::{
+    cache::ResolverCache,
     config::{load_hosts, read_network_config},
     consts::{
-        MAX_DNS_QUERY_SLOTS, MAX_HOSTS, MAX_TCP_LISTENERS, MAX_TCP_SOCKETS, MAX_UDP_SOCKETS,
-        TCP_SOCKET_BUFFER_BYTES, UDP_DATAGRAM_BUFFER_BYTES,
+        DNS_UDP_BUFFER_BYTES, MAX_HOSTS, MAX_TCP_LISTENERS, MAX_TCP_SOCKETS,
+        MAX_UDP_SOCKETS, TCP_SOCKET_BUFFER_BYTES, UDP_DATAGRAM_BUFFER_BYTES,
     },
     device::KernelPacketDevice,
+    firewall::FirewallState,
     protocol::{
         apply_interface_runtime, drive_dynamic_ipv4, handle_datagram_request,
         handle_listener_request, handle_public_request, handle_socket_request, pump_listeners,
@@ -121,9 +127,16 @@ pub(crate) fn run() -> u64 {
         icmp::PacketBuffer::new(&mut icmp_tx_meta[..], &mut icmp_tx_data[..]),
     );
     let dhcp_socket = dhcpv4::Socket::new();
-    let mut dns_queries = [const { None }; MAX_DNS_QUERY_SLOTS];
-    let initial_dns_servers = [smoltcp::wire::IpAddress::Ipv4(runtime_state.dns_server)];
-    let dns_socket = dns::Socket::new(&initial_dns_servers, &mut dns_queries[..]);
+    // Dedicated DNS client socket (own wire codec; see dnsresolv.rs). Bound
+    // to an ephemeral local port; queries are identified by transaction id.
+    let mut dns_rx = [0u8; DNS_UDP_BUFFER_BYTES];
+    let mut dns_tx = [0u8; DNS_UDP_BUFFER_BYTES];
+    let mut dns_rx_meta = [udp::PacketMetadata::EMPTY];
+    let mut dns_tx_meta = [udp::PacketMetadata::EMPTY];
+    let dns_client_socket = udp::Socket::new(
+        udp::PacketBuffer::new(&mut dns_rx_meta[..], &mut dns_rx[..]),
+        udp::PacketBuffer::new(&mut dns_tx_meta[..], &mut dns_tx[..]),
+    );
     let mut tcp0_rx = [0u8; TCP_SOCKET_BUFFER_BYTES];
     let mut tcp0_tx = [0u8; TCP_SOCKET_BUFFER_BYTES];
     let mut tcp1_rx = [0u8; TCP_SOCKET_BUFFER_BYTES];
@@ -139,7 +152,7 @@ pub(crate) fn run() -> u64 {
     let mut sockets = SocketSet::new(&mut socket_storage[..]);
     let icmp_handle = sockets.add(icmp_socket);
     let dhcp_handle = sockets.add(dhcp_socket);
-    let dns_handle = sockets.add(dns_socket);
+    let dns_client_handle = sockets.add(dns_client_socket);
     let tcp_handles = [sockets.add(tcp0), sockets.add(tcp1)];
     let mut udp_a_rx_meta = [udp::PacketMetadata::EMPTY; 4];
     let mut udp_a_rx_data = [0u8; UDP_DATAGRAM_BUFFER_BYTES];
@@ -186,6 +199,39 @@ pub(crate) fn run() -> u64 {
     let mut next_local_port = crate::consts::EPHEMERAL_PORT_BASE;
     let mut dhcp_started_at = rt::monotonic_now().unwrap_or(0);
     let mut selftest_done = false;
+    let mut resolver_cache = ResolverCache::new();
+    let mut firewall = FirewallState::new();
+    let mut next_query_id = 1u16;
+
+    // Bind the DNS client socket to a deterministic ephemeral port before any
+    // request-driven ephemeral allocation can collide with it.
+    {
+        let dns_local_port = next_local_port;
+        next_local_port = next_local_port.saturating_add(1);
+        if sockets
+            .get_mut::<udp::Socket>(dns_client_handle)
+            .bind(dns_local_port)
+            .is_err()
+        {
+            return 0xfb12;
+        }
+    }
+
+    let _ = rt::write_logf(
+        "network",
+        format_args!(
+            "resolver-cache ready capacity={} entries=0 hits=0 misses=0",
+            crate::consts::MAX_RESOLVER_CACHE_ENTRIES
+        ),
+    );
+    let _ = rt::write_logf(
+        "network",
+        format_args!(
+            "firewall state rules=0 default-inbound={} dns-client-port={}",
+            if firewall.default_inbound_allow { "allow" } else { "deny" },
+            next_local_port.wrapping_sub(1)
+        ),
+    );
 
     let _ = emit_log(
         log_handle,
@@ -223,7 +269,6 @@ pub(crate) fn run() -> u64 {
                 &mut iface,
                 &mut sockets,
                 dhcp_handle,
-                dns_handle,
             )
             .is_err()
         {
@@ -237,6 +282,7 @@ pub(crate) fn run() -> u64 {
             &mut transports,
             tcp_handles,
             &mut sockets,
+            &mut firewall,
         )
         .is_err()
         {
@@ -268,9 +314,12 @@ pub(crate) fn run() -> u64 {
                     &mut iface,
                     &mut device,
                     &mut sockets,
-                    dns_handle,
+                    dns_client_handle,
                     icmp_handle,
                     &mut next_sequence,
+                    &mut next_query_id,
+                    &mut resolver_cache,
+                    &mut firewall,
                     &mut transports,
                     tcp_handles,
                     &mut next_local_port,
@@ -335,6 +384,7 @@ pub(crate) fn run() -> u64 {
                         &mut sockets,
                         &mut udp_slots[index],
                         &datagram_request,
+                        &mut firewall,
                     )
                     .is_err()
                     {

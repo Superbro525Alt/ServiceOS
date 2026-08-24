@@ -393,6 +393,7 @@ fn launch_root_manager(kernel: &Kernel<'_>) -> Result<RootBootstrapSummary, Boot
             boot_store_bytes.len() as u64,
             BootstrapPlatform::Raspi5 as u32 as u64,
             0,
+            0,
         ],
     )?
     .add_transfer(boot_store_transfer)?

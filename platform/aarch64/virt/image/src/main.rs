@@ -589,6 +589,7 @@ fn launch_root_manager(
             boot_store_bytes.len() as u64,
             BootstrapPlatform::QemuVirtio as u32 as u64,
             bootstrap_resource_flags,
+            0,
         ],
     )?
     .add_transfer(boot_store_transfer)?

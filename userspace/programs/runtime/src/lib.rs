@@ -104,12 +104,14 @@ pub type Result<T> = core::result::Result<T, Error>;
 #[macro_export]
 macro_rules! entry {
     ($path:path) => {
+        #[cfg(not(test))]
         #[panic_handler]
         fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
             let _ = $crate::write_log("panic", "userspace panic");
             $crate::thread_exit(0xffff_ffff_ffff_ff00)
         }
 
+        #[cfg(not(test))]
         #[unsafe(no_mangle)]
         #[unsafe(link_section = ".text.start")]
         pub extern "C" fn _start() -> ! {

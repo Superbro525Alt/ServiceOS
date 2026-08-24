@@ -37,20 +37,6 @@ serviceos_x86_64_resume_user:
     push qword ptr [r11 + 0x88]
     push qword ptr [r11 + 0x80]
     push qword ptr [r11 + 0x78]
-    // TEMP-DEBUG(qisa-gpf): snapshot iretq frame + rax source; remove.
-    mov [rip + serviceos_kdbg_rsp_snap], rsp
-    mov rcx, [rsp]
-    mov [rip + serviceos_kdbg_w0], rcx
-    mov rcx, [rsp + 8]
-    mov [rip + serviceos_kdbg_w1], rcx
-    mov rcx, [rsp + 16]
-    mov [rip + serviceos_kdbg_w2], rcx
-    mov rcx, [rsp + 24]
-    mov [rip + serviceos_kdbg_w3], rcx
-    mov rcx, [rsp + 32]
-    mov [rip + serviceos_kdbg_w4], rcx
-    mov rcx, [r11 + 0x70]
-    mov [rip + serviceos_kdbg_rax_src], rcx
     mov r15, [r11 + 0x00]
     mov r14, [r11 + 0x08]
     mov r13, [r11 + 0x10]
@@ -276,22 +262,6 @@ impl AddressSpaceRuntime {
 #[unsafe(no_mangle)]
 static mut serviceos_x86_64_user_return_stack: u64 = 0;
 
-// TEMP-DEBUG(qisa-gpf): remove after root-cause confirmed.
-#[unsafe(no_mangle)]
-pub static mut serviceos_kdbg_rsp_snap: u64 = 0;
-#[unsafe(no_mangle)]
-pub static mut serviceos_kdbg_w0: u64 = 0;
-#[unsafe(no_mangle)]
-pub static mut serviceos_kdbg_w1: u64 = 0;
-#[unsafe(no_mangle)]
-pub static mut serviceos_kdbg_w2: u64 = 0;
-#[unsafe(no_mangle)]
-pub static mut serviceos_kdbg_w3: u64 = 0;
-#[unsafe(no_mangle)]
-pub static mut serviceos_kdbg_w4: u64 = 0;
-#[unsafe(no_mangle)]
-pub static mut serviceos_kdbg_rax_src: u64 = 0;
-
 static USER_THREADS: Mutex<UserThreadRuntime> = Mutex::new(UserThreadRuntime::new());
 static ADDRESS_SPACES: Mutex<AddressSpaceRuntime> = Mutex::new(AddressSpaceRuntime::new());
 
@@ -484,70 +454,23 @@ pub fn run_thread(thread_id: ThreadId) -> Result<(), UserLaunchError> {
     };
     let kernel_page_table_root = cpu::current_page_table_root();
 
-    // TEMP-DEBUG(qisa-gpf): remove after root-cause confirmed.
-    {
-        let k_pml40 = unsafe { (kernel_page_table_root.as_u64() as *const u64).read_volatile() };
-        let u_pml40 = unsafe { (thread.page_table_root.as_u64() as *const u64).read_volatile() };
-        let ctx_va = &thread.context as *const SavedUserContext as u64;
-        let rsp_now: u64;
-        unsafe { core::arch::asm!("mov {}, rsp", out(reg) rsp_now) };
-        let pa_k = unsafe { OwnedPageTable::from_root(kernel_page_table_root) }
-            .translate(VirtualAddress::new(ctx_va))
-            .map(|p| p.as_u64())
-            .unwrap_or(u64::MAX);
-        crate::serial::write_args(format_args!(
-            "dbg: kroot={:#x} uroot={:#x} k[0]={:#x} u[0]={:#x} ctx(cs={:#x} ss={:#x} ip={:#x} sp={:#x}) ctxva={:#x} rsp={:#x} pa_k={:#x}\n",
-            kernel_page_table_root.as_u64(),
-            thread.page_table_root.as_u64(),
-            k_pml40,
-            u_pml40,
-            thread.context.code_segment,
-            thread.context.user_stack_segment,
-            thread.context.instruction_pointer,
-            thread.context.user_stack_pointer,
-            ctx_va,
-            rsp_now,
-            pa_k,
-        ));
-    }
-
     unsafe {
         cpu::load_page_table_root(thread.page_table_root);
-        // TEMP-DEBUG(qisa-gpf): re-read under the user CR3.
-        {
-            let u_pml40 = (thread.page_table_root.as_u64() as *const u64).read_volatile();
-            let canary = (&thread.context as *const SavedUserContext as *const u64)
-                .add(15)
-                .read_volatile();
-            crate::serial::write_args(format_args!(
-                "dbg: post-switch cr3={:#x} u[0]={:#x} ctx-ip-field={:#x}\n",
-                cpu::current_page_table_root().as_u64(),
-                u_pml40,
-                canary,
-            ));
-        }
+        // The platform boots with interrupts disabled and the kernel-side
+        // executor keeps them disabled (its spin locks are not irq-safe), so
+        // a latched LAPIC/PIT expiry would otherwise sit pending until the
+        // `iretq` below restores the user RFLAGS (IF=1) and inject at the
+        // very first instruction boundary — before any user instruction can
+        // retire. Enable interrupts only for the window in which user code
+        // runs: ticks delivered here are either resumed via IRET (kernel-mode
+        // tick) or preempted into the saved context (user-mode tick).
+        x86_64::instructions::interrupts::enable();
         serviceos_x86_64_resume_user(&thread.context);
+        // Every path back out of resume_user (preempted timer frame or
+        // syscall yield) returns through an interrupt gate, so IF is already
+        // clear; disable defensively to keep the kernel-side invariant.
+        x86_64::instructions::interrupts::disable();
         cpu::load_page_table_root(kernel_page_table_root);
-    }
-
-    // TEMP-DEBUG(qisa-gpf): unreachable on success; dump asm snapshots.
-    #[allow(static_mut_refs)]
-    {
-        let (rsp, w0, w1, w2, w3, w4, rax_src) = unsafe {
-            (
-                serviceos_kdbg_rsp_snap,
-                serviceos_kdbg_w0,
-                serviceos_kdbg_w1,
-                serviceos_kdbg_w2,
-                serviceos_kdbg_w3,
-                serviceos_kdbg_w4,
-                serviceos_kdbg_rax_src,
-            )
-        };
-        crate::serial::write_args(format_args!(
-            "dbg: asmsnap rsp={:#x} w0(ip)={:#x} w1(cs)={:#x} w2(fl)={:#x} w3(sp)={:#x} w4(ss)={:#x} raxsrc={:#x}\n",
-            rsp, w0, w1, w2, w3, w4, rax_src
-        ));
     }
 
     Ok(())

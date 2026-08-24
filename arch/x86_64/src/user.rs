@@ -515,13 +515,10 @@ pub fn run_thread(thread_id: ThreadId) -> Result<(), UserLaunchError> {
         cpu::load_page_table_root(thread.page_table_root);
         // TEMP-DEBUG(qisa-gpf): re-read under the user CR3.
         {
-            let u_pml40 =
-                unsafe { (thread.page_table_root.as_u64() as *const u64).read_volatile() };
-            let canary = unsafe {
-                (&thread.context as *const SavedUserContext as *const u64)
-                    .add(15)
-                    .read_volatile()
-            };
+            let u_pml40 = (thread.page_table_root.as_u64() as *const u64).read_volatile();
+            let canary = (&thread.context as *const SavedUserContext as *const u64)
+                .add(15)
+                .read_volatile();
             crate::serial::write_args(format_args!(
                 "dbg: post-switch cr3={:#x} u[0]={:#x} ctx-ip-field={:#x}\n",
                 cpu::current_page_table_root().as_u64(),

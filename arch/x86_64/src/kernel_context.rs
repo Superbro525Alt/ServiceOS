@@ -129,13 +129,18 @@ serviceos_x86_64_kthread_entry:
     /// r12-r15 -- the callee-saved set shared by both conventions.
     #[inline(never)]
     pub unsafe extern "C" fn kernel_context_switch(from: &mut KernelContext, to: &KernelContext) {
-        core::arch::asm!(
-            "call {body}",
-            in("rcx") from as *mut KernelContext as usize,
-            in("rdx") to as *const KernelContext as usize,
-            body = sym kernel_context_switch_body,
-            clobber_abi("C"),
-        );
+        // SAFETY: caller guarantees both contexts are live and no other CPU
+        // is switching these stacks; the body preserves the SysV/MS-x64
+        // callee-saved register set.
+        unsafe {
+            core::arch::asm!(
+                "call {body}",
+                in("rcx") from as *mut KernelContext as usize,
+                in("rdx") to as *const KernelContext as usize,
+                body = sym kernel_context_switch_body,
+                clobber_abi("C"),
+            );
+        }
     }
 }
 

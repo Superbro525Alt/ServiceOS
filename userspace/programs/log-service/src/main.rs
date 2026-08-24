@@ -1,11 +1,14 @@
-#![no_std]
-#![no_main]
+#![cfg_attr(not(test), no_std)]
+#![cfg_attr(not(test), no_main)]
+
+mod crashlog;
 
 use rt::{
     ConfigKey, ControlTag, KernelEventKind, LOG_FILTER_ANY, LifecycleEvent, LogDomain, LogEvent,
     LogQueryStatus, LogSeverity, LogStatus, LogTag, RawMessage, ServiceId, StorageEntryKind,
 };
 use serviceos_userspace_runtime as rt;
+use crashlog::{CrashLog, CrashRecord};
 
 const MAX_LOG_RECORDS: usize = 64;
 const MAX_SUBSCRIBERS: usize = 8;
@@ -114,6 +117,7 @@ fn main() -> u64 {
     let mut next_slot = 0usize;
     let mut sequence = 0u64;
     let mut subscribers = [Subscriber::empty(); MAX_SUBSCRIBERS];
+    let mut crashes = CrashLog::new();
     let mut next_kernel_sequence = 0u64;
     let mut persist_dirty = false;
     let mut persist_pending_records = 0usize;
@@ -127,6 +131,21 @@ fn main() -> u64 {
             &mut next_slot,
             &mut sequence,
         );
+    }
+    for stored in &records[..record_count] {
+        if CrashRecord::is_crash(stored.severity as u32, stored.event as u32) {
+            crashes.record(CrashRecord {
+                log_sequence: stored.sequence,
+                tick: stored.tick,
+                source: stored.source as u32,
+                severity: stored.severity as u32,
+                domain: stored.domain as u32,
+                event: stored.event as u32,
+                arg0: stored.arg0,
+                arg1: stored.arg1,
+                arg2: stored.arg2,
+            });
+        }
     }
     if let Ok((oldest, next)) = rt::kernel_event_query_info() {
         next_kernel_sequence = if next == 0 { oldest } else { oldest.max(1) };
@@ -161,6 +180,7 @@ fn main() -> u64 {
             &mut next_slot,
             &mut sequence,
             &mut subscribers,
+            &mut crashes,
             &mut next_kernel_sequence,
             &mut persist_dirty,
             &mut persist_pending_records,
@@ -183,6 +203,7 @@ fn main() -> u64 {
                     &mut next_slot,
                     &mut sequence,
                     &mut subscribers,
+                    &mut crashes,
                     &mut persist_dirty,
                     &mut persist_pending_records,
                 )
@@ -228,6 +249,7 @@ fn handle_request(
     next_slot: &mut usize,
     sequence: &mut u64,
     subscribers: &mut [Subscriber; MAX_SUBSCRIBERS],
+    crashes: &mut CrashLog,
     persist_dirty: &mut bool,
     persist_pending_records: &mut usize,
 ) -> rt::Result<()> {
@@ -413,10 +435,26 @@ fn drain_kernel_events(
     next_slot: &mut usize,
     sequence: &mut u64,
     subscribers: &mut [Subscriber; MAX_SUBSCRIBERS],
+    crashes: &mut CrashLog,
     next_kernel_sequence: &mut u64,
     persist_dirty: &mut bool,
     persist_pending_records: &mut usize,
 ) -> rt::Result<()> {
+    for stored in &records[..*record_count] {
+        if CrashRecord::is_crash(stored.severity as u32, stored.event as u32) {
+            crashes.record(CrashRecord {
+                log_sequence: stored.sequence,
+                tick: stored.tick,
+                source: stored.source as u32,
+                severity: stored.severity as u32,
+                domain: stored.domain as u32,
+                event: stored.event as u32,
+                arg0: stored.arg0,
+                arg1: stored.arg1,
+                arg2: stored.arg2,
+            });
+        }
+    }
     let (oldest, next) = rt::kernel_event_query_info()?;
     if *next_kernel_sequence == 0 {
         *next_kernel_sequence = oldest;
@@ -455,6 +493,19 @@ fn drain_kernel_events(
             persist_dirty,
             persist_pending_records,
         )?;
+        if CrashRecord::is_crash(record.severity as u32, record.event as u32) {
+            crashes.record(CrashRecord {
+                log_sequence: 0,
+                tick: record.tick,
+                source: ServiceId::RootManager as u32,
+                severity: record.severity as u32,
+                domain: record.domain as u32,
+                event: record.event as u32,
+                arg0: record.arg0,
+                arg1: record.arg1,
+                arg2: record.arg2,
+            });
+        }
     }
     Ok(())
 }

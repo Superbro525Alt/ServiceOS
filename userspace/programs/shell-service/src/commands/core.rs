@@ -656,8 +656,22 @@ fn format_rights(rights: u64) -> FixedLogBuffer<64> {
 }
 
 pub(crate) fn cmd_run_sysinfo(bootstrap: rt::Handle, output: ShellOutput) -> rt::Result<()> {
-    let task_handle =
-        rt::manager_launch_program(bootstrap, ServiceImageId::SysinfoTool, Some(output.handle))?;
+    let task_handle = match rt::manager_launch_program(
+        bootstrap,
+        ServiceImageId::SysinfoTool,
+        Some(output.handle),
+    ) {
+        Ok(handle) => handle,
+        Err(rt::Error::PermissionDenied) => {
+            return explain_native_launch_denial(
+                bootstrap,
+                output,
+                super::deny::DenialSubject::App { name: "sysinfo" },
+                Some(ServiceImageId::SysinfoTool),
+            );
+        }
+        Err(error) => return Err(error),
+    };
     let status = rt::wait_for_exit(task_handle)?;
     let _ = rt::handle_close(task_handle);
     write_output_linef(
@@ -671,7 +685,7 @@ pub(crate) fn cmd_run_image(
     output: ShellOutput,
     path: &str,
 ) -> rt::Result<()> {
-    let task_handle = rt::manager_launch_stored_program_with_payload(
+    let task_handle = match rt::manager_launch_stored_program_with_payload(
         bootstrap,
         path,
         &[1],
@@ -682,11 +696,33 @@ pub(crate) fn cmd_run_image(
                 | rt::rights::DUPLICATE
                 | rt::rights::TRANSFER,
         }],
-    )?;
+    ) {
+        Ok(handle) => handle,
+        Err(rt::Error::PermissionDenied) => {
+            return explain_native_launch_denial(
+                bootstrap,
+                output,
+                super::deny::DenialSubject::StoredImage { path },
+                None,
+            );
+        }
+        Err(error) => return Err(error),
+    };
     let status = rt::wait_for_exit(task_handle)?;
     let _ = rt::handle_close(task_handle);
     write_output_linef(
         output,
         format_args!("image exited with {:#x}", status.exit_code),
     )
+}
+
+fn explain_native_launch_denial(
+    bootstrap: rt::Handle,
+    output: ShellOutput,
+    subject: super::deny::DenialSubject<'_>,
+    image_id: Option<ServiceImageId>,
+) -> rt::Result<()> {
+    let observation = super::deny::observe_native_denial(bootstrap, image_id);
+    let explanation = super::deny::classify_denial(&subject, &observation);
+    super::deny::render_denial_explanation(output, &subject, &explanation)
 }

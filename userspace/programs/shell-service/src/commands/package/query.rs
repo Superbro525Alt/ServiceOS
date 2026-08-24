@@ -5,7 +5,9 @@ use crate::util::{
     MAX_VERSION_BYTES, ShellOutput, printable_version, service_name, write_output_linef,
 };
 
-use super::parse::{MAX_PACKAGE_TEXT, channel_name, ring_name, trust_state_name};
+use super::parse::{
+    MAX_PACKAGE_TEXT, channel_name, ring_name, signing_state_name, trust_state_name,
+};
 
 pub(super) fn cmd_pkg_list(bootstrap: rt::Handle, output: ShellOutput) -> rt::Result<()> {
     let package_handle = rt::lookup_service(bootstrap, ServiceId::Package)?;
@@ -107,6 +109,27 @@ pub(super) fn cmd_pkg_info(
         &mut rollback,
         &mut latest,
     )?;
+
+    // Trust/provenance view: reuse the provenance and history contracts so the
+    // operator sees signing state and rollback provenance alongside versions.
+    let mut prov_installed = [0u8; MAX_VERSION_BYTES];
+    let mut prov_active = [0u8; MAX_VERSION_BYTES];
+    let mut prov_rollback = [0u8; MAX_PACKAGE_TEXT];
+    let mut prov_latest = [0u8; MAX_VERSION_BYTES];
+    let mut source = [0u8; MAX_PACKAGE_TEXT];
+    let provenance = rt::package_provenance(
+        package_handle,
+        service_id,
+        &mut prov_installed,
+        &mut prov_active,
+        &mut prov_rollback,
+        &mut prov_latest,
+        &mut source,
+    );
+
+    let mut current = [0u8; MAX_VERSION_BYTES];
+    let mut previous = [0u8; MAX_VERSION_BYTES];
+    let history = rt::package_history(package_handle, service_id, &mut current, &mut previous);
     let _ = rt::handle_close(package_handle);
 
     write_output_linef(
@@ -132,7 +155,42 @@ pub(super) fn cmd_pkg_info(
                     .map_err(|_| rt::Error::InvalidArgument)?
             ),
         ),
-    )
+    )?;
+
+    if let Ok(provenance) = provenance {
+        let source_text = core::str::from_utf8(&source[..provenance.source_len]).unwrap_or("?");
+        write_output_linef(
+            output,
+            format_args!(
+                "  trust={} signing={} channel={} ring={} source={}",
+                trust_state_name(provenance.trust_state),
+                signing_state_name(provenance.trust_state),
+                channel_name(provenance.channel),
+                ring_name(provenance.ring),
+                source_text,
+            ),
+        )?;
+        write_output_linef(
+            output,
+            format_args!(
+                "  rollback-provenance: available={} previous={} source={}",
+                if info.rollback_available || provenance.rollback_available {
+                    "yes"
+                } else {
+                    "no"
+                },
+                printable_version(
+                    core::str::from_utf8(&previous[..history.unwrap_or((0, 0)).1])
+                        .or_else(|_| core::str::from_utf8(
+                            &prov_rollback[..provenance.rollback_version_len.min(MAX_PACKAGE_TEXT)]
+                        ))
+                        .unwrap_or("?"),
+                ),
+                source_text,
+            ),
+        )?;
+    }
+    Ok(())
 }
 
 pub(super) fn cmd_pkg_history(

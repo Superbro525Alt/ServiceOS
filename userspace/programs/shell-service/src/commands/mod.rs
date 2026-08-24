@@ -1,5 +1,6 @@
 mod audio;
 mod core;
+mod deny;
 mod desktop;
 mod developer;
 mod diagnostics;

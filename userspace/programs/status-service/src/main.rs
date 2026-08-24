@@ -2,6 +2,7 @@
 #![cfg_attr(not(test), no_main)]
 
 mod rollup;
+mod timeline;
 
 use rollup::{RollupEntry, compute_rollup, fill_snapshot_reply, is_restarting_phase};
 use rt::{
@@ -9,6 +10,10 @@ use rt::{
     RawMessage, ServiceId, StatusHealth, StatusResult, StatusTag,
 };
 use serviceos_userspace_runtime as rt;
+use timeline::{
+    TIMELINE_REPLY_EVENTS, Timeline, TimelineEvent, compute_timeline_summary, event_kind,
+    timeline_tag,
+};
 
 const MAX_BANNER_BYTES: usize = 128;
 const MAX_STATUS_SERVICES: usize = 24;
@@ -129,12 +134,28 @@ fn main() -> u64 {
     let mut entries = [ServiceStatusEntry::empty(); MAX_STATUS_SERVICES];
     let mut subscribers = [Subscriber::empty(); MAX_SUBSCRIBERS];
     let mut entry_count = 0usize;
-    if seed_from_manager(bootstrap, &mut entries, &mut entry_count).is_err() {
+    let mut timeline = Timeline::new();
+    if seed_from_manager(bootstrap, &mut entries, &mut entry_count, &mut timeline).is_err() {
         return 0xf40c;
+    }
+    {
+        let summary = compute_timeline_summary(&timeline);
+        let _ = rt::write_logf(
+            "status",
+            format_args!(
+                "timeline seeded: retained={} pushed={} services={} busiest={}/{}",
+                summary.retained,
+                summary.pushed,
+                summary.per_service_len,
+                summary.busiest_service,
+                summary.busiest_count,
+            ),
+        );
     }
 
     let mut heartbeat_count = 0u64;
     let mut last_tick = 0u64;
+    let mut timeline_stats_emitted = false;
     let mut next_heartbeat = match rt::monotonic_now() {
         Ok(now) => now.saturating_add(heartbeat_ticks),
         Err(_) => return 0xf40d,
@@ -176,6 +197,8 @@ fn main() -> u64 {
                     &mut entries,
                     &mut entry_count,
                     &mut subscribers,
+                    &mut timeline,
+                    &mut timeline_stats_emitted,
                     heartbeat_count,
                     last_tick,
                 )
@@ -202,6 +225,7 @@ fn main() -> u64 {
                 &mut entries,
                 &mut entry_count,
                 &mut subscribers,
+                &mut timeline,
                 ServiceId::Status,
                 ManagerServicePhase::Ready,
                 StatusHealth::Healthy,
@@ -210,6 +234,23 @@ fn main() -> u64 {
                 last_tick,
                 now,
             );
+
+            if heartbeat_count == 1 {
+                let summary = compute_timeline_summary(&timeline);
+                let _ = rt::write_logf(
+                    "status",
+                    format_args!(
+                        "timeline: retained={} pushed={} services={} busiest={}/{} first_tick={} last_tick={}",
+                        summary.retained,
+                        summary.pushed,
+                        summary.per_service_len,
+                        summary.busiest_service,
+                        summary.busiest_count,
+                        summary.first_tick.unwrap_or(0),
+                        summary.last_tick.unwrap_or(0),
+                    ),
+                );
+            }
 
             if heartbeat_log_period != 0 && heartbeat_count % heartbeat_log_period == 0 {
                 let _ = rt::send_log_record(
@@ -247,6 +288,8 @@ fn handle_request(
     entries: &mut [ServiceStatusEntry; MAX_STATUS_SERVICES],
     entry_count: &mut usize,
     subscribers: &mut [Subscriber; MAX_SUBSCRIBERS],
+    timeline: &mut Timeline,
+    timeline_stats_emitted: &mut bool,
     heartbeat_count: u64,
     last_tick: u64,
 ) -> rt::Result<()> {
@@ -289,6 +332,7 @@ fn handle_request(
                 entries,
                 entry_count,
                 subscribers,
+                timeline,
                 service_id_from_word(request.words[0]),
                 manager_phase_from_word(request.words[1]),
                 health_from_word(request.words[2]),
@@ -297,6 +341,23 @@ fn handle_request(
                 request.words[5],
                 request.words[6],
             );
+            if !*timeline_stats_emitted {
+                *timeline_stats_emitted = true;
+                let summary = compute_timeline_summary(timeline);
+                let _ = rt::write_logf(
+                    "status",
+                    format_args!(
+                        "timeline live: retained={} pushed={} services={} busiest={}/{} first_tick={} last_tick={}",
+                        summary.retained,
+                        summary.pushed,
+                        summary.per_service_len,
+                        summary.busiest_service,
+                        summary.busiest_count,
+                        summary.first_tick.unwrap_or(0),
+                        summary.last_tick.unwrap_or(0),
+                    ),
+                );
+            }
         }
         x if x == StatusTag::ServiceQueryRequest as u32 => {
             if request.word_count < 1 || request.handle_count < 1 {
@@ -396,6 +457,57 @@ fn handle_request(
                 }
             }
         }
+        x if x == timeline_tag::QUERY_REQUEST as u32 => {
+            if request.word_count < 2 || request.handle_count < 1 {
+                return Ok(());
+            }
+            let reply_handle = request.handles[0];
+            let mut out = [TimelineEvent::zeroed(); TIMELINE_REPLY_EVENTS];
+            let count = if request.words[0] == timeline_tag::QUERY_MODE_SINCE {
+                timeline.query_since(request.words[1], &mut out)
+            } else {
+                timeline.query_last(request.words[1] as usize, &mut out)
+            };
+            let mut reply = RawMessage::empty(timeline_tag::QUERY_REPLY);
+            reply.word_count = 1;
+            reply.words[0] = count as u64;
+            for slot in 0..count {
+                let base = 1 + slot * 3;
+                reply.words[base] = out[slot].service_id as u64 | ((out[slot].kind as u64) << 32);
+                reply.words[base + 1] = out[slot].tick;
+                reply.words[base + 2] = out[slot].from as u64 | ((out[slot].to as u64) << 32);
+                reply.word_count += 3;
+            }
+            let _ = rt::channel_send(reply_handle, &reply);
+            let _ = rt::handle_close(reply_handle);
+        }
+        x if x == timeline_tag::SUMMARY_REQUEST as u32 => {
+            if request.handle_count < 1 {
+                return Ok(());
+            }
+            let reply_handle = request.handles[0];
+            let summary = compute_timeline_summary(timeline);
+            let mut reply = RawMessage::empty(timeline_tag::SUMMARY_REPLY);
+            reply.word_count = 12;
+            reply.words[0] = summary.retained as u64;
+            reply.words[1] = summary.pushed;
+            reply.words[2] = summary.per_service_len as u64;
+            for slot in 0..4usize {
+                let (service_id, count) = if slot < summary.per_service_len {
+                    summary.per_service[slot]
+                } else {
+                    (0, 0)
+                };
+                reply.words[3 + slot] = service_id as u64 | ((count as u64) << 32);
+            }
+            reply.words[7] = summary.busiest_service as u64;
+            reply.words[8] = summary.busiest_count as u64;
+            reply.words[9] = summary.first_tick.unwrap_or(0);
+            reply.words[10] = summary.last_tick.unwrap_or(0);
+            reply.words[11] = timeline.total_pushed();
+            let _ = rt::channel_send(reply_handle, &reply);
+            let _ = rt::handle_close(reply_handle);
+        }
         _ => {}
     }
 
@@ -406,6 +518,7 @@ fn seed_from_manager(
     bootstrap: rt::Handle,
     entries: &mut [ServiceStatusEntry; MAX_STATUS_SERVICES],
     entry_count: &mut usize,
+    timeline: &mut Timeline,
 ) -> rt::Result<()> {
     let mut services = [rt::ManagerServiceInfo {
         service_id: ServiceId::RootManager,
@@ -426,6 +539,7 @@ fn seed_from_manager(
             entries,
             entry_count,
             &mut no_subscribers,
+            timeline,
             service.service_id,
             info.phase,
             health_for_phase(info.phase),
@@ -442,6 +556,7 @@ fn update_entry(
     entries: &mut [ServiceStatusEntry; MAX_STATUS_SERVICES],
     entry_count: &mut usize,
     subscribers: &mut [Subscriber],
+    timeline: &mut Timeline,
     service_id: ServiceId,
     phase: ManagerServicePhase,
     health: StatusHealth,
@@ -483,6 +598,18 @@ fn update_entry(
         restarts,
     };
 
+    record_timeline_event(
+        timeline,
+        prior,
+        service_id as u32,
+        phase,
+        health,
+        detail_kind,
+        was_restarting,
+        restarts != prior_restarts,
+        updated_tick,
+    );
+
     let mut event = RawMessage::empty(StatusTag::StreamEvent as u32);
     event.word_count = 7;
     event.words[0] = service_id as u32 as u64;
@@ -502,6 +629,60 @@ fn update_entry(
             *subscriber = Subscriber::empty();
         }
     }
+}
+
+/// Classifies one status update as at most one notable timeline event.
+/// Priority: restart > crash (degraded/exited) > phase change > health flip.
+/// First sight of a service is recorded as a seed event.
+fn record_timeline_event(
+    timeline: &mut Timeline,
+    prior: Option<ServiceStatusEntry>,
+    service_id: u32,
+    phase: ManagerServicePhase,
+    health: StatusHealth,
+    detail_kind: u32,
+    was_restarting: bool,
+    restart_incremented: bool,
+    tick: u64,
+) {
+    let Some(prior) = prior else {
+        timeline.push(TimelineEvent {
+            service_id,
+            kind: event_kind::SEED,
+            tick,
+            from: 0,
+            to: phase as u32,
+        });
+        return;
+    };
+
+    let restarted = detail_kind == rt::status_detail_kind::RESTART_BACKOFF
+        && !was_restarting
+        && restart_incremented;
+    let kind = if restarted {
+        event_kind::RESTART
+    } else if prior.phase != phase {
+        if matches!(
+            phase,
+            ManagerServicePhase::Degraded | ManagerServicePhase::Exited
+        ) {
+            event_kind::CRASH
+        } else {
+            event_kind::STATE_CHANGE
+        }
+    } else if prior.health != health {
+        event_kind::HEALTH_FLIP
+    } else {
+        return;
+    };
+
+    timeline.push(TimelineEvent {
+        service_id,
+        kind,
+        tick,
+        from: prior.phase as u32,
+        to: phase as u32,
+    });
 }
 
 fn find_entry(

@@ -24,7 +24,9 @@ const LAPIC_TIMER_DCR: u32 = 0x3E0;
 
 /// LAPIC LVT entry bits
 const LVT_MODE_EXTINT: u32 = 0b111 << 8;
-const LVT_MODE_PERIODIC: u32 = 0b010 << 8;
+/// Timer LVT mode field is bits[18:17] (SDM Table 11-19), not the generic
+/// delivery-mode field at bits[12:8] used by the LINT entries. Periodic = 01b.
+const LVT_MODE_PERIODIC: u32 = 0b001 << 17;
 const LVT_MASKED: u32 = 1 << 16;
 
 /// ICR delivery modes and flags for inter-processor interrupts

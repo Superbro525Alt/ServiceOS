@@ -336,12 +336,30 @@ fn cmd_runtime_launch(
         x if x == rt::RuntimeStatus::InvalidPath as u32 => rt::RuntimeStatus::InvalidPath,
         x if x == rt::RuntimeStatus::Unsupported as u32 => rt::RuntimeStatus::Unsupported,
         x if x == rt::RuntimeStatus::Closed as u32 => rt::RuntimeStatus::Closed,
+        x if x == rt::RuntimeStatus::PendingApproval as u32 => rt::RuntimeStatus::PendingApproval,
         _ => rt::RuntimeStatus::Busy,
     };
     if status != rt::RuntimeStatus::Ok {
         let _ = rt::handle_close(relay.first);
         let _ = rt::handle_close(relay.second);
         let _ = rt::handle_close(runtime_handle);
+        if matches!(
+            status,
+            rt::RuntimeStatus::Denied | rt::RuntimeStatus::PendingApproval
+        ) {
+            let observation = super::deny::observe_runtime_denial(bootstrap, env_id);
+            let subject = super::deny::DenialSubject::RuntimeLaunch {
+                env_id,
+                workload: runtime_workload_name(workload),
+                path: if argument.is_empty() {
+                    None
+                } else {
+                    Some(argument)
+                },
+            };
+            let explanation = super::deny::classify_denial(&subject, &observation);
+            return super::deny::render_denial_explanation(output, &subject, &explanation);
+        }
         return write_output_linef(
             output,
             format_args!("runtime launch failed: {}", runtime_status_name(status)),

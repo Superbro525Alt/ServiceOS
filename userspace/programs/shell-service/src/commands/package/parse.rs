@@ -66,6 +66,19 @@ pub(super) fn trust_state_name(value: rt::PackageTrustState) -> &'static str {
     }
 }
 
+/// Operator-facing signing state derived from the package trust contract:
+/// boot-trusted packages are anchored in the boot trust root, digest-pinned
+/// packages carry a pinned digest verification, and unverified/failed states
+/// mean no accepted signature evidence exists.
+pub(super) fn signing_state_name(value: rt::PackageTrustState) -> &'static str {
+    match value {
+        rt::PackageTrustState::BootTrusted => "trust-root",
+        rt::PackageTrustState::Unverified => "unsigned",
+        rt::PackageTrustState::DigestPinned => "digest-signed",
+        rt::PackageTrustState::VerificationFailed => "verification-failed",
+    }
+}
+
 pub(super) fn channel_name(value: PackageChannel) -> &'static str {
     match value {
         PackageChannel::Stable => "stable",
@@ -87,5 +100,30 @@ pub(super) fn maintenance_action_name(value: PackageMaintenanceAction) -> &'stat
         PackageMaintenanceAction::Validate => "validated",
         PackageMaintenanceAction::Repair => "repaired",
         PackageMaintenanceAction::GarbageCollect => "garbage-collected",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn signing_state_tracks_trust_contract() {
+        assert_eq!(
+            signing_state_name(rt::PackageTrustState::BootTrusted),
+            "trust-root"
+        );
+        assert_eq!(
+            signing_state_name(rt::PackageTrustState::DigestPinned),
+            "digest-signed"
+        );
+        assert_eq!(
+            signing_state_name(rt::PackageTrustState::Unverified),
+            "unsigned"
+        );
+        assert_eq!(
+            signing_state_name(rt::PackageTrustState::VerificationFailed),
+            "verification-failed"
+        );
     }
 }

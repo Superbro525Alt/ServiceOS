@@ -2,10 +2,11 @@ use rt::{RawMessage, TerminalStatus, TerminalTag};
 use serviceos_userspace_runtime as rt;
 
 use crate::{
-    session::{handle_input_byte, initialize_session, release_session, unpack_bytes},
-    state::{
-        MAX_INLINE_BYTES, MAX_SESSIONS, Session, SessionProfile, PROFILE_WIRE_LEN,
+    session::{
+        attach_client, bookmark_current_line, bookmark_cycle, detach_session, handle_input_byte,
+        initialize_session, release_session, unpack_bytes,
     },
+    state::{MAX_INLINE_BYTES, MAX_SESSIONS, PROFILE_WIRE_LEN, Session, SessionProfile, wire},
 };
 
 pub(crate) fn handle_public_request(
@@ -28,8 +29,11 @@ pub(crate) fn handle_public_request(
             let profile = if request.word_count >= 1 {
                 let len = (request.words[0] as usize).min(PROFILE_WIRE_LEN);
                 let mut wire = [0u8; PROFILE_WIRE_LEN];
-                match unpack_bytes(&request.words[1..request.word_count as usize], len, &mut wire)
-                {
+                match unpack_bytes(
+                    &request.words[1..request.word_count as usize],
+                    len,
+                    &mut wire,
+                ) {
                     Ok(()) => SessionProfile::from_wire(&wire),
                     Err(_) => None,
                 }
@@ -105,6 +109,68 @@ pub(crate) fn handle_public_request(
             let _ = rt::channel_send(reply_handle, &reply);
             let _ = rt::handle_close(reply_handle);
         }
+        x if x == wire::SESSION_ATTACH_REQUEST as u32 => {
+            if request.handle_count < 1 {
+                return Ok(());
+            }
+            let reply_handle = request.handles[0];
+            let session_id = if request.word_count >= 1 {
+                request.words[0] as u32
+            } else {
+                0
+            };
+            let mut reply = RawMessage::empty(wire::SESSION_ATTACH_REPLY);
+            reply.word_count = 2;
+            let target = sessions
+                .iter_mut()
+                .find(|session| session.occupied && session.id == session_id);
+            match target {
+                None => {
+                    reply.words[0] = TerminalStatus::NotFound as u32 as u64;
+                    reply.words[1] = session_id as u64;
+                }
+                Some(session) => match attach_client(session) {
+                    Some(handle) => {
+                        reply.words[0] = TerminalStatus::Ok as u32 as u64;
+                        reply.words[1] = session.id as u64;
+                        reply.handle_count = 1;
+                        reply.handles[0] = handle;
+                        reply.handle_rights[0] =
+                            rt::rights::SEND | rt::rights::RECEIVE | rt::rights::TRANSFER;
+                    }
+                    None => {
+                        reply.words[0] = TerminalStatus::Busy as u32 as u64;
+                        reply.words[1] = session_id as u64;
+                    }
+                },
+            }
+            let _ = rt::channel_send(reply_handle, &reply);
+            let _ = rt::handle_close(reply_handle);
+        }
+        x if x == wire::SESSION_ENUMERATE_REQUEST as u32 => {
+            if request.handle_count < 1 {
+                return Ok(());
+            }
+            let reply_handle = request.handles[0];
+            // words[2..] alternate id, attached-flag pairs so clients can
+            // offer detached (reattachable) sessions on launch.
+            let mut reply = RawMessage::empty(wire::SESSION_ENUMERATE_REPLY);
+            reply.word_count = 2;
+            reply.words[0] = TerminalStatus::Ok as u32 as u64;
+            let mut count = 0usize;
+            for session in sessions.iter().filter(|session| session.occupied) {
+                if 3 + count * 2 >= rt::IPC_MAX_WORDS as usize {
+                    break;
+                }
+                reply.words[2 + count * 2] = session.id as u64;
+                reply.words[3 + count * 2] = session.attached as u64;
+                count += 1;
+            }
+            reply.word_count = 2 + count as u32 * 2;
+            reply.words[1] = count as u64;
+            let _ = rt::channel_send(reply_handle, &reply);
+            let _ = rt::handle_close(reply_handle);
+        }
         _ => {}
     }
 
@@ -142,6 +208,17 @@ pub(crate) fn handle_session_message(
         }
         x if x == TerminalTag::SessionClose as u32 => {
             release_session(bootstrap, session);
+        }
+        x if x == wire::SESSION_DETACH as u32 => {
+            // Pane close-with-detach: keep the session (scrollback, line
+            // state, history, bookmarks) alive for a later reattach.
+            detach_session(session);
+        }
+        x if x == wire::SESSION_BOOKMARK_ADD as u32 => {
+            bookmark_current_line(session);
+        }
+        x if x == wire::SESSION_BOOKMARK_CYCLE as u32 => {
+            bookmark_cycle(session)?;
         }
         _ => {}
     }

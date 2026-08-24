@@ -67,6 +67,55 @@ pub(crate) fn open_new_tab(state: &mut TerminalState) -> rt::Result<()> {
     open_tab_with_profile(state, index, state.profile_index)
 }
 
+/// Restore-on-launch: offer the most recent detached session first. Scans the
+/// service's live sessions and reattaches the highest-id detached one; returns
+/// Ok(false) when nothing was reattachable.
+pub(crate) fn restore_most_recent_detached(state: &mut TerminalState) -> rt::Result<bool> {
+    let mut sessions = [(0u32, false); MAX_TABS];
+    let count = crate::profiles::enumerate_sessions(state.terminal_handle, &mut sessions)?;
+    let candidate = sessions[..count]
+        .iter()
+        .filter(|(_, attached)| !attached)
+        .map(|(id, _)| *id)
+        .max();
+    let Some(session_id) = candidate else {
+        return Ok(false);
+    };
+    let index = match state.tabs.iter().position(|tab| !tab.occupied) {
+        Some(index) => index,
+        None => return Ok(false),
+    };
+    let handle = match crate::profiles::attach_to_session(state.terminal_handle, session_id) {
+        Ok(handle) => handle,
+        Err(_) => return Ok(false),
+    };
+    clear_tab_grid(index);
+    let mut tab = TerminalTab::empty();
+    tab.occupied = true;
+    tab.profile_index = state.profile_index % crate::profiles::PROFILE_COUNT;
+    tab.pane_count = 1;
+    tab.panes[0] = TerminalPane::opened(handle, session_id);
+    tab.panes[0].columns = state.columns.max(1);
+    tab.panes[0].rows = state.rows.max(1);
+    state.tabs[index] = tab;
+    state.active_tab = index;
+    state.selection = None;
+    refresh_pane_sizes(state);
+    inject_reattach_notice(&mut state.tabs[index], session_id, index);
+    Ok(true)
+}
+
+/// Feed a reattach banner through the VT parser so the restored pane shows
+/// which session it picked up.
+fn inject_reattach_notice(tab: &mut TerminalTab, session_id: u32, tab_index: usize) {
+    use core::fmt::Write as _;
+    let mut buffer = rt::FixedLogBuffer::<48>::new();
+    let _ = write!(&mut buffer, "[reattached session {}]\r\n", session_id);
+    let slot = grid_slot(tab_index, 0);
+    let pane = &mut tab.panes[0];
+    crate::vt::apply_output(pane, slot, buffer.as_bytes());
+}
+
 fn open_tab_with_profile(
     state: &mut TerminalState,
     index: usize,
@@ -116,6 +165,23 @@ pub(crate) fn split_active_pane(
 
 /// Close the focused pane; when it is the last pane of the tab, close the tab.
 pub(crate) fn close_focused_pane_or_tab(state: &mut TerminalState) {
+    collapse_focused_pane(state, CollapseMode::Kill);
+}
+
+/// Detach the focused pane's session (it stays alive in terminal-service with
+/// its scrollback) and merge/close the pane like a normal close. When it is
+/// the last pane of the tab the tab closes but the session survives detached.
+pub(crate) fn detach_focused_pane_or_tab(state: &mut TerminalState) {
+    collapse_focused_pane(state, CollapseMode::Detach);
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum CollapseMode {
+    Kill,
+    Detach,
+}
+
+fn collapse_focused_pane(state: &mut TerminalState, mode: CollapseMode) {
     let index = state.active_tab;
     if !state.tabs[index].occupied {
         return;
@@ -123,7 +189,7 @@ pub(crate) fn close_focused_pane_or_tab(state: &mut TerminalState) {
     if state.tabs[index].tree.split {
         let focused = state.tabs[index].tree.focused.min(1);
         let keep = 1 - focused;
-        release_pane_session(&mut state.tabs[index], focused);
+        release_pane_session(&mut state.tabs[index], focused, mode);
         // Keep the surviving pane's data; move pane `keep` into slot 0.
         if keep != 0 {
             let kept = state.tabs[index].panes[1];
@@ -140,37 +206,43 @@ pub(crate) fn close_focused_pane_or_tab(state: &mut TerminalState) {
         refresh_pane_sizes(state);
         return;
     }
-    close_active_tab(state);
+    close_tab(state, index, mode);
 }
 
-fn release_pane_session(tab: &mut TerminalTab, pane_index: usize) {
+fn release_pane_session(tab: &mut TerminalTab, pane_index: usize, mode: CollapseMode) {
     let handle = tab.panes[pane_index].session_handle;
     if handle != rt::INVALID_HANDLE {
-        let _ = rt::terminal_session_close(handle);
+        if mode == CollapseMode::Detach {
+            // Keep the service-side session alive for a later reattach.
+            let _ = rt::channel_send(handle, &rt::RawMessage::empty(crate::wire::SESSION_DETACH));
+        } else {
+            let _ = rt::terminal_session_close(handle);
+        }
         let _ = rt::handle_close(handle);
     }
     tab.panes[pane_index] = TerminalPane::empty();
 }
 
+#[allow(dead_code)]
 pub(crate) fn close_active_tab(state: &mut TerminalState) {
     let active = state.active_tab;
     if active_tab_count(state) <= 1 {
         return;
     }
-    close_tab(state, active);
+    close_tab(state, active, CollapseMode::Kill);
     if !state.tabs[state.active_tab].occupied {
         focus_next_tab(state);
     }
     state.selection = None;
 }
 
-pub(crate) fn close_tab(state: &mut TerminalState, tab_index: usize) {
+pub(crate) fn close_tab(state: &mut TerminalState, tab_index: usize, mode: CollapseMode) {
     if tab_index >= MAX_TABS || !state.tabs[tab_index].occupied {
         return;
     }
     let pane_count = state.tabs[tab_index].pane_count;
     for pane_index in 0..pane_count {
-        release_pane_session(&mut state.tabs[tab_index], pane_index);
+        release_pane_session(&mut state.tabs[tab_index], pane_index, mode);
     }
     state.tabs[tab_index] = TerminalTab::empty();
     clear_tab_grid(tab_index);

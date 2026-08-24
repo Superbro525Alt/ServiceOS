@@ -73,8 +73,8 @@ impl PaneTree {
 
     pub(crate) fn resize_ratio(&mut self, delta_permille: i32) {
         let current = self.ratio_permille as i32;
-        let next = (current + delta_permille)
-            .clamp(RATIO_MIN_PERMILLE as i32, RATIO_MAX_PERMILLE as i32);
+        let next =
+            (current + delta_permille).clamp(RATIO_MIN_PERMILLE as i32, RATIO_MAX_PERMILLE as i32);
         self.ratio_permille = next as u32;
     }
 }
@@ -128,9 +128,15 @@ pub(crate) fn pane_rects(area: PixelRect, tree: &PaneTree) -> [PixelRect; 3] {
                 h: area.h,
             };
             let second = PixelRect {
-                x: area.x.saturating_add(first_w).saturating_add(DIVIDER_THICKNESS),
+                x: area
+                    .x
+                    .saturating_add(first_w)
+                    .saturating_add(DIVIDER_THICKNESS),
                 y: area.y,
-                w: area.w.saturating_sub(first_w).saturating_sub(DIVIDER_THICKNESS),
+                w: area
+                    .w
+                    .saturating_sub(first_w)
+                    .saturating_sub(DIVIDER_THICKNESS),
                 h: area.h,
             };
             [first, second, divider]
@@ -152,9 +158,15 @@ pub(crate) fn pane_rects(area: PixelRect, tree: &PaneTree) -> [PixelRect; 3] {
             };
             let second = PixelRect {
                 x: area.x,
-                y: area.y.saturating_add(first_h).saturating_add(DIVIDER_THICKNESS),
+                y: area
+                    .y
+                    .saturating_add(first_h)
+                    .saturating_add(DIVIDER_THICKNESS),
                 w: area.w,
-                h: area.h.saturating_sub(first_h).saturating_sub(DIVIDER_THICKNESS),
+                h: area
+                    .h
+                    .saturating_sub(first_h)
+                    .saturating_sub(DIVIDER_THICKNESS),
             };
             [first, second, divider]
         }
@@ -261,7 +273,10 @@ mod tests {
         tree.resize_ratio(0);
         assert_eq!(tree.ratio_permille, RATIO_MIN_PERMILLE);
         tree.resize_ratio(RATIO_STEP_PERMILLE as i32);
-        assert_eq!(tree.ratio_permille, RATIO_MIN_PERMILLE + RATIO_STEP_PERMILLE);
+        assert_eq!(
+            tree.ratio_permille,
+            RATIO_MIN_PERMILLE + RATIO_STEP_PERMILLE
+        );
     }
 
     #[test]

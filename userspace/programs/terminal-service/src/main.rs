@@ -92,8 +92,12 @@ fn main() -> u64 {
                         }
                     }
                     Err(rt::Error::QueueEmpty) => break,
+                    // A detached session has no live client: transport errors
+                    // from the departed pane must not kill retained state.
                     Err(_) => {
-                        release_session(bootstrap, session);
+                        if session.attached {
+                            release_session(bootstrap, session);
+                        }
                         break;
                     }
                 }

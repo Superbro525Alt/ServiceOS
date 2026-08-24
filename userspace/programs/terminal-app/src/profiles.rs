@@ -69,13 +69,21 @@ pub(crate) fn decode_wire(bytes: &[u8]) -> Option<TerminalProfile> {
     let mut profile = TerminalProfile::empty();
     profile.name.copy_from_slice(&bytes[..PROFILE_NAME_BYTES]);
     let mut offset = PROFILE_NAME_BYTES;
-    profile.program.copy_from_slice(&bytes[offset..offset + PROFILE_PROGRAM_BYTES]);
+    profile
+        .program
+        .copy_from_slice(&bytes[offset..offset + PROFILE_PROGRAM_BYTES]);
     offset += PROFILE_PROGRAM_BYTES;
-    profile.args.copy_from_slice(&bytes[offset..offset + PROFILE_ARGS_BYTES]);
+    profile
+        .args
+        .copy_from_slice(&bytes[offset..offset + PROFILE_ARGS_BYTES]);
     offset += PROFILE_ARGS_BYTES;
-    profile.env.copy_from_slice(&bytes[offset..offset + PROFILE_ENV_BYTES]);
+    profile
+        .env
+        .copy_from_slice(&bytes[offset..offset + PROFILE_ENV_BYTES]);
     offset += PROFILE_ENV_BYTES;
-    profile.cwd.copy_from_slice(&bytes[offset..offset + PROFILE_CWD_BYTES]);
+    profile
+        .cwd
+        .copy_from_slice(&bytes[offset..offset + PROFILE_CWD_BYTES]);
     offset += PROFILE_CWD_BYTES;
     profile.theme_index = bytes[offset];
     profile.name_len = cstr_len(&profile.name);
@@ -139,7 +147,10 @@ const fn const_copy<const N: usize>(destination: &mut [u8; N], source: &[u8]) ->
 
 #[allow(dead_code)]
 fn cstr_len(field: &[u8]) -> usize {
-    field.iter().position(|byte| *byte == 0).unwrap_or(field.len())
+    field
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(field.len())
 }
 
 /// Serialize profiles in the config-service `key=value` line style.
@@ -286,6 +297,66 @@ pub(crate) fn open_session_with_profile(
     }
 }
 
+/// Attach to a detached session by id, receiving a fresh client handle.
+/// Mirrors open_session_with_profile's reply-channel pattern.
+pub(crate) fn attach_to_session(
+    service_handle: rt::Handle,
+    session_id: u32,
+) -> rt::Result<rt::Handle> {
+    let reply = rt::channel_create()?;
+    let mut request = RawMessage::empty(crate::wire::SESSION_ATTACH_REQUEST);
+    request.word_count = 1;
+    request.words[0] = session_id as u64;
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rt::rights::SEND;
+    rt::channel_send(service_handle, &request)?;
+    let _ = rt::handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    rt::channel_receive_blocking(reply.first, &mut response)?;
+    let _ = rt::handle_close(reply.first);
+    if response.tag != crate::wire::SESSION_ATTACH_REPLY || response.word_count < 2 {
+        return Err(rt::Error::InvalidArgument);
+    }
+    match response.words[0] as u32 {
+        x if x == TerminalStatus::Ok as u32 && response.handle_count > 0 => Ok(response.handles[0]),
+        _ => Err(rt::Error::PermissionDenied),
+    }
+}
+
+/// Enumerate live sessions as (id, attached) pairs; returns the count written
+/// into `out`. Detached entries are the reattachable ones.
+pub(crate) fn enumerate_sessions(
+    service_handle: rt::Handle,
+    out: &mut [(u32, bool)],
+) -> rt::Result<usize> {
+    let reply = rt::channel_create()?;
+    let mut request = RawMessage::empty(crate::wire::SESSION_ENUMERATE_REQUEST);
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rt::rights::SEND;
+    rt::channel_send(service_handle, &request)?;
+    let _ = rt::handle_close(reply.second);
+
+    let mut response = RawMessage::empty(0);
+    rt::channel_receive_blocking(reply.first, &mut response)?;
+    let _ = rt::handle_close(reply.first);
+    if response.tag != crate::wire::SESSION_ENUMERATE_REPLY || response.word_count < 2 {
+        return Err(rt::Error::InvalidArgument);
+    }
+    if (response.words[0] as u32) != TerminalStatus::Ok as u32 {
+        return Err(rt::Error::PermissionDenied);
+    }
+    let count = (response.words[1] as usize).min(out.len());
+    for index in 0..count {
+        let id = response.words[2 + index * 2] as u32;
+        let attached = response.words[3 + index * 2] != 0;
+        out[index] = (id, attached);
+    }
+    Ok(count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,7 +407,10 @@ mod tests {
     fn default_profiles_have_distinct_names_and_themes() {
         for (index, profile) in DEFAULT_PROFILES.iter().enumerate() {
             assert!(!profile.name_str().is_empty(), "profile {index} unnamed");
-            assert_eq!(profile.theme_index as usize % THEMES.len(), index % THEMES.len());
+            assert_eq!(
+                profile.theme_index as usize % THEMES.len(),
+                index % THEMES.len()
+            );
         }
         assert!(DEFAULT_PROFILES[0].name_str() != DEFAULT_PROFILES[1].name_str());
     }
@@ -357,7 +431,10 @@ mod tests {
         let len = write_config_text(&DEFAULT_PROFILES, &mut buffer);
         // Corrupt one line: drop the '=' from the first key.
         let mut corrupted = buffer;
-        let equals = corrupted[..len].iter().position(|byte| *byte == b'=').unwrap();
+        let equals = corrupted[..len]
+            .iter()
+            .position(|byte| *byte == b'=')
+            .unwrap();
         corrupted[equals] = b'_';
         assert!(parse_config_text(&corrupted[..len]).is_none());
         // Unknown field name.

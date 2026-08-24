@@ -72,8 +72,7 @@ pub(crate) fn poll_control(
                     };
                     let mut bytes = [0u8; 4];
                     let encoded = ch.encode_utf8(&mut bytes);
-                    let _ =
-                        rt::terminal_session_send_input(session_handle, encoded.as_bytes());
+                    let _ = rt::terminal_session_send_input(session_handle, encoded.as_bytes());
                     changed |= visual_changed;
                     did_work = true;
                 }
@@ -117,6 +116,18 @@ pub(crate) fn handle_key_down(
             }
             KEY_D => {
                 crate::tabs::split_active_pane(state, crate::panes::SplitAxis::Rows)?;
+                return Ok(true);
+            }
+            // Detach: close the pane but keep the session (scrollback, line
+            // state, bookmarks) alive in terminal-service for reattach.
+            KEY_Q => {
+                crate::tabs::detach_focused_pane_or_tab(state);
+                return Ok(true);
+            }
+            // Cycle command bookmarks into the input line (re-edit only,
+            // never auto-executed).
+            KEY_B => {
+                send_session_op(state, crate::wire::SESSION_BOOKMARK_CYCLE)?;
                 return Ok(true);
             }
             KEY_P => {
@@ -192,6 +203,11 @@ pub(crate) fn handle_key_down(
                 return Ok(true);
             }
         }
+    }
+    // Bookmark the current command line as typed (service snapshots it).
+    if modifiers & MOD_CTRL != 0 && key_code == KEY_B {
+        send_session_op(state, crate::wire::SESSION_BOOKMARK_ADD)?;
+        return Ok(true);
     }
     if key_code == KEY_PAGE_UP || (modifiers & MOD_SHIFT != 0 && key_code == KEY_UP) {
         let state_rows = state.rows;
@@ -328,6 +344,19 @@ fn handle_pointer_scroll(state: &mut TerminalState, delta_y: i32) {
                 crate::render::scroll_down_view(pane, (-delta_y) as usize);
             }
         }
+    }
+}
+
+/// Fire a session-channel op (detach handled in tabs; bookmark add/cycle
+/// here) on the focused pane's session.
+fn send_session_op(state: &mut TerminalState, tag: u32) -> rt::Result<()> {
+    let handle = crate::tabs::active_tab_mut(state)
+        .and_then(|tab| tab.focused_pane_ref())
+        .map(|pane| pane.session_handle)
+        .filter(|handle| *handle != rt::INVALID_HANDLE);
+    match handle {
+        Some(handle) => rt::channel_send(handle, &rt::RawMessage::empty(tag)),
+        None => Ok(()),
     }
 }
 

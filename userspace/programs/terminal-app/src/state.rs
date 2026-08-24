@@ -25,11 +25,13 @@ pub(crate) const KEY_2: u32 = 3;
 pub(crate) const KEY_3: u32 = 4;
 pub(crate) const KEY_BACKSPACE: u32 = 14;
 pub(crate) const KEY_TAB: u32 = 15;
+pub(crate) const KEY_Q: u32 = 16;
 pub(crate) const KEY_W: u32 = 17;
 pub(crate) const KEY_E: u32 = 18;
 pub(crate) const KEY_T: u32 = 20;
 pub(crate) const KEY_P: u32 = 25;
 pub(crate) const KEY_D: u32 = 32;
+pub(crate) const KEY_B: u32 = 48;
 pub(crate) const KEY_C: u32 = 46;
 pub(crate) const KEY_V: u32 = 47;
 pub(crate) const KEY_UP: u32 = 103;
@@ -42,6 +44,18 @@ pub(crate) const MOD_SHIFT: u32 = 1 << 0;
 pub(crate) const MOD_ALT: u32 = 1 << 1;
 pub(crate) const MOD_CTRL: u32 = 1 << 2;
 pub(crate) const PIXEL_STRIDE: usize = BUFFER_WIDTH as usize;
+
+/// Wire tags mirroring terminal-service's local session-persistence
+/// extensions (values past TerminalTag::SessionClosed).
+pub(crate) mod wire {
+    pub(crate) const SESSION_ATTACH_REQUEST: u32 = 0xb10;
+    pub(crate) const SESSION_ATTACH_REPLY: u32 = 0xb11;
+    pub(crate) const SESSION_DETACH: u32 = 0xb13;
+    pub(crate) const SESSION_BOOKMARK_ADD: u32 = 0xb14;
+    pub(crate) const SESSION_BOOKMARK_CYCLE: u32 = 0xb15;
+    pub(crate) const SESSION_ENUMERATE_REQUEST: u32 = 0xb16;
+    pub(crate) const SESSION_ENUMERATE_REPLY: u32 = 0xb17;
+}
 
 pub(crate) const COLOR_DEFAULT: u8 = 0;
 pub(crate) const CELL_FLAG_BOLD: u8 = 1 << 0;
@@ -239,7 +253,8 @@ impl TerminalTab {
         if !self.occupied {
             return None;
         }
-        self.panes.get_mut(self.tree.focused.min(self.pane_count - 1))
+        self.panes
+            .get_mut(self.tree.focused.min(self.pane_count - 1))
     }
 
     pub(crate) fn focused_pane_ref(&self) -> Option<&TerminalPane> {

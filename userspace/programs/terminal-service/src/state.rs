@@ -9,6 +9,149 @@ pub(crate) const DEFAULT_ROWS: u32 = 25;
 pub(crate) const MAX_PUBLIC_REQUESTS_PER_TURN: usize = 8;
 pub(crate) const MAX_SESSION_MESSAGES_PER_TURN: usize = 16;
 
+/// Retained output bytes per session; replayed to clients on reattach.
+pub(crate) const SCROLLBACK_BYTES: usize = 4096;
+/// Bookmarked command lines retained per session for quick re-edit.
+pub(crate) const MAX_BOOKMARKS: usize = 8;
+
+/// Wire tags for the session persistence/bookmark extensions. Kept local so
+/// the shared ABI enum stays untouched; values sit past TerminalTag::SessionClosed.
+pub(crate) mod wire {
+    pub(crate) const SESSION_ATTACH_REQUEST: u32 = 0xb10;
+    pub(crate) const SESSION_ATTACH_REPLY: u32 = 0xb11;
+    pub(crate) const SESSION_DETACH: u32 = 0xb13;
+    pub(crate) const SESSION_BOOKMARK_ADD: u32 = 0xb14;
+    pub(crate) const SESSION_BOOKMARK_CYCLE: u32 = 0xb15;
+    pub(crate) const SESSION_ENUMERATE_REQUEST: u32 = 0xb16;
+    pub(crate) const SESSION_ENUMERATE_REPLY: u32 = 0xb17;
+}
+
+/// Byte ring holding the most recent session output. Records continuously so
+/// any later attach can restore the pane's visible history.
+#[derive(Clone, Copy)]
+pub(crate) struct ScrollbackRing {
+    bytes: [u8; SCROLLBACK_BYTES],
+    head: usize,
+    len: usize,
+}
+
+impl ScrollbackRing {
+    pub(crate) const fn empty() -> Self {
+        Self {
+            bytes: [0; SCROLLBACK_BYTES],
+            head: 0,
+            len: 0,
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.head = 0;
+        self.len = 0;
+    }
+
+    /// Append output bytes, evicting the oldest when over capacity.
+    pub(crate) fn record(&mut self, input: &[u8]) {
+        for chunk in input {
+            self.bytes[self.head] = *chunk;
+            self.head = (self.head + 1) % SCROLLBACK_BYTES;
+            if self.len < SCROLLBACK_BYTES {
+                self.len += 1;
+            }
+        }
+    }
+
+    /// Retained bytes oldest-first as at most two contiguous slices.
+    pub(crate) fn slices(&self) -> (&[u8], &[u8]) {
+        if self.len < SCROLLBACK_BYTES {
+            return (&self.bytes[..self.head], &[]);
+        }
+        (&self.bytes[self.head..], &self.bytes[..self.head])
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn len(&self) -> usize {
+        self.len
+    }
+}
+
+/// Fixed-capacity list of bookmarked command lines with a cycle cursor for
+/// quick re-edit traversal (newest first).
+#[derive(Clone, Copy)]
+pub(crate) struct BookmarkList {
+    lines: [[u8; MAX_LINE_BYTES]; MAX_BOOKMARKS],
+    lens: [usize; MAX_BOOKMARKS],
+    count: usize,
+    view: Option<usize>,
+}
+
+impl BookmarkList {
+    pub(crate) const fn empty() -> Self {
+        Self {
+            lines: [[0; MAX_LINE_BYTES]; MAX_BOOKMARKS],
+            lens: [0; MAX_BOOKMARKS],
+            count: 0,
+            view: None,
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.count = 0;
+        self.view = None;
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn count(&self) -> usize {
+        self.count
+    }
+
+    /// Bookmark a command line. Duplicates of the newest entry are ignored;
+    /// overflow evicts the oldest. Returns true when stored.
+    pub(crate) fn add(&mut self, line: &[u8]) -> bool {
+        if line.is_empty() || line.len() > MAX_LINE_BYTES {
+            return false;
+        }
+        if self.count > 0 {
+            let latest = self.count - 1;
+            if self.lens[latest] == line.len() && &self.lines[latest][..line.len()] == line {
+                return false;
+            }
+        }
+        if self.count < MAX_BOOKMARKS {
+            self.lines[self.count][..line.len()].copy_from_slice(line);
+            self.lens[self.count] = line.len();
+            self.count += 1;
+        } else {
+            self.lines.rotate_left(1);
+            self.lens.rotate_left(1);
+            self.lines[MAX_BOOKMARKS - 1][..line.len()].copy_from_slice(line);
+            self.lens[MAX_BOOKMARKS - 1] = line.len();
+        }
+        self.view = None;
+        true
+    }
+
+    /// Advance the cycle cursor (newest -> oldest -> newest) and copy the
+    /// visited entry into `line`. Returns the copied length.
+    pub(crate) fn cycle_next(&mut self, line: &mut [u8; MAX_LINE_BYTES]) -> Option<usize> {
+        if self.count == 0 {
+            return None;
+        }
+        let next = match self.view {
+            None => self.count - 1,
+            Some(0) => self.count - 1,
+            Some(index) => index - 1,
+        };
+        self.view = Some(next);
+        let len = self.lens[next];
+        line[..len].copy_from_slice(&self.lines[next][..len]);
+        Some(len)
+    }
+
+    pub(crate) fn reset_view(&mut self) {
+        self.view = None;
+    }
+}
+
 /// Launch metadata relayed by terminal-app session profiles
 /// (name/program/args/env/cwd). Mirrors the app-side wire layout.
 pub(crate) const PROFILE_NAME_BYTES: usize = 10;
@@ -81,7 +224,10 @@ impl SessionProfile {
 }
 
 fn cstr_len(field: &[u8]) -> usize {
-    field.iter().position(|byte| *byte == 0).unwrap_or(field.len())
+    field
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(field.len())
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -94,11 +240,16 @@ pub(crate) enum EscapeState {
 #[derive(Clone, Copy)]
 pub(crate) struct Session {
     pub(crate) endpoint: rt::Handle,
+    /// Retained duplicate of the session channel used to mint client handles
+    /// on reattach; stays valid for the whole session lifetime.
+    pub(crate) spare_endpoint: rt::Handle,
     pub(crate) id: u32,
     pub(crate) columns: u32,
     pub(crate) rows: u32,
     pub(crate) width_pixels: u32,
     pub(crate) height_pixels: u32,
+    /// True while a pane holds a client handle; false after a detach.
+    pub(crate) attached: bool,
     pub(crate) line: [u8; MAX_LINE_BYTES],
     pub(crate) line_len: usize,
     pub(crate) line_cursor: usize,
@@ -110,6 +261,8 @@ pub(crate) struct Session {
     pub(crate) history_stash: [u8; MAX_LINE_BYTES],
     pub(crate) history_stash_len: usize,
     pub(crate) escape_state: EscapeState,
+    pub(crate) scrollback: ScrollbackRing,
+    pub(crate) bookmarks: BookmarkList,
     pub(crate) profile: SessionProfile,
     pub(crate) occupied: bool,
 }
@@ -118,11 +271,13 @@ impl Session {
     pub(crate) const fn empty() -> Self {
         Self {
             endpoint: rt::INVALID_HANDLE,
+            spare_endpoint: rt::INVALID_HANDLE,
             id: 0,
             columns: DEFAULT_COLS,
             rows: DEFAULT_ROWS,
             width_pixels: 0,
             height_pixels: 0,
+            attached: false,
             line: [0; MAX_LINE_BYTES],
             line_len: 0,
             line_cursor: 0,
@@ -133,9 +288,170 @@ impl Session {
             history_view: None,
             history_stash: [0; MAX_LINE_BYTES],
             history_stash_len: 0,
-        escape_state: EscapeState::None,
-        profile: SessionProfile::empty(),
-        occupied: false,
+            escape_state: EscapeState::None,
+            scrollback: ScrollbackRing::empty(),
+            bookmarks: BookmarkList::empty(),
+            profile: SessionProfile::empty(),
+            occupied: false,
+        }
     }
+
+    /// A detached session keeps its shell state but has no attached pane.
+    pub(crate) fn is_detach_available(&self) -> bool {
+        self.occupied && self.attached
+    }
+
+    /// Reattach preconditions: alive, currently detached, spare handle held.
+    pub(crate) fn can_attach(&self) -> bool {
+        self.occupied && !self.attached && self.spare_endpoint != rt::INVALID_HANDLE
+    }
+
+    /// Mark the session detached. Returns false when there is nothing to
+    /// detach (free slot or already detached).
+    pub(crate) fn mark_detached(&mut self) -> bool {
+        if !self.is_detach_available() {
+            return false;
+        }
+        self.attached = false;
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_session() -> Session {
+        let mut session = Session::empty();
+        session.occupied = true;
+        session.attached = true;
+        session.spare_endpoint = 7;
+        session
+    }
+
+    fn ring_bytes(ring: &ScrollbackRing) -> [u8; SCROLLBACK_BYTES] {
+        let (first, second) = ring.slices();
+        let mut joined = [0u8; SCROLLBACK_BYTES];
+        joined[..first.len()].copy_from_slice(first);
+        joined[first.len()..first.len() + second.len()].copy_from_slice(second);
+        joined
+    }
+
+    #[test]
+    fn scrollback_ring_retains_recent_output_in_order() {
+        let mut ring = ScrollbackRing::empty();
+        ring.record(b"alpha\r\n");
+        ring.record(b"beta\r\n");
+        let joined = ring_bytes(&ring);
+        assert_eq!(&joined[..13], b"alpha\r\nbeta\r\n");
+        assert_eq!(ring.len(), 13);
+    }
+
+    #[test]
+    fn scrollback_ring_evicts_oldest_beyond_capacity() {
+        let mut ring = ScrollbackRing::empty();
+        // Write a sawtooth pattern twice the ring capacity.
+        let total = SCROLLBACK_BYTES * 2;
+        let mut chunk = [0u8; 64];
+        let mut written = 0usize;
+        while written < total {
+            for slot in chunk.iter_mut() {
+                *slot = (written % 251) as u8;
+                written += 1;
+            }
+            ring.record(&chunk);
+        }
+        assert_eq!(ring.len(), SCROLLBACK_BYTES);
+        let joined = ring_bytes(&ring);
+        // Oldest byte retained is sequence position total - SCROLLBACK_BYTES.
+        let start = total - SCROLLBACK_BYTES;
+        for (index, byte) in joined.iter().enumerate() {
+            assert_eq!(*byte, ((start + index) % 251) as u8);
+        }
+    }
+
+    #[test]
+    fn scrollback_ring_clear_resets() {
+        let mut ring = ScrollbackRing::empty();
+        ring.record(b"hello");
+        ring.clear();
+        assert_eq!(ring.len(), 0);
+        assert_eq!(ring.slices().0.len() + ring.slices().1.len(), 0);
+    }
+
+    #[test]
+    fn attach_detach_state_machine_transitions() {
+        let mut session = sample_session();
+        // Attached pane detaches: shell state survives, slot stays occupied.
+        assert!(session.mark_detached());
+        assert!(!session.attached && session.occupied);
+        // Double detach is a no-op.
+        assert!(!session.mark_detached());
+        // Detached slot satisfies reattach preconditions.
+        assert!(session.can_attach());
+        session.attached = true;
+        // Reattach over an attached session is refused.
+        assert!(!session.can_attach());
+        // Free slots are neither detachable nor attachable.
+        let mut free = Session::empty();
+        free.spare_endpoint = 7;
+        assert!(!free.mark_detached());
+        assert!(!free.can_attach());
+        // Missing spare handle blocks reattach even when detached.
+        let mut spareless = sample_session();
+        spareless.spare_endpoint = rt::INVALID_HANDLE;
+        spareless.attached = false;
+        assert!(!spareless.can_attach());
+    }
+
+    #[test]
+    fn bookmark_add_dedupes_and_cycles_newest_first_with_wraparound() {
+        let mut bookmarks = BookmarkList::empty();
+        assert!(!bookmarks.cycle_next(&mut [0u8; MAX_LINE_BYTES]).is_some());
+        assert!(bookmarks.add(b"echo one"));
+        assert!(!bookmarks.add(b"echo one"), "duplicate of newest ignored");
+        assert!(bookmarks.add(b"echo two"));
+        assert!(bookmarks.add(b"echo three"));
+        assert_eq!(bookmarks.count(), 3);
+
+        let mut line = [0u8; MAX_LINE_BYTES];
+        let len = bookmarks.cycle_next(&mut line).expect("first cycle");
+        assert_eq!(&line[..len], b"echo three", "newest first");
+        let len = bookmarks.cycle_next(&mut line).expect("second cycle");
+        assert_eq!(&line[..len], b"echo two");
+        let len = bookmarks.cycle_next(&mut line).expect("third cycle");
+        assert_eq!(&line[..len], b"echo one", "oldest last");
+        let len = bookmarks.cycle_next(&mut line).expect("wraps around");
+        assert_eq!(&line[..len], b"echo three");
+
+        bookmarks.reset_view();
+        let len = bookmarks
+            .cycle_next(&mut line)
+            .expect("reset restarts at newest");
+        assert_eq!(&line[..len], b"echo three");
+    }
+
+    #[test]
+    fn bookmark_overflow_evicts_oldest() {
+        let mut bookmarks = BookmarkList::empty();
+        for index in 0..MAX_BOOKMARKS + 2 {
+            let text = format!("cmd-{index}");
+            bookmarks.add(text.as_bytes());
+        }
+        assert_eq!(bookmarks.count(), MAX_BOOKMARKS);
+        let mut line = [0u8; MAX_LINE_BYTES];
+        let len = bookmarks.cycle_next(&mut line).expect("cycle");
+        assert_eq!(&line[..len], b"cmd-9", "newest survives, cmd-0/1 evicted");
+        let len = bookmarks.cycle_next(&mut line).expect("second entry");
+        assert_eq!(&line[..len], b"cmd-8");
+    }
+
+    #[test]
+    fn bookmark_rejects_empty_and_oversized_lines() {
+        let mut bookmarks = BookmarkList::empty();
+        assert!(!bookmarks.add(b""));
+        let oversized = [b'x'; MAX_LINE_BYTES + 1];
+        assert!(!bookmarks.add(&oversized));
+        assert_eq!(bookmarks.count(), 0);
     }
 }

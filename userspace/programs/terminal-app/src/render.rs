@@ -121,10 +121,7 @@ fn draw_tab_strip(bytes: &mut [u8], width: usize, state: &TerminalState, theme: 
             fill,
         );
         let tab = &state.tabs[index];
-        let focused_pane = tab
-            .tree
-            .focused
-            .min(tab.pane_count.saturating_sub(1));
+        let focused_pane = tab.tree.focused.min(tab.pane_count.saturating_sub(1));
         let pane = &tab.panes[focused_pane];
         let text = if pane.title_len > 0 {
             core::str::from_utf8(&pane.title[..pane.title_len]).unwrap_or("TAB")
@@ -196,7 +193,14 @@ fn draw_terminal_contents(
     }
     if tab.tree.split {
         let divider = rects[2];
-        fill_rect(bytes, divider.x, divider.y, divider.w, divider.h, theme.panel_alt);
+        fill_rect(
+            bytes,
+            divider.x,
+            divider.y,
+            divider.w,
+            divider.h,
+            theme.panel_alt,
+        );
     }
 }
 
@@ -267,7 +271,9 @@ fn draw_pane(
         let _ = write!(&mut status, "SCROLL -{}", pane.scroll_offset);
         if let Ok(label) = core::str::from_utf8(status.as_bytes()) {
             let label_width = label.len() * rt::BITMAP_GLYPH_ADVANCE;
-            let label_x = rect.x.saturating_add(rect.w.saturating_sub(label_width + 6));
+            let label_x = rect
+                .x
+                .saturating_add(rect.w.saturating_sub(label_width + 6));
             rt::draw_text_rgba8888(
                 bytes,
                 PIXEL_STRIDE,
@@ -284,9 +290,7 @@ fn draw_pane(
         if cursor_visible_row < visible_rows && pane.cursor_col < pane.columns {
             let cursor_x = rect.x + pane.cursor_col * CELL_WIDTH;
             let cursor_y = rect.y + cursor_visible_row * CELL_HEIGHT;
-            if cursor_x + CELL_WIDTH < width
-                && cursor_y < rect.y.saturating_add(rect.h)
-            {
+            if cursor_x + CELL_WIDTH < width && cursor_y < rect.y.saturating_add(rect.h) {
                 fill_rect(
                     bytes,
                     cursor_x,
@@ -471,11 +475,7 @@ pub(crate) fn tab_strip_hit_index(x: i32, y: i32) -> Option<usize> {
 }
 
 /// Map a pointer position to the containing pane plus its grid cell.
-pub(crate) fn pointer_to_cell(
-    state: &TerminalState,
-    x: i32,
-    y: i32,
-) -> Option<(usize, CellPos)> {
+pub(crate) fn pointer_to_cell(state: &TerminalState, x: i32, y: i32) -> Option<(usize, CellPos)> {
     let tab = crate::tabs::active_tab_ref(state)?;
     let area = crate::panes::content_area(state);
     let rects = crate::panes::pane_rects(area, &tab.tree);

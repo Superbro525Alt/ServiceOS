@@ -77,7 +77,11 @@ fn main() -> u64 {
         clipboard_len: 0,
     };
     tabs::recompute_layout(&mut state);
-    if tabs::open_new_tab(&mut state).is_err() {
+    // Restore-on-launch: prefer reattaching the most recent detached session
+    // (with its retained scrollback) before opening a fresh shell.
+    if tabs::restore_most_recent_detached(&mut state).unwrap_or(false) {
+        // Reattach path handled; fall through to first render.
+    } else if tabs::open_new_tab(&mut state).is_err() {
         return 0xfa05;
     }
     let (slot, buffer) = buffers.current();
@@ -192,7 +196,11 @@ fn main() -> u64 {
 /// A session ended on its own (exit command): merge the split away when the
 /// pane was part of one, otherwise close the tab. Keeps at least one tab open.
 fn close_pane_from_event(state: &mut TerminalState, tab_index: usize, pane_index: usize) {
-    let tab_occupied = state.tabs.get(tab_index).map(|tab| tab.occupied).unwrap_or(false);
+    let tab_occupied = state
+        .tabs
+        .get(tab_index)
+        .map(|tab| tab.occupied)
+        .unwrap_or(false);
     if !tab_occupied {
         return;
     }
@@ -221,7 +229,7 @@ fn close_pane_from_event(state: &mut TerminalState, tab_index: usize, pane_index
         tabs::refresh_pane_sizes(state);
         return;
     }
-    tabs::close_tab(state, tab_index);
+    tabs::close_tab(state, tab_index, crate::tabs::CollapseMode::Kill);
     if tabs::active_tab_count(state) == 0 {
         let _ = tabs::open_new_tab(state);
     }

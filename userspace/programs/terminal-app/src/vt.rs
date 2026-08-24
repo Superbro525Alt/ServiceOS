@@ -164,7 +164,9 @@ fn apply_csi(pane: &mut TerminalPane, columns: usize, slot: usize, opcode: u8) {
             pane.saved_cursor_col = pane.cursor_col;
         }
         b'u' => {
-            pane.cursor_line = pane.saved_cursor_line.min(pane.line_count.saturating_sub(1));
+            pane.cursor_line = pane
+                .saved_cursor_line
+                .min(pane.line_count.saturating_sub(1));
             pane.cursor_col = pane.saved_cursor_col.min(columns.saturating_sub(1));
         }
         _ => {}

@@ -86,8 +86,7 @@ pub(crate) fn handle_request(state: &mut DesktopState, request: &RawMessage) -> 
             let mut reply = RawMessage::empty(DesktopTag::ListAppsReply as u32);
             reply.word_count = 3;
             reply.words[0] = DesktopStatus::Ok as u32 as u64;
-            let end = (start + crate::APP_PAGE_SIZE).min(state.apps.len());
-            let count = end.saturating_sub(start);
+            let (end, count) = crate::list_apps_page(start, state.apps.len());
             reply.words[1] = count as u64;
             reply.words[2] = end as u64;
             for (page_index, slot) in state.apps[start..end].iter().copied().enumerate() {

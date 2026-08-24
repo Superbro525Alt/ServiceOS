@@ -5,6 +5,10 @@ use serviceos_userspace_runtime as rt;
 pub(crate) const SESSION_ID: u32 = 1;
 pub(crate) const APP_COUNT: usize = 5;
 pub(crate) const APP_PAGE_SIZE: usize = 4;
+pub(crate) const LIST_APPS_HEADER_WORDS: usize = 3;
+pub(crate) const LIST_APPS_ENTRY_WORDS: usize = 4;
+pub(crate) const LIST_APPS_MAX_PAGE: usize =
+    (rt::IPC_MAX_WORDS - LIST_APPS_HEADER_WORDS) / LIST_APPS_ENTRY_WORDS;
 pub(crate) const WINDOW_PAGE_SIZE: usize = 2;
 pub(crate) const WORKSPACE_COUNT: u32 = 4;
 pub(crate) const MAX_DESKTOP_REQUESTS_PER_TURN: usize = 24;
@@ -313,4 +317,60 @@ pub(crate) enum PaletteAction {
     ShowClipboardHistory,
     SwitchWorkspace(u32),
     FocusNext,
+}
+
+pub(crate) fn list_apps_page(start: usize, total: usize) -> (usize, usize) {
+    let page = APP_PAGE_SIZE.min(LIST_APPS_MAX_PAGE);
+    let end = start.saturating_add(page).min(total);
+    let count = end.saturating_sub(start);
+    (end, count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn list_apps_reply_never_exceeds_ipc_max_words() {
+        assert!(
+            LIST_APPS_HEADER_WORDS + LIST_APPS_ENTRY_WORDS * LIST_APPS_MAX_PAGE
+                <= rt::IPC_MAX_WORDS
+        );
+        for start in 0..=APP_COUNT + 2 {
+            let (end, count) = list_apps_page(start, APP_COUNT);
+            assert!(count <= LIST_APPS_MAX_PAGE);
+            assert!(LIST_APPS_HEADER_WORDS + count * LIST_APPS_ENTRY_WORDS <= rt::IPC_MAX_WORDS);
+            assert_eq!(end.saturating_sub(start), count);
+        }
+    }
+
+    #[test]
+    fn unclamped_page_would_overflow_ipc_max() {
+        assert!(
+            LIST_APPS_HEADER_WORDS + LIST_APPS_ENTRY_WORDS * APP_PAGE_SIZE > rt::IPC_MAX_WORDS,
+            "regression guard assumes full page exceeds the IPC word budget"
+        );
+    }
+
+    #[test]
+    fn list_apps_pagination_covers_all_apps() {
+        let mut start = 0usize;
+        let mut seen = 0usize;
+        for _ in 0..8 {
+            let (end, count) = list_apps_page(start, APP_COUNT);
+            if count == 0 || end <= start {
+                break;
+            }
+            seen += count;
+            start = end;
+        }
+        assert_eq!(seen, APP_COUNT);
+    }
+
+    #[test]
+    fn list_apps_page_handles_out_of_range_start() {
+        assert_eq!(list_apps_page(APP_COUNT, APP_COUNT), (APP_COUNT, 0));
+        assert_eq!(list_apps_page(10, APP_COUNT), (APP_COUNT, 0));
+        assert_eq!(list_apps_page(0, 0), (0, 0));
+    }
 }

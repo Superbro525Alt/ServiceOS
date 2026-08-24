@@ -5,7 +5,7 @@ use serviceos_userspace_runtime as rt;
 
 use crate::state::{
     AppState, CatalogEntry, MAX_CATEGORY_BYTES, MAX_ENTRIES, MAX_STATUS_BYTES, MAX_SUMMARY_BYTES,
-    select_service,
+    rebuild_view, select_service,
 };
 
 pub(crate) fn reload_catalog(package_handle: rt::Handle, state: &mut AppState) -> rt::Result<()> {
@@ -40,6 +40,10 @@ pub(crate) fn reload_catalog(package_handle: rt::Handle, state: &mut AppState) -
             summary_len: entry.summary_len,
         };
         state.entry_count += 1;
+    }
+    rebuild_view(state);
+    if state.selected_index >= state.view_count && state.view_count > 0 {
+        state.selected_index = state.view_count - 1;
     }
     let entry_count = state.entry_count;
     set_statusf(
@@ -172,11 +176,6 @@ pub(crate) fn error_label(error: rt::Error) -> &'static str {
         rt::Error::QueueEmpty => "timeout",
         rt::Error::Unknown(_) => "unknown",
     }
-}
-
-pub(crate) fn category_chip_label(entry: &CatalogEntry) -> &str {
-    let category = text_or_dash(&entry.category[..entry.category_len]);
-    if category == "-" { "SYSTEM" } else { category }
 }
 
 pub(crate) fn trust_badge(value: rt::PackageTrustState) -> &'static str {

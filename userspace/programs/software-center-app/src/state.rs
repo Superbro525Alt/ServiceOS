@@ -1,6 +1,8 @@
 use rt::ServiceId;
 use serviceos_userspace_runtime as rt;
 
+use crate::catalog_meta::{self, MAX_QUERY_BYTES};
+
 pub(crate) const MAX_ENTRIES: usize = 24;
 pub(crate) const MAX_CATEGORY_BYTES: usize = 24;
 pub(crate) const MAX_SUMMARY_BYTES: usize = 72;
@@ -23,7 +25,9 @@ pub(crate) const STATUS_BAR_HEIGHT: i32 = 24;
 pub(crate) const KEY_ENTER: u32 = 28;
 pub(crate) const KEY_BACKSPACE: u32 = 14;
 pub(crate) const KEY_DELETE: u32 = 111;
+pub(crate) const KEY_ESC: u32 = 1;
 pub(crate) const KEY_R: u32 = 19;
+pub(crate) const KEY_TAB: u32 = 15;
 pub(crate) const KEY_UP: u32 = 103;
 pub(crate) const KEY_PAGE_UP: u32 = 104;
 pub(crate) const KEY_DOWN: u32 = 108;
@@ -111,14 +115,114 @@ pub(crate) struct AppState {
     pub(crate) entry_count: usize,
     pub(crate) selected_index: usize,
     pub(crate) scroll_offset: usize,
+    pub(crate) query: [u8; MAX_QUERY_BYTES],
+    pub(crate) query_len: usize,
+    pub(crate) category_filter: usize,
+    /// Indices into `entries` for the visible (filtered + ranked) view.
+    pub(crate) view: [usize; MAX_ENTRIES],
+    pub(crate) view_count: usize,
     pub(crate) status: [u8; MAX_STATUS_BYTES],
     pub(crate) status_len: usize,
 }
 
+pub(crate) const CATEGORY_FILTERS: [&str; 5] =
+    ["All", "Messaging", "Runtime", "Development", "System"];
+
+impl AppState {
+    pub(crate) fn new(width: u32, height: u32, focused: bool) -> Self {
+        Self {
+            width,
+            height,
+            focused,
+            entries: [CatalogEntry::empty(); MAX_ENTRIES],
+            entry_count: 0,
+            selected_index: 0,
+            scroll_offset: 0,
+            query: [0; MAX_QUERY_BYTES],
+            query_len: 0,
+            category_filter: 0,
+            view: [0; MAX_ENTRIES],
+            view_count: 0,
+            status: [0; MAX_STATUS_BYTES],
+            status_len: 0,
+        }
+    }
+}
+
+pub(crate) fn rebuild_view(state: &mut AppState) {
+    let count = state.entry_count;
+    let filter = CATEGORY_FILTERS
+        .get(state.category_filter)
+        .copied()
+        .unwrap_or("All");
+    let mut view = [0usize; MAX_ENTRIES];
+    let mut view_count = 0usize;
+
+    if filter != "All" || state.query_len > 0 {
+        // Filtered path: category gate first, then search ranking when a
+        // query is active. Unranked matches keep catalog order.
+        let mut candidates = [0usize; MAX_ENTRIES];
+        let mut candidate_count = 0usize;
+        for index in 0..count {
+            let doc = catalog_meta::doc_for(
+                state.entries[index].service_id,
+                &state.entries[index].category[..state.entries[index].category_len],
+            );
+            if filter != "All" && !catalog_meta::field_eq_ci(doc.category, filter) {
+                continue;
+            }
+            candidates[candidate_count] = index;
+            candidate_count += 1;
+        }
+
+        if state.query_len > 0 {
+            let query_bytes = &state.query[..state.query_len];
+            if let Ok(query) = core::str::from_utf8(query_bytes) {
+                let mut ranked = [0usize; MAX_ENTRIES];
+                let hit_count = catalog_meta::rank_docs(
+                    candidate_count,
+                    |position| {
+                        let entry = &state.entries[candidates[position]];
+                        catalog_meta::doc_for(
+                            entry.service_id,
+                            &entry.category[..entry.category_len],
+                        )
+                    },
+                    query,
+                    &mut ranked,
+                );
+                for position in 0..hit_count {
+                    view[view_count] = candidates[ranked[position]];
+                    view_count += 1;
+                }
+                state.view = view;
+                state.view_count = view_count;
+                return;
+            }
+        }
+
+        for &candidate in candidates.iter().take(candidate_count) {
+            view[view_count] = candidate;
+            view_count += 1;
+        }
+    } else {
+        for (index, slot) in view.iter_mut().enumerate().take(count) {
+            *slot = index;
+        }
+        view_count = count;
+    }
+
+    state.view = view;
+    state.view_count = view_count;
+}
+
 pub(crate) fn selected_entry(state: &AppState) -> Option<CatalogEntry> {
-    state.entries[..state.entry_count]
+    state
+        .view
         .get(state.selected_index)
         .copied()
+        .filter(|index| *index < state.entry_count)
+        .map(|index| state.entries[index])
 }
 
 pub(crate) fn installed_count(state: &AppState) -> usize {
@@ -129,11 +233,11 @@ pub(crate) fn installed_count(state: &AppState) -> usize {
 }
 
 pub(crate) fn select_service(state: &mut AppState, service_id: ServiceId) {
-    if let Some(index) = state.entries[..state.entry_count]
+    if let Some(position) = state.view[..state.view_count]
         .iter()
-        .position(|entry| entry.service_id == service_id)
+        .position(|index| state.entries[*index].service_id == service_id)
     {
-        state.selected_index = index;
+        state.selected_index = position;
         ensure_selected_visible(state);
     }
 }
@@ -153,12 +257,12 @@ pub(crate) fn ensure_selected_visible(state: &mut AppState) {
 
 pub(crate) fn clamp_view(state: &mut AppState) {
     let visible = visible_row_count(state.height).max(1);
-    let max_scroll = state.entry_count.saturating_sub(visible);
+    let max_scroll = state.view_count.saturating_sub(visible);
     if state.scroll_offset > max_scroll {
         state.scroll_offset = max_scroll;
     }
-    if state.selected_index >= state.entry_count && state.entry_count != 0 {
-        state.selected_index = state.entry_count - 1;
+    if state.selected_index >= state.view_count && state.view_count != 0 {
+        state.selected_index = state.view_count - 1;
     }
 }
 
@@ -171,11 +275,72 @@ pub(crate) fn scroll_up(state: &mut AppState, amount: usize) {
 
 pub(crate) fn scroll_down(state: &mut AppState, amount: usize) {
     let visible = visible_row_count(state.height).max(1);
-    let max_scroll = state.entry_count.saturating_sub(visible);
+    let max_scroll = state.view_count.saturating_sub(visible);
     state.scroll_offset = (state.scroll_offset + amount.max(1)).min(max_scroll);
     if state.selected_index < state.scroll_offset {
         state.selected_index = state.scroll_offset;
     }
+}
+
+fn reset_selection(state: &mut AppState) {
+    rebuild_view(state);
+    if state.view_count == 0 {
+        state.selected_index = 0;
+        state.scroll_offset = 0;
+    } else {
+        if state.selected_index >= state.view_count {
+            state.selected_index = state.view_count - 1;
+        }
+        ensure_selected_visible(state);
+    }
+}
+
+pub(crate) fn push_query_char(state: &mut AppState, byte: u8) -> bool {
+    if state.query_len >= state.query.len() {
+        return false;
+    }
+    state.query[state.query_len] = byte;
+    state.query_len += 1;
+    state.selected_index = 0;
+    state.scroll_offset = 0;
+    reset_selection(state);
+    true
+}
+
+pub(crate) fn pop_query_char(state: &mut AppState) -> bool {
+    if state.query_len == 0 {
+        return false;
+    }
+    state.query_len -= 1;
+    state.query[state.query_len] = 0;
+    state.selected_index = 0;
+    state.scroll_offset = 0;
+    reset_selection(state);
+    true
+}
+
+pub(crate) fn clear_query(state: &mut AppState) -> bool {
+    if state.query_len == 0 {
+        return false;
+    }
+    while state.query_len > 0 {
+        state.query_len -= 1;
+        state.query[state.query_len] = 0;
+    }
+    reset_selection(state);
+    true
+}
+
+pub(crate) fn cycle_category_filter(state: &mut AppState) -> bool {
+    state.category_filter = (state.category_filter + 1) % CATEGORY_FILTERS.len();
+    state.selected_index = 0;
+    state.scroll_offset = 0;
+    reset_selection(state);
+    true
+}
+
+pub(crate) fn query_text(state: &AppState) -> &str {
+    core::str::from_utf8(&state.query[..state.query_len]).unwrap_or("")
 }
 
 pub(crate) fn compute_layout(state: &AppState) -> Layout {

@@ -5,7 +5,9 @@ use rt::{
 use serviceos_userspace_runtime as rt;
 
 use crate::{
-    consts::{BUILDER_REPORT_TAG, MAX_JOBS},
+    consts::{BUILDER_REPORT_TAG, MAX_JOBS, MAX_TOOLCHAINS},
+    registry::{self, RegistryRecord},
+    routing,
     sandbox,
     types::{JobSlot, ToolchainSlot, WorkspaceSlot},
     util::{
@@ -19,6 +21,7 @@ pub(crate) struct Catalog<'a> {
     pub(crate) toolchain_count: usize,
     pub(crate) workspaces: &'a [WorkspaceSlot],
     pub(crate) workspace_count: usize,
+    pub(crate) registry: &'a mut [RegistryRecord; MAX_TOOLCHAINS],
 }
 
 pub(crate) fn handle_public_request(
@@ -31,10 +34,21 @@ pub(crate) fn handle_public_request(
 ) -> rt::Result<()> {
     match message.tag {
         x if x == DeveloperTag::ToolchainListRequest as u32 => {
-            reply_toolchain_list(catalog.toolchains, catalog.toolchain_count, message)
+            reply_toolchain_list(
+                catalog.registry,
+                catalog.toolchains,
+                catalog.toolchain_count,
+                message,
+            )
         }
         x if x == DeveloperTag::ToolchainInfoRequest as u32 => {
-            reply_toolchain_info(catalog.toolchains, catalog.toolchain_count, message)
+            reply_toolchain_info(
+                storage_handle,
+                catalog.registry,
+                catalog.toolchains,
+                catalog.toolchain_count,
+                message,
+            )
         }
         x if x == DeveloperTag::WorkspaceListRequest as u32 => {
             reply_workspace_list(catalog.workspaces, catalog.workspace_count, message)
@@ -60,6 +74,7 @@ pub(crate) fn handle_public_request(
 }
 
 fn reply_toolchain_list(
+    registry: &[RegistryRecord; MAX_TOOLCHAINS],
     toolchains: &[ToolchainSlot],
     toolchain_count: usize,
     message: &RawMessage,
@@ -83,7 +98,27 @@ fn reply_toolchain_list(
         reply.words[3] = toolchain.state as u32 as u64;
         reply.words[4] = toolchain.format as u32 as u64;
         reply.words[5] = toolchain.name.len as u64;
-        reply.word_count += rt::pack_bytes(toolchain.name.as_bytes(), &mut reply.words[6..])?;
+        let packed_name =
+            rt::pack_bytes(toolchain.name.as_bytes(), &mut reply.words[6..])? as usize;
+        // Trailing registry fields appended after the packed name region so
+        // existing clients that stop reading at the name are unaffected:
+        // family, newest-first rank within the family, version text.
+        let record = registry
+            .get(index)
+            .copied()
+            .unwrap_or(RegistryRecord::empty());
+        let mut version_text = [0u8; 32];
+        let version_bytes: &[u8] = record
+            .version
+            .as_ref()
+            .map(|version| registry::format_version_text(version, &mut version_text))
+            .unwrap_or(&[]);
+        let tail_base = 6 + packed_name;
+        reply.words[tail_base] = record.family as u64;
+        reply.words[tail_base + 1] = u64::from(record.rank);
+        reply.words[tail_base + 2] = version_bytes.len() as u64;
+        let packed_version = rt::pack_bytes(version_bytes, &mut reply.words[tail_base + 3..])?;
+        reply.word_count += (packed_name + 3) as u32 + packed_version;
     }
     let _ = rt::channel_send(reply_handle, &reply);
     let _ = rt::handle_close(reply_handle);
@@ -91,6 +126,8 @@ fn reply_toolchain_list(
 }
 
 fn reply_toolchain_info(
+    storage_handle: rt::Handle,
+    registry: &mut [RegistryRecord; MAX_TOOLCHAINS],
     toolchains: &[ToolchainSlot],
     toolchain_count: usize,
     message: &RawMessage,
@@ -108,6 +145,12 @@ fn reply_toolchain_info(
         .copied()
         .filter(|toolchain| toolchain.occupied)
     {
+        // Verify-present operation: probe the SDK install root live and
+        // record the result on the registry entry before answering.
+        let present = registry::verify_present(storage_handle, &toolchain);
+        if let Some(record) = registry.get_mut(index) {
+            record.present = present;
+        }
         reply.words[0] = DeveloperStatus::Ok as u32 as u64;
         reply.words[1] = index as u64;
         reply.words[2] = toolchain.target as u32 as u64;
@@ -123,6 +166,11 @@ fn reply_toolchain_info(
             .copy_from_slice(toolchain.sdk_root.as_bytes());
         total += toolchain.sdk_root.len;
         reply.word_count += rt::pack_bytes(&combined[..total], &mut reply.words[7..])?;
+        // Trailing verify word appended after the packed byte region so
+        // existing clients that stop reading at name/sdk lengths are
+        // unaffected.
+        reply.words[reply.word_count as usize] = present as u64;
+        reply.word_count += 1;
     }
     let _ = rt::channel_send(reply_handle, &reply);
     let _ = rt::handle_close(reply_handle);
@@ -265,6 +313,51 @@ fn handle_build_request(
         let _ = rt::handle_close(output_handle);
         return Ok(());
     }
+    // Registry verify-present gate: an installed toolchain whose SDK root
+    // no longer resolves in storage cannot run a build job.
+    let present = registry::verify_present(storage_handle, &toolchain);
+    if let Some(record) = catalog.registry.get_mut(toolchain_index as usize) {
+        record.present = present;
+    }
+    if !present {
+        reply.words[0] = DeveloperStatus::Unsupported as u32 as u64;
+        let _ = emit_log(
+            log_handle,
+            LogSeverity::Warn,
+            LogEvent::DeveloperBuildFailed,
+            workspace_id as u64,
+            ((target as u64) << 32) | registry::TOOLCHAIN_ROOT_MISSING,
+        );
+        let _ = rt::channel_send(reply_handle, &reply);
+        let _ = rt::handle_close(reply_handle);
+        let _ = rt::handle_close(output_handle);
+        return Ok(());
+    }
+
+    // Runtime-aware routing: word[2] carries an optional runtime profile
+    // tag; when it matches an active runtime-service environment the job is
+    // routed through that contract, otherwise the direct worker spawn path
+    // is reused.
+    let profile = if message.word_count >= 3 {
+        message.words[2] as u32
+    } else {
+        routing::RUNTIME_PROFILE_NONE
+    };
+    let route = match profile {
+        routing::RUNTIME_PROFILE_NONE => routing::BuildRoute::DirectSpawn,
+        _ => {
+            let empty = [routing::RuntimeEnvSnapshot {
+                env_id: 0,
+                kind: 0,
+                state: 0,
+            }; 0];
+            let route = match routing::probe_runtime_envs(bootstrap) {
+                Some(envs) => routing::route_for(profile, &envs),
+                None => routing::route_for(profile, &empty),
+            };
+            route
+        }
+    };
 
     // Capability manifest: explicit fs scope prefixes derived from the
     // workspace descriptor plus the toolchain SDK root; network is always
@@ -366,10 +459,13 @@ fn handle_build_request(
     startup_words[2] = workspace.artifact.len as u64;
     let packed =
         rt::pack_bytes(workspace.artifact.as_bytes(), &mut startup_words[3..]).unwrap_or(0);
+    // Route word appended after the packed artifact name so older worker
+    // images that read exactly name_len bytes are unaffected.
+    startup_words[3 + packed as usize] = routing::encode_route_word(route);
     let task_handle = rt::manager_launch_program_with_payload(
         bootstrap,
         rt::ServiceImageId::CrossBuilderTool,
-        &startup_words[..3 + packed as usize],
+        &startup_words[..4 + packed as usize],
         &startup_handles,
     );
     let _ = rt::handle_close(output_handle);
@@ -391,15 +487,17 @@ fn handle_build_request(
                 task_handle,
                 report_handle: report.first,
                 sandbox: decision,
+                route,
             };
             reply.words[0] = DeveloperStatus::Ok as u32 as u64;
             reply.words[1] = job_id as u64;
+            let route_bits = (routing::encode_route_word(route).min(0xFF)) << 16;
             let _ = emit_log(
                 log_handle,
                 LogSeverity::Info,
                 LogEvent::DeveloperBuildStarted,
                 job_id as u64,
-                ((workspace_id as u64) << 32) | target as u32 as u64,
+                ((workspace_id as u64) << 32) | route_bits | target as u32 as u64,
             );
         }
         Err(error) => {
@@ -571,12 +669,18 @@ pub(crate) fn poll_job_reports(log_handle: rt::Handle, jobs: &mut [JobSlot; MAX_
                     );
                 } else {
                     job.state = DeveloperJobState::Failed;
+                    let route_bits = match job.route {
+                        routing::BuildRoute::DirectSpawn => 0u64,
+                        routing::BuildRoute::RuntimeEnv { env_id } => {
+                            (u64::from(env_id).min(0xFF)) << 8
+                        }
+                    };
                     let _ = emit_log(
                         log_handle,
                         LogSeverity::Error,
                         LogEvent::DeveloperBuildFailed,
                         job_id as u64,
-                        2,
+                        2 | route_bits,
                     );
                 }
                 let _ = rt::handle_close(job.report_handle);

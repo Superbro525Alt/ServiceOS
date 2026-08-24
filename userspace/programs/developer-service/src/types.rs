@@ -3,6 +3,7 @@ use serviceos_userspace_runtime as rt;
 
 use crate::{
     consts::{MAX_NAME, MAX_PATH},
+    routing::{self, BuildRoute},
     sandbox::SandboxDecision,
 };
 
@@ -91,6 +92,7 @@ pub(crate) struct JobSlot {
     pub(crate) task_handle: rt::Handle,
     pub(crate) report_handle: rt::Handle,
     pub(crate) sandbox: SandboxDecision,
+    pub(crate) route: BuildRoute,
 }
 
 impl JobSlot {
@@ -110,6 +112,7 @@ impl JobSlot {
                 allowed: false,
                 scope_count: 0,
             },
+            route: routing::BuildRoute::DirectSpawn,
         }
     }
 }

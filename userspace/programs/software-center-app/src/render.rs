@@ -4,13 +4,12 @@ use rt::FixedLogBuffer;
 use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
 
-use crate::actions::{
-    action_label, category_chip_label, channel_label, ring_label, text_or_dash, trust_badge,
-};
+use crate::actions::{action_label, channel_label, ring_label, text_or_dash, trust_badge};
+use crate::catalog_meta::{self, MAX_QUERY_BYTES};
 use crate::state::{
-    AppState, BUFFER_BYTES, BUFFER_HEIGHT, BUFFER_WIDTH, CatalogEntry, HEADER_HEIGHT, Layout,
-    MAX_SOURCE_BYTES, PIXEL_STRIDE, ROW_HEIGHT, STATUS_BAR_HEIGHT, compute_layout, installed_count,
-    selected_entry, service_title,
+    AppState, BUFFER_BYTES, BUFFER_HEIGHT, BUFFER_WIDTH, CATEGORY_FILTERS, CatalogEntry,
+    HEADER_HEIGHT, Layout, MAX_SOURCE_BYTES, PIXEL_STRIDE, ROW_HEIGHT, STATUS_BAR_HEIGHT,
+    compute_layout, installed_count, query_text, selected_entry, service_title,
 };
 
 pub(crate) fn render(
@@ -28,6 +27,7 @@ pub(crate) fn render(
     let mut detail1 = FixedLogBuffer::<80>::new();
     let mut detail2 = FixedLogBuffer::<80>::new();
     let mut detail3 = FixedLogBuffer::<96>::new();
+    let mut unsupported_chip: Option<&'static str> = None;
     if let Some(entry) = selected_entry(state) {
         let mut installed = [0u8; 24];
         let mut active = [0u8; 24];
@@ -44,14 +44,18 @@ pub(crate) fn render(
             &mut source,
         ) {
             let _ = write!(&mut detail0, "{}", service_title(entry.service_id));
-            let _ = write!(
-                &mut detail1,
-                "{}  repo={}  {}",
-                text_or_dash(&entry.summary[..entry.summary_len]),
-                provenance.repo_index,
-                trust_badge(provenance.trust_state),
-            );
-            let _ = write!(&mut detail1, "");
+            let description = catalog_meta::description_for(entry.service_id);
+            if description.is_empty() {
+                let _ = write!(
+                    &mut detail1,
+                    "{}  repo={}  {}",
+                    text_or_dash(&entry.summary[..entry.summary_len]),
+                    provenance.repo_index,
+                    trust_badge(provenance.trust_state),
+                );
+            } else {
+                let _ = write!(&mut detail1, "{}", description);
+            }
             let _ = write!(
                 &mut detail2,
                 "latest={}  installed={}  active={}",
@@ -69,11 +73,16 @@ pub(crate) fn render(
             let _ = source;
         } else {
             let _ = write!(&mut detail0, "{}", service_title(entry.service_id));
-            let _ = write!(
-                &mut detail1,
-                "{}",
-                text_or_dash(&entry.summary[..entry.summary_len])
-            );
+            let description = catalog_meta::description_for(entry.service_id);
+            if description.is_empty() {
+                let _ = write!(
+                    &mut detail1,
+                    "{}",
+                    text_or_dash(&entry.summary[..entry.summary_len])
+                );
+            } else {
+                let _ = write!(&mut detail1, "{}", description);
+            }
             let _ = write!(
                 &mut detail2,
                 "latest={}",
@@ -82,8 +91,21 @@ pub(crate) fn render(
             let _ = write!(
                 &mut detail3,
                 "category={}",
-                text_or_dash(&entry.category[..entry.category_len])
+                catalog_meta::category_for(entry.service_id, &entry.category[..entry.category_len])
             );
+        }
+        let targets = catalog_meta::targets_for(entry.service_id);
+        let _ = write!(
+            &mut detail3,
+            "  host={}",
+            catalog_meta::compat_label(targets)
+        );
+        if !catalog_meta::host_supported(targets) {
+            unsupported_chip = Some("UNSUPPORTED ON THIS HOST");
+        }
+        let screenshot_ref = catalog_meta::screenshot_ref_for(entry.service_id);
+        if !screenshot_ref.is_empty() {
+            let _ = write!(&mut detail3, "  shot={}", screenshot_ref);
         }
     } else {
         let _ = write!(&mut detail0, "Select a package");
@@ -154,6 +176,7 @@ pub(crate) fn render(
         str::from_utf8(detail3.as_bytes()).unwrap_or("DETAILS"),
         str::from_utf8(&state.status[..state.status_len]).unwrap_or(""),
         selected_entry(state),
+        unsupported_chip,
     );
     draw_button(
         bytes,
@@ -219,6 +242,35 @@ fn draw_header(bytes: &mut [u8], layout: Layout, state: &AppState) {
         ui::TEXT_SECONDARY,
         str::from_utf8(summary.as_bytes()).unwrap_or(""),
     );
+
+    let filter = CATEGORY_FILTERS
+        .get(state.category_filter)
+        .copied()
+        .unwrap_or("All");
+    let mut search = FixedLogBuffer::<{ MAX_QUERY_BYTES + 48 }>::new();
+    if query_text(state).is_empty() {
+        let _ = write!(
+            &mut search,
+            "find: type to search   cat:{}  tab=next",
+            filter
+        );
+    } else {
+        let _ = write!(
+            &mut search,
+            "find:{}  {} hits  cat:{}",
+            query_text(state),
+            state.view_count,
+            filter
+        );
+    }
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        layout.sync_x0 - (search.as_bytes().len() as i32 + 2) * 8,
+        layout.header_y + 12 + 16,
+        ui::TEXT_MUTED,
+        str::from_utf8(search.as_bytes()).unwrap_or(""),
+    );
 }
 
 fn draw_details(
@@ -230,6 +282,7 @@ fn draw_details(
     detail3: &str,
     status: &str,
     entry: Option<CatalogEntry>,
+    unsupported_chip: Option<&'static str>,
 ) {
     let meta_x = layout.right_x + 12;
     let title_y = layout.detail_title_y;
@@ -254,10 +307,20 @@ fn draw_details(
             bytes,
             meta_x,
             layout.detail_chip_y,
-            category_chip_label(&entry),
+            catalog_meta::category_for(entry.service_id, &entry.category[..entry.category_len]),
             ui::ACCENT_DIM,
             ui::TEXT_PRIMARY,
         );
+        if let Some(chip) = unsupported_chip {
+            draw_chip(
+                bytes,
+                meta_x + 140,
+                layout.detail_chip_y,
+                chip,
+                ui::STATUS_WARN,
+                ui::BG_PANEL,
+            );
+        }
         if entry.installed {
             draw_chip(
                 bytes,
@@ -312,7 +375,11 @@ fn draw_details(
 fn draw_list(bytes: &mut [u8], layout: Layout, state: &AppState) {
     let visible_rows = layout.visible_rows();
     for row in 0..visible_rows {
-        let entry_index = state.scroll_offset + row;
+        let view_position = state.scroll_offset + row;
+        if view_position >= state.view_count {
+            break;
+        }
+        let entry_index = state.view[view_position];
         if entry_index >= state.entry_count {
             break;
         }
@@ -351,7 +418,7 @@ fn draw_list(bytes: &mut [u8], layout: Layout, state: &AppState) {
             &mut meta,
             "v{}  {}  r{}  {}{}{}",
             text_or_dash(&entry.latest_version[..entry.latest_version_len]),
-            text_or_dash(&entry.category[..entry.category_len]),
+            catalog_meta::category_for(entry.service_id, &entry.category[..entry.category_len]),
             entry.repo_index,
             if entry.installed { "I" } else { "-" },
             if entry.active { "A" } else { "-" },
@@ -364,6 +431,16 @@ fn draw_list(bytes: &mut [u8], layout: Layout, state: &AppState) {
             row_y as i32 + 16,
             ui::TEXT_MUTED,
             str::from_utf8(meta.as_bytes()).unwrap_or(""),
+        );
+    }
+    if state.view_count == 0 {
+        rt::draw_text_rgba8888(
+            bytes,
+            PIXEL_STRIDE,
+            layout.left_x + 14,
+            layout.list_rows_y + 6,
+            ui::TEXT_MUTED,
+            "no matching packages",
         );
     }
 }

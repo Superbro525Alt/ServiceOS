@@ -3,6 +3,8 @@
 
 mod consts;
 mod protocol;
+mod registry;
+mod routing;
 mod sandbox;
 mod service;
 mod types;

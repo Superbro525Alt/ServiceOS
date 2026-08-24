@@ -3,11 +3,13 @@ use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
 
 use crate::actions::{PackageAction, apply_selected_package_action, sync_repositories};
+use crate::catalog_meta::keycode_to_char;
 use crate::render::render;
 use crate::state::{
-    AppState, KEY_BACKSPACE, KEY_DELETE, KEY_DOWN, KEY_ENTER, KEY_PAGE_DOWN, KEY_PAGE_UP, KEY_R,
-    KEY_UP, ROW_HEIGHT, SURFACE_BUFFER_SLOTS, clamp_view, compute_layout, ensure_selected_visible,
-    scroll_down, scroll_up, selected_entry, visible_row_count,
+    AppState, KEY_BACKSPACE, KEY_DELETE, KEY_DOWN, KEY_ENTER, KEY_ESC, KEY_PAGE_DOWN, KEY_PAGE_UP,
+    KEY_R, KEY_TAB, KEY_UP, ROW_HEIGHT, SURFACE_BUFFER_SLOTS, clamp_view, clear_query,
+    compute_layout, cycle_category_filter, ensure_selected_visible, pop_query_char,
+    push_query_char, scroll_down, scroll_up, selected_entry, visible_row_count,
 };
 
 pub(crate) enum ControlFlow {
@@ -133,9 +135,12 @@ fn handle_pointer_down(
     let visible_rows = layout.visible_rows();
     if x >= layout.left_x + 8 && x < layout.left_x + layout.left_w - 8 && y >= layout.list_rows_y {
         let row = ((y - layout.list_rows_y) / ROW_HEIGHT) as usize;
-        let entry_index = state.scroll_offset + row;
-        if row < visible_rows && entry_index < state.entry_count {
-            state.selected_index = entry_index;
+        let view_position = state.scroll_offset + row;
+        if row < visible_rows
+            && view_position < state.view_count
+            && state.view[view_position] < state.entry_count
+        {
+            state.selected_index = view_position;
             return Ok(true);
         }
     }
@@ -152,7 +157,7 @@ fn handle_key_down(package_handle: rt::Handle, state: &mut AppState, key: u32) -
             }
         }
         KEY_DOWN => {
-            if state.selected_index + 1 < state.entry_count {
+            if state.selected_index + 1 < state.view_count {
                 state.selected_index += 1;
                 ensure_selected_visible(state);
                 return Ok(true);
@@ -166,11 +171,15 @@ fn handle_key_down(package_handle: rt::Handle, state: &mut AppState, key: u32) -
         }
         KEY_PAGE_DOWN => {
             let step = visible_row_count(state.height).max(1);
-            if state.entry_count > 0 {
-                state.selected_index = (state.selected_index + step).min(state.entry_count - 1);
+            if state.view_count > 0 {
+                state.selected_index = (state.selected_index + step).min(state.view_count - 1);
                 ensure_selected_visible(state);
                 return Ok(true);
             }
+        }
+        KEY_TAB => {
+            cycle_category_filter(state);
+            return Ok(true);
         }
         KEY_ENTER => {
             if let Some(entry) = selected_entry(state) {
@@ -183,17 +192,28 @@ fn handle_key_down(package_handle: rt::Handle, state: &mut AppState, key: u32) -
                 return Ok(true);
             }
         }
+        KEY_ESC => {
+            clear_query(state);
+            return Ok(true);
+        }
         KEY_BACKSPACE | KEY_DELETE => {
+            if pop_query_char(state) {
+                return Ok(true);
+            }
             if let Some(entry) = selected_entry(state).filter(|entry| entry.installed) {
                 apply_selected_package_action(package_handle, state, entry, PackageAction::Remove);
                 return Ok(true);
             }
         }
-        KEY_R => {
+        KEY_R if state.query_len == 0 => {
             sync_repositories(package_handle, state);
             return Ok(true);
         }
         _ => {}
+    }
+    if let Some(byte) = keycode_to_char(key) {
+        push_query_char(state, byte);
+        return Ok(true);
     }
     Ok(false)
 }

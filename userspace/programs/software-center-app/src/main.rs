@@ -1,7 +1,8 @@
-#![no_std]
-#![no_main]
+#![cfg_attr(not(test), no_std)]
+#![cfg_attr(not(test), no_main)]
 
 mod actions;
+mod catalog_meta;
 mod control;
 mod render;
 mod state;
@@ -13,10 +14,7 @@ use serviceos_userspace_runtime as rt;
 use crate::actions::{error_label, reload_catalog, set_statusf};
 use crate::control::{ControlFlow, poll_control};
 use crate::render::render;
-use crate::state::{
-    AppState, BUFFER_BYTES, BUFFER_HEIGHT, BUFFER_WIDTH, CatalogEntry, MAX_ENTRIES,
-    MAX_STATUS_BYTES, SURFACE_BUFFER_SLOTS,
-};
+use crate::state::{AppState, BUFFER_BYTES, BUFFER_HEIGHT, BUFFER_WIDTH, SURFACE_BUFFER_SLOTS};
 
 rt::entry!(main);
 
@@ -36,17 +34,11 @@ fn main() -> u64 {
     let surface_handle = startup.handles[0];
     let control_handle = startup.handles[1];
     let package_handle = startup.handles[2];
-    let mut state = AppState {
-        width: startup.words[1] as u32,
-        height: startup.words[2] as u32,
-        focused: startup.words[3] != 0,
-        entries: [CatalogEntry::empty(); MAX_ENTRIES],
-        entry_count: 0,
-        selected_index: 0,
-        scroll_offset: 0,
-        status: [0; MAX_STATUS_BYTES],
-        status_len: 0,
-    };
+    let mut state = AppState::new(
+        startup.words[1] as u32,
+        startup.words[2] as u32,
+        startup.words[3] != 0,
+    );
     let mut buffers = match ui::SurfaceBuffers::<SURFACE_BUFFER_SLOTS>::new(
         surface_handle,
         BUFFER_WIDTH,

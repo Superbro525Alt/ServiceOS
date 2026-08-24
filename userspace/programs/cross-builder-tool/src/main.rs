@@ -71,6 +71,11 @@ fn main() -> u64 {
     // One-line worker sandbox echo for the build log.
     log_sandbox_line(output, &sandbox);
 
+    // Runtime-aware routing echo: the launcher appends a route word after
+    // the packed artifact name; absent word means legacy direct spawn.
+    let route = decode_startup_route(startup.word_count as usize, name_len, &startup.words);
+    log_route_line(output, &route);
+
     if !sandbox.net_denied
         || !path_in_scopes(&sandbox.scopes[..sandbox.scope_count], &sandbox.request_in)
         || !path_in_scopes(&sandbox.scopes[..sandbox.scope_count], &sandbox.request_out)
@@ -289,6 +294,54 @@ fn push_chunk(line: &mut [u8], cursor: usize, chunk: &[u8]) -> usize {
     }
     line[cursor..cursor + chunk.len()].copy_from_slice(chunk);
     cursor + chunk.len()
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorkerRoute {
+    Direct,
+    RuntimeEnv(u32),
+}
+
+/// Decode the optional startup payload route word: nonzero encodes a
+/// runtime-service environment as env_id + 1; zero or missing = direct.
+fn decode_startup_route(word_count: usize, name_len: usize, words: &[u64]) -> WorkerRoute {
+    let route_index = 3 + name_len.div_ceil(8);
+    if word_count <= route_index {
+        return WorkerRoute::Direct;
+    }
+    match words.get(route_index).copied().unwrap_or(0) {
+        0 => WorkerRoute::Direct,
+        encoded => WorkerRoute::RuntimeEnv(encoded.saturating_sub(1) as u32),
+    }
+}
+
+fn log_route_line(output: rt::Handle, route: &WorkerRoute) {
+    let mut line = [0u8; 64];
+    let mut cursor = push_chunk(&mut line, 0, b"worker route: ");
+    cursor = match *route {
+        WorkerRoute::Direct => push_chunk(&mut line, cursor, b"direct\r\n"),
+        WorkerRoute::RuntimeEnv(env_id) => {
+            cursor = push_chunk(&mut line, cursor, b"runtime-env ");
+            let mut digits = [0u8; 10];
+            let mut count = 0usize;
+            let mut value = env_id;
+            loop {
+                digits[count] = b'0' + (value % 10) as u8;
+                count += 1;
+                value /= 10;
+                if value == 0 {
+                    break;
+                }
+            }
+            for byte in digits[..count].iter().rev() {
+                cursor = push_chunk(&mut line, cursor, core::slice::from_ref(byte));
+            }
+            push_chunk(&mut line, cursor, b"\r\n")
+        }
+    };
+    if let Ok(text) = core::str::from_utf8(&line[..cursor]) {
+        let _ = rt::text_relay_write(output, text);
+    }
 }
 
 fn send_report(
@@ -647,5 +700,59 @@ out=packages/developer-service/1.0.0/projects/hello-cross/hello-cross\n";
         cursor = push_chunk(&mut line, cursor, b"] net=denied\r\n");
         let rendered = core::str::from_utf8(&line[..cursor]).unwrap();
         assert_eq!(rendered, "worker sandbox: fs=[ws/src] net=denied\r\n");
+    }
+}
+
+#[cfg(test)]
+mod route_tests {
+    use super::*;
+
+    fn payload(name_len: usize, extra: &[u64]) -> (usize, Vec<u64>) {
+        let packed = name_len.div_ceil(8);
+        let mut words = vec![0u64; 3 + packed];
+        words.extend_from_slice(extra);
+        (words.len(), words)
+    }
+
+    #[test]
+    fn missing_route_word_means_direct() {
+        let (word_count, words) = payload(11, &[]);
+        assert_eq!(
+            decode_startup_route(word_count, 11, &words),
+            WorkerRoute::Direct
+        );
+    }
+
+    #[test]
+    fn zero_route_word_means_direct() {
+        let (word_count, words) = payload(11, &[0]);
+        assert_eq!(
+            decode_startup_route(word_count, 11, &words),
+            WorkerRoute::Direct
+        );
+    }
+
+    #[test]
+    fn nonzero_route_word_decodes_env_id() {
+        let (word_count, words) = payload(11, &[4]);
+        assert_eq!(
+            decode_startup_route(word_count, 11, &words),
+            WorkerRoute::RuntimeEnv(3)
+        );
+    }
+
+    #[test]
+    fn route_word_position_follows_packed_name_length() {
+        // name_len exactly word-aligned vs not must both land on the right
+        // slot.
+        for name_len in [8usize, 9usize, 16usize, 17usize] {
+            let packed = name_len.div_ceil(8);
+            let mut words = vec![0u64; 3 + packed];
+            words.push(7);
+            assert_eq!(
+                decode_startup_route(words.len(), name_len, &words),
+                WorkerRoute::RuntimeEnv(6)
+            );
+        }
     }
 }

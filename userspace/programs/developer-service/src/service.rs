@@ -4,6 +4,7 @@ use serviceos_userspace_runtime as rt;
 use crate::{
     consts::{MAX_JOBS, MAX_TOOLCHAINS, MAX_WORKSPACES},
     protocol::{Catalog, handle_public_request, poll_job_exits, poll_job_reports},
+    registry,
     types::{JobSlot, ToolchainSlot, WorkspaceSlot},
     util::{emit_log, read_catalog},
 };
@@ -34,6 +35,8 @@ pub(crate) fn run() -> u64 {
         Err(_) => return 0xfd03,
     };
 
+    let mut registry = registry::build_registry(&toolchains, toolchain_count);
+
     let public = match rt::channel_create() {
         Ok(pair) => pair,
         Err(_) => return 0xfd04,
@@ -48,7 +51,9 @@ pub(crate) fn run() -> u64 {
         rt::LogSeverity::Info,
         rt::LogEvent::DeveloperCatalogLoaded,
         toolchain_count as u64,
-        workspace_count as u64,
+        workspace_count as u64
+            | (registry::family_mask(&registry) << 16)
+            | (registry::versioned_count(&registry).min(0xFF) << 44),
     );
 
     let mut jobs = [JobSlot::empty(); MAX_JOBS];
@@ -74,6 +79,7 @@ pub(crate) fn run() -> u64 {
                     toolchain_count,
                     workspaces: &workspaces,
                     workspace_count,
+                    registry: &mut registry,
                 };
                 if handle_public_request(
                     bootstrap,

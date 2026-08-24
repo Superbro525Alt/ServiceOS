@@ -131,6 +131,11 @@ fn main() -> u64 {
         master_volume: media::MASTER_VOLUME_DEFAULT,
         master_muted: false,
         pending_media_refresh: rt::PendingFlag::new(),
+        animations: [None; windows::ANIM_QUEUE_MAX],
+        shadow_surface_id: 0,
+        shadow_surface_handle: rt::INVALID_HANDLE,
+        shadow_width: 0,
+        shadow_height: 0,
     };
 
     if render::render_desktop(&mut state).is_err() {
@@ -219,6 +224,7 @@ fn main() -> u64 {
             Ok(now) => now,
             Err(_) => return 0xfe11,
         };
+        windows::step_animations(&mut state, now);
         if !did_work {
             if let Some(app_id) = state.pending_app_launch.take() {
                 if windows::launch_or_focus_app(&mut state, app_id).is_err() {

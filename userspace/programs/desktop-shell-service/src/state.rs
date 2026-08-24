@@ -2,7 +2,7 @@ use rt::{DesktopAppId, ServiceImageId};
 use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
 
-use crate::media::{MASTER_VOLUME_DEFAULT, MEDIA_OVERLAY_HEIGHT, MEDIA_OVERLAY_WIDTH};
+use crate::windows::{ANIM_QUEUE_MAX, WindowAnim};
 
 pub(crate) const SESSION_ID: u32 = 1;
 pub(crate) const APP_COUNT: usize = 5;
@@ -317,6 +317,11 @@ pub(crate) struct DesktopState {
     pub(crate) master_volume: u8,
     pub(crate) master_muted: bool,
     pub(crate) pending_media_refresh: rt::PendingFlag,
+    pub(crate) animations: [Option<WindowAnim>; ANIM_QUEUE_MAX],
+    pub(crate) shadow_surface_id: u32,
+    pub(crate) shadow_surface_handle: rt::Handle,
+    pub(crate) shadow_width: u32,
+    pub(crate) shadow_height: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

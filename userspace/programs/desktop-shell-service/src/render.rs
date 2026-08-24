@@ -11,12 +11,15 @@ use crate::{
     STATUS_PANEL_WIDTH, SWITCHER_HEIGHT, SWITCHER_WIDTH, TOPBAR_HEIGHT, WORKSPACE_COUNT,
     media::{MEDIA_LINE_COUNT, MEDIA_OVERLAY_HEIGHT, MEDIA_OVERLAY_WIDTH},
     palette_action_label, palette_matches,
-    windows::{app_title, launcher_line, running_app_count, visible_on_workspace},
+    windows::{
+        app_title, launcher_line, running_app_count, sync_focus_shadow, visible_on_workspace,
+    },
 };
 
 pub(crate) fn render_desktop(state: &mut DesktopState) -> rt::Result<()> {
     let status_snapshot = snapshot_for_render(state);
     render_shell_chrome(state, status_snapshot, true)?;
+    sync_focus_shadow(state);
     render_overlays(state)?;
     state.last_status_snapshot = Some(status_snapshot);
     Ok(())
@@ -25,6 +28,7 @@ pub(crate) fn render_desktop(state: &mut DesktopState) -> rt::Result<()> {
 pub(crate) fn render_focus_chrome(state: &mut DesktopState) -> rt::Result<()> {
     let status_snapshot = snapshot_for_render(state);
     render_shell_chrome(state, status_snapshot, false)?;
+    sync_focus_shadow(state);
     state.last_status_snapshot = Some(status_snapshot);
     Ok(())
 }

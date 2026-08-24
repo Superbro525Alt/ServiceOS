@@ -1,7 +1,9 @@
+mod anim;
 mod encode;
 mod layout;
 mod lifecycle;
 mod notifications;
+mod shadow;
 
 use core::fmt::Write;
 
@@ -18,6 +20,10 @@ use crate::{
     render::render_desktop,
 };
 
+pub(crate) use anim::{
+    ANIM_QUEUE_MAX, WindowAnim, begin_close_animation, begin_minimize_animation,
+    begin_open_animation, begin_restore_animation, cancel_animations, step_animations,
+};
 pub(crate) use encode::{encode_window_page, pack_i32_pair};
 pub(crate) use layout::{
     allocate_z_order, app_slot_index, app_title, apply_window_geometry,
@@ -31,3 +37,4 @@ pub(crate) use lifecycle::{
     schedule_launch_or_focus_app, switch_workspace,
 };
 pub(crate) use notifications::{post_notification, push_recent_focus};
+pub(crate) use shadow::sync_focus_shadow;

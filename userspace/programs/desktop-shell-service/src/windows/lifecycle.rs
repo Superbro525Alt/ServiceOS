@@ -88,6 +88,7 @@ pub(crate) fn launch_or_focus_app(
     };
     state.apps[index].running = true;
     let surface_id = focus_app_internal(state, app_id, false, false)?;
+    begin_open_animation(state, app_id)?;
     state.pending_shell_refresh.set();
     let _ = emit_log(
         state.log_handle,
@@ -185,7 +186,7 @@ pub(crate) fn minimize_app(state: &mut DesktopState, app_id: DesktopAppId) -> rt
         return Err(rt::Error::NotFound);
     }
     state.apps[index].window.minimized = true;
-    set_window_visibility(&state.apps[index], false)?;
+    begin_minimize_animation(state, app_id)?;
     if state.focused_app == Some(app_id) {
         state.focused_app = None;
         let _ = rt::session_focus(state.session_handle, SESSION_ID, 0);
@@ -206,6 +207,7 @@ pub(crate) fn restore_app(state: &mut DesktopState, app_id: DesktopAppId) -> rt:
     if !state.apps[index].running {
         return Err(rt::Error::NotFound);
     }
+    let was_minimized = state.apps[index].window.minimized;
     if state.apps[index].window.maximized {
         let restore_x = state.apps[index].window.restore_x;
         let restore_y = state.apps[index].window.restore_y;
@@ -231,7 +233,11 @@ pub(crate) fn restore_app(state: &mut DesktopState, app_id: DesktopAppId) -> rt:
         }
     }
     state.apps[index].window.minimized = false;
-    focus_app_internal(state, app_id, true, true)
+    let surface_id = focus_app_internal(state, app_id, true, true)?;
+    if was_minimized {
+        begin_restore_animation(state, app_id)?;
+    }
+    Ok(surface_id)
 }
 
 pub(crate) fn maximize_app(state: &mut DesktopState, app_id: DesktopAppId) -> rt::Result<u32> {
@@ -241,6 +247,7 @@ pub(crate) fn maximize_app(state: &mut DesktopState, app_id: DesktopAppId) -> rt
     if !state.apps[index].running {
         return Err(rt::Error::NotFound);
     }
+    cancel_animations(&mut state.animations, app_id);
     if state.apps[index].window.maximized {
         return restore_app(state, app_id);
     }
@@ -281,6 +288,7 @@ pub(crate) fn move_app(
     if !state.apps[index].running {
         return Err(rt::Error::NotFound);
     }
+    cancel_animations(&mut state.animations, app_id);
     state.apps[index].window.maximized = false;
     state.apps[index].window.x =
         clamp_window_x(state.chrome.output_width, state.apps[index].window.width, x);
@@ -312,6 +320,7 @@ pub(crate) fn resize_app(
     if !state.apps[index].running {
         return Err(rt::Error::NotFound);
     }
+    cancel_animations(&mut state.animations, app_id);
     state.apps[index].window.maximized = false;
     let width = width.clamp(
         WINDOW_MIN_WIDTH,
@@ -359,6 +368,8 @@ pub(crate) fn close_app(state: &mut DesktopState, app_id: DesktopAppId) -> rt::R
         return Err(rt::Error::NotFound);
     }
     clear_pending_resize(state, app_id);
+    cancel_animations(&mut state.animations, app_id);
+    begin_close_animation(state, app_id)?;
     let control_handle = state.apps[index].window.control_handle;
     if control_handle != rt::INVALID_HANDLE {
         let _ = rt::app_control_close(control_handle);
@@ -389,6 +400,7 @@ pub(crate) fn refresh_apps(state: &mut DesktopState) -> rt::Result<()> {
         let exited_app = state.apps[index].app_id;
         let exit_code = status.exit_code;
         let faulted = status.state == rt::TaskStateCode::Faulted;
+        cancel_animations(&mut state.animations, exited_app);
         if state.apps[index].window.surface_handle != rt::INVALID_HANDLE {
             let _ = rt::surface_close(state.apps[index].window.surface_handle);
             let _ = rt::handle_close(state.apps[index].window.surface_handle);

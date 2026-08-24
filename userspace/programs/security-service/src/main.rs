@@ -1,5 +1,5 @@
-#![no_std]
-#![no_main]
+#![cfg_attr(not(test), no_std)]
+#![cfg_attr(not(test), no_main)]
 
 use core::{fmt::Write, str};
 
@@ -99,6 +99,7 @@ impl AuditSlot {
     }
 }
 
+#[cfg(not(test))]
 rt::entry!(main);
 
 fn main() -> u64 {
@@ -250,14 +251,14 @@ fn handle_request(
             }
             let reply_handle = request.handles[0];
             let index = request.words[0] as usize;
+            let filter = if request.word_count >= 2 {
+                Some(request.words[1])
+            } else {
+                None
+            };
             let mut reply = RawMessage::empty(SecurityTag::AuditListReply as u32);
             reply.word_count = 6;
-            if let Some(entry) = audits
-                .iter()
-                .filter(|entry| entry.occupied)
-                .nth(index)
-                .copied()
-            {
+            if let Some(entry) = select_audit(audits, index, filter) {
                 reply.words[0] = SecurityStatus::Ok as u32 as u64;
                 reply.words[1] = entry.sequence as u64;
                 reply.words[2] = entry.kind as u32 as u64;
@@ -306,6 +307,36 @@ fn emit_log(
         arg0,
         arg1,
     )
+}
+
+fn audit_kind_from_word(value: u64) -> Option<SecurityAuditKind> {
+    match value as u32 {
+        x if x == SecurityAuditKind::PolicyChanged as u32 => Some(SecurityAuditKind::PolicyChanged),
+        x if x == SecurityAuditKind::LaunchDenied as u32 => Some(SecurityAuditKind::LaunchDenied),
+        x if x == SecurityAuditKind::RuntimeApprovalRequested as u32 => {
+            Some(SecurityAuditKind::RuntimeApprovalRequested)
+        }
+        x if x == SecurityAuditKind::RuntimeApprovalChanged as u32 => {
+            Some(SecurityAuditKind::RuntimeApprovalChanged)
+        }
+        _ => None,
+    }
+}
+
+fn select_audit(
+    audits: &[AuditSlot; MAX_AUDIT],
+    index: usize,
+    filter: Option<u64>,
+) -> Option<AuditSlot> {
+    let matches = |entry: &AuditSlot| match filter {
+        None => true,
+        Some(word) => audit_kind_from_word(word).is_some_and(|expected| expected == entry.kind),
+    };
+    audits
+        .iter()
+        .filter(|entry| entry.occupied && matches(entry))
+        .nth(index)
+        .copied()
 }
 
 fn record_audit(
@@ -470,5 +501,98 @@ fn lifecycle_event_from_word(value: u64) -> LifecycleEvent {
         x if x == LifecycleEvent::Failed as u32 => LifecycleEvent::Failed,
         x if x == LifecycleEvent::Stopped as u32 => LifecycleEvent::Stopped,
         _ => LifecycleEvent::Restarting,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn slot(kind: SecurityAuditKind, sequence: u32) -> AuditSlot {
+        let mut entry = AuditSlot::empty();
+        entry.occupied = true;
+        entry.kind = kind;
+        entry.sequence = sequence;
+        entry
+    }
+
+    #[test]
+    fn audit_roundtrip_preserves_entries() {
+        let mut audits = [AuditSlot::empty(); MAX_AUDIT];
+        let mut next = 1u32;
+        record_audit(
+            &mut audits,
+            &mut next,
+            SecurityAuditKind::PolicyChanged,
+            ServiceImageId::SettingsApp,
+            PermissionPolicyState::Blocked,
+            0,
+        );
+        record_audit(
+            &mut audits,
+            &mut next,
+            SecurityAuditKind::LaunchDenied,
+            ServiceImageId::TerminalApp,
+            PermissionPolicyState::DefaultAllow,
+            42,
+        );
+        let first = select_audit(&audits, 0, None).expect("first entry");
+        assert!(matches!(first.kind, SecurityAuditKind::PolicyChanged));
+        assert_eq!(first.sequence, 1);
+        assert!(matches!(first.subject, ServiceImageId::SettingsApp));
+        assert!(matches!(first.policy, PermissionPolicyState::Blocked));
+        let second = select_audit(&audits, 1, None).expect("second entry");
+        assert!(matches!(second.kind, SecurityAuditKind::LaunchDenied));
+        assert_eq!(second.detail, 42);
+        assert!(select_audit(&audits, 2, None).is_none());
+        assert_eq!(next, 3);
+    }
+
+    #[test]
+    fn audit_kind_filter_skips_non_matching_entries() {
+        let mut audits = [AuditSlot::empty(); MAX_AUDIT];
+        audits[0] = slot(SecurityAuditKind::LaunchDenied, 1);
+        audits[2] = slot(SecurityAuditKind::RuntimeApprovalRequested, 2);
+        audits[3] = slot(SecurityAuditKind::RuntimeApprovalChanged, 3);
+        let changed_word = SecurityAuditKind::RuntimeApprovalChanged as u32 as u64;
+        let filtered = select_audit(&audits, 0, Some(changed_word)).expect("filtered entry");
+        assert_eq!(filtered.sequence, 3);
+        assert!(select_audit(&audits, 1, Some(changed_word)).is_none());
+        assert!(select_audit(&audits, 0, Some(9999)).is_none());
+        assert_eq!(
+            select_audit(&audits, 0, None).expect("unfiltered").sequence,
+            1
+        );
+    }
+
+    #[test]
+    fn audit_kind_from_word_decodes_discriminants() {
+        for kind in [
+            SecurityAuditKind::PolicyChanged,
+            SecurityAuditKind::LaunchDenied,
+            SecurityAuditKind::RuntimeApprovalRequested,
+            SecurityAuditKind::RuntimeApprovalChanged,
+        ] {
+            assert!(audit_kind_from_word(kind as u32 as u64).is_some());
+        }
+        assert!(audit_kind_from_word(9999).is_none());
+    }
+
+    #[test]
+    fn audit_wraparound_overwrites_oldest_slot() {
+        let mut audits = [AuditSlot::empty(); MAX_AUDIT];
+        let mut next = 1u32;
+        for _ in 0..=MAX_AUDIT {
+            record_audit(
+                &mut audits,
+                &mut next,
+                SecurityAuditKind::PolicyChanged,
+                ServiceImageId::RootManager,
+                PermissionPolicyState::DefaultAllow,
+                0,
+            );
+        }
+        assert!(audits.iter().all(|entry| entry.occupied));
+        assert_eq!(audits[0].sequence, MAX_AUDIT as u32 + 1);
     }
 }

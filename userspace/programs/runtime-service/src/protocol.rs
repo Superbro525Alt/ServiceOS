@@ -16,7 +16,7 @@ mod sessions;
 
 use self::envs::{
     allocate_env, encode_env_status, handle_audit_list_request, handle_env_decision_request,
-    handle_env_mount_request, handle_env_var_request, record_audit,
+    handle_env_list_request, handle_env_mount_request, handle_env_var_request, record_audit,
 };
 use self::runs::handle_run_launch_request;
 pub(crate) use self::{runs::poll_run_exits, sessions::handle_run_session_request};
@@ -111,48 +111,7 @@ pub(crate) fn handle_public_request(
             let _ = rt::handle_close(reply_handle);
         }
         x if x == RuntimeTag::EnvListRequest as u32 => {
-            if message.handle_count < 1 {
-                return Ok(());
-            }
-            let start = if message.word_count > 0 {
-                message.words[0] as usize
-            } else {
-                0
-            };
-            let reply_handle = message.handles[0];
-            let mut reply = RawMessage::empty(RuntimeTag::EnvListReply as u32);
-            reply.word_count = 3;
-            reply.words[0] = RuntimeStatus::Ok as u32 as u64;
-            reply.words[1] = 0;
-            reply.words[2] = usize::MAX as u64;
-            let mut emitted = 0usize;
-            let mut visible = 0usize;
-            for (index, env) in envs.iter().enumerate() {
-                if !env.occupied {
-                    continue;
-                }
-                if visible < start {
-                    visible += 1;
-                    continue;
-                }
-                if reply.word_count as usize + 6 > rt::IPC_MAX_WORDS {
-                    reply.words[2] = visible as u64;
-                    break;
-                }
-                let base = reply.word_count as usize;
-                reply.words[base] = index as u64;
-                reply.words[base + 1] = env.kind as u32 as u64;
-                reply.words[base + 2] = env.state as u32 as u64;
-                reply.words[base + 3] = env.capabilities as u64;
-                reply.words[base + 4] = env.mount_count as u64;
-                reply.words[base + 5] = env.active_runs as u64;
-                reply.word_count += 6;
-                emitted += 1;
-                visible += 1;
-            }
-            reply.words[1] = emitted as u64;
-            let _ = rt::channel_send(reply_handle, &reply);
-            let _ = rt::handle_close(reply_handle);
+            handle_env_list_request(envs, message)?;
         }
         x if x == RuntimeTag::EnvStatusRequest as u32 => {
             if message.handle_count < 1 || message.word_count < 1 {

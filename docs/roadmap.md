@@ -232,7 +232,7 @@
 |---|---|---|
 | &#x2705; | Logging / observability | Add persistent log storage, streaming log subscriptions, richer structured payload schemas, and better kernel trap ingestion into the log pipeline |
 | &#x2705; | Status / observability | Add richer service health reporting, subscription-based status monitoring, and shell/session status views |
-| &#x2B1C; | Observability / desktop | Add desktop-facing logs, crash reports, service health surfaces, and app/runtime diagnostics on top of the current logging/status foundations |
+| &#x2705; | Observability / desktop | Add crash-record capture and query in the log service and a system-health rollup in the status snapshot reply (total services, counts by state, degraded/restarting lists, worst restart offenders) on top of the current logging/status foundations; desktop-facing log/crash viewer surfaces and app/runtime diagnostics remain open |
 | &#x2B1C; | Observability / developer | Add richer trace capture, performance/event timeline views, and operator/developer diagnostics for graphics, networking, runtimes, and builds |
 
 ## 18. Toward a More Complete OS

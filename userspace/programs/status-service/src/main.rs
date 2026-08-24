@@ -1,6 +1,9 @@
-#![no_std]
-#![no_main]
+#![cfg_attr(not(test), no_std)]
+#![cfg_attr(not(test), no_main)]
 
+mod rollup;
+
+use rollup::{RollupEntry, compute_rollup, fill_snapshot_reply, is_restarting_phase};
 use rt::{
     ConfigKey, ControlTag, LifecycleEvent, LogDomain, LogEvent, LogSeverity, ManagerServicePhase,
     RawMessage, ServiceId, StatusHealth, StatusResult, StatusTag,
@@ -21,6 +24,7 @@ struct ServiceStatusEntry {
     detail0: u64,
     detail1: u64,
     updated_tick: u64,
+    restarts: u64,
 }
 
 impl ServiceStatusEntry {
@@ -34,6 +38,7 @@ impl ServiceStatusEntry {
             detail0: 0,
             detail1: 0,
             updated_tick: 0,
+            restarts: 0,
         }
     }
 }
@@ -55,6 +60,7 @@ impl Subscriber {
     }
 }
 
+#[cfg(not(test))]
 rt::entry!(main);
 
 fn main() -> u64 {
@@ -250,11 +256,28 @@ fn handle_request(
                 return Ok(());
             }
             let reply_handle = request.handles[0];
+            let mut rollup_entries = [RollupEntry {
+                service_id: 0,
+                health: StatusHealth::Unknown,
+                phase: ManagerServicePhase::Dormant,
+                restarts: 0,
+            }; MAX_STATUS_SERVICES];
+            let mut rollup_count = 0usize;
+            for entry in entries[..*entry_count]
+                .iter()
+                .filter(|entry| entry.occupied)
+            {
+                rollup_entries[rollup_count] = RollupEntry {
+                    service_id: entry.service_id as u32,
+                    health: entry.health,
+                    phase: entry.phase,
+                    restarts: entry.restarts,
+                };
+                rollup_count += 1;
+            }
+            let summary = compute_rollup(&rollup_entries[..rollup_count]);
             let mut reply = RawMessage::empty(StatusTag::SnapshotReply as u32);
-            reply.word_count = 3;
-            reply.words[0] = heartbeat_count;
-            reply.words[1] = last_tick;
-            reply.words[2] = *entry_count as u64;
+            fill_snapshot_reply(&mut reply, heartbeat_count, last_tick, &summary);
             let _ = rt::channel_send(reply_handle, &reply);
             let _ = rt::handle_close(reply_handle);
         }
@@ -427,17 +450,25 @@ fn update_entry(
     detail1: u64,
     updated_tick: u64,
 ) {
-    let index = match entries[..*entry_count]
+    let (index, prior) = match entries[..*entry_count]
         .iter()
         .position(|entry| entry.occupied && entry.service_id == service_id)
     {
-        Some(index) => index,
+        Some(index) => (index, Some(entries[index])),
         None if *entry_count < entries.len() => {
             let index = *entry_count;
             *entry_count += 1;
-            index
+            (index, None)
         }
         None => return,
+    };
+
+    let prior_restarts = prior.map_or(0, |entry| entry.restarts);
+    let was_restarting = prior.is_some_and(|entry| is_restarting_phase(entry.phase));
+    let restarts = if detail_kind == rt::status_detail_kind::RESTART_BACKOFF && !was_restarting {
+        prior_restarts.saturating_add(1)
+    } else {
+        prior_restarts
     };
 
     entries[index] = ServiceStatusEntry {
@@ -449,6 +480,7 @@ fn update_entry(
         detail0,
         detail1,
         updated_tick,
+        restarts,
     };
 
     let mut event = RawMessage::empty(StatusTag::StreamEvent as u32);

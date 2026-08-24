@@ -106,6 +106,10 @@ pub(crate) fn instantiate_env(profile: Profile) -> EnvSlot {
     env.state = RuntimeEnvState::Ready;
     env.capabilities = profile.capabilities;
     env.granted_caps = 0;
+    env.sandbox = crate::sandbox::SandboxProfile::from_masks(profile.capabilities, 0);
+    if env.sandbox.has_pending_classes() {
+        env.state = RuntimeEnvState::PendingApproval;
+    }
     env.mount_count = profile.mount_count;
     env.var_count = profile.var_count;
     env.active_runs = 0;

@@ -108,19 +108,26 @@ pub(crate) fn handle_run_launch_request(
         let _ = rt::handle_close(output_handle);
         return Ok(());
     };
-    if env.state == rt::RuntimeEnvState::PendingApproval {
-        reply.words[0] = RuntimeStatus::PendingApproval as u32 as u64;
-        let _ = rt::channel_send(reply_handle, &reply);
-        let _ = rt::handle_close(reply_handle);
-        let _ = rt::handle_close(output_handle);
-        return Ok(());
-    }
-    if env.state == rt::RuntimeEnvState::Denied {
-        reply.words[0] = RuntimeStatus::Denied as u32 as u64;
-        let _ = rt::channel_send(reply_handle, &reply);
-        let _ = rt::handle_close(reply_handle);
-        let _ = rt::handle_close(output_handle);
-        return Ok(());
+    // S11 enforcement point: the sandbox capability matrix decides whether
+    // this environment may host a workload right now. Pending requested-but-
+    // ungranted device classes (network/graphics/input/audio) and explicit
+    // denials both refuse launch through the existing status contract.
+    match crate::sandbox::launch_decision(env) {
+        crate::sandbox::LaunchDecision::PendingApproval => {
+            reply.words[0] = RuntimeStatus::PendingApproval as u32 as u64;
+            let _ = rt::channel_send(reply_handle, &reply);
+            let _ = rt::handle_close(reply_handle);
+            let _ = rt::handle_close(output_handle);
+            return Ok(());
+        }
+        crate::sandbox::LaunchDecision::Denied => {
+            reply.words[0] = RuntimeStatus::Denied as u32 as u64;
+            let _ = rt::channel_send(reply_handle, &reply);
+            let _ = rt::handle_close(reply_handle);
+            let _ = rt::handle_close(output_handle);
+            return Ok(());
+        }
+        crate::sandbox::LaunchDecision::Allowed => {}
     }
 
     let slot_index = match allocate_run_slot(runs) {

@@ -14,6 +14,8 @@ mod envs;
 mod runs;
 mod sessions;
 
+#[cfg(test)]
+pub(crate) use self::envs::apply_decision;
 use self::envs::{
     allocate_env, encode_env_status, handle_audit_list_request, handle_env_decision_request,
     handle_env_list_request, handle_env_mount_request, handle_env_var_request, record_audit,

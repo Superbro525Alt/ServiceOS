@@ -45,7 +45,9 @@ pub(crate) fn encode_env_status(reply: &mut RawMessage, env_id: u32, env: EnvSlo
     reply.words[7] = env.active_runs as u64;
     reply.words[8] = env.granted_caps as u64;
     reply.words[9] = pending_capabilities(env.capabilities, env.granted_caps) as u64;
-    reply.word_count = 10;
+    reply.words[10] = env.sandbox.requested_mask() as u64;
+    reply.words[11] = env.sandbox.granted_mask() as u64;
+    reply.word_count = 12;
 }
 
 pub(crate) fn decision_policy(decision: u64) -> PermissionPolicyState {
@@ -119,6 +121,7 @@ pub(crate) fn handle_env_decision_request(
             let (state, granted) = apply_decision(env.capabilities, env.granted_caps, policy, mask);
             env.granted_caps = granted;
             env.state = state;
+            env.sandbox.apply_granted_mask(granted);
             record_audit(
                 audits,
                 next_audit_sequence,

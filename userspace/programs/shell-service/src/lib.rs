@@ -1,4 +1,4 @@
-#![no_std]
+#![cfg_attr(not(test), no_std)]
 
 pub mod commands;
 pub mod util;
@@ -6,7 +6,7 @@ pub mod util;
 use rt::{LogEvent, LogSeverity, ServiceId};
 use serviceos_userspace_runtime as rt;
 
-pub use util::{HELP_TEXT, ShellOutput, shell_output_write, write_output_linef};
+pub use util::{HELP_TEXT, ShellOutput, shell_output_write, take_pending_line, write_output_linef};
 
 pub const MAX_LINE_BYTES: usize = 128;
 pub const SHELL_PROMPT: &str = "serviceos> ";

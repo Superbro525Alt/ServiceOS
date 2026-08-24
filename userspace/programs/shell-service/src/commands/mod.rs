@@ -2,6 +2,7 @@ mod audio;
 mod core;
 mod desktop;
 mod developer;
+mod diagnostics;
 mod graphics;
 mod network;
 mod package;
@@ -63,6 +64,19 @@ pub(crate) fn execute_command(
                     .unwrap_or(12);
                 core::cmd_logs_stream(bootstrap, output, count)
             }
+            Some("follow") => match parts.next() {
+                Some(filter) => diagnostics::cmd_logs_follow(bootstrap, output, filter),
+                None => {
+                    write_output_linef(output, format_args!("usage: logs follow <domain|service>"))
+                }
+            },
+            Some("crashes") => {
+                let count = parts
+                    .next()
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .unwrap_or(8);
+                diagnostics::cmd_logs_crashes(bootstrap, output, count)
+            }
             maybe_count => {
                 let count = maybe_count
                     .and_then(|value| value.parse::<usize>().ok())
@@ -114,6 +128,11 @@ pub(crate) fn execute_command(
         "status" => match parts.next() {
             None => core::cmd_status_snapshot(bootstrap, output),
             Some("services") => core::cmd_status_services(bootstrap, output),
+            Some("health") => diagnostics::cmd_status_health(bootstrap, output),
+            Some("svc") => match parts.next().and_then(parse_service_name) {
+                Some(service_id) => diagnostics::cmd_status_svc(bootstrap, output, service_id),
+                None => write_output_linef(output, format_args!("usage: status svc <name>")),
+            },
             Some("watch") => {
                 let count = parts
                     .next()
@@ -123,8 +142,12 @@ pub(crate) fn execute_command(
             }
             _ => write_output_linef(
                 output,
-                format_args!("usage: status [services|watch [count]]"),
+                format_args!("usage: status [services|health|svc <name>|watch [count]]"),
             ),
+        },
+        "ps" => match parts.next() {
+            Some("app") => diagnostics::cmd_ps_app(bootstrap, output, parts.next()),
+            _ => write_output_linef(output, format_args!("usage: ps app [name]")),
         },
         "net" => network::cmd_net(bootstrap, output, parts),
         "audio" => audio::cmd_audio(bootstrap, output, parts),

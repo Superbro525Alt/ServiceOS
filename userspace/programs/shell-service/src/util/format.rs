@@ -37,6 +37,13 @@ pub(crate) struct FixedValueText {
 }
 
 impl FixedValueText {
+    pub(crate) const fn empty() -> Self {
+        Self {
+            bytes: [0; 32],
+            len: 0,
+        }
+    }
+
     pub(crate) fn unsigned(value: u64) -> Self {
         let mut text = Self {
             bytes: [0; 32],

@@ -32,6 +32,8 @@ service-revoke-lookup <service> <target> <revoke|default>: change future delegat
 restart <name>: request a service restart\r\n\
 logs [count]: show recent structured logs\r\n\
 logs stream [count]: subscribe to live structured logs\r\n\
+logs follow <domain|service>: stream live records until Ctrl-C (console) or idle timeout\r\n\
+logs crashes [count]: list recent crash-shaped log records\r\n\
 config: show core configuration values\r\n\
 config get <key>: read one persisted configuration key\r\n\
 config set <key> <value>: update one persisted configuration key\r\n\
@@ -43,6 +45,9 @@ store rm <path>: remove a writable file or empty directory\r\n\
 cat <path>: print a text resource\r\n\
 status: show status-service heartbeat and tracked service count\r\n\
 status services: list structured service health/status entries\r\n\
+status health: show system health rollup from the status snapshot\r\n\
+status svc <name>: inspect one service across manager and status views\r\n\
+ps app [name]: list desktop apps ps-style or inspect one app\r\n\
 status watch [count]: stream status changes from status-service\r\n\
 net ifaces: show network interfaces\r\n\
 net route: show the default route\r\n\

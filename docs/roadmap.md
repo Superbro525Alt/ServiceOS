@@ -146,7 +146,7 @@
 | &#x2B1C; | Terminal | Split panes and explicit session profiles have landed on the current richer ANSI/VT base (per-pane sessions, focus/resize/close keybindings, profile-driven shell metadata); remaining expansion is remote terminal/SSH-backed sessions and durable profile persistence on top of the shared clipboard path, themes, and resize/reflow semantics |
 | &#x2B1C; | Terminal | Add terminal session persistence/reattach, command bookmarking, session restore, and richer command/result inspection |
 | &#x2B1C; | Console | Add graphical console surfaces and operator-session handoff/routing on top of the current serial console model |
-| &#x2B1C; | Operator UX | Add richer shell/operator diagnostics, log-following, structured status views, and app/runtime inspection tooling without bypassing service contracts |
+| &#x2705; | Operator UX | Landed richer shell/operator diagnostics on the service contracts: `logs follow` streams a live filtered tail through log-service subscriptions and ends cleanly on Ctrl-C over console sessions (graphical terminal panes fall back to an idle timeout), `logs crashes` lists recent crash-shaped records by filtering the retained log ring client-side until log-service dispatches a dedicated crash-query tag, `status health` renders the status-service snapshot rollup as a formatted table, and `status svc <name>` / `ps app [name]` give structured per-service and per-app inspection |
 
 ## 11. Execution, Loading, Compatibility, and Runtimes
 

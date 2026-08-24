@@ -54,7 +54,7 @@ fn main() -> u64 {
     let mut line_buffer = [0u8; MAX_LINE_BYTES];
     loop {
         let _ = rt::console_session_write(session_handle, SHELL_PROMPT);
-        let line_len = match rt::console_session_read_line(session_handle, &mut line_buffer) {
+        let line_len = match read_prompt_line(session_handle, &mut line_buffer) {
             Ok(len) => len,
             Err(_) => return 0xf707,
         };
@@ -75,6 +75,48 @@ fn main() -> u64 {
                     serviceos_shell_service::util::error_name(error)
                 ),
             );
+        }
+
+        // A line submitted (Enter) while `logs follow` was streaming is
+        // stashed and executed here, after the follow has ended.
+        let mut pending = [0u8; MAX_LINE_BYTES];
+        let pending_len = serviceos_shell_service::take_pending_line(&mut pending);
+        if pending_len > 0 {
+            if let Ok(pending_line) = core::str::from_utf8(&pending[..pending_len]) {
+                let trimmed = pending_line.trim();
+                if !trimmed.is_empty() {
+                    let _ = write_output_linef(output, format_args!("{SHELL_PROMPT}{trimmed}"));
+                    if let Err(error) = execute_command(bootstrap, output, trimmed) {
+                        let _ = write_output_linef(
+                            output,
+                            format_args!(
+                                "command failed: {}",
+                                serviceos_shell_service::util::error_name(error)
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Reads a prompt line, tolerating the transient failures that occur right
+/// after `logs follow` releases an armed console read-line slot: the console
+/// service keeps a single pending-reply slot, so a request issued before the
+/// stale slot clears is rejected and must be retried once input arrives.
+fn read_prompt_line(session_handle: rt::Handle, buffer: &mut [u8]) -> rt::Result<usize> {
+    let mut attempts = 0usize;
+    loop {
+        match rt::console_session_read_line(session_handle, buffer) {
+            Ok(len) => return Ok(len),
+            Err(error) => {
+                attempts += 1;
+                if attempts >= 16 {
+                    return Err(error);
+                }
+                let _ = rt::yield_current();
+            }
         }
     }
 }

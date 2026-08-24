@@ -173,8 +173,8 @@
 | &#x2B1C; | Audio / hardware | Add broader hardware audio backends beyond the current wired/emulated paths, including Bluetooth audio and future USB audio paths |
 | &#x2B1C; | Audio / Bluetooth | Add Bluetooth audio output/input support, pairing integration, and endpoint routing on top of the broader audio platform |
 | &#x2B1C; | Media | Add codecs, containers, richer media pipelines, DMA-safe memory-object policy, and broader hardware backends beyond the current QEMU PC speaker path |
-| &#x2B1C; | Audio / UX | Add desktop-facing volume, endpoint selection, per-app audio policy, and notification/media playback integration |
-| &#x2B1C; | Media / apps | Add first-party media playback/preview apps and richer integration with files, notifications, and runtime-hosted apps |
+| &#x2B1C; | Audio / UX | Partial: desktop-facing volume and endpoint status surfaced — desktop-shell gained a media overlay (Alt+M or command palette) that honestly reports output endpoint presence/state (including no-endpoint and audio-unavailable states), master volume/mute with keyboard control wired to the audio-service set-master-volume contract (`EndpointVolumeSet`), and active/listed PCM stream counts; the settings System page shows live PCM stream counts beside endpoint state. Master volume is set-only in the ABI (no read-back tag), so the shell displays its last applied value, and per-stream formats are visible only at the sink level; true endpoint selection, per-app audio policy, and notification/media playback integration remain open |
+| &#x2B1C; | Media / apps | Partial: first-party media preview basics landed as a read-only desktop-shell media surface listing currently-active PCM streams (slot, direction, state, session, endpoint, frequency) alongside mixed-sink counters (frames mixed, FNV checksum) from the null-sink drain-side stats; codecs, containers, richer media pipelines, DMA-safe memory-object policy, broader hardware backends beyond the current QEMU PC speaker path, and deeper files/notifications/runtime app integration remain open |
 
 ## 13. Developer Tooling and Workflows
 
@@ -239,7 +239,7 @@
 
 | Status | Area | Work Item |
 |---|---|---|
-| &#x2B1C; | Accounts / identity | Add user accounts, login/session ownership, identity switching, and user-scoped policy across storage, apps, runtimes, and services |
+| &#x2B1C; | Accounts / identity | Partial: service-side foundation landed in `account-service` — account store (id/name/display-name, per-account salted credential hashes using an honestly non-cryptographic FNV-based KDF) persisted via storage-service contracts; login/logout claim session ownership over session-service session ids and identity switching re-binds the active claim across sessions mirroring handoff semantics; per-account default capability grant sets recorded and exposed for future enforcement points; host unit tests cover hashing, the login state machine, switch semantics, policy defaults, and store serialization. Activation is manual (image built into the boot store, spawned by path via stored-image launch; not in the default boot graph and not registered under a named `ServiceId` pending a shared-ABI slot). Graphical login UI, a real password KDF, and enforcement across storage, apps, runtimes, and services remain open |
 | &#x2B1C; | Backup / restore | Add backup, restore, migration, and state export/import flows for user data, apps, packages, and system configuration |
 | &#x2B1C; | Printing / peripherals | Add printer/peripheral service contracts and desktop-facing peripheral management as hardware support broadens |
 | &#x2B1C; | Peripherals / wireless | Add broader peripheral connectivity including Bluetooth input devices, wireless accessories, and consumer-device management flows |

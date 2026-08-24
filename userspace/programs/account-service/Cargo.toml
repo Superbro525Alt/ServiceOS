@@ -1,0 +1,16 @@
+[package]
+name = "serviceos-account-service"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+serviceos-userspace-runtime = { path = "../runtime" }
+
+[lib]
+name = "serviceos_account_service"
+path = "src/lib.rs"
+test = true
+
+[[bin]]
+name = "serviceos-account-service"
+path = "src/main.rs"

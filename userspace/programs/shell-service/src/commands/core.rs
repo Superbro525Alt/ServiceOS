@@ -7,9 +7,10 @@ use rt::{
 use serviceos_userspace_runtime as rt;
 
 use crate::util::{
-    MAX_CAT_CHUNK, MAX_LISTED_SERVICES, MAX_STORAGE_PATH, ShellOutput, availability_name,
-    config_key_name, config_value_text, manager_status_name, phase_name, service_name,
-    shell_output_write, startup_name, write_log_record, write_output_linef,
+    MAX_CAT_CHUNK, MAX_LISTED_SERVICES, MAX_STORAGE_PATH, MAX_VERSION_BYTES, ShellOutput,
+    availability_name, config_key_name, config_value_text, manager_status_name, phase_name,
+    printable_version, service_name, shell_output_write, startup_name, write_log_record,
+    write_output_linef,
 };
 
 const MAX_SERVICE_LOOKUPS: usize = 8;
@@ -725,4 +726,138 @@ fn explain_native_launch_denial(
     let observation = super::deny::observe_native_denial(bootstrap, image_id);
     let explanation = super::deny::classify_denial(&subject, &observation);
     super::deny::render_denial_explanation(output, &subject, &explanation)
+}
+
+/// Launch an installed package through the manager-mediated stored-image
+/// path. The package identity comes from package-service (installed check +
+/// version for the report) and the program image rides the same manager
+/// launch contract as `run image`.
+pub(crate) fn cmd_run_package(
+    bootstrap: rt::Handle,
+    output: ShellOutput,
+    service_id: ServiceId,
+) -> rt::Result<()> {
+    let name = service_name(service_id);
+    let package_handle = rt::lookup_service(bootstrap, ServiceId::Package)?;
+    let mut installed = [0u8; MAX_VERSION_BYTES];
+    let mut active = [0u8; MAX_VERSION_BYTES];
+    let mut rollback = [0u8; MAX_VERSION_BYTES];
+    let mut latest = [0u8; MAX_VERSION_BYTES];
+    let info_result = rt::package_info(
+        package_handle,
+        service_id,
+        &mut installed,
+        &mut active,
+        &mut rollback,
+        &mut latest,
+    );
+    let _ = rt::handle_close(package_handle);
+    let Ok(info) = info_result else {
+        return write_output_linef(
+            output,
+            format_args!("{name} is not a known package; try pkg catalog"),
+        );
+    };
+    if !info.installed {
+        return write_output_linef(
+            output,
+            format_args!("{name} is not installed; install it with: pkg install {name}"),
+        );
+    }
+    let installed_version = printable_version(
+        core::str::from_utf8(&installed[..info.installed_version_len])
+            .map_err(|_| rt::Error::InvalidArgument)?,
+    );
+
+    // Visibility first: an already-running service needs focus/restart, not a
+    // second launch.
+    let running_phase = rt::manager_service_status(bootstrap, service_id)
+        .ok()
+        .map(|status| {
+            let running = matches!(
+                status.phase,
+                rt::ManagerServicePhase::Starting
+                    | rt::ManagerServicePhase::Ready
+                    | rt::ManagerServicePhase::Backoff
+                    | rt::ManagerServicePhase::Degraded
+            );
+            running.then_some(status.phase)
+        })
+        .flatten();
+    if let Some(phase) = running_phase {
+        return write_output_linef(
+            output,
+            format_args!(
+                "{name} {installed_version} already running (phase={})",
+                crate::util::phase_name(phase),
+            ),
+        );
+    }
+
+    let image_path = package_program_image_path(name);
+    match rt::manager_launch_stored_program_with_payload(bootstrap, image_path.as_str(), &[0], &[]) {
+        Ok(task_handle) => {
+            let _ = rt::handle_close(task_handle);
+            write_output_linef(
+                output,
+                format_args!("launched {name} {installed_version} via manager ({image_path})"),
+            )
+        }
+        Err(rt::Error::PermissionDenied) => explain_native_launch_denial(
+            bootstrap,
+            output,
+            super::deny::DenialSubject::App { name },
+            None,
+        ),
+        Err(rt::Error::NotFound) => write_output_linef(
+            output,
+            format_args!("no launchable image for {name}; package ships no program"),
+        ),
+        Err(error) => Err(error),
+    }
+}
+
+/// Installed packages materialize their service program at a deterministic
+/// boot-store path; this mirrors the catalog layout used by the manager.
+fn package_program_image_path(name: &str) -> heapless_path::Path {
+    let mut path = heapless_path::Path::new();
+    path.push_str("services/");
+    path.push_str(name);
+    path.push_str("/program.img");
+    path
+}
+
+mod heapless_path {
+    /// Bounded fixed buffer for boot-store paths built at runtime.
+    pub(crate) struct Path {
+        bytes: [u8; 64],
+        len: usize,
+    }
+
+    impl Path {
+        pub(crate) const fn new() -> Self {
+            Self {
+                bytes: [0; 64],
+                len: 0,
+            }
+        }
+
+        pub(crate) fn push_str(&mut self, piece: &str) {
+            let bytes = piece.as_bytes();
+            let remaining = self.bytes.len() - self.len;
+            let take = bytes.len().min(remaining);
+            self.bytes[self.len..self.len + take].copy_from_slice(&bytes[..take]);
+            self.len += take;
+        }
+
+        pub(crate) fn as_str(&self) -> &str {
+            core::str::from_utf8(&self.bytes[..self.len]).unwrap_or("")
+        }
+    }
+
+    impl core::fmt::Display for Path {
+        fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            formatter.write_str(self.as_str())
+        }
+    }
 }

@@ -373,11 +373,93 @@ pub(super) fn cmd_pkg_remove(
     output: ShellOutput,
     service_id: ServiceId,
 ) -> rt::Result<()> {
+    let name = service_name(service_id);
     let package_handle = rt::lookup_service(bootstrap, ServiceId::Package)?;
+
+    // Pre-remove snapshot: what is being taken away.
+    let mut installed = [0u8; MAX_VERSION_BYTES];
+    let mut active = [0u8; MAX_VERSION_BYTES];
+    let mut rollback = [0u8; MAX_VERSION_BYTES];
+    let mut latest = [0u8; MAX_VERSION_BYTES];
+    let pre = rt::package_info(
+        package_handle,
+        service_id,
+        &mut installed,
+        &mut active,
+        &mut rollback,
+        &mut latest,
+    )
+    .ok();
+    let removed_version = pre.as_ref().and_then(|info| {
+        core::str::from_utf8(&installed[..info.installed_version_len])
+            .ok()
+            .map(printable_version)
+    });
+    let was_active = pre.as_ref().is_some_and(|info| info.active);
+
     let result = rt::package_remove(package_handle, service_id);
+
+    // Post-remove state drives the cleanup summary (rollback slot retention).
+    let post = if result.is_ok() {
+        let mut post_installed = [0u8; MAX_VERSION_BYTES];
+        let mut post_active = [0u8; MAX_VERSION_BYTES];
+        let mut post_rollback = [0u8; MAX_VERSION_BYTES];
+        let mut post_latest = [0u8; MAX_VERSION_BYTES];
+        match rt::package_info(
+            package_handle,
+            service_id,
+            &mut post_installed,
+            &mut post_active,
+            &mut post_rollback,
+            &mut post_latest,
+        ) {
+            Ok(info) => {
+                let mut version = rt::FixedLogBuffer::<MAX_VERSION_BYTES>::new();
+                if let Ok(text) = core::str::from_utf8(&post_rollback[..info.rollback_version_len])
+                {
+                    let _ = core::fmt::Write::write_fmt(
+                        &mut version,
+                        format_args!("{}", printable_version(text)),
+                    );
+                }
+                Some((info.rollback_available, version))
+            }
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
     let _ = rt::handle_close(package_handle);
     result?;
-    write_output_linef(output, format_args!("removed {}", service_name(service_id)))
+
+    write_output_linef(output, format_args!("removed {}", name))?;
+    write_output_linef(
+        output,
+        format_args!(
+            "  cleanup: version={} deactivated={} journal=cleared",
+            removed_version.unwrap_or("-"),
+            if was_active { "yes" } else { "not-running" },
+        ),
+    )?;
+    match post {
+        Some((true, version)) if !version.as_str().is_empty() && version.as_str() != "-" => {
+            write_output_linef(
+                output,
+                format_args!(
+                    "  cleanup: rollback-slot=retained ({}) ; reclaim storage: pkg gc",
+                    version.as_str()
+                ),
+            )
+        }
+        Some((true, _)) => write_output_linef(
+            output,
+            format_args!("  cleanup: rollback-slot=retained ; reclaim storage: pkg gc"),
+        ),
+        _ => write_output_linef(
+            output,
+            format_args!("  cleanup: rollback-slot=none ; reclaim storage: pkg gc"),
+        ),
+    }
 }
 
 pub(super) fn cmd_pkg_rollback(

@@ -160,11 +160,15 @@ pub(crate) fn execute_command(
         "security" => security::cmd_security(bootstrap, output, parts),
         "run" => match parts.next() {
             Some("sysinfo") => core::cmd_run_sysinfo(bootstrap, output),
+            Some("pkg") => match parts.next().and_then(parse_service_name) {
+                Some(service_id) => core::cmd_run_package(bootstrap, output, service_id),
+                None => write_output_linef(output, format_args!("usage: run pkg <name>")),
+            },
             Some("image") => match parts.next() {
                 Some(path) => core::cmd_run_image(bootstrap, output, path),
                 None => write_output_linef(output, format_args!("usage: run image <path>")),
             },
-            _ => write_output_linef(output, format_args!("usage: run <sysinfo|image>")),
+            _ => write_output_linef(output, format_args!("usage: run <sysinfo|pkg|image>")),
         },
         _ => write_output_linef(output, format_args!("unknown command: {command}")),
     }

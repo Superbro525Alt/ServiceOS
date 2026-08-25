@@ -2,13 +2,13 @@ use rt::{AppControlTag, RawMessage};
 use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
 
-use crate::actions::{PackageAction, apply_selected_package_action, sync_repositories};
+use crate::actions::{PackageAction, apply_selected_package_action, launch_guidance, sync_repositories};
 use crate::catalog_meta::keycode_to_char;
 use crate::render::render;
 use crate::state::{
-    AppState, KEY_BACKSPACE, KEY_DELETE, KEY_DOWN, KEY_ENTER, KEY_ESC, KEY_PAGE_DOWN, KEY_PAGE_UP,
-    KEY_R, KEY_TAB, KEY_UP, ROW_HEIGHT, SURFACE_BUFFER_SLOTS, clamp_view, clear_query,
-    compute_layout, cycle_category_filter, ensure_selected_visible, pop_query_char,
+    AppState, KEY_BACKSPACE, KEY_DELETE, KEY_DOWN, KEY_ENTER, KEY_ESC, KEY_L, KEY_PAGE_DOWN,
+    KEY_PAGE_UP, KEY_R, KEY_TAB, KEY_UP, ROW_HEIGHT, SURFACE_BUFFER_SLOTS, clamp_view,
+    clear_query, compute_layout, cycle_category_filter, ensure_selected_visible, pop_query_char,
     push_query_char, scroll_down, scroll_up, selected_entry, visible_row_count,
 };
 
@@ -208,6 +208,12 @@ fn handle_key_down(package_handle: rt::Handle, state: &mut AppState, key: u32) -
         KEY_R if state.query_len == 0 => {
             sync_repositories(package_handle, state);
             return Ok(true);
+        }
+        KEY_L if state.query_len == 0 => {
+            if let Some(entry) = selected_entry(state) {
+                launch_guidance(state, entry);
+                return Ok(true);
+            }
         }
         _ => {}
     }

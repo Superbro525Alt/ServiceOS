@@ -1,11 +1,11 @@
 use core::{fmt::Write, str};
 
-use rt::{FixedLogBuffer, PackageChannel, PackageRing};
+use rt::{FixedLogBuffer, PackageChannel, PackageRing, ServiceId};
 use serviceos_userspace_runtime as rt;
 
 use crate::state::{
-    AppState, CatalogEntry, MAX_CATEGORY_BYTES, MAX_ENTRIES, MAX_STATUS_BYTES, MAX_SUMMARY_BYTES,
-    rebuild_view, select_service,
+    AppState, CatalogEntry, MAX_CATEGORY_BYTES, MAX_ENTRIES, MAX_SOURCE_BYTES, MAX_STATUS_BYTES,
+    MAX_SUMMARY_BYTES, rebuild_view, select_service,
 };
 
 pub(crate) fn reload_catalog(package_handle: rt::Handle, state: &mut AppState) -> rt::Result<()> {
@@ -84,6 +84,13 @@ pub(crate) fn apply_selected_package_action(
     entry: CatalogEntry,
     action: PackageAction,
 ) {
+    // Pre-remove snapshot feeds the cleanup summary shown after removal.
+    let remove_snapshot = if matches!(action, PackageAction::Remove) {
+        capture_remove_snapshot(package_handle, entry.service_id)
+    } else {
+        None
+    };
+
     let result = match action {
         PackageAction::InstallOrUpdate => {
             if entry.installed {
@@ -102,11 +109,14 @@ pub(crate) fn apply_selected_package_action(
                 match action {
                     PackageAction::InstallOrUpdate => {
                         if entry.installed {
+                            let tick = rt::monotonic_now().unwrap_or(0);
+                            state.record_session_update(entry.service_id, tick);
                             set_statusf(
                                 state,
                                 format_args!(
-                                    "updated {}",
-                                    crate::state::service_label(entry.service_id)
+                                    "updated {} (at tick {})",
+                                    crate::state::service_label(entry.service_id),
+                                    tick
                                 ),
                             );
                         } else {
@@ -123,8 +133,9 @@ pub(crate) fn apply_selected_package_action(
                         set_statusf(
                             state,
                             format_args!(
-                                "removed {}",
-                                crate::state::service_label(entry.service_id)
+                                "removed {}: {}",
+                                crate::state::service_label(entry.service_id),
+                                remove_cleanup_summary(remove_snapshot)
                             ),
                         );
                     }
@@ -153,6 +164,129 @@ pub(crate) fn apply_selected_package_action(
             );
         }
     }
+}
+
+/// What the pre-remove view knew: version and running state.
+struct RemoveSnapshot {
+    version: [u8; 24],
+    version_len: usize,
+    was_active: bool,
+}
+
+fn capture_remove_snapshot(package_handle: rt::Handle, service_id: ServiceId) -> Option<RemoveSnapshot> {
+    let mut installed = [0u8; 24];
+    let mut active = [0u8; 24];
+    let mut rollback = [0u8; 24];
+    let mut latest = [0u8; 24];
+    let mut source = [0u8; MAX_SOURCE_BYTES];
+    let provenance = rt::package_provenance(
+        package_handle,
+        service_id,
+        &mut installed,
+        &mut active,
+        &mut rollback,
+        &mut latest,
+        &mut source,
+    )
+    .ok()?;
+    Some(RemoveSnapshot {
+        version: installed,
+        version_len: provenance.installed_version_len.min(24),
+        was_active: provenance.active,
+    })
+}
+
+/// Human summary of what a successful uninstall cleaned up. The manager
+/// deactivation and journal clear happen service-side; storage reclamation
+/// is an explicit `pkg gc` step, so the summary says exactly that.
+fn remove_cleanup_summary(snapshot: Option<RemoveSnapshot>) -> heapless_string::String {
+    let mut text = heapless_string::String::new();
+    match snapshot {
+        Some(snapshot) => {
+            let version = str::from_utf8(&snapshot.version[..snapshot.version_len])
+                .unwrap_or("-");
+            let _ = core::fmt::Write::write_fmt(
+                &mut text,
+                format_args!(
+                    "v{} deactivated={} journal-cleared rollback-kept gc=reclaims",
+                    if snapshot.version_len > 0 { version } else { "-" },
+                    if snapshot.was_active { "yes" } else { "not-running" },
+                ),
+            );
+        }
+        None => {
+            text.push_str("journal-cleared gc=reclaims");
+        }
+    }
+    text
+}
+
+mod heapless_string {
+    use core::fmt;
+
+    use crate::state::MAX_STATUS_BYTES;
+
+    pub(crate) struct String {
+        bytes: [u8; MAX_STATUS_BYTES],
+        len: usize,
+    }
+
+    impl String {
+        pub(crate) const fn new() -> Self {
+            Self {
+                bytes: [0; MAX_STATUS_BYTES],
+                len: 0,
+            }
+        }
+
+        pub(crate) fn push_str(&mut self, piece: &str) {
+            let bytes = piece.as_bytes();
+            let remaining = self.bytes.len() - self.len;
+            let take = bytes.len().min(remaining);
+            self.bytes[self.len..self.len + take].copy_from_slice(&bytes[..take]);
+            self.len += take;
+        }
+
+        pub(crate) fn as_str(&self) -> &str {
+            str::from_utf8(&self.bytes[..self.len]).unwrap_or("")
+        }
+    }
+
+    impl fmt::Display for String {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str(self.as_str())
+        }
+    }
+
+    impl fmt::Write for String {
+        fn write_str(&mut self, piece: &str) -> fmt::Result {
+            self.push_str(piece);
+            Ok(())
+        }
+    }
+}
+
+/// Operator guidance for launching an installed package: launches ride the
+/// manager via the shell (`run pkg <name>`); this app has no manager channel.
+pub(crate) fn launch_guidance(state: &mut AppState, entry: CatalogEntry) {
+    if !entry.installed {
+        set_statusf(
+            state,
+            format_args!(
+                "{} is not installed yet",
+                crate::state::service_label(entry.service_id)
+            ),
+        );
+        return;
+    }
+    set_statusf(
+        state,
+        format_args!(
+            "launch {} via shell: run pkg {}",
+            crate::state::service_label(entry.service_id),
+            crate::state::service_label(entry.service_id),
+        ),
+    );
 }
 
 pub(crate) fn set_statusf(state: &mut AppState, args: core::fmt::Arguments<'_>) {

@@ -6,6 +6,7 @@ use serviceos_userspace_runtime as rt;
 use crate::util::{ShellOutput, write_output_linef};
 
 const AUDIT_SCAN_DEPTH: usize = 8;
+const RUNTIME_ENV_SCAN_DEPTH: usize = 8;
 const MAX_EXPLANATION_LINE: usize = 128;
 
 pub(crate) enum DenialSubject<'a> {
@@ -75,6 +76,18 @@ pub(crate) fn classify_denial(
                     reason: "operator security policy blocks this image",
                     missing_authority: "explicit allow decision for this image",
                     review_surface: "security apps",
+                }
+            } else if observation.env_state == Some(RuntimeEnvState::PendingApproval)
+                || observation.pending_approvals > 0
+            {
+                // Permissions handoff: a launch denial while runtime approvals
+                // are outstanding points at the approval queue instead of a
+                // bare denial, so the operator can go decide.
+                DenialExplanation {
+                    class: DenialReasonClass::RuntimePendingApproval,
+                    reason: "a runtime environment awaits an operator approval decision",
+                    missing_authority: "approval decision for the pending runtime environment",
+                    review_surface: "runtime envs",
                 }
             } else if observation.audit_launch_denied {
                 DenialExplanation {
@@ -197,7 +210,7 @@ fn next_action_text(
             );
         }
         (DenialReasonClass::RuntimePendingApproval, _) => {
-            text.push_str("security runtimes");
+            text.push_str("review the queue: runtime envs; decide via security runtime <id> approve");
         }
         (DenialReasonClass::RuntimeEnvDenied, DenialSubject::RuntimeLaunch { env_id, .. }) => {
             let _ = fmt::write(&mut text, format_args!("security runtime {} reset", env_id));
@@ -297,7 +310,33 @@ pub(crate) fn observe_native_denial(
         observation.app_policy = read_app_policy(bootstrap, image_id);
         observation.audit_launch_denied |= audit_has_launch_denied_for_app(bootstrap, image_id);
     }
+    observation.pending_approvals = count_pending_runtime_approvals(bootstrap);
     observation
+}
+
+/// Depth of the runtime-service pending-approval queue; drives the
+/// permissions-review handoff in launch denial explanations.
+fn count_pending_runtime_approvals(bootstrap: rt::Handle) -> u32 {
+    let Ok(runtime) = rt::lookup_service(bootstrap, ServiceId::Runtime) else {
+        return 0;
+    };
+    let mut envs = [rt::RuntimeEnvInfo {
+        env_id: 0,
+        kind: rt::RuntimeKind::Posix,
+        state: RuntimeEnvState::Destroyed,
+        capabilities: 0,
+        mount_count: 0,
+        var_count: 0,
+        active_runs: 0,
+    }; RUNTIME_ENV_SCAN_DEPTH];
+    let count = rt::runtime_env_list(runtime, &mut envs).unwrap_or(0);
+    let pending = envs
+        .iter()
+        .take(count)
+        .filter(|env| env.state == RuntimeEnvState::PendingApproval)
+        .count() as u32;
+    let _ = rt::handle_close(runtime);
+    pending
 }
 
 /// Gather the observations a runtime-workload denial explanation needs.
@@ -491,6 +530,47 @@ mod tests {
         let subject = DenialSubject::StoredImage { path: "demo.img" };
         let explained = classify_denial(&subject, &observation(None, None, 0, true));
         assert_eq!(explained.class, DenialReasonClass::LaunchAuditDenied);
+    }
+
+    #[test]
+    fn pending_approvals_hand_app_denial_to_review_queue() {
+        let subject = app_subject();
+        let explained = classify_denial(
+            &subject,
+            &observation(Some(PermissionPolicyState::DefaultAllow), None, 1, false),
+        );
+        assert_eq!(explained.class, DenialReasonClass::RuntimePendingApproval);
+        assert_eq!(explained.review_surface, "runtime envs");
+    }
+
+    #[test]
+    fn pending_approvals_hand_stored_image_denial_to_review_queue() {
+        let subject = DenialSubject::StoredImage { path: "pkg.img" };
+        let explained = classify_denial(&subject, &observation(None, None, 3, false));
+        assert_eq!(explained.class, DenialReasonClass::RuntimePendingApproval);
+        assert!(explained.missing_authority.contains("approval"));
+    }
+
+    #[test]
+    fn explicit_block_still_wins_over_pending_approvals() {
+        let explained = classify_denial(
+            &app_subject(),
+            &observation(Some(PermissionPolicyState::Blocked), None, 2, false),
+        );
+        assert_eq!(explained.class, DenialReasonClass::AppBlockedByPolicy);
+    }
+
+    #[test]
+    fn app_pending_next_action_points_at_queue_query_and_decision_surface() {
+        let subject = app_subject();
+        let explained = classify_denial(
+            &subject,
+            &observation(Some(PermissionPolicyState::DefaultAllow), None, 2, false),
+        );
+        let next_action = next_action_text(&subject, &explained).as_str().to_string();
+        assert!(next_action.contains("runtime envs"));
+        assert!(next_action.contains("security runtime"));
+        assert!(next_action.contains("approve"));
     }
 
     #[test]

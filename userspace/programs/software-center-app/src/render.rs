@@ -56,20 +56,51 @@ pub(crate) fn render(
             } else {
                 let _ = write!(&mut detail1, "{}", description);
             }
-            let _ = write!(
-                &mut detail2,
-                "latest={}  installed={}  active={}",
-                text_or_dash(&latest[..provenance.latest_version_len]),
-                text_or_dash(&installed[..provenance.installed_version_len]),
-                text_or_dash(&active[..provenance.active_version_len]),
-            );
-            let _ = write!(
-                &mut detail3,
-                "channel={}  ring={}  rollback={}",
-                channel_label(provenance.channel),
-                ring_label(provenance.ring),
-                text_or_dash(&rollback[..provenance.rollback_version_len]),
-            );
+            // Update/remove visibility: flag older installs against the
+            // newest catalog version and note in-session update times.
+            if entry.installed {
+                let decision = catalog_meta::decide_update(
+                    core::str::from_utf8(&installed[..provenance.installed_version_len]).ok(),
+                    core::str::from_utf8(&latest[..provenance.latest_version_len]).ok(),
+                );
+                let _ = write!(
+                    &mut detail2,
+                    "latest={}  installed={}  active={}  {}",
+                    text_or_dash(&latest[..provenance.latest_version_len]),
+                    text_or_dash(&installed[..provenance.installed_version_len]),
+                    text_or_dash(&active[..provenance.active_version_len]),
+                    decision.label(),
+                );
+                if let Some(tick) = state.session_update_tick(entry.service_id) {
+                    let _ = write!(&mut detail2, "  here@tick{}", tick);
+                }
+            } else {
+                let _ = write!(
+                    &mut detail2,
+                    "latest={}  installed={}  active={}",
+                    text_or_dash(&latest[..provenance.latest_version_len]),
+                    text_or_dash(&installed[..provenance.installed_version_len]),
+                    text_or_dash(&active[..provenance.active_version_len]),
+                );
+            }
+            if entry.installed {
+                let _ = write!(
+                    &mut detail3,
+                    "channel={}  ring={}  rollback={}  launch=L (run pkg {})",
+                    channel_label(provenance.channel),
+                    ring_label(provenance.ring),
+                    text_or_dash(&rollback[..provenance.rollback_version_len]),
+                    crate::state::service_label(entry.service_id),
+                );
+            } else {
+                let _ = write!(
+                    &mut detail3,
+                    "channel={}  ring={}  rollback={}",
+                    channel_label(provenance.channel),
+                    ring_label(provenance.ring),
+                    text_or_dash(&rollback[..provenance.rollback_version_len]),
+                );
+            }
             let _ = source;
         } else {
             let _ = write!(&mut detail0, "{}", service_title(entry.service_id));

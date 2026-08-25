@@ -127,6 +127,7 @@ pkg ring <name> <production|preview|testing>: set staged rollout ring\r\n\
  pkg recover: resume or discard an interrupted install/update/rollback\r\n\
 pkg gc: garbage-collect old package artifacts\r\n\
 run sysinfo: launch a transient tool\r\n\
+run pkg <name>: launch an installed package through the manager launch path\r\n\
 run image <path>: launch a flat image resource through the manager loader path\r\n";
 
 pub fn emit_shell_log(

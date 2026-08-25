@@ -2,15 +2,75 @@ use rt::ServiceId;
 use serviceos_userspace_runtime as rt;
 
 use crate::util::{
-    MAX_VERSION_BYTES, ShellOutput, printable_version, service_name, write_output_linef,
+    MAX_VERSION_BYTES, ShellOutput, UpdateDecision, decide_update, printable_version,
+    service_name, write_output_linef,
 };
 
 use super::parse::{
     MAX_PACKAGE_TEXT, channel_name, ring_name, signing_state_name, trust_state_name,
 };
 
+/// Upper bound for the catalog snapshot used to annotate `pkg list` rows
+/// with an update-available flag; matches the package-service slot count.
+const MAX_CATALOG_SNAPSHOT: usize = 32;
+
+/// Snapshot of the catalog's newest version per service, used to decide the
+/// per-row update flag without a second round trip per row.
+struct CatalogSnapshot {
+    service_ids: [ServiceId; MAX_CATALOG_SNAPSHOT],
+    latest: [[u8; MAX_VERSION_BYTES]; MAX_CATALOG_SNAPSHOT],
+    latest_lens: [usize; MAX_CATALOG_SNAPSHOT],
+    count: usize,
+}
+
+impl CatalogSnapshot {
+    fn capture(package_handle: rt::Handle) -> Self {
+        let mut snapshot = Self {
+            service_ids: [ServiceId::RootManager; MAX_CATALOG_SNAPSHOT],
+            latest: [[0; MAX_VERSION_BYTES]; MAX_CATALOG_SNAPSHOT],
+            latest_lens: [0; MAX_CATALOG_SNAPSHOT],
+            count: 0,
+        };
+        let mut latest = [0u8; MAX_VERSION_BYTES];
+        let mut category = [0u8; MAX_PACKAGE_TEXT];
+        let mut summary = [0u8; MAX_PACKAGE_TEXT];
+        while snapshot.count < MAX_CATALOG_SNAPSHOT {
+            let Ok(Some(entry)) = rt::package_catalog(
+                package_handle,
+                snapshot.count,
+                &mut latest,
+                &mut category,
+                &mut summary,
+            ) else {
+                break;
+            };
+            let index = snapshot.count;
+            snapshot.service_ids[index] = entry.service_id;
+            snapshot.latest[index] = latest;
+            snapshot.latest_lens[index] = entry.latest_version_len.min(MAX_VERSION_BYTES);
+            snapshot.count += 1;
+        }
+        snapshot
+    }
+
+    /// Most recent event tick for a service from the log ring, if any.
+    fn latest_text(&self, service_id: ServiceId) -> Option<&str> {
+        for index in 0..self.count {
+            if self.service_ids[index] == service_id {
+                return core::str::from_utf8(&self.latest[index][..self.latest_lens[index]]).ok();
+            }
+        }
+        None
+    }
+
+    fn decision(&self, service_id: ServiceId, installed: Option<&str>) -> UpdateDecision {
+        decide_update(installed, self.latest_text(service_id))
+    }
+}
+
 pub(super) fn cmd_pkg_list(bootstrap: rt::Handle, output: ShellOutput) -> rt::Result<()> {
     let package_handle = rt::lookup_service(bootstrap, ServiceId::Package)?;
+    let catalog = CatalogSnapshot::capture(package_handle);
     let mut installed = [0u8; MAX_VERSION_BYTES];
     let mut active = [0u8; MAX_VERSION_BYTES];
     let mut index = 0usize;
@@ -20,10 +80,11 @@ pub(super) fn cmd_pkg_list(bootstrap: rt::Handle, output: ShellOutput) -> rt::Re
             .map_err(|_| rt::Error::InvalidArgument)?;
         let active_version = core::str::from_utf8(&active[..entry.active_version_len])
             .map_err(|_| rt::Error::InvalidArgument)?;
+        let decision = catalog.decision(entry.service_id, Some(installed_version));
         write_output_linef(
             output,
             format_args!(
-                "{:<16} repo={} installed={} active={} rollback={}",
+                "{:<16} repo={} installed={} active={} rollback={} update={}",
                 service_name(entry.service_id),
                 entry.repository_versions,
                 printable_version(installed_version),
@@ -33,6 +94,7 @@ pub(super) fn cmd_pkg_list(bootstrap: rt::Handle, output: ShellOutput) -> rt::Re
                 } else {
                     "no"
                 },
+                decision.flag(),
             ),
         )?;
         index += 1;
@@ -190,7 +252,63 @@ pub(super) fn cmd_pkg_info(
             ),
         )?;
     }
+
+    // Update/remove visibility: compare the installed version against the
+    // newest catalog version and report when this package last changed.
+    let installed_text = core::str::from_utf8(&installed[..info.installed_version_len]).ok();
+    let latest_text = core::str::from_utf8(&latest[..info.latest_version_len]).ok();
+    let decision = decide_update(installed_text, latest_text);
+    let mut last_change = rt::FixedLogBuffer::<48>::new();
+    match last_package_event(bootstrap, service_id) {
+        Some((kind, tick)) => {
+            let _ = core::fmt::Write::write_fmt(
+                &mut last_change,
+                format_args!("{} at tick {}", kind, tick),
+            );
+        }
+        None => {
+            let _ = core::fmt::Write::write_fmt(&mut last_change, format_args!("never"));
+        }
+    }
+    write_output_linef(
+        output,
+        format_args!(
+            "  update-available={} ({}) last-change={}",
+            decision.flag(),
+            decision.label(),
+            last_change.as_str(),
+        ),
+    )?;
     Ok(())
+}
+
+/// Scan depth for the last-change lookup; bounded so a large retained ring
+/// cannot stall the operator prompt.
+const LAST_CHANGE_SCAN_DEPTH: u64 = 256;
+
+/// Most recent install/update event for a package from the log ring,
+/// newest-first. Returns ("update"|"install", tick).
+fn last_package_event(bootstrap: rt::Handle, service_id: ServiceId) -> Option<(&'static str, u64)> {
+    let log_handle = rt::lookup_service(bootstrap, ServiceId::Log).ok()?;
+    let result = (|| {
+        let (oldest, next) = rt::log_query_info(log_handle).ok()?;
+        let start = next.saturating_sub(LAST_CHANGE_SCAN_DEPTH).max(oldest);
+        for sequence in (start..next).rev() {
+            let record = rt::log_query_record(log_handle, sequence).ok()??;
+            if record.source != ServiceId::Package || record.arg0 != service_id as u32 as u64 {
+                continue;
+            }
+            let kind = match record.event {
+                rt::LogEvent::PackageUpdated => "update",
+                rt::LogEvent::PackageInstalled => "install",
+                _ => continue,
+            };
+            return Some((kind, record.tick));
+        }
+        None
+    })();
+    let _ = rt::handle_close(log_handle);
+    result
 }
 
 pub(super) fn cmd_pkg_history(

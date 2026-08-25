@@ -291,6 +291,93 @@ pub(crate) fn keycode_to_char(key: u32) -> Option<u8> {
     }
 }
 
+/// Display state for an installed package relative to the newest catalog
+/// version. `Unknown` covers missing data instead of guessing.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum UpdateDecision {
+    UpToDate,
+    UpdateAvailable,
+    Unknown,
+}
+
+impl UpdateDecision {
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            UpdateDecision::UpToDate => "up-to-date",
+            UpdateDecision::UpdateAvailable => "update-available",
+            UpdateDecision::Unknown => "unknown",
+        }
+    }
+}
+
+/// Compare two dotted versions numerically per component; missing trailing
+/// components count as zero and non-numeric tails fall back to byte order.
+pub(crate) fn compare_versions(left: &str, right: &str) -> core::cmp::Ordering {
+    let mut left_parts = left.split('.');
+    let mut right_parts = right.split('.');
+    loop {
+        match (left_parts.next(), right_parts.next()) {
+            (None, None) => return core::cmp::Ordering::Equal,
+            (Some(left_part), Some(right_part)) => {
+                let ordering = compare_component(left_part, right_part);
+                if ordering != core::cmp::Ordering::Equal {
+                    return ordering;
+                }
+            }
+            (Some(_), None) => {
+                return if left_parts.all(is_zero_component) {
+                    core::cmp::Ordering::Equal
+                } else {
+                    core::cmp::Ordering::Greater
+                };
+            }
+            (None, Some(_)) => {
+                return if right_parts.all(is_zero_component) {
+                    core::cmp::Ordering::Equal
+                } else {
+                    core::cmp::Ordering::Less
+                };
+            }
+        }
+    }
+}
+
+fn is_zero_component(part: &str) -> bool {
+    part.is_empty() || part.bytes().all(|byte| byte == b'0')
+}
+
+fn compare_component(left: &str, right: &str) -> core::cmp::Ordering {
+    match (fully_numeric(left), fully_numeric(right)) {
+        (Some(left_number), Some(right_number)) => left_number.cmp(&right_number),
+        // Mixed or non-numeric components keep a deterministic byte order so
+        // tagged versions never silently compare equal.
+        _ => left.cmp(right),
+    }
+}
+
+fn fully_numeric(part: &str) -> Option<u64> {
+    if !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()) {
+        part.parse::<u64>().ok()
+    } else {
+        None
+    }
+}
+
+/// Decide the installed-vs-latest badge state for the detail panel.
+pub(crate) fn decide_update(installed: Option<&str>, latest: Option<&str>) -> UpdateDecision {
+    let (Some(installed), Some(latest)) = (installed, latest) else {
+        return UpdateDecision::Unknown;
+    };
+    if installed.is_empty() || latest.is_empty() {
+        return UpdateDecision::Unknown;
+    }
+    if compare_versions(installed, latest) == core::cmp::Ordering::Less {
+        UpdateDecision::UpdateAvailable
+    } else {
+        UpdateDecision::UpToDate
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -411,5 +498,30 @@ mod tests {
         assert_eq!(keycode_to_char(50), Some(b'm'));
         assert_eq!(keycode_to_char(14), None);
         assert_eq!(keycode_to_char(999), None);
+    }
+
+    #[test]
+    fn version_components_compare_numerically() {
+        use core::cmp::Ordering;
+        assert_eq!(compare_versions("1.9.0", "1.10.0"), Ordering::Less);
+        assert_eq!(compare_versions("1.2", "1.2.0"), Ordering::Equal);
+        assert_eq!(compare_versions("1.0.0-beta", "1.0.0"), Ordering::Greater);
+    }
+
+    #[test]
+    fn update_decision_maps_missing_or_equal_data() {
+        assert_eq!(
+            decide_update(Some("1.0.0"), Some("1.1.0")),
+            UpdateDecision::UpdateAvailable
+        );
+        assert_eq!(
+            decide_update(Some("2.0.0"), Some("2.0.0")),
+            UpdateDecision::UpToDate
+        );
+        assert_eq!(
+            decide_update(None, Some("1.0.0")),
+            UpdateDecision::Unknown
+        );
+        assert_eq!(UpdateDecision::Unknown.label(), "unknown");
     }
 }

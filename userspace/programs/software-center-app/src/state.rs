@@ -27,6 +27,7 @@ pub(crate) const KEY_BACKSPACE: u32 = 14;
 pub(crate) const KEY_DELETE: u32 = 111;
 pub(crate) const KEY_ESC: u32 = 1;
 pub(crate) const KEY_R: u32 = 19;
+pub(crate) const KEY_L: u32 = 38;
 pub(crate) const KEY_TAB: u32 = 15;
 pub(crate) const KEY_UP: u32 = 103;
 pub(crate) const KEY_PAGE_UP: u32 = 104;
@@ -123,6 +124,11 @@ pub(crate) struct AppState {
     pub(crate) view_count: usize,
     pub(crate) status: [u8; MAX_STATUS_BYTES],
     pub(crate) status_len: usize,
+    /// Updates performed through this app this session: (service, tick).
+    /// The package contract carries no timestamp, so last-update time is
+    /// shown only where actually observed.
+    pub(crate) session_updates: [(ServiceId, u64); MAX_ENTRIES],
+    pub(crate) session_update_count: usize,
 }
 
 pub(crate) const CATEGORY_FILTERS: [&str; 5] =
@@ -145,7 +151,39 @@ impl AppState {
             view_count: 0,
             status: [0; MAX_STATUS_BYTES],
             status_len: 0,
+            session_updates: [(ServiceId::RootManager, 0); MAX_ENTRIES],
+            session_update_count: 0,
         }
+    }
+
+    /// Record an update performed through this app (bounded ring).
+    pub(crate) fn record_session_update(&mut self, service_id: ServiceId, tick: u64) {
+        let slot = self
+            .session_updates
+            .iter_mut()
+            .take(self.session_update_count)
+            .find(|(recorded, _)| *recorded == service_id);
+        match slot {
+            Some((_, recorded_tick)) => *recorded_tick = tick,
+            None => {
+                if self.session_update_count < MAX_ENTRIES {
+                    self.session_updates[self.session_update_count] = (service_id, tick);
+                    self.session_update_count += 1;
+                } else {
+                    // Ring full: drop the oldest entry by shifting down.
+                    self.session_updates.rotate_left(1);
+                    self.session_updates[MAX_ENTRIES - 1] = (service_id, tick);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn session_update_tick(&self, service_id: ServiceId) -> Option<u64> {
+        self.session_updates
+            .iter()
+            .take(self.session_update_count)
+            .find(|(recorded, _)| *recorded == service_id)
+            .map(|(_, tick)| *tick)
     }
 }
 

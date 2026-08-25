@@ -4,6 +4,9 @@ mod names;
 mod output;
 pub(crate) mod pending;
 pub(crate) mod tables;
+mod version;
+
+pub(crate) use version::{UpdateDecision, decide_update};
 
 pub(crate) use format::*;
 pub(crate) use logs::*;

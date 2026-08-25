@@ -9,6 +9,15 @@ pub enum CommandKind {
     /// so the platform loader hands root-manager the recovery boot-mode word.
     Recover,
     CiMatrix,
+    /// Build release images for every registered platform and write a
+    /// RELEASE-MANIFEST.json artifact manifest.
+    Release,
+    /// Boot-upgrade-boot cycle on qemu-virtio verifying storage persistence
+    /// markers survive a rebuild between boots.
+    TestUpgrade,
+    /// Workspace check + tests + bounded QEMU boots + selftest greps with a
+    /// single summary table and exit code.
+    Validate,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -32,11 +41,13 @@ impl<'a> Options<'a> {
             "run" => CommandKind::Run,
             "recover" => CommandKind::Recover,
             "ci-matrix" => CommandKind::CiMatrix,
+            "release" => CommandKind::Release,
+            "test-upgrade" => CommandKind::TestUpgrade,
+            "validate" => CommandKind::Validate,
             "qemu" => {
                 platform = Some("qemu-virtio");
                 CommandKind::Run
             }
-            "release" => CommandKind::Image,
             _ => return Err(Box::new(UsageError)),
         };
 
@@ -66,7 +77,6 @@ impl<'a> Options<'a> {
         }
 
         let platform = platform.unwrap_or("qemu-virtio");
-        let release = release || matches!(command, CommandKind::Image) && args[0] == "release";
 
         Ok(Options {
             command,
@@ -93,7 +103,7 @@ impl fmt::Display for UsageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "usage: cargo xtask <build|image|run|recover|qemu|release|ci-matrix> [--platform <qemu-virtio|raspi5|virt|qemu-isa>] [--release]"
+            "usage: cargo xtask <build|image|run|recover|qemu|release|test-upgrade|validate|ci-matrix> [--platform <qemu-virtio|raspi5|virt|qemu-isa>] [--release]"
         )
     }
 }

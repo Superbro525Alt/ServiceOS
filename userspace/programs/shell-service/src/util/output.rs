@@ -28,8 +28,13 @@ help: show this command list\r\n\
 sessions: list operator sessions hosted by this shell\r\n\
 history [count]: show this session's command history (oldest first)\r\n\
 login <name> <secret>: bind an account identity to this operator session\r\n\
-whoami: show the owning identity of this operator session\r\n\
+whoami: show the owning identity and session binding of this session\r\n\
 logout: unbind this session's account identity\r\n\
+su <name> <secret>: switch this session to another account identity\r\n\
+peripheral [status]: show attached peripheral summary\r\n\
+peripheral list [class]: list registry devices (keyboard|pointer|tablet|block|display|audio|printer)\r\n\
+peripheral events [n]: show recent attach/detach events\r\n\
+peripheral printer: printer class query (unimplemented stub)\r\n\
 console grid: render the kernel console VT grid snapshot\r\n\
 console follow: stream live kernel console records until idle timeout\r\n\
 services: list managed services\r\n\

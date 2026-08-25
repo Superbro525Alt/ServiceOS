@@ -7,9 +7,11 @@ mod desktop;
 mod developer;
 mod diagnostics;
 mod graphics;
+mod identity;
 mod network;
 mod operator;
 mod package;
+mod peripheral;
 mod runtime;
 mod security;
 
@@ -188,6 +190,10 @@ pub(crate) fn execute_command(
         },
         "whoami" => operator::cmd_whoami(output),
         "logout" => operator::cmd_logout(bootstrap, output),
+        "su" => match (parts.next(), parts.next()) {
+            (name, secret) => identity::cmd_su(bootstrap, output, name, secret),
+        },
+        "peripheral" => peripheral::cmd_peripheral(bootstrap, output, parts),
         "console" => console::cmd_console(bootstrap, output, parts.next()),
         _ => write_output_linef(output, format_args!("unknown command: {command}")),
     }

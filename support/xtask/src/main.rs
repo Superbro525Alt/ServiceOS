@@ -1,10 +1,14 @@
+mod bootlog;
 mod build;
 mod bundle;
 mod ci;
 mod cli;
 mod image;
 mod platform;
+mod release;
 mod run;
+mod upgrade;
+mod validate;
 
 use std::error::Error;
 
@@ -24,9 +28,15 @@ fn main() {
 
 fn try_main() -> Result<(), Box<dyn Error>> {
     let options = Options::parse(std::env::args().skip(1).collect())?;
-    if matches!(options.command, CommandKind::CiMatrix) {
-        print_github_matrix();
-        return Ok(());
+    match options.command {
+        CommandKind::CiMatrix => {
+            print_github_matrix();
+            return Ok(());
+        }
+        CommandKind::Release => return release::run_release(),
+        CommandKind::TestUpgrade => return upgrade::run_test_upgrade(),
+        CommandKind::Validate => return validate::run_validate(),
+        _ => {}
     }
     if matches!(options.command, CommandKind::Recover) {
         // Recovery boots build with the boot-mode flag baked into the platform
@@ -52,6 +62,9 @@ fn try_main() -> Result<(), Box<dyn Error>> {
             run_platform(&artifacts, &image)?;
         }
         CommandKind::CiMatrix => unreachable!("ci-matrix returns before platform resolution"),
+        CommandKind::Release | CommandKind::TestUpgrade | CommandKind::Validate => {
+            unreachable!("release commands return before platform resolution")
+        }
     }
 
     Ok(())

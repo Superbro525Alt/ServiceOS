@@ -31,6 +31,18 @@ pub fn run_platform(artifacts: &BuildArtifacts, image: &Path) -> Result<(), Box<
 }
 
 fn run_qemu_virt(artifacts: &BuildArtifacts) -> Result<(), Box<dyn Error>> {
+    let mut command = qemu_virt_command(artifacts)?;
+    let status = command
+        .status()
+        .map_err(|error| format!("failed to launch QEMU aarch64 command: {}", error))?;
+
+    ensure_success(status, "QEMU virt run failed")
+}
+
+/// Assemble the full QEMU aarch64 `virt` command line for the platform
+/// artifacts. Shared by the interactive runner and the bounded headless
+/// boot logger.
+pub(crate) fn qemu_virt_command(artifacts: &BuildArtifacts) -> Result<Command, Box<dyn Error>> {
     let kernel_image = ensure_virt_kernel_image(artifacts)?;
     let qemu_binary = find_qemu_aarch64_binary().ok_or_else(|| {
         "qemu-system-aarch64 not found; install QEMU or set QEMU_SYSTEM_AARCH64 to an absolute path"
@@ -83,16 +95,7 @@ fn run_qemu_virt(artifacts: &BuildArtifacts) -> Result<(), Box<dyn Error>> {
         }
     }
 
-    let status = command.status().map_err(|error| {
-        format!(
-            "failed to launch QEMU binary {} with kernel {}: {}",
-            qemu_binary.display(),
-            kernel_image.display(),
-            error
-        )
-    })?;
-
-    ensure_success(status, "QEMU virt run failed")
+    Ok(command)
 }
 
 fn run_qemu_isa(artifacts: &BuildArtifacts) -> Result<(), Box<dyn Error>> {
@@ -154,7 +157,7 @@ fn ensure_virt_data_image(data_image: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn find_qemu_aarch64_binary() -> Option<PathBuf> {
+pub(crate) fn find_qemu_aarch64_binary() -> Option<PathBuf> {
     env::var_os("QEMU_SYSTEM_AARCH64")
         .map(PathBuf::from)
         .filter(|path| path.exists())
@@ -181,6 +184,20 @@ fn run_qemu(disk_image: &Path) -> Result<(), Box<dyn Error>> {
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .join("serviceos-data.img");
+    let mut command = qemu_virtio_command(&data_image, disk_image)?;
+    let status = command
+        .status()
+        .map_err(|error| format!("failed to launch QEMU UEFI command: {}", error))?;
+    ensure_success(status, "QEMU UEFI run failed")
+}
+
+/// Assemble the full qemu-system-x86_64 UEFI command line for the virtio
+/// platform. Shared by the interactive runner and the bounded headless boot
+/// logger.
+pub(crate) fn qemu_virtio_command(
+    data_image: &Path,
+    disk_image: &Path,
+) -> Result<Command, Box<dyn Error>> {
     let qemu_binary = find_qemu_binary().ok_or_else(|| {
         "qemu-system-x86_64 not found; install QEMU or set QEMU_SYSTEM_X86_64 to an absolute path"
     })?;
@@ -313,15 +330,7 @@ fn run_qemu(disk_image: &Path) -> Result<(), Box<dyn Error>> {
         }
     }
 
-    let status = command.status().map_err(|error| {
-        format!(
-            "failed to launch QEMU binary {} with disk {}: {}",
-            qemu_binary.display(),
-            disk_image.display(),
-            error
-        )
-    })?;
-    ensure_success(status, "QEMU UEFI run failed")
+    Ok(command)
 }
 
 fn qemu_audio_device() -> Result<Option<String>, Box<dyn Error>> {
@@ -377,6 +386,18 @@ fn kvm_available() -> bool {
 
 fn create_ovmf_vars_copy(out_dir: &Path) -> Result<PathBuf, Box<dyn Error>> {
     std::fs::create_dir_all(out_dir)?;
+    // Bounded/headless boots can be killed mid-run, which can leave the
+    // shared vars image dirty and wedge later firmware phases. They opt out
+    // via SERVICEOS_OVMF_VARS and get a throwaway copy instead.
+    if let Some(path) = env::var_os("SERVICEOS_OVMF_VARS") {
+        let destination = PathBuf::from(path);
+        if let Some(parent) = destination.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let source = find_ovmf_vars_template().ok_or("no OVMF variables template found")?;
+        std::fs::copy(&source, &destination)?;
+        return Ok(destination);
+    }
     let destination = out_dir.join("OVMF_VARS.fd");
 
     if destination.exists() {

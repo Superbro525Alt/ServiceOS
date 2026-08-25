@@ -55,14 +55,7 @@ pub fn build_for_platform(
             &[("SERVICEOS_USER_TARGET", userspace_target)],
         )?;
     }
-    build_package(
-        &workspace_root,
-        USERSPACE_CATALOG_PACKAGE,
-        None,
-        release,
-        false,
-        &[("SERVICEOS_USER_TARGET", userspace_target)],
-    )?;
+    build_userspace_catalog(spec, release)?;
 
     let kernel_binary = spec.kernel_binary_path(&workspace_root, profile);
 
@@ -73,6 +66,30 @@ pub fn build_for_platform(
         kernel_binary,
         image_root: spec.image_root(&workspace_root, profile),
     })
+}
+
+/// Build the userspace catalog (which drives the nested userspace program
+/// builds and produces bootstore.bin).
+pub fn build_userspace_catalog(spec: PlatformSpec, release: bool) -> Result<(), Box<dyn Error>> {
+    build_package(
+        &workspace_root(),
+        USERSPACE_CATALOG_PACKAGE,
+        None,
+        release,
+        false,
+        &[("SERVICEOS_USER_TARGET", userspace_target(spec))],
+    )
+}
+
+/// Path of the bootstore.bin produced for the given platform/profile.
+pub fn userspace_bootstore_path(spec: PlatformSpec, release: bool) -> PathBuf {
+    let profile = if release { "release" } else { "debug" };
+    workspace_root()
+        .join("target")
+        .join("userspace-programs")
+        .join(userspace_target(spec))
+        .join(profile)
+        .join("bootstore.bin")
 }
 
 fn build_package(
@@ -115,7 +132,7 @@ pub fn ensure_success(status: ExitStatus, context: &str) -> Result<(), Box<dyn E
     }
 }
 
-fn workspace_root() -> PathBuf {
+pub fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
         .nth(2)

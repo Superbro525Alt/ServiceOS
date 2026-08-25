@@ -78,15 +78,92 @@ fn ensure_account_channel(bootstrap: rt::Handle) -> Option<Handle> {
     if slot.reachable && slot.handle != rt::INVALID_HANDLE {
         return Some(slot.handle);
     }
-    match rt::manager_launch_stored_program_with_payload(bootstrap, ACCOUNT_PROGRAM_PATH, &[], &[])
-    {
-        Ok(handle) => {
-            slot.handle = handle;
-            slot.reachable = true;
-            Some(handle)
-        }
-        Err(_) => None,
+    let handle = launch_with_announce(bootstrap, ACCOUNT_PROGRAM_PATH, true)?;
+    slot.handle = handle;
+    slot.reachable = true;
+    Some(handle)
+}
+
+/// Launch a stored program and await its public-channel announcement.
+///
+/// The manager's launch reply carries a task view, not a channel, so the
+/// caller passes an announcer send-half as a startup handle; the launched
+/// service replies with its public channel's send-half. `with_storage`
+/// prepends the storage-service grant first (account-service's positional
+/// contract: handles[0]=storage, handles[1]=announcer); services that only
+/// need the announcer keep it at handles[0].
+pub(crate) fn launch_with_announce(
+    bootstrap: rt::Handle,
+    program_path: &str,
+    with_storage: bool,
+) -> Option<Handle> {
+    const ANNOUNCE_WAIT_ITERATIONS: usize = 5000;
+
+    let mut startup_handles: [rt::StartupHandle; 2] = [
+        rt::StartupHandle {
+            handle: rt::INVALID_HANDLE,
+            rights: 0,
+        },
+        rt::StartupHandle {
+            handle: rt::INVALID_HANDLE,
+            rights: 0,
+        },
+    ];
+    let mut count = 0usize;
+    if with_storage {
+        let storage = rt::lookup_service(bootstrap, rt::ServiceId::Storage).ok()?;
+        startup_handles[count] = rt::StartupHandle {
+            handle: storage,
+            // The relay hops (shell -> manager -> child) each need a
+            // re-forwardable copy; a send-only mask dies at the first hop
+            // (see root-manager lookup.rs's rights note).
+            rights: rt::rights::SEND | rt::rights::DUPLICATE | rt::rights::TRANSFER,
+        };
+        count += 1;
     }
+    let announcer = match rt::channel_create() {
+        Ok(pair) => pair,
+        Err(_) => return None,
+    };
+    startup_handles[count] = rt::StartupHandle {
+        handle: announcer.second,
+        rights: rt::rights::SEND | rt::rights::DUPLICATE | rt::rights::TRANSFER,
+    };
+    count += 1;
+
+    let launched = rt::manager_launch_stored_program_with_payload(
+        bootstrap,
+        program_path,
+        &[],
+        &startup_handles[..count],
+    );
+    let _ = rt::handle_close(announcer.second);
+    if launched.is_err() {
+        let _ = rt::handle_close(announcer.first);
+        return None;
+    }
+
+    // Await the child's announce carrying its public send-half.
+    for _ in 0..ANNOUNCE_WAIT_ITERATIONS {
+        let mut message = RawMessage::empty(0);
+        match rt::channel_receive_nonblocking(announcer.first, &mut message) {
+            Ok(()) => {
+                let _ = rt::handle_close(announcer.first);
+                if message.handle_count >= 1 {
+                    return Some(message.handles[0]);
+                }
+                return None;
+            }
+            Err(rt::Error::QueueEmpty) => {
+                if rt::yield_current().is_err() {
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    let _ = rt::handle_close(announcer.first);
+    None
 }
 
 /// Run one request/reply round against account-service.

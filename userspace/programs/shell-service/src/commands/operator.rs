@@ -83,10 +83,12 @@ pub(crate) fn cmd_whoami(output: ShellOutput) -> rt::Result<()> {
         Some(owner) => write_output_linef(
             output,
             format_args!(
-                "account={} id={} capabilities={:#x}",
+                "account={} id={} capabilities={:#x} binding={}/{}",
                 owner.name(),
                 owner.account_id,
-                owner.capabilities
+                owner.capabilities,
+                key.kind_name(),
+                source_session_id(key),
             ),
         ),
         None => write_output_linef(
@@ -153,8 +155,8 @@ pub(crate) fn cmd_logout(bootstrap: rt::Handle, output: ShellOutput) -> rt::Resu
 }
 
 /// The key's source handle doubles as the account-service claim session id so
-/// logout targets the same binding that login created.
-fn source_session_id(key: SessionKey) -> u32 {
+/// logout and switch target the same binding that login created.
+pub(crate) fn source_session_id(key: SessionKey) -> u32 {
     match key {
         SessionKey::Console(value) | SessionKey::Client(value) => value,
     }

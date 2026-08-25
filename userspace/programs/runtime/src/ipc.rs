@@ -1,6 +1,6 @@
 use crate::{
-    Error, Handle, HandlePair, INVALID_HANDLE, IPC_FLAG_NONBLOCK, RawMessage, Result,
-    SyscallNumber, rights, syscall1, syscall2,
+    Error, Handle, HandlePair, INVALID_HANDLE, IPC_FLAG_NONBLOCK, IPC_FLAG_RECEIVE_TIMEOUT,
+    RawMessage, Result, SyscallNumber, rights, syscall1, syscall2, syscall3,
 };
 
 pub fn channel_create() -> Result<HandlePair> {
@@ -60,6 +60,32 @@ pub fn channel_receive_blocking(endpoint: Handle, message: &mut RawMessage) -> R
             Err(error) => return Err(error),
         }
     }
+}
+
+fn channel_receive_timed(
+    endpoint: Handle,
+    message: &mut RawMessage,
+    timeout_ticks: u64,
+) -> Result<()> {
+    message.flags = IPC_FLAG_RECEIVE_TIMEOUT;
+    let result = syscall3(
+        SyscallNumber::ChannelReceive,
+        endpoint as u64,
+        message as *mut RawMessage as u64,
+        timeout_ticks,
+    );
+    message.flags = 0;
+    result.map(|_| ())
+}
+
+/// Blocking receive that gives up with `Error::QueueEmpty` once
+/// `timeout_ticks` (0 = wait forever) elapse without a message.
+pub fn channel_receive_blocking_timeout(
+    endpoint: Handle,
+    message: &mut RawMessage,
+    timeout_ticks: u64,
+) -> Result<()> {
+    channel_receive_timed(endpoint, message, timeout_ticks)
 }
 
 pub fn channel_call(endpoint: Handle, request: &mut RawMessage) -> Result<RawMessage> {

@@ -4,6 +4,7 @@ pub const INVALID_HANDLE: Handle = 0;
 pub const IPC_MAX_WORDS: usize = 16;
 pub const IPC_MAX_HANDLES: usize = 8;
 pub const IPC_FLAG_NONBLOCK: u32 = 1 << 0;
+pub const IPC_FLAG_RECEIVE_TIMEOUT: u32 = 1 << 1;
 pub const OBJECT_WAIT_FLAG_NONBLOCK: u32 = 1 << 0;
 
 pub mod memory_map_flags {

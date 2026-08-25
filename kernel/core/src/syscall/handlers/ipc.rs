@@ -1,5 +1,6 @@
 use serviceos_abi::{
-    Handle, HandlePair, IPC_FLAG_NONBLOCK, IPC_MAX_HANDLES, IPC_MAX_WORDS, RawMessage,
+    Handle, HandlePair, IPC_FLAG_NONBLOCK, IPC_FLAG_RECEIVE_TIMEOUT, IPC_MAX_HANDLES,
+    IPC_MAX_WORDS, RawMessage,
 };
 
 use super::{
@@ -66,11 +67,13 @@ pub(crate) fn handle_channel_create(context: &SyscallContext) -> SyscallReturn {
     SyscallReturn::success(0)
 }
 
+#[cfg(feature = "ipc-trace")]
 struct TraceBuf {
     bytes: [u8; 128],
     len: usize,
 }
 
+#[cfg(feature = "ipc-trace")]
 impl core::fmt::Write for TraceBuf {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         let len = self.len;
@@ -87,6 +90,7 @@ impl core::fmt::Write for TraceBuf {
     }
 }
 
+#[cfg(feature = "ipc-trace")]
 fn trace_ipc(args: core::fmt::Arguments<'_>) {
     if let Some(writer) = super::DEBUG_LOG_WRITER.get() {
         let mut buf = TraceBuf {
@@ -97,6 +101,9 @@ fn trace_ipc(args: core::fmt::Arguments<'_>) {
         writer(&buf.bytes[..buf.len]);
     }
 }
+
+#[cfg(not(feature = "ipc-trace"))]
+fn trace_ipc(_args: core::fmt::Arguments<'_>) {}
 
 pub(crate) fn handle_channel_send(context: &SyscallContext) -> SyscallReturn {
     let Ok(current_task) = current_task() else {
@@ -236,9 +243,14 @@ pub(crate) fn handle_channel_receive(context: &SyscallContext) -> SyscallReturn 
                 Ok(endpoint) => endpoint,
                 Err(error) => return SyscallReturn::error(map_ipc_error(error)),
             };
+            let timed = message_out.flags & IPC_FLAG_RECEIVE_TIMEOUT != 0;
+            let deadline_ticks = if timed { context.arguments[2] } else { 0 };
             SyscallReturn::error_with_action(
                 SyscallError::QueueEmpty,
-                SyscallAction::BlockCurrentThreadOnReceive { endpoint },
+                SyscallAction::BlockCurrentThreadOnReceive {
+                    endpoint,
+                    deadline_ticks,
+                },
             )
         }
         Err(error) => {

@@ -235,6 +235,49 @@ impl Scheduler {
         schedule_next_locked(&mut state, ScheduleTrigger::Blocked, Some(current))
     }
 
+    /// Block the current thread until a message arrives on `endpoint` or
+    /// `deadline_ticks` elapse (0 blocks indefinitely). The timer token keeps
+    /// the deadline armed while the channel wait queue provides the message
+    /// wake path; whichever fires first makes the thread runnable again.
+    pub fn block_current_on_receive_until(
+        &self,
+        endpoint: ObjectId,
+        deadline_ticks: u64,
+    ) -> Result<ScheduleDecision, SchedulerError> {
+        if deadline_ticks == 0 {
+            return self.block_current_on_receive(endpoint);
+        }
+        let mut state = self.state.lock();
+        let Some(current) = state.current else {
+            return Ok(decision(&state, ScheduleTrigger::Blocked, None, None));
+        };
+        let manager = time::manager().ok_or(SchedulerError::TimeUnavailable)?;
+        let now = manager.now();
+        let deadline = MonotonicInstant(now.0.saturating_add(deadline_ticks));
+        let token = WakeToken(state.next_wake_token);
+        state.next_wake_token = state
+            .next_wake_token
+            .checked_add(1)
+            .ok_or(SchedulerError::WakeTokenExhausted)?;
+        TimerService::arm_wakeup(manager, token, TimerRequest::one_shot(deadline))?;
+
+        let thread = lookup_thread(&state, current)?;
+        thread.transition_to(
+            ExecutionState::Blocked,
+            Some(WaitTarget::ChannelReceive { endpoint }),
+            None,
+        );
+        state.current = None;
+        state.waiting_timers.insert(token, current);
+        state
+            .waiting_receivers
+            .entry(endpoint)
+            .or_default()
+            .push_back(current);
+
+        schedule_next_locked(&mut state, ScheduleTrigger::Blocked, Some(current))
+    }
+
     pub fn block_current_on_packet_receive(
         &self,
         interface: ObjectId,
@@ -365,6 +408,14 @@ impl Scheduler {
         let previous = state.current;
         let thread_id = state.waiting_timers.remove(&event.token)?;
         let thread = lookup_thread_record(&state, thread_id).ok()?;
+        let waiting = thread
+            .object
+            .thread()
+            .map(|thread| thread.snapshot().execution_state == ExecutionState::Blocked)
+            .unwrap_or(false);
+        if !waiting {
+            return None;
+        }
         state.push_runnable_if_absent(thread_id);
         thread
             .object
@@ -392,27 +443,37 @@ impl Scheduler {
         let mut state = self.state.lock();
         let previous = state.current;
         let mut woke_receiver = false;
-        let mut remove_waiters = false;
-        if let Some(waiters) = state.waiting_receivers.get_mut(&endpoint) {
-            if let Some(thread_id) = waiters.pop_front() {
-                remove_waiters = waiters.is_empty();
-
-                let thread = lookup_thread_record(&state, thread_id).ok()?;
-                state.push_runnable_if_absent(thread_id);
-                thread
-                    .object
-                    .thread()
-                    .expect("registered thread object")
-                    .transition_to(
-                        ExecutionState::Runnable,
-                        None,
-                        Some(ThreadWakeReason::ChannelMessage),
-                    );
-                woke_receiver = true;
+        let mut queue = state
+            .waiting_receivers
+            .remove(&endpoint)
+            .unwrap_or_default();
+        while let Some(thread_id) = queue.pop_front() {
+            let Ok(thread) = lookup_thread_record(&state, thread_id) else {
+                continue;
+            };
+            let waiting = thread
+                .object
+                .thread()
+                .map(|thread| thread.snapshot().execution_state == ExecutionState::Blocked)
+                .unwrap_or(false);
+            if !waiting {
+                continue;
             }
+            state.push_runnable_if_absent(thread_id);
+            thread
+                .object
+                .thread()
+                .expect("registered thread object")
+                .transition_to(
+                    ExecutionState::Runnable,
+                    None,
+                    Some(ThreadWakeReason::ChannelMessage),
+                );
+            woke_receiver = true;
+            break;
         }
-        if remove_waiters {
-            state.waiting_receivers.remove(&endpoint);
+        if !queue.is_empty() {
+            state.waiting_receivers.insert(endpoint, queue);
         }
         let woke_object = wake_object_waiters_locked(&mut state, endpoint)?;
         if !woke_receiver && !woke_object {

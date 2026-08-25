@@ -12,7 +12,7 @@ use serviceos_userspace_runtime as rt;
 use crate::{
     compose::{compose_and_present, compose_damage_and_present, cursor_present},
     logging::{emit_log, poll_lifecycle},
-    requests::{drain_public_requests, drain_surface_requests},
+    requests::{drain_public_requests, drain_surface_requests, handle_public_request},
     types::{
         CURSOR_PRESENT_COALESCE_TICKS, DirtyState, MAX_FRAMEBUFFER_BYTES, MAX_SURFACES,
         PRESENT_COALESCE_TICKS, SurfaceSlot, active_surface_count,
@@ -20,6 +20,8 @@ use crate::{
 };
 
 rt::entry!(main);
+
+const IDLE_WAIT_TICKS: u64 = 2;
 
 fn main() -> u64 {
     let bootstrap = 1;
@@ -151,8 +153,31 @@ fn main() -> u64 {
             present_deadline = 0;
         }
 
-        if rt::yield_current().is_err() {
-            return 0xfc0c;
+        let wait_ticks = match dirty {
+            DirtyState::Clean => IDLE_WAIT_TICKS,
+            _ => present_deadline
+                .saturating_sub(rt::monotonic_now().unwrap_or(0))
+                .max(1),
+        };
+        let mut waited = RawMessage::empty(0);
+        match rt::channel_receive_blocking_timeout(public.first, &mut waited, wait_ticks) {
+            Ok(()) => {
+                if handle_public_request(
+                    &waited,
+                    log_handle,
+                    output,
+                    present_count,
+                    &mut surfaces,
+                    &mut next_surface_id,
+                    &mut dirty,
+                )
+                .is_err()
+                {
+                    return 0xfc08;
+                }
+            }
+            Err(rt::Error::QueueEmpty) => {}
+            Err(_) => return 0xfc0c,
         }
     }
 }

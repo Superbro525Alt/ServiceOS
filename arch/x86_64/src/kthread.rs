@@ -181,20 +181,24 @@ pub fn pump_pending() -> usize {
     switch_ins
 }
 
-/// AP idle loop: steal queued kernel threads forever. Interrupts stay
-/// disabled on APs, so this is a purely cooperative polling loop.
+/// AP idle loop: steal queued kernel threads, halting with interrupts
+/// enabled between steals so an idle AP parks in `hlt` until the next
+/// interrupt (or BSP-steal drains the queues).
 pub fn ap_idle_loop(cpu: usize) -> ! {
+    crate::cpu::enable_interrupts();
     loop {
         match pop_ready(cpu) {
             Some(entry) => {
+                crate::cpu::disable_interrupts();
                 crate::serial::write_args(format_args!(
                     "serviceos: smp: ap{} picked up kernel thread {}\n",
                     cpu,
                     RUNNERS.current[cpu % RUN_QUEUE_CPUS].load(Ordering::Relaxed),
                 ));
                 unsafe { run_one(cpu, entry) };
+                crate::cpu::enable_interrupts();
             }
-            None => core::hint::spin_loop(),
+            None => crate::cpu::halt(),
         }
     }
 }

@@ -1,4 +1,4 @@
-use serviceos_kernel_arch_x86_64::{interrupts, kthread, user};
+use serviceos_kernel_arch_x86_64::{cpu, interrupts, kthread, user};
 use serviceos_kernel_core::{
     Kernel,
     object::ObjectId,
@@ -7,7 +7,6 @@ use serviceos_kernel_core::{
 };
 
 use crate::bootstrap::BootstrapError;
-use crate::logging::log_line;
 
 pub(crate) fn run_userspace_executor(
     kernel: &Kernel<'_>,
@@ -47,11 +46,8 @@ pub(crate) fn run_userspace_executor(
                 continue;
             }
             if snapshot.blocked_threads > 0 {
-                log_line(
-                    "bootstrap",
-                    "userspace executor stalled with only blocked threads",
-                );
-                return Ok(());
+                park_until_interrupt();
+                continue;
             }
             return Ok(());
         }
@@ -72,8 +68,19 @@ pub(crate) fn run_userspace_executor(
             && thread_state.execution_state == ExecutionState::Running
         {
             user::run_thread(thread_id)?;
+        } else if snapshot.runnable_threads == 0 && kthread::pending_count() == 0 {
+            park_until_interrupt();
         } else {
             let _ = scheduler.yield_current()?;
         }
     }
+}
+
+/// Sleep until the next interrupt (timer tick or device IRQ) makes waiters
+/// runnable. The enable/halt/disable window keeps the executor's interrupt
+/// invariant (IF=0 outside user execution) intact across the park.
+fn park_until_interrupt() {
+    cpu::enable_interrupts();
+    cpu::halt();
+    cpu::disable_interrupts();
 }

@@ -19,6 +19,8 @@ use serviceos_userspace_runtime as rt;
 
 rt::entry!(main);
 
+const IDLE_WAIT_TICKS: u64 = 2;
+
 fn main() -> u64 {
     let bootstrap = 1;
     let mut startup = RawMessage::empty(0);
@@ -271,8 +273,29 @@ fn main() -> u64 {
             continue;
         }
 
-        if rt::yield_current().is_err() {
-            return 0xfe13;
+        let mut waited = RawMessage::empty(0);
+        match rt::channel_receive_blocking_timeout(public.first, &mut waited, IDLE_WAIT_TICKS) {
+            Ok(()) => {
+                if let Some((x, y, detail)) = requests::coalescible_pointer_move(&waited) {
+                    if requests::dispatch_input_request(
+                        &mut state,
+                        rt::DesktopInputAction::PointerMove,
+                        x,
+                        y,
+                        detail,
+                        None,
+                    )
+                    .is_err()
+                    {
+                        return 0xfe0e;
+                    }
+                } else if requests::handle_request(&mut state, &waited).is_err() {
+                    return 0xfe0e;
+                }
+                continue;
+            }
+            Err(rt::Error::QueueEmpty) => {}
+            Err(_) => return 0xfe13,
         }
     }
 }

@@ -9,6 +9,9 @@ rust-version.workspace = true
 [lib]
 path = "src/lib.rs"
 
+[features]
+ipc-trace = []
+
 [dependencies]
 serviceos-abi = { path = "../../shared/abi" }
 spin = "0.9"

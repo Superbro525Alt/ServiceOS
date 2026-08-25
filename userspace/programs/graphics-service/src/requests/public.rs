@@ -45,7 +45,7 @@ pub(crate) fn drain_public_requests(
     }
 }
 
-fn handle_public_request(
+pub(crate) fn handle_public_request(
     request: &RawMessage,
     log_handle: rt::Handle,
     output: rt::DisplayOutputInfo,

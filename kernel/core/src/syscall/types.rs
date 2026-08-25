@@ -76,7 +76,7 @@ impl SyscallReturn {
 pub enum SyscallAction {
     ReturnToCaller,
     YieldCurrentThread,
-    BlockCurrentThreadOnReceive { endpoint: ObjectId },
+    BlockCurrentThreadOnReceive { endpoint: ObjectId, deadline_ticks: u64 },
     BlockCurrentThreadOnPacketReceive { interface: ObjectId },
     BlockCurrentThreadOnInputReceive { source: ObjectId },
     BlockCurrentThreadOnObject { object: ObjectId },

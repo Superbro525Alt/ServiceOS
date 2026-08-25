@@ -31,12 +31,17 @@ extern "C" fn serviceos_x86_64_handle_syscall(frame: &mut SavedUserContext) -> u
             }
             1
         }
-        SyscallAction::BlockCurrentThreadOnReceive { endpoint } => {
+        SyscallAction::BlockCurrentThreadOnReceive {
+            endpoint,
+            deadline_ticks,
+        } => {
             if let Some(tasks) = task::system() {
                 if let Some(thread_id) = tasks.scheduler().current_thread() {
                     crate::user::save_thread_context(thread_id, frame);
                 }
-                let _ = tasks.scheduler().block_current_on_receive(endpoint);
+                let _ = tasks
+                    .scheduler()
+                    .block_current_on_receive_until(endpoint, deadline_ticks);
             }
             1
         }

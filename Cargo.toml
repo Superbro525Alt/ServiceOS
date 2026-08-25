@@ -26,6 +26,7 @@ repository = "https://github.com/Superbro525Alt/ServiceOS"
 rust-version = "1.85"
 
 [profile.dev]
+opt-level = 1
 panic = "abort"
 
 [profile.release]

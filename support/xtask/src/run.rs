@@ -214,10 +214,16 @@ fn run_qemu(disk_image: &Path) -> Result<(), Box<dyn Error>> {
     let accel = qemu_accel_mode();
     println!("  accelerator: {}", accel_name(accel));
     let audio_device = qemu_audio_device()?;
-    println!("  audio: {}", audio_device);
+    match &audio_device {
+        Some(spec) => println!("  audio: {}", spec),
+        None => println!("  audio: off"),
+    }
 
     let mut command = Command::new(&qemu_binary);
-    command.args(["-machine", "q35,pcspk-audiodev=speaker"]);
+    match &audio_device {
+        Some(_) => command.args(["-machine", "q35,pcspk-audiodev=speaker"]),
+        None => command.args(["-machine", "q35"]),
+    };
     command.args(["-m", "1048"]);
     // SERVICEOS_SMP controls the guest CPU count (default single-core, which
     // keeps kernel boot output byte-identical to the pre-SMP kernel).
@@ -239,9 +245,11 @@ fn run_qemu(disk_image: &Path) -> Result<(), Box<dyn Error>> {
     if headless {
         command.args(["-display", "none"]);
     } else {
-        command.args(["-display", "gtk,gl=off"]);
+        command.args(["-display", "gtk,gl=on"]);
     }
-    command.args(["-audiodev", &audio_device]);
+    if let Some(audio_device) = &audio_device {
+        command.args(["-audiodev", audio_device]);
+    }
     command.args(["-netdev", "user,id=net0"]);
     command.args([
         "-device",
@@ -287,20 +295,16 @@ fn run_qemu(disk_image: &Path) -> Result<(), Box<dyn Error>> {
     ensure_success(status, "QEMU UEFI run failed")
 }
 
-fn qemu_audio_device() -> Result<String, Box<dyn Error>> {
+fn qemu_audio_device() -> Result<Option<String>, Box<dyn Error>> {
     if let Some(spec) = env::var_os("QEMU_AUDIODEV") {
-        return Ok(spec.to_string_lossy().into_owned());
+        let spec = spec.to_string_lossy().into_owned();
+        if spec.is_empty() || spec == "off" {
+            return Ok(None);
+        }
+        return Ok(Some(spec));
     }
 
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .unwrap()
-        .join("target")
-        .join("qemu-audio");
-    std::fs::create_dir_all(&root)?;
-    let path = root.join("serviceos-pcspk.wav");
-    Ok(format!("wav,id=speaker,path={}", path.display()))
+    Ok(None)
 }
 
 fn qemu_headless() -> bool {

@@ -116,11 +116,15 @@ desktop launch terminal: open the graphical terminal app\r\n\
 pkg list: list repository packages\r\n\
 pkg catalog: browse the current package catalog\r\n\
 pkg repos: list configured package repositories\r\n\
-pkg repo add <name> <url> [trust] [channel] [ring]: register a network package repository\r\n\
+pkg repo add <name> <url> [trust] [channel] [ring]: review then register a third-party repository (--yes commits)\r\n\
+pkg repo enable|disable <name>: change operator state for an onboarded source\r\n\
+pkg repo remove <name>: revoke an onboarded source's approval\r\n\
+pkg repo status: show onboarding ledger, side-load policy, and host arch\r\n\
+pkg sideload policy [allow|warn|deny]: set the side-loading policy switch\r\n\
 pkg repo sync [all|index]: fetch repository metadata through package-service\r\n\
 pkg info <name>: inspect one package\r\n\
- pkg install <name> [version] [@source] [--yes]: activate a package from a chosen source\r\n\
- pkg update <name> [version] [@source] [--yes]: switch to a newer package version\r\n\
+  pkg install <name> [version] [@source] [--yes] [--force-compat]: activate a package from a chosen source\r\n\
+  pkg update <name> [version] [@source] [--yes] [--force-compat]: switch to a newer package version\r\n\
  pkg remove <name>: deactivate a package\r\n\
  pkg rollback <name>: restore the prior active version (prints the rollback summary)\r\n\
 pkg history <name>: show current and rollback versions\r\n\

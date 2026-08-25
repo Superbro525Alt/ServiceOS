@@ -3,6 +3,7 @@ use serviceos_userspace_runtime as rt;
 
 use crate::util::{ShellOutput, write_output_linef};
 
+use super::onboard::{self, RepoAddPlan};
 use super::parse::{
     MAX_PACKAGE_TEXT, channel_name, parse_channel, parse_repo_trust, parse_ring, parse_usize,
     repo_sync_state_name, ring_name, trust_mode_name,
@@ -20,10 +21,15 @@ pub(super) fn cmd_pkg_repos(bootstrap: rt::Handle, output: ShellOutput) -> rt::R
             core::str::from_utf8(&name[..repo.name_len]).map_err(|_| rt::Error::InvalidArgument)?;
         let url_text =
             core::str::from_utf8(&url[..repo.url_len]).map_err(|_| rt::Error::InvalidArgument)?;
+        let ledger_state = match onboard::onboard_lookup(name_text) {
+            Some(true) => " onboarded",
+            Some(false) => " onboarded-disabled",
+            None => "",
+        };
         write_output_linef(
             output,
             format_args!(
-                "#{} {} pkgs={} trust={} sync={} channel={} ring={} enabled={} digest={:016x} source={}",
+                "#{} {} pkgs={} trust={} sync={} channel={} ring={} enabled={} digest={:016x} source={}{}",
                 repo.repo_index,
                 name_text,
                 repo.package_count,
@@ -34,6 +40,7 @@ pub(super) fn cmd_pkg_repos(bootstrap: rt::Handle, output: ShellOutput) -> rt::R
                 if repo.enabled { "yes" } else { "no" },
                 repo.last_digest,
                 url_text,
+                ledger_state,
             ),
         )?;
         index += 1;
@@ -61,7 +68,7 @@ where
                 return write_output_linef(
                     output,
                     format_args!(
-                        "usage: pkg repo add <name> <url> [unsigned|pinned:<hex>] [stable|beta|canary] [production|preview|testing]"
+                        "usage: pkg repo add <name> <url> [unsigned|pinned:<hex>] [stable|beta|canary] [production|preview|testing] [--yes]"
                     ),
                 );
             };
@@ -69,14 +76,33 @@ where
                 return write_output_linef(
                     output,
                     format_args!(
-                        "usage: pkg repo add <name> <url> [unsigned|pinned:<hex>] [stable|beta|canary] [production|preview|testing]"
+                        "usage: pkg repo add <name> <url> [unsigned|pinned:<hex>] [stable|beta|canary] [production|preview|testing] [--yes]"
                     ),
                 );
             };
-            let trust = parts.next().unwrap_or("unsigned");
-            let channel = parts.next().unwrap_or("stable");
-            let ring = parts.next().unwrap_or("user");
-            cmd_pkg_repo_add(bootstrap, output, name, url, trust, channel, ring)
+            let mut positionals: [&str; 3] = ["unsigned", "stable", "user"];
+            let mut filled = 0usize;
+            let mut confirmed = false;
+            for token in parts {
+                if token == "--yes" {
+                    confirmed = true;
+                    continue;
+                }
+                if filled < 3 {
+                    positionals[filled] = token;
+                    filled += 1;
+                }
+            }
+            cmd_pkg_repo_add(
+                bootstrap,
+                output,
+                name,
+                url,
+                positionals[0],
+                positionals[1],
+                positionals[2],
+                confirmed,
+            )
         }
         Some("sync") => match parts.next() {
             Some("all") | None => cmd_pkg_repo_sync(bootstrap, output, None),
@@ -87,10 +113,27 @@ where
                 }
             },
         },
-        _ => write_output_linef(output, format_args!("usage: pkg repo <add|sync> ...")),
+        Some("enable") => match parts.next() {
+            Some(name) => onboard::cmd_pkg_repo_set_enabled(output, name, true),
+            None => write_output_linef(output, format_args!("usage: pkg repo enable <name>")),
+        },
+        Some("disable") => match parts.next() {
+            Some(name) => onboard::cmd_pkg_repo_set_enabled(output, name, false),
+            None => write_output_linef(output, format_args!("usage: pkg repo disable <name>")),
+        },
+        Some("remove") => match parts.next() {
+            Some(name) => onboard::cmd_pkg_repo_remove(output, name),
+            None => write_output_linef(output, format_args!("usage: pkg repo remove <name>")),
+        },
+        Some("status") => onboard::cmd_pkg_repo_status(bootstrap, output),
+        _ => write_output_linef(
+            output,
+            format_args!("usage: pkg repo <add|sync|enable|disable|remove|status> ..."),
+        ),
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_pkg_repo_add(
     bootstrap: rt::Handle,
     output: ShellOutput,
@@ -99,6 +142,7 @@ fn cmd_pkg_repo_add(
     trust_text: &str,
     channel_text: &str,
     ring_text: &str,
+    confirmed: bool,
 ) -> rt::Result<()> {
     let Some((trust_mode, digest)) = parse_repo_trust(trust_text) else {
         return write_output_linef(
@@ -115,11 +159,22 @@ fn cmd_pkg_repo_add(
     let Some(ring) = parse_ring(ring_text) else {
         return write_output_linef(output, format_args!("ring must be user, beta, or canary"));
     };
+
+    let plan = RepoAddPlan {
+        name,
+        url,
+        trust_mode,
+        pinned_digest: digest,
+    };
+    if !confirmed {
+        return onboard::write_repo_review(output, &plan);
+    }
+
     let package_handle = rt::lookup_service(bootstrap, ServiceId::Package)?;
     let result = rt::package_repository_add(
         package_handle,
-        name,
-        url,
+        plan.name,
+        plan.url,
         trust_mode,
         channel,
         ring,
@@ -128,7 +183,15 @@ fn cmd_pkg_repo_add(
     );
     let _ = rt::handle_close(package_handle);
     result?;
-    write_output_linef(output, format_args!("added repository {}", name))
+    onboard::onboard_record(name)?;
+    write_output_linef(
+        output,
+        format_args!(
+            "added repository {} (trust {}; manage with pkg repo status)",
+            name,
+            trust_mode_name(trust_mode),
+        ),
+    )
 }
 
 fn cmd_pkg_repo_sync(

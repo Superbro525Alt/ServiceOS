@@ -1,4 +1,5 @@
 mod mutate;
+mod onboard;
 mod parse;
 mod query;
 mod repos;
@@ -6,6 +7,10 @@ mod repos;
 use serviceos_userspace_runtime as rt;
 
 use crate::util::{ShellOutput, parse_service_name, write_output_linef};
+
+pub(crate) fn gate_run_image(output: ShellOutput, path: &str) -> rt::Result<bool> {
+    onboard::sideload_image_gate(output, path)
+}
 
 pub(crate) fn cmd_pkg<'a, I>(
     bootstrap: rt::Handle,
@@ -28,14 +33,14 @@ where
             Some(service_id) => mutate::cmd_pkg_install(bootstrap, output, service_id, parts),
             None => write_output_linef(
                 output,
-                format_args!("usage: pkg install <name> [version] [@source] [--yes]"),
+                format_args!("usage: pkg install <name> [version] [@source] [--yes] [--force-compat]"),
             ),
         },
         Some("update") => match parts.next().and_then(parse_service_name) {
             Some(service_id) => mutate::cmd_pkg_update(bootstrap, output, service_id, parts),
             None => write_output_linef(
                 output,
-                format_args!("usage: pkg update <name> [version] [@source] [--yes]"),
+                format_args!("usage: pkg update <name> [version] [@source] [--yes] [--force-compat]"),
             ),
         },
         Some("remove") => match parts.next().and_then(parse_service_name) {
@@ -89,6 +94,7 @@ where
             mutate::cmd_pkg_maintenance(bootstrap, output, rt::PackageMaintenanceAction::Repair)
         }
         Some("recover") => mutate::cmd_pkg_recover(bootstrap, output),
+        Some("sideload") => onboard::cmd_pkg_sideload(output, parts),
         Some("gc") => mutate::cmd_pkg_maintenance(
             bootstrap,
             output,
@@ -97,7 +103,7 @@ where
         _ => write_output_linef(
             output,
             format_args!(
-                "usage: pkg <list|catalog|repos|repo|info|install|update|remove|rollback|history|provenance|policy|pin|channel|ring|verify|repair|recover|gc> ..."
+                "usage: pkg <list|catalog|repos|repo|info|install|update|remove|rollback|history|provenance|policy|pin|channel|ring|verify|repair|recover|gc|sideload> ..."
             ),
         ),
     }

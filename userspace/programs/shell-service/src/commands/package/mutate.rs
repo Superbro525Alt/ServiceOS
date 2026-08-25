@@ -5,6 +5,7 @@ use crate::util::{
     MAX_VERSION_BYTES, ShellOutput, printable_version, service_name, write_output_linef,
 };
 
+use super::onboard::{self, SourceGateDecision};
 use super::parse::{
     channel_name, maintenance_action_name, parse_channel, parse_ring, repo_sync_state_name,
     ring_name, trust_mode_name,
@@ -22,6 +23,7 @@ pub(super) struct MutationOptions<'a> {
     version: Option<&'a str>,
     source: Option<&'a str>,
     yes: bool,
+    force_compat: bool,
 }
 
 pub(super) fn parse_mutation_options<'a, I>(parts: I) -> MutationOptions<'a>
@@ -32,10 +34,15 @@ where
         version: None,
         source: None,
         yes: false,
+        force_compat: false,
     };
     for token in parts {
         if token == "--yes" {
             options.yes = true;
+            continue;
+        }
+        if token == "--force-compat" {
+            options.force_compat = true;
             continue;
         }
         match token.rsplit_once('@') {
@@ -172,16 +179,19 @@ fn trust_explanation(mode: rt::PackageRepositoryTrustMode) -> &'static str {
     }
 }
 
-struct SourceInfo {
-    url_len: usize,
-    url_bytes: [u8; MAX_VERSION_BYTES],
-    trust_mode: rt::PackageRepositoryTrustMode,
-    sync_state: rt::PackageRepositorySyncState,
-    enabled: bool,
-    pinned_digest: u64,
+pub(super) struct SourceInfo {
+    pub(super) url_len: usize,
+    pub(super) url_bytes: [u8; MAX_VERSION_BYTES],
+    pub(super) trust_mode: rt::PackageRepositoryTrustMode,
+    pub(super) sync_state: rt::PackageRepositorySyncState,
+    pub(super) enabled: bool,
+    pub(super) pinned_digest: u64,
 }
 
-fn find_source_repo(package_handle: rt::Handle, source: &str) -> rt::Result<Option<SourceInfo>> {
+pub(super) fn find_source_repo(
+    package_handle: rt::Handle,
+    source: &str,
+) -> rt::Result<Option<SourceInfo>> {
     let mut name = [0u8; MAX_VERSION_BYTES];
     let mut url = [0u8; MAX_VERSION_BYTES];
     let mut index = 0usize;
@@ -293,6 +303,77 @@ where
     )
 }
 
+/// Resolve the install/update candidate version: the explicit argument when
+/// given, otherwise package-service's latest catalog version.
+fn candidate_version_text<'a>(
+    package_handle: rt::Handle,
+    service_id: ServiceId,
+    explicit: Option<&'a str>,
+    latest_buffer: &'a mut [u8; MAX_VERSION_BYTES],
+) -> Option<&'a str> {
+    if let Some(version) = explicit {
+        return Some(version);
+    }
+    let mut installed = [0u8; MAX_VERSION_BYTES];
+    let mut active = [0u8; MAX_VERSION_BYTES];
+    let mut rollback = [0u8; MAX_VERSION_BYTES];
+    let info = rt::package_info(
+        package_handle,
+        service_id,
+        &mut installed,
+        &mut active,
+        &mut rollback,
+        latest_buffer,
+    )
+    .ok()?;
+    let text = core::str::from_utf8(&latest_buffer[..info.latest_version_len]).ok()?;
+    Some(text)
+}
+
+fn compat_gate(
+    output: ShellOutput,
+    package_handle: rt::Handle,
+    service_id: ServiceId,
+    explicit_version: Option<&str>,
+    force_compat: bool,
+) -> rt::Result<bool> {
+    let mut latest_buffer = [0u8; MAX_VERSION_BYTES];
+    let Some(candidate) =
+        candidate_version_text(package_handle, service_id, explicit_version, &mut latest_buffer)
+    else {
+        return Ok(true);
+    };
+    let verdict = onboard::compat_verdict(candidate);
+    if !onboard::compat_requires_override(&verdict) {
+        return Ok(true);
+    }
+    let onboard::CompatVerdict::Mismatch { declared } = verdict else {
+        return Ok(true);
+    };
+    if !force_compat {
+        write_output_linef(
+            output,
+            format_args!(
+                "compat warning: package target {declared} does not match host {}",
+                onboard::HOST_ARCH,
+            ),
+        )?;
+        return write_output_linef(
+            output,
+            format_args!("blocked by compatibility policy; re-run with --force-compat to override"),
+        )
+        .map(|_| false);
+    }
+    write_output_linef(
+        output,
+        format_args!(
+            "proceeding with --force-compat: package target {declared} on host {} may fail to run",
+            onboard::HOST_ARCH,
+        ),
+    )?;
+    Ok(true)
+}
+
 fn run_mutation<'a, I>(
     bootstrap: rt::Handle,
     output: ShellOutput,
@@ -314,6 +395,16 @@ where
             let _ = rt::handle_close(package_handle);
             return Ok(());
         }
+        if let SourceGateDecision::BlockedDisabled = onboard::source_gate_decision(onboard::onboard_lookup(source)) {
+            write_output_linef(
+                output,
+                format_args!(
+                    "blocked: source {source} was disabled by operator review; re-enable with pkg repo enable {source}"
+                ),
+            )?;
+            let _ = rt::handle_close(package_handle);
+            return Ok(());
+        }
         if !options.yes {
             // Confirmation gate: the operator must acknowledge the chosen
             // source's trust state before a non-boot-trusted install runs.
@@ -324,6 +415,17 @@ where
             let _ = rt::handle_close(package_handle);
             return Ok(());
         }
+    }
+
+    if !compat_gate(
+        output,
+        package_handle,
+        service_id,
+        options.version,
+        options.force_compat,
+    )? {
+        let _ = rt::handle_close(package_handle);
+        return Ok(());
     }
 
     let argument = compose_version_argument(&mut argument_buffer, options.version, options.source);

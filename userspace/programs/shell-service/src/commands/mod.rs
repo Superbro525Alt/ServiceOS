@@ -168,7 +168,12 @@ pub(crate) fn execute_command(
                 None => write_output_linef(output, format_args!("usage: run pkg <name>")),
             },
             Some("image") => match parts.next() {
-                Some(path) => core::cmd_run_image(bootstrap, output, path),
+                Some(path) => {
+                    if !package::gate_run_image(output, path)? {
+                        return Ok(());
+                    }
+                    core::cmd_run_image(bootstrap, output, path)
+                }
                 None => write_output_linef(output, format_args!("usage: run image <path>")),
             },
             _ => write_output_linef(output, format_args!("usage: run <sysinfo|pkg|image>")),

@@ -138,7 +138,7 @@ pub(crate) fn handle_public_request(
             handle_env_var_request(envs, message)?;
         }
         x if x == RuntimeTag::RunLaunchRequest as u32 => {
-            handle_run_launch_request(bootstrap, log_handle, envs, runs, message)?;
+            handle_run_launch_request(bootstrap, storage_handle, log_handle, envs, runs, message)?;
         }
         x if x == RuntimeTag::EnvDecisionRequest as u32 => {
             handle_env_decision_request(log_handle, envs, audits, next_audit_sequence, message)?;
@@ -178,7 +178,7 @@ pub(crate) fn handle_public_request(
                 let base = reply.word_count as usize;
                 reply.words[base] = index as u64;
                 reply.words[base + 1] = run.env_id as u64;
-                reply.words[base + 2] = run.workload as u32 as u64;
+                reply.words[base + 2] = run.workload_word();
                 reply.words[base + 3] = run.state as u32 as u64;
                 reply.words[base + 4] = run.exit_code;
                 reply.word_count += 5;
@@ -201,7 +201,7 @@ pub(crate) fn handle_public_request(
                 reply.words[0] = RuntimeStatus::Ok as u32 as u64;
                 reply.words[1] = run_id as u64;
                 reply.words[2] = run.env_id as u64;
-                reply.words[3] = run.workload as u32 as u64;
+                reply.words[3] = run.workload_word();
                 reply.words[4] = run.state as u32 as u64;
                 reply.words[5] = run.exit_code;
             } else {

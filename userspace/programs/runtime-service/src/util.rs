@@ -93,6 +93,25 @@ fn parse_profile(text: &str) -> rt::Result<Profile> {
                 slot.value.set(value.trim().as_bytes())?;
                 profile.var_count += 1;
             }
+            "lib" => {
+                // Bundled guest library: `lib = <name> = <guest-path>` maps a
+                // library name to a mounted path holding its flat image.
+                if profile.lib_count == profile.libs.len() {
+                    return Err(rt::Error::CapacityExceeded);
+                }
+                let Some((name, guest)) = value.split_once('=') else {
+                    return Err(rt::Error::InvalidArgument);
+                };
+                let name = name.trim();
+                let guest = guest.trim();
+                if name.is_empty() || !guest.starts_with('/') {
+                    return Err(rt::Error::InvalidArgument);
+                }
+                let slot = &mut profile.libs[profile.lib_count];
+                slot.name.set(name.as_bytes())?;
+                slot.guest.set(guest.as_bytes())?;
+                profile.lib_count += 1;
+            }
             _ => return Err(rt::Error::InvalidArgument),
         }
     }
@@ -112,6 +131,7 @@ pub(crate) fn instantiate_env(profile: Profile) -> EnvSlot {
     }
     env.mount_count = profile.mount_count;
     env.var_count = profile.var_count;
+    env.lib_count = profile.lib_count;
     env.active_runs = 0;
     let mut index = 0usize;
     while index < profile.mount_count {
@@ -121,6 +141,11 @@ pub(crate) fn instantiate_env(profile: Profile) -> EnvSlot {
     index = 0;
     while index < profile.var_count {
         env.vars[index] = profile.vars[index];
+        index += 1;
+    }
+    index = 0;
+    while index < profile.lib_count {
+        env.libs[index] = profile.libs[index];
         index += 1;
     }
     env
@@ -203,4 +228,46 @@ pub(crate) fn pack_pair(first: &[u8], second: &[u8], words: &mut [u64]) -> rt::R
     combined[..first.len()].copy_from_slice(first);
     combined[first.len()..first.len() + second.len()].copy_from_slice(second);
     rt::pack_bytes(&combined[..first.len() + second.len()], words)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::consts::MAX_LIBS;
+
+    #[test]
+    fn descriptor_parses_bundled_lib_lines_into_profile() {
+        let text = "kind=posix\ncaps=file-read\nlib = libc = /lib/libc.so.sosimg\nlib=libm=/lib/libm.so.sosimg\n";
+        let profile = parse_profile(text).expect("profile");
+        assert_eq!(profile.lib_count, 2);
+        assert_eq!(profile.libs[0].name.as_bytes(), b"libc");
+        assert_eq!(profile.libs[0].guest.as_bytes(), b"/lib/libc.so.sosimg");
+        assert_eq!(profile.libs[1].name.as_bytes(), b"libm");
+    }
+
+    #[test]
+    fn descriptor_rejects_malformed_lib_lines_and_overflow() {
+        assert!(parse_profile("lib = nopath").is_err());
+        assert!(parse_profile("lib = name = relative/path").is_err());
+        let mut overflowed = String::from("kind=posix\n");
+        for index in 0..MAX_LIBS + 1 {
+            use core::fmt::Write as _;
+            let _ = write!(overflowed, "lib = l{index} = /lib/l{index}\n");
+        }
+        assert!(matches!(
+            parse_profile(&overflowed),
+            Err(rt::Error::CapacityExceeded)
+        ));
+    }
+
+    #[test]
+    fn instantiate_env_carries_declared_libs_into_env_record() {
+        let profile =
+            parse_profile("kind=posix\nlib = libc = /lib/libc.so.sosimg\n").expect("profile");
+        let env = instantiate_env(profile);
+        assert_eq!(env.lib_count, 1);
+        assert_eq!(env.libs[0].name.as_bytes(), b"libc");
+        assert_eq!(env.libs[0].guest.as_bytes(), b"/lib/libc.so.sosimg");
+        assert_eq!(EnvSlot::empty().lib_count, 0);
+    }
 }

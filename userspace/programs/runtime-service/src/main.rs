@@ -1,7 +1,9 @@
 #![cfg_attr(not(test), no_std)]
 #![cfg_attr(not(test), no_main)]
 
+mod abi_image;
 mod consts;
+mod linux_abi;
 mod protocol;
 mod sandbox;
 mod service;

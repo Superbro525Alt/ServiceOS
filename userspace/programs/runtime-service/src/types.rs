@@ -5,7 +5,7 @@ use rt::{
 use serviceos_userspace_runtime as rt;
 
 use crate::consts::{
-    MAX_GUEST_PATH, MAX_MOUNTS, MAX_STORAGE_PATH, MAX_VAR_KEY, MAX_VAR_VALUE, MAX_VARS,
+    MAX_GUEST_PATH, MAX_LIBS, MAX_MOUNTS, MAX_STORAGE_PATH, MAX_VAR_KEY, MAX_VAR_VALUE, MAX_VARS,
 };
 
 #[derive(Clone, Copy)]
@@ -67,6 +67,21 @@ impl VarSlot {
 }
 
 #[derive(Clone, Copy)]
+pub(crate) struct LibSlot {
+    pub(crate) name: FixedBytes<MAX_VAR_KEY>,
+    pub(crate) guest: FixedBytes<MAX_GUEST_PATH>,
+}
+
+impl LibSlot {
+    pub(crate) const fn empty() -> Self {
+        Self {
+            name: FixedBytes::empty(),
+            guest: FixedBytes::empty(),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
 pub(crate) struct Profile {
     pub(crate) kind: RuntimeKind,
     pub(crate) capabilities: u32,
@@ -74,6 +89,8 @@ pub(crate) struct Profile {
     pub(crate) mount_count: usize,
     pub(crate) vars: [VarSlot; MAX_VARS],
     pub(crate) var_count: usize,
+    pub(crate) libs: [LibSlot; MAX_LIBS],
+    pub(crate) lib_count: usize,
 }
 
 impl Profile {
@@ -85,6 +102,8 @@ impl Profile {
             mount_count: 0,
             vars: [VarSlot::empty(); MAX_VARS],
             var_count: 0,
+            libs: [LibSlot::empty(); MAX_LIBS],
+            lib_count: 0,
         }
     }
 }
@@ -101,6 +120,8 @@ pub(crate) struct EnvSlot {
     pub(crate) mount_count: usize,
     pub(crate) vars: [VarSlot; MAX_VARS],
     pub(crate) var_count: usize,
+    pub(crate) libs: [LibSlot; MAX_LIBS],
+    pub(crate) lib_count: usize,
     pub(crate) active_runs: u32,
 }
 
@@ -117,6 +138,8 @@ impl EnvSlot {
             mount_count: 0,
             vars: [VarSlot::empty(); MAX_VARS],
             var_count: 0,
+            libs: [LibSlot::empty(); MAX_LIBS],
+            lib_count: 0,
             active_runs: 0,
         }
     }
@@ -127,6 +150,9 @@ pub(crate) struct RunSlot {
     pub(crate) occupied: bool,
     pub(crate) env_id: u32,
     pub(crate) workload: RuntimeWorkloadKind,
+    /// True when the run launched a guest image through the raw-image
+    /// spawn path instead of the hosted posix tool.
+    pub(crate) guest_exec: bool,
     pub(crate) state: RuntimeRunState,
     pub(crate) task_handle: rt::Handle,
     pub(crate) session_handle: rt::Handle,
@@ -139,10 +165,21 @@ impl RunSlot {
             occupied: false,
             env_id: 0,
             workload: RuntimeWorkloadKind::Inspect,
+            guest_exec: false,
             state: RuntimeRunState::Exited,
             task_handle: rt::INVALID_HANDLE,
             session_handle: rt::INVALID_HANDLE,
             exit_code: 0,
+        }
+    }
+
+    /// Workload word reported over IPC. Guest-exec runs surface the
+    /// runtime-service-local exec marker (see `abi_image`).
+    pub(crate) fn workload_word(&self) -> u64 {
+        if self.guest_exec {
+            crate::abi_image::EXEC_GUEST_WORKLOAD as u64
+        } else {
+            self.workload as u32 as u64
         }
     }
 }

@@ -17,6 +17,10 @@ pub(crate) struct PackageMeta {
     pub(crate) keywords: &'static [&'static str],
     pub(crate) targets: &'static [&'static str],
     pub(crate) screenshot_ref: &'static str,
+    /// Editorial placeholder rating in half-star tenths out of
+    /// [`MAX_RATING_TENTHS`] (50 = 5 stars). No telemetry source feeds this;
+    /// values are static curation until a real signal exists.
+    pub(crate) rating_tenths: u16,
 }
 
 pub(crate) const HOST_TARGET: &str = if cfg!(target_arch = "aarch64") {
@@ -37,7 +41,8 @@ pub(crate) fn meta_for(service_id: ServiceId) -> Option<&'static PackageMeta> {
             description: "Broadcast announcement messages to subscribed desktop listeners.",
             keywords: &["announce", "notification", "broadcast", "message"],
             targets: UNIVERSAL_TARGETS,
-            screenshot_ref: "",
+            screenshot_ref: "announce-desktop-broadcast",
+            rating_tenths: 42,
         }),
         ServiceId::Runtime => Some(&PackageMeta {
             category: "Runtime",
@@ -45,13 +50,15 @@ pub(crate) fn meta_for(service_id: ServiceId) -> Option<&'static PackageMeta> {
             keywords: &["runtime", "posix", "workload", "sandbox", "shell"],
             targets: UNIVERSAL_TARGETS,
             screenshot_ref: "",
+            rating_tenths: 46,
         }),
         ServiceId::Developer => Some(&PackageMeta {
             category: "Development",
             description: "Cross-platform SDK with toolchains and sample workspaces.",
             keywords: &["sdk", "toolchain", "development", "compiler", "workspace"],
             targets: UNIVERSAL_TARGETS,
-            screenshot_ref: "",
+            screenshot_ref: "developer-sdk-workspace",
+            rating_tenths: 38,
         }),
         _ => None,
     }
@@ -111,6 +118,176 @@ pub(crate) fn screenshot_ref_for(service_id: ServiceId) -> &'static str {
     meta_for(service_id)
         .map(|meta| meta.screenshot_ref)
         .unwrap_or("")
+}
+
+pub(crate) const MAX_RATING_TENTHS: u16 = 50;
+
+/// Clamp a raw rating to the displayable 1..=50 tenths-of-star range.
+/// Zero means "no rating yet" and maps to `None`.
+pub(crate) fn clamp_rating_tenths(raw: u16) -> Option<u8> {
+    if raw == 0 {
+        return None;
+    }
+    Some(raw.min(MAX_RATING_TENTHS) as u8)
+}
+
+pub(crate) fn rating_tenths_for(service_id: ServiceId) -> Option<u8> {
+    meta_for(service_id)
+        .and_then(|meta| clamp_rating_tenths(meta.rating_tenths))
+}
+
+/// Map tenths of a star to five ASCII star slots, rounding half-up
+/// (25 tenths -> three filled). Filled slots are `*`, empty ones `-`.
+pub(crate) fn star_bar(tenths: u8) -> [u8; 5] {
+    let clamped = u16::from(clamp_rating_tenths(u16::from(tenths)).unwrap_or(0));
+    let filled = ((clamped + 5) / 10) as usize;
+    let mut bar = [b'-'; 5];
+    for slot in bar.iter_mut().take(filled.min(5)) {
+        *slot = b'*';
+    }
+    bar
+}
+
+/// Stylized placeholder headlines for screenshot cards. The framebuffer text
+/// stack cannot decode images, so a reference renders as an honestly labeled
+/// card; the headline is picked deterministically from the reference bytes.
+pub(crate) const SCREENSHOT_HEADLINES: [&str; 3] =
+    ["PACKAGE SCREENSHOT", "APP PREVIEW", "SEE IT IN ACTION"];
+
+fn fnv1a(bytes: &[u8]) -> u32 {
+    let mut hash: u32 = 0x811c_9dc5;
+    for byte in bytes {
+        hash ^= u32::from(*byte);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    hash
+}
+
+pub(crate) fn screenshot_placeholder_headline(screenshot_ref: &str) -> Option<&'static str> {
+    if screenshot_ref.is_empty() {
+        return None;
+    }
+    let index = fnv1a(screenshot_ref.as_bytes()) as usize % SCREENSHOT_HEADLINES.len();
+    Some(SCREENSHOT_HEADLINES[index])
+}
+
+/// Per-catalog-entry facts recommendation scoring needs. Built from search
+/// docs so entries without side-table metadata still participate.
+#[derive(Clone, Copy)]
+pub(crate) struct RecommendInput {
+    pub(crate) category: &'static str,
+    pub(crate) keywords: &'static [&'static str],
+    pub(crate) installed: bool,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct Recommendation {
+    pub(crate) index: usize,
+    pub(crate) category_hits: u16,
+    pub(crate) keyword_hits: u16,
+}
+
+impl Recommendation {
+    pub(crate) const EMPTY: Self = Self {
+        index: 0,
+        category_hits: 0,
+        keyword_hits: 0,
+    };
+
+    pub(crate) fn score(self) -> u32 {
+        u32::from(self.category_hits) * 4 + u32::from(self.keyword_hits) * 3
+    }
+
+    /// Human-facing reason derived from which signal fired.
+    pub(crate) fn reason(self) -> &'static str {
+        match (self.category_hits > 0, self.keyword_hits > 0) {
+            (true, true) => "popular in its category and matches apps you have",
+            (true, false) => "popular with installs in this category",
+            (false, true) => "similar to apps you have installed",
+            (false, false) => "suggested for you",
+        }
+    }
+}
+
+/// Cap on how many entries the "recommended for you" row shows.
+pub(crate) const MAX_RECOMMENDATIONS: usize = 3;
+
+/// Deterministic, offline recommendations: score every not-installed entry by
+/// same-category install popularity plus keyword overlap with installed apps,
+/// keep the best [`MAX_RECOMMENDATIONS`], ties resolved by catalog order.
+/// Entries scoring zero are dropped entirely.
+pub(crate) fn rank_recommendations(
+    count: usize,
+    mut input_at: impl FnMut(usize) -> RecommendInput,
+    out: &mut [Recommendation],
+) -> usize {
+    let count = count.min(crate::state::MAX_ENTRIES);
+    let mut categories: [&str; crate::state::MAX_ENTRIES] = [""; crate::state::MAX_ENTRIES];
+    let mut keywords: [&[&str]; crate::state::MAX_ENTRIES] = [&[]; crate::state::MAX_ENTRIES];
+    let mut installed_flags = [false; crate::state::MAX_ENTRIES];
+    let mut installed_count = 0usize;
+    for index in 0..count {
+        let input = input_at(index);
+        categories[index] = input.category;
+        keywords[index] = input.keywords;
+        installed_flags[index] = input.installed;
+        if input.installed {
+            installed_count += 1;
+        }
+    }
+    if installed_count == 0 {
+        return 0;
+    }
+
+    let mut picks: [Recommendation; crate::state::MAX_ENTRIES] =
+        [Recommendation::EMPTY; crate::state::MAX_ENTRIES];
+    let mut pick_count = 0usize;
+    for index in 0..count {
+        if installed_flags[index] {
+            continue;
+        }
+        let mut category_hits = 0u16;
+        let mut keyword_hits = 0u16;
+        for other in 0..count {
+            if other == index || !installed_flags[other] {
+                continue;
+            }
+            if eq_ci(categories[index], categories[other]) {
+                category_hits += 1;
+            }
+            for keyword in keywords[index] {
+                if keywords[other].iter().any(|other_kw| eq_ci(keyword, other_kw)) {
+                    keyword_hits += 1;
+                    break;
+                }
+            }
+        }
+        let candidate = Recommendation {
+            index,
+            category_hits,
+            keyword_hits,
+        };
+        if candidate.score() == 0 {
+            continue;
+        }
+        picks[pick_count] = candidate;
+        pick_count += 1;
+    }
+
+    // Stable insertion sort by descending score keeps catalog order on ties.
+    for slot in 1..pick_count {
+        let item = picks[slot];
+        let mut cursor = slot;
+        while cursor > 0 && picks[cursor - 1].score() < item.score() {
+            picks[cursor] = picks[cursor - 1];
+            cursor -= 1;
+        }
+        picks[cursor] = item;
+    }
+
+    let written = pick_count.min(out.len()).min(MAX_RECOMMENDATIONS);
+    out[..written].copy_from_slice(&picks[..written]);
+    written
 }
 
 fn ascii_lower(byte: u8) -> u8 {
@@ -520,5 +697,124 @@ mod tests {
         );
         assert_eq!(decide_update(None, Some("1.0.0")), UpdateDecision::Unknown);
         assert_eq!(UpdateDecision::Unknown.label(), "unknown");
+    }
+
+    fn rec_input(
+        category: &'static str,
+        keywords: &'static [&'static str],
+        installed: bool,
+    ) -> RecommendInput {
+        RecommendInput {
+            category,
+            keywords,
+            installed,
+        }
+    }
+
+    #[test]
+    fn rating_clamps_to_displayable_range() {
+        assert_eq!(clamp_rating_tenths(0), None);
+        assert_eq!(clamp_rating_tenths(42), Some(42));
+        assert_eq!(clamp_rating_tenths(51), Some(MAX_RATING_TENTHS as u8));
+        assert_eq!(
+            clamp_rating_tenths(u16::MAX),
+            Some(MAX_RATING_TENTHS as u8)
+        );
+        assert_eq!(rating_tenths_for(ServiceId::Runtime), Some(46));
+    }
+
+    #[test]
+    fn star_bar_rounds_half_up_and_caps_at_five() {
+        let bar = |tenths: u8| -> [u8; 5] { star_bar(tenths) };
+        assert_eq!(&bar(50), b"*****");
+        assert_eq!(&bar(45), b"*****");
+        assert_eq!(&bar(44), b"****-");
+        assert_eq!(&bar(25), b"***--");
+        assert_eq!(&bar(24), b"**---");
+        // One tenth of a star rounds to zero filled slots.
+        assert_eq!(&bar(1), b"-----");
+        assert_eq!(&bar(5), b"*----");
+        assert_eq!(&bar(0), b"-----");
+        // Out-of-range input saturates instead of panicking or underflowing.
+        assert_eq!(&bar(255), b"*****");
+    }
+
+    #[test]
+    fn screenshot_placeholder_selection_is_stable_and_labeled() {
+        assert_eq!(screenshot_placeholder_headline(""), None);
+        let chosen = screenshot_placeholder_headline("announce-desktop-broadcast").unwrap();
+        assert!(SCREENSHOT_HEADLINES.contains(&chosen));
+        // Same reference always selects the same headline (deterministic).
+        assert_eq!(
+            screenshot_placeholder_headline("announce-desktop-broadcast"),
+            Some(chosen)
+        );
+        let other = screenshot_placeholder_headline("zz-unseen-ref").unwrap();
+        assert!(SCREENSHOT_HEADLINES.contains(&other));
+    }
+
+    #[test]
+    fn recommendations_rank_by_overlap_then_catalog_order() {
+        let categories = ["Messaging", "Runtime", "Development", "Messaging", "Development"];
+        let keyword_sets: [&[&str]; 5] = [
+            &["notify"],
+            &["posix"],
+            &["sdk", "workspace"],
+            &["chat"],
+            &["sdk", "tools"],
+        ];
+        let installed = [false, false, false, true, true];
+        let inputs = |index: usize| {
+            rec_input(categories[index], keyword_sets[index], installed[index])
+        };
+        let mut out = [Recommendation::EMPTY; MAX_RECOMMENDATIONS];
+        let written = rank_recommendations(5, inputs, &mut out);
+        // Development SDK scores 4 (category) + 3 (keyword) = 7; Messaging
+        // scores 4 (category only); Runtime scores zero and is dropped.
+        assert_eq!(written, 2);
+        assert_eq!(out[0].index, 2);
+        assert_eq!(out[0].score(), 7);
+        assert_eq!(
+            out[0].reason(),
+            "popular in its category and matches apps you have"
+        );
+        assert_eq!(out[1].index, 0);
+        assert_eq!(out[1].category_hits, 1);
+        assert_eq!(out[1].keyword_hits, 0);
+        assert_eq!(out[1].reason(), "popular with installs in this category");
+    }
+
+    #[test]
+    fn recommendations_break_ties_by_catalog_order_and_cap_output() {
+        let categories = ["A", "A", "A", "A"];
+        let keyword_sets: [&[&str]; 4] = [&[]; 4];
+        let installed = [true, false, false, false];
+        let inputs = |index: usize| {
+            rec_input(categories[index], keyword_sets[index], installed[index])
+        };
+        let mut out = [Recommendation::EMPTY; MAX_RECOMMENDATIONS];
+        let written = rank_recommendations(4, inputs, &mut out);
+        assert_eq!(written, MAX_RECOMMENDATIONS);
+        assert_eq!(out[0].index, 1);
+        assert_eq!(out[1].index, 2);
+        assert_eq!(out[2].index, 3);
+    }
+
+    #[test]
+    fn recommendations_need_an_installed_base_and_skip_zero_scores() {
+        let categories = ["A", "B"];
+        let keyword_sets: [&[&str]; 2] = [&["x"], &["y"]];
+        let installed = [false, false];
+        let inputs = |index: usize| {
+            rec_input(categories[index], keyword_sets[index], installed[index])
+        };
+        let mut out = [Recommendation::EMPTY; MAX_RECOMMENDATIONS];
+        assert_eq!(rank_recommendations(2, inputs, &mut out), 0);
+
+        let installed = [true, false];
+        let inputs = |index: usize| {
+            rec_input(categories[index], keyword_sets[index], installed[index])
+        };
+        assert_eq!(rank_recommendations(2, inputs, &mut out), 0);
     }
 }

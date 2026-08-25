@@ -28,6 +28,23 @@ pub(crate) fn render(
     let mut detail2 = FixedLogBuffer::<80>::new();
     let mut detail3 = FixedLogBuffer::<96>::new();
     let mut unsupported_chip: Option<&'static str> = None;
+    let mut recommendations =
+        [catalog_meta::Recommendation::EMPTY; catalog_meta::MAX_RECOMMENDATIONS];
+    let recommendation_count = {
+        let inputs = |index: usize| {
+            let entry = &state.entries[index];
+            let doc = catalog_meta::doc_for(
+                entry.service_id,
+                &entry.category[..entry.category_len],
+            );
+            catalog_meta::RecommendInput {
+                category: doc.category,
+                keywords: doc.keywords,
+                installed: entry.installed,
+            }
+        };
+        catalog_meta::rank_recommendations(state.entry_count, inputs, &mut recommendations)
+    };
     if let Some(entry) = selected_entry(state) {
         let mut installed = [0u8; 24];
         let mut active = [0u8; 24];
@@ -138,6 +155,16 @@ pub(crate) fn render(
         if !screenshot_ref.is_empty() {
             let _ = write!(&mut detail3, "  shot={}", screenshot_ref);
         }
+        if let Some(tenths) = catalog_meta::rating_tenths_for(entry.service_id) {
+            let bar = catalog_meta::star_bar(tenths);
+            let _ = write!(
+                &mut detail3,
+                "  rating={}.{} {}",
+                tenths / 10,
+                tenths % 10,
+                str::from_utf8(&bar).unwrap_or("-----")
+            );
+        }
     } else {
         let _ = write!(&mut detail0, "Select a package");
         let _ = write!(
@@ -209,6 +236,12 @@ pub(crate) fn render(
         selected_entry(state),
         unsupported_chip,
     );
+    let mut section_y = layout.detail_body_y + 44;
+    if let Some(entry) = selected_entry(state) {
+        draw_screenshot_card(bytes, layout, section_y, entry.service_id);
+        section_y += SCREENSHOT_CARD_HEIGHT + 16;
+    }
+    draw_recommendations(bytes, layout, section_y, &recommendations[..recommendation_count], state);
     draw_button(
         bytes,
         layout.install_x0,
@@ -555,6 +588,106 @@ fn draw_text_fit(bytes: &mut [u8], x: i32, y: i32, color: u32, text: &str, width
         color,
         str::from_utf8(buffer.as_bytes()).unwrap_or(""),
     );
+}
+
+const SCREENSHOT_CARD_HEIGHT: i32 = 56;
+
+/// Stylized, honestly-labeled screenshot placeholder. The framebuffer text
+/// stack has no image decoding, so a screenshot reference renders as a framed
+/// card naming what would be shown instead of pretending to show pixels.
+fn draw_screenshot_card(
+    bytes: &mut [u8],
+    layout: Layout,
+    y: i32,
+    service_id: rt::ServiceId,
+) {
+    let screenshot_ref = catalog_meta::screenshot_ref_for(service_id);
+    let Some(headline) = catalog_meta::screenshot_placeholder_headline(screenshot_ref) else {
+        return;
+    };
+    let x = layout.right_x + 12;
+    let width = layout.right_w - 24;
+    draw_panel(bytes, x, y, width, SCREENSHOT_CARD_HEIGHT, ui::ACCENT_DIM);
+    draw_panel(
+        bytes,
+        x + 2,
+        y + 2,
+        width - 4,
+        SCREENSHOT_CARD_HEIGHT - 4,
+        ui::BG_WINDOW,
+    );
+    // Accent spine on the left edge marks this as a media slot.
+    draw_panel(bytes, x + 2, y + 2, 5, SCREENSHOT_CARD_HEIGHT - 4, ui::ACCENT);
+    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, x + 14, y + 7, ui::TEXT_PRIMARY, headline);
+    let mut reference = FixedLogBuffer::<64>::new();
+    let _ = write!(&mut reference, "ref: {}", screenshot_ref);
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        x + 14,
+        y + 23,
+        ui::TEXT_SECONDARY,
+        str::from_utf8(reference.as_bytes()).unwrap_or(""),
+    );
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        x + 14,
+        y + 39,
+        ui::TEXT_MUTED,
+        "placeholder - image decode not supported yet",
+    );
+}
+
+/// "Recommended for you" row: offline, deterministic suggestions from the
+/// installed set (category popularity + keyword overlap), drawn under the
+/// screenshot card when any candidate scores.
+fn draw_recommendations(
+    bytes: &mut [u8],
+    layout: Layout,
+    y: i32,
+    recommendations: &[catalog_meta::Recommendation],
+    state: &AppState,
+) {
+    if recommendations.is_empty() {
+        return;
+    }
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        layout.right_x + 12,
+        y,
+        ui::TEXT_PRIMARY,
+        "RECOMMENDED FOR YOU",
+    );
+    for (row, recommendation) in recommendations.iter().enumerate() {
+        let row_y = y + 18 + row as i32 * 28;
+        if row_y + 24 > layout.status_y {
+            break;
+        }
+        if recommendation.index >= state.entry_count {
+            continue;
+        }
+        let entry = state.entries[recommendation.index];
+        let mut title = FixedLogBuffer::<48>::new();
+        let _ = write!(&mut title, "* {}", service_title(entry.service_id));
+        rt::draw_text_rgba8888(
+            bytes,
+            PIXEL_STRIDE,
+            layout.right_x + 12,
+            row_y,
+            ui::ACCENT,
+            str::from_utf8(title.as_bytes()).unwrap_or(""),
+        );
+        draw_text_fit(
+            bytes,
+            layout.right_x + 12,
+            row_y + 12,
+            ui::TEXT_MUTED,
+            recommendation.reason(),
+            layout.detail_text_w,
+        );
+    }
 }
 
 fn draw_status_bar(bytes: &mut [u8], x: i32, y: i32, width: i32, status: &str) {

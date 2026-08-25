@@ -2,6 +2,7 @@
 #![cfg_attr(not(test), no_main)]
 
 mod compose;
+mod fence;
 mod logging;
 mod requests;
 mod types;
@@ -10,12 +11,18 @@ use rt::{ControlTag, LogEvent, LogSeverity, RawMessage, ServiceId};
 use serviceos_userspace_runtime as rt;
 
 use crate::{
-    compose::{compose_and_present, compose_damage_and_present, cursor_present},
+    compose::{
+        compose_and_present, compose_damage_and_present, cursor_present, presented_frame_slice,
+    },
+    fence::FenceTracker,
     logging::{emit_log, poll_lifecycle},
-    requests::{drain_public_requests, drain_surface_requests, handle_public_request},
+    requests::{
+        drain_public_requests, drain_surface_requests, flush_close_pending_surfaces,
+        handle_public_request,
+    },
     types::{
         CURSOR_PRESENT_COALESCE_TICKS, DirtyState, MAX_FRAMEBUFFER_BYTES, MAX_SURFACES,
-        PRESENT_COALESCE_TICKS, SurfaceSlot, active_surface_count,
+        PRESENT_COALESCE_TICKS, PresentStats, SurfaceSlot, active_surface_count,
     },
 };
 
@@ -59,6 +66,11 @@ fn main() -> u64 {
         output.width as u64,
         output.height as u64,
     );
+    let _ = rt::write_log(
+        "graphics",
+        "present-fence v0: PresentBufferReply word1 carries frame-counter token; \
+         completion query = output-status word12 >= token; noop-skip/saved-bytes/close-pending stats in words 13..=15",
+    );
 
     let mut surfaces = [SurfaceSlot::empty(); MAX_SURFACES];
     let mut next_surface_id = 1u32;
@@ -66,6 +78,8 @@ fn main() -> u64 {
     let mut last_logged_surface_count = 0usize;
     let mut dirty = DirtyState::Full { immediate: true };
     let mut present_deadline = 0u64;
+    let mut stats = PresentStats::default();
+    let mut fences = FenceTracker::new();
 
     loop {
         match poll_lifecycle(bootstrap) {
@@ -79,6 +93,8 @@ fn main() -> u64 {
             log_handle,
             output,
             present_count,
+            fences.completed(),
+            &stats,
             &mut surfaces,
             &mut next_surface_id,
             &mut dirty,
@@ -86,10 +102,11 @@ fn main() -> u64 {
             Ok(had_work) => had_work,
             Err(_) => return 0xfc08,
         };
-        let had_surface_work = match drain_surface_requests(&mut surfaces, &mut dirty) {
-            Ok(had_work) => had_work,
-            Err(_) => return 0xfc0a,
-        };
+        let had_surface_work =
+            match drain_surface_requests(&mut surfaces, &mut dirty, present_count) {
+                Ok(had_work) => had_work,
+                Err(_) => return 0xfc0a,
+            };
         let _had_work = had_public_work || had_surface_work;
 
         if !matches!(dirty, DirtyState::Clean) {
@@ -107,18 +124,29 @@ fn main() -> u64 {
                 DirtyState::Full { immediate } => immediate || now >= present_deadline,
             };
             if should_present {
+                let byte_len = output.byte_len as usize;
+                let presented = presented_frame_slice(byte_len);
+                let allow_noop_skip = present_count > 0;
+                let fence = fences.issue();
                 let result = match dirty {
-                    DirtyState::CursorOnly(damage) => {
-                        cursor_present(output_handle, output, &surfaces, damage)
-                    }
+                    DirtyState::CursorOnly(damage) => cursor_present(
+                        output_handle,
+                        output,
+                        &surfaces,
+                        damage,
+                        presented,
+                        allow_noop_skip,
+                    ),
                     DirtyState::Region { damages, .. } => {
-                        let mut result = Ok(());
+                        let mut result = Ok(compose::PresentOutcome::presented());
                         for index in 0..damages.len {
                             result = compose_damage_and_present(
                                 output_handle,
                                 output,
                                 &surfaces,
                                 damages.rects[index],
+                                presented,
+                                allow_noop_skip,
                             );
                             if result.is_err() {
                                 break;
@@ -126,15 +154,45 @@ fn main() -> u64 {
                         }
                         result
                     }
-                    DirtyState::Full { .. } => {
-                        compose_and_present(output_handle, output, &surfaces)
-                    }
-                    DirtyState::Clean => Ok(()),
+                    DirtyState::Full { .. } => compose_and_present(
+                        output_handle,
+                        output,
+                        &surfaces,
+                        presented,
+                        allow_noop_skip,
+                    ),
+                    DirtyState::Clean => Ok(compose::PresentOutcome::presented()),
                 };
-                if result.is_err() {
-                    return 0xfc0b;
+                match result {
+                    Ok(outcome) => {
+                        let skips_before = stats.noop_skips;
+                        stats.record(&outcome);
+                        fences.complete(fence);
+                        if outcome.skipped && skips_before == 0 {
+                            let _ = rt::write_logf(
+                                "graphics",
+                                format_args!(
+                                    "partial-present noop skip: saved_bytes={} skips={} present_count={}",
+                                    outcome.saved_bytes, stats.noop_skips, present_count
+                                ),
+                            );
+                        } else if present_count == 0 {
+                            let _ = rt::write_logf(
+                                "graphics",
+                                format_args!(
+                                    "present-fence v0: token={} completed={} stats(skips={},saved_bytes={})",
+                                    fence,
+                                    fences.completed(),
+                                    stats.noop_skips,
+                                    stats.noop_saved_bytes
+                                ),
+                            );
+                        }
+                    }
+                    Err(_) => return 0xfc0b,
                 }
                 present_count = present_count.saturating_add(1);
+                let _ = flush_close_pending_surfaces(&mut surfaces, &mut dirty);
                 let surface_count = active_surface_count(&surfaces);
                 if present_count == 1 || surface_count != last_logged_surface_count {
                     let _ = emit_log(
@@ -167,6 +225,8 @@ fn main() -> u64 {
                     log_handle,
                     output,
                     present_count,
+                    fences.completed(),
+                    &stats,
                     &mut surfaces,
                     &mut next_surface_id,
                     &mut dirty,

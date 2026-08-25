@@ -105,6 +105,7 @@ pub(crate) struct SurfaceSlot {
     pub(crate) fill_rgb: u32,
     pub(crate) visible: bool,
     pub(crate) occupied: bool,
+    pub(crate) close_pending: bool,
     pub(crate) buffers: [BufferBinding; MAX_SURFACE_BUFFERS],
     pub(crate) active_buffer_slot: Option<usize>,
     pub(crate) rects: [RectSlot; MAX_SURFACE_RECTS],
@@ -125,6 +126,7 @@ impl SurfaceSlot {
             fill_rgb: 0,
             visible: false,
             occupied: false,
+            close_pending: false,
             buffers: [BufferBinding::empty(); MAX_SURFACE_BUFFERS],
             active_buffer_slot: None,
             rects: [RectSlot::empty(); MAX_SURFACE_RECTS],
@@ -241,6 +243,30 @@ pub(crate) enum DirtyState {
 
 pub(crate) fn active_surface_count(surfaces: &Surfaces) -> usize {
     surfaces.iter().filter(|surface| surface.occupied).count()
+}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct PresentStats {
+    pub(crate) presents: u64,
+    pub(crate) noop_skips: u64,
+    pub(crate) noop_saved_bytes: u64,
+}
+
+impl PresentStats {
+    pub(crate) fn record(&mut self, outcome: &crate::compose::PresentOutcome) {
+        self.presents = self.presents.saturating_add(1);
+        if outcome.skipped {
+            self.noop_skips = self.noop_skips.saturating_add(1);
+            self.noop_saved_bytes = self.noop_saved_bytes.saturating_add(outcome.saved_bytes);
+        }
+    }
+}
+
+pub(crate) fn close_pending_count(surfaces: &Surfaces) -> usize {
+    surfaces
+        .iter()
+        .filter(|surface| surface.occupied && surface.close_pending)
+        .count()
 }
 
 pub(crate) fn find_surface(surfaces: &Surfaces, surface_id: u32) -> Option<&SurfaceSlot> {

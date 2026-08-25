@@ -4,8 +4,9 @@ use serviceos_userspace_runtime as rt;
 use crate::{
     logging::emit_log,
     types::{
-        DirtyState, MAX_PUBLIC_REQUESTS_PER_TURN, MAX_SURFACE_LABELS, MAX_SURFACE_RECTS, Surfaces,
-        active_buffer, active_surface_count, attached_buffer_count, find_surface, surface_bounds,
+        DirtyState, MAX_PUBLIC_REQUESTS_PER_TURN, MAX_SURFACE_LABELS, MAX_SURFACE_RECTS,
+        PresentStats, Surfaces, active_buffer, active_surface_count, attached_buffer_count,
+        close_pending_count, find_surface, surface_bounds,
     },
 };
 
@@ -14,6 +15,8 @@ pub(crate) fn drain_public_requests(
     log_handle: rt::Handle,
     output: rt::DisplayOutputInfo,
     present_count: u64,
+    fence_completed: u64,
+    stats: &PresentStats,
     surfaces: &mut Surfaces,
     next_surface_id: &mut u32,
     dirty: &mut DirtyState,
@@ -34,6 +37,8 @@ pub(crate) fn drain_public_requests(
                     log_handle,
                     output,
                     present_count,
+                    fence_completed,
+                    stats,
                     surfaces,
                     next_surface_id,
                     dirty,
@@ -50,6 +55,8 @@ pub(crate) fn handle_public_request(
     log_handle: rt::Handle,
     output: rt::DisplayOutputInfo,
     present_count: u64,
+    fence_completed: u64,
+    stats: &PresentStats,
     surfaces: &mut Surfaces,
     next_surface_id: &mut u32,
     dirty: &mut DirtyState,
@@ -73,7 +80,7 @@ pub(crate) fn handle_public_request(
             }
             let reply_handle = request.handles[0];
             let mut reply = RawMessage::empty(GraphicsTag::OutputStatusReply as u32);
-            reply.word_count = 12;
+            reply.word_count = 16;
             if request.words[0] != 0 {
                 reply.words[0] = GraphicsStatus::NotFound as u32 as u64;
             } else {
@@ -89,6 +96,10 @@ pub(crate) fn handle_public_request(
                 reply.words[9] = output.byte_len;
                 reply.words[10] = present_count;
                 reply.words[11] = active_surface_count(surfaces) as u64;
+                reply.words[12] = fence_completed;
+                reply.words[13] = stats.noop_skips;
+                reply.words[14] = stats.noop_saved_bytes;
+                reply.words[15] = close_pending_count(surfaces) as u64;
             }
             let _ = rt::channel_send(reply_handle, &reply);
             let _ = rt::handle_close(reply_handle);

@@ -10,20 +10,49 @@ use crate::types::{
 
 static mut FRAMEBUFFER_BYTES: [u8; MAX_FRAMEBUFFER_BYTES] = [0; MAX_FRAMEBUFFER_BYTES];
 static mut BASE_FRAMEBUFFER_BYTES: [u8; MAX_FRAMEBUFFER_BYTES] = [0; MAX_FRAMEBUFFER_BYTES];
+static mut PRESENTED_FRAMEBUFFER_BYTES: [u8; MAX_FRAMEBUFFER_BYTES] = [0; MAX_FRAMEBUFFER_BYTES];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PresentOutcome {
+    pub(crate) skipped: bool,
+    pub(crate) saved_bytes: u64,
+}
+
+impl PresentOutcome {
+    pub(crate) const fn presented() -> Self {
+        Self {
+            skipped: false,
+            saved_bytes: 0,
+        }
+    }
+
+    pub(crate) const fn noop(saved_bytes: u64) -> Self {
+        Self {
+            skipped: true,
+            saved_bytes,
+        }
+    }
+}
 
 pub(crate) fn compose_and_present(
     output_handle: rt::Handle,
     output: rt::DisplayOutputInfo,
     surfaces: &Surfaces,
-) -> rt::Result<()> {
+    presented: &mut [u8],
+    allow_noop_skip: bool,
+) -> rt::Result<PresentOutcome> {
     let byte_len = output.byte_len as usize;
     let base = base_framebuffer_slice(byte_len);
     compose_base_frame(base, output, surfaces);
     let frame = framebuffer_slice(byte_len);
     frame.copy_from_slice(base);
     overlay_cursor_surfaces(frame, output, surfaces);
-    let _ = rt::display_output_present(output_handle, &frame[..byte_len])?;
-    Ok(())
+    present_full_inner(
+        output_handle,
+        &frame[..byte_len],
+        presented,
+        allow_noop_skip,
+    )
 }
 
 pub(crate) fn cursor_present(
@@ -31,21 +60,22 @@ pub(crate) fn cursor_present(
     output: rt::DisplayOutputInfo,
     surfaces: &Surfaces,
     damage: DamageRect,
-) -> rt::Result<()> {
+    presented: &mut [u8],
+    allow_noop_skip: bool,
+) -> rt::Result<PresentOutcome> {
     let byte_len = output.byte_len as usize;
     let frame = framebuffer_slice(byte_len);
     let base = base_framebuffer_slice(byte_len);
     restore_damage_from_base(frame, base, output, damage);
     overlay_cursor_surfaces(frame, output, surfaces);
-    let _ = rt::display_output_present_damage(
+    present_damage_inner(
         output_handle,
+        output,
         &frame[..byte_len],
-        damage.x,
-        damage.y,
-        damage.width,
-        damage.height,
-    )?;
-    Ok(())
+        presented,
+        damage,
+        allow_noop_skip,
+    )
 }
 
 pub(crate) fn compose_damage_and_present(
@@ -53,22 +83,148 @@ pub(crate) fn compose_damage_and_present(
     output: rt::DisplayOutputInfo,
     surfaces: &Surfaces,
     damage: DamageRect,
-) -> rt::Result<()> {
+    presented: &mut [u8],
+    allow_noop_skip: bool,
+) -> rt::Result<PresentOutcome> {
     let byte_len = output.byte_len as usize;
     let base = base_framebuffer_slice(byte_len);
     compose_base_damage(base, output, surfaces, damage);
     let frame = framebuffer_slice(byte_len);
     restore_damage_from_base(frame, base, output, damage);
     overlay_cursor_surfaces_damage(frame, output, surfaces, damage);
-    let _ = rt::display_output_present_damage(
+    present_damage_inner(
         output_handle,
+        output,
         &frame[..byte_len],
+        presented,
+        damage,
+        allow_noop_skip,
+    )
+}
+
+fn region_byte_span(output: rt::DisplayOutputInfo, damage: DamageRect) -> Option<RegionSpan> {
+    let start_x = damage.x.max(0) as usize;
+    let start_y = damage.y.max(0) as usize;
+    let end_x =
+        ((damage.x.saturating_add(damage.width as i32)).max(0) as usize).min(output.width as usize);
+    let end_y = ((damage.y.saturating_add(damage.height as i32)).max(0) as usize)
+        .min(output.height as usize);
+    if start_x >= end_x || start_y >= end_y {
+        return None;
+    }
+    let stride_bytes = output.stride as usize * output.bytes_per_pixel as usize;
+    Some(RegionSpan {
+        row_start: start_y,
+        row_end: end_y,
+        col_start: start_x * output.bytes_per_pixel as usize,
+        col_end: end_x * output.bytes_per_pixel as usize,
+        stride_bytes,
+    })
+}
+
+struct RegionSpan {
+    row_start: usize,
+    row_end: usize,
+    col_start: usize,
+    col_end: usize,
+    stride_bytes: usize,
+}
+
+impl RegionSpan {
+    fn byte_span(&self) -> u64 {
+        (self.row_end - self.row_start) as u64 * (self.col_end - self.col_start) as u64
+    }
+
+    fn rows_identical(&self, left: &[u8], right: &[u8]) -> bool {
+        for row in self.row_start..self.row_end {
+            let offset = row * self.stride_bytes;
+            if left[offset + self.col_start..offset + self.col_end]
+                != right[offset + self.col_start..offset + self.col_end]
+            {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn update_rows(&self, presented: &mut [u8], frame: &[u8]) {
+        for row in self.row_start..self.row_end {
+            let offset = row * self.stride_bytes;
+            let range = offset + self.col_start..offset + self.col_end;
+            presented[range.clone()].copy_from_slice(&frame[range]);
+        }
+    }
+}
+
+fn region_identical_bytes(
+    presented: &[u8],
+    frame: &[u8],
+    output: rt::DisplayOutputInfo,
+    damage: DamageRect,
+) -> Option<u64> {
+    let span = region_byte_span(output, damage)?;
+    if presented.len() != frame.len() {
+        return None;
+    }
+    let bytes = span.byte_span();
+    if bytes == 0 || span.rows_identical(presented, frame) {
+        return Some(bytes);
+    }
+    None
+}
+
+fn present_damage_inner(
+    output_handle: rt::Handle,
+    output: rt::DisplayOutputInfo,
+    frame: &[u8],
+    presented: &mut [u8],
+    damage: DamageRect,
+    allow_noop_skip: bool,
+) -> rt::Result<PresentOutcome> {
+    if allow_noop_skip {
+        if let Some(saved) = region_identical_bytes(presented, frame, output, damage) {
+            return Ok(PresentOutcome::noop(saved));
+        }
+    }
+    rt::display_output_present_damage(
+        output_handle,
+        frame,
         damage.x,
         damage.y,
         damage.width,
         damage.height,
     )?;
-    Ok(())
+    if presented.len() == frame.len() {
+        if let Some(span) = region_byte_span(output, damage) {
+            span.update_rows(presented, frame);
+        }
+    }
+    Ok(PresentOutcome::presented())
+}
+
+fn present_full_inner(
+    output_handle: rt::Handle,
+    frame: &[u8],
+    presented: &mut [u8],
+    allow_noop_skip: bool,
+) -> rt::Result<PresentOutcome> {
+    if allow_noop_skip && presented.len() == frame.len() && presented == frame {
+        return Ok(PresentOutcome::noop(frame.len() as u64));
+    }
+    rt::display_output_present(output_handle, frame)?;
+    if presented.len() == frame.len() {
+        presented.copy_from_slice(frame);
+    }
+    Ok(PresentOutcome::presented())
+}
+
+pub(crate) fn presented_frame_slice(len: usize) -> &'static mut [u8] {
+    unsafe {
+        slice::from_raw_parts_mut(
+            ptr::addr_of_mut!(PRESENTED_FRAMEBUFFER_BYTES).cast::<u8>(),
+            len,
+        )
+    }
 }
 
 fn compose_base_frame(frame: &mut [u8], output: rt::DisplayOutputInfo, surfaces: &Surfaces) {
@@ -476,4 +632,107 @@ fn clip_rect(
             end_y.min(((clip.y + clip.height as i32).max(0) as usize).min(output.height as usize));
     }
     (start_x, start_y, end_x, end_y)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn output(width: u32, height: u32, stride: u32, bpp: u32) -> rt::DisplayOutputInfo {
+        rt::DisplayOutputInfo {
+            backend: 0,
+            state: 0,
+            pixel_format: 0,
+            reserved: 0,
+            width,
+            height,
+            stride,
+            bytes_per_pixel: bpp,
+            byte_len: (stride as u64) * (height as u64) * (bpp as u64),
+            present_count: 0,
+        }
+    }
+
+    fn rect(x: i32, y: i32, width: u32, height: u32) -> DamageRect {
+        DamageRect {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    #[test]
+    fn region_span_clamps_to_output_bounds() {
+        let out = output(8, 8, 8, 4);
+        let span = region_byte_span(out, rect(0, 0, 100, 100)).unwrap();
+        assert_eq!(span.col_start, 0);
+        assert_eq!(span.col_end, 8 * 4);
+        assert_eq!(span.row_start, 0);
+        assert_eq!(span.row_end, 8);
+    }
+
+    #[test]
+    fn region_span_rejects_empty_and_offscreen() {
+        let out = output(8, 8, 8, 4);
+        assert!(region_byte_span(out, rect(0, 0, 0, 4)).is_none());
+        assert!(region_byte_span(out, rect(-20, -20, 4, 4)).is_none());
+        assert!(region_byte_span(out, rect(100, 0, 4, 4)).is_none());
+    }
+
+    #[test]
+    fn region_identical_bytes_reports_saved_region_size() {
+        let out = output(4, 2, 4, 4);
+        let frame = vec![7u8; out.byte_len as usize];
+        let presented = frame.clone();
+        assert_eq!(
+            region_identical_bytes(&presented, &frame, out, rect(0, 0, 4, 2)),
+            Some(32)
+        );
+    }
+
+    #[test]
+    fn region_differs_when_any_row_byte_changes() {
+        let out = output(4, 2, 4, 4);
+        let mut frame = vec![7u8; out.byte_len as usize];
+        let presented = frame.clone();
+        frame[20] ^= 0xff;
+        assert_eq!(
+            region_identical_bytes(&presented, &frame, out, rect(0, 0, 4, 2)),
+            None
+        );
+    }
+
+    #[test]
+    fn identical_check_ignores_bytes_outside_damage() {
+        let out = output(4, 2, 4, 4);
+        let mut frame = vec![0u8; out.byte_len as usize];
+        let presented = frame.clone();
+        frame[1] = 9;
+        assert_eq!(
+            region_identical_bytes(&presented, &frame, out, rect(1, 0, 3, 2)),
+            Some(24)
+        );
+    }
+
+    #[test]
+    fn length_mismatch_never_reports_noop() {
+        let out = output(4, 2, 4, 4);
+        let frame = vec![7u8; out.byte_len as usize];
+        assert_eq!(
+            region_identical_bytes(&[], &frame, out, rect(0, 0, 4, 2)),
+            None
+        );
+    }
+
+    #[test]
+    fn outcome_records_noop_savings() {
+        let mut stats = crate::types::PresentStats::default();
+        stats.record(&PresentOutcome::noop(96));
+        stats.record(&PresentOutcome::presented());
+        stats.record(&PresentOutcome::noop(32));
+        assert_eq!(stats.presents, 3);
+        assert_eq!(stats.noop_skips, 2);
+        assert_eq!(stats.noop_saved_bytes, 128);
+    }
 }

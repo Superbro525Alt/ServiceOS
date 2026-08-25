@@ -20,6 +20,25 @@ pub(crate) fn reply_surface_status(
     let _ = rt::handle_close(handle);
 }
 
+pub(crate) fn reply_surface_status_fenced(
+    handles: [rt::Handle; rt::IPC_MAX_HANDLES],
+    handle_count: u32,
+    tag: SurfaceTag,
+    status: GraphicsStatus,
+    fence: u64,
+) {
+    if handle_count == 0 {
+        return;
+    }
+    let handle = handles[0];
+    let mut reply = RawMessage::empty(tag as u32);
+    reply.word_count = 2;
+    reply.words[0] = status as u32 as u64;
+    reply.words[1] = fence;
+    let _ = rt::channel_send(handle, &reply);
+    let _ = rt::handle_close(handle);
+}
+
 pub(crate) fn unpack_bytes(words: &[u64], len: usize, destination: &mut [u8]) -> rt::Result<()> {
     if len > destination.len() || len > words.len() * 8 {
         return Err(rt::Error::BufferTooSmall);

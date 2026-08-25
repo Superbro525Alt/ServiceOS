@@ -8,7 +8,9 @@ use crate::types::{
     surface_bounds,
 };
 
-use super::common::{merge_region_dirty, reply_surface_status, unpack_bytes};
+use super::common::{
+    merge_region_dirty, reply_surface_status, reply_surface_status_fenced, unpack_bytes,
+};
 
 fn decorated_surface_damage(surface: &SurfaceSlot) -> crate::types::DamageRect {
     let mut damage = surface_bounds(surface);
@@ -69,6 +71,7 @@ fn mark_surface_dirty(dirty: &mut DirtyState, surface: &SurfaceSlot, immediate: 
 pub(crate) fn drain_surface_requests(
     surfaces: &mut Surfaces,
     dirty: &mut DirtyState,
+    present_count: u64,
 ) -> rt::Result<bool> {
     let mut had_work = false;
     let mut processed = 0usize;
@@ -104,7 +107,7 @@ pub(crate) fn drain_surface_requests(
                             surface_processed,
                         )?;
                     }
-                    handle_surface_request(surface, &message, dirty)?;
+                    handle_surface_request(surface, &message, dirty, present_count)?;
                 }
                 Err(rt::Error::QueueEmpty) => break,
                 Err(_) => {
@@ -160,6 +163,7 @@ fn handle_surface_request(
     surface: &mut SurfaceSlot,
     message: &RawMessage,
     dirty: &mut DirtyState,
+    present_count: u64,
 ) -> rt::Result<()> {
     match message.tag {
         x if x == SurfaceTag::SetGeometryRequest as u32 => {
@@ -476,11 +480,13 @@ fn handle_surface_request(
                 }
                 GraphicsStatus::Ok
             };
-            reply_surface_status(
+            let fence = crate::fence::fence_for_request(present_count, dirty);
+            reply_surface_status_fenced(
                 message.handles,
                 message.handle_count,
                 SurfaceTag::PresentBufferReply,
                 status,
+                fence,
             );
         }
         x if x == SurfaceTag::ReleaseBufferRequest as u32 => {
@@ -514,10 +520,10 @@ fn handle_surface_request(
             );
         }
         x if x == SurfaceTag::CloseRequest as u32 => {
-            let old_rect = visible_surface_damage(surface);
-            release_surface(surface);
-            if old_rect.width != 0 && old_rect.height != 0 {
-                merge_region_dirty(dirty, old_rect, false);
+            if !surface.occupied || matches!(dirty, DirtyState::Clean) {
+                release_closed_surface(surface, dirty);
+            } else {
+                surface.close_pending = true;
             }
         }
         _ => {}
@@ -526,10 +532,32 @@ fn handle_surface_request(
     Ok(())
 }
 
+fn release_closed_surface(surface: &mut SurfaceSlot, dirty: &mut DirtyState) {
+    let old_rect = visible_surface_damage(surface);
+    release_surface(surface);
+    if old_rect.width != 0 && old_rect.height != 0 {
+        merge_region_dirty(dirty, old_rect, false);
+    }
+}
+
+pub(crate) fn flush_close_pending_surfaces(
+    surfaces: &mut Surfaces,
+    dirty: &mut DirtyState,
+) -> usize {
+    let mut flushed = 0usize;
+    for surface in surfaces.iter_mut() {
+        if surface.occupied && surface.close_pending {
+            release_closed_surface(surface, dirty);
+            flushed += 1;
+        }
+    }
+    flushed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{LabelSlot, RectSlot, SurfaceSlot};
+    use crate::types::{LabelSlot, MAX_SURFACES, RectSlot, SurfaceSlot, Surfaces};
 
     fn surface(x: i32, y: i32, width: u32, height: u32) -> SurfaceSlot {
         let mut slot = SurfaceSlot::empty();
@@ -653,5 +681,53 @@ mod tests {
         subject.visible = false;
         assert_eq!(visible_surface_damage(&subject).width, 0);
         assert_eq!(visible_surface_damage(&subject).height, 0);
+    }
+
+    #[test]
+    fn flush_releases_only_pending_surfaces_and_marks_damage() {
+        let mut surfaces: Surfaces = [SurfaceSlot::empty(); MAX_SURFACES];
+        let mut closing = surface(10, 10, 40, 40);
+        closing.occupied = true;
+        closing.close_pending = true;
+        surfaces[0] = closing;
+        let mut staying = surface(100, 100, 40, 40);
+        staying.occupied = true;
+        surfaces[1] = staying;
+
+        let mut dirty = DirtyState::Clean;
+        let flushed = flush_close_pending_surfaces(&mut surfaces, &mut dirty);
+
+        assert_eq!(flushed, 1);
+        assert!(!surfaces[0].occupied);
+        assert!(surfaces[1].occupied);
+        assert_eq!(
+            (dirty_width_height(&dirty)),
+            Some((40u32, 40u32)),
+            "flush must queue damage for the released region"
+        );
+    }
+
+    #[test]
+    fn flush_with_no_pending_is_noop() {
+        let mut surfaces: Surfaces = [SurfaceSlot::empty(); MAX_SURFACES];
+        let mut plain = surface(0, 0, 8, 8);
+        plain.occupied = true;
+        surfaces[2] = plain;
+        let mut dirty = DirtyState::Clean;
+        assert_eq!(flush_close_pending_surfaces(&mut surfaces, &mut dirty), 0);
+        assert!(matches!(dirty, DirtyState::Clean));
+        assert!(surfaces[2].occupied);
+    }
+
+    fn dirty_width_height(dirty: &DirtyState) -> Option<(u32, u32)> {
+        match *dirty {
+            DirtyState::Clean => None,
+            DirtyState::CursorOnly(rect) => Some((rect.width, rect.height)),
+            DirtyState::Region { damages, .. } => {
+                let bounds = damages.bounding_rect();
+                Some((bounds.width, bounds.height))
+            }
+            DirtyState::Full { .. } => Some((u32::MAX, u32::MAX)),
+        }
     }
 }

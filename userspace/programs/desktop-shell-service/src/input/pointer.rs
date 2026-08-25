@@ -2,8 +2,12 @@ use super::*;
 
 pub(super) fn handle_pointer_down(state: &mut DesktopState, x: i32, y: i32) -> rt::Result<u32> {
     if state.overlay_mode != OverlayMode::None {
+        if let Some(surface_id) = overlay_click(state, x, y)? {
+            return Ok(surface_id);
+        }
         state.overlay_mode = OverlayMode::None;
         state.overlay_selection = 0;
+        state.switcher_selection = 0;
         render_overlays_only(state)?;
         return Ok(focused_surface_id(state));
     }
@@ -292,4 +296,71 @@ fn resize_drag(
         });
     }
     Ok(state.apps[index].window.surface_id)
+}
+
+/// Quick-action strip inside the notification panel: local-y band and halves.
+const NOTIF_QA_LOCAL_Y: i32 = 148;
+const NOTIF_QA_HEIGHT: i32 = 16;
+
+fn overlay_click(state: &mut DesktopState, x: i32, y: i32) -> rt::Result<Option<u32>> {
+    let Some((ox, oy, ow, oh)) = crate::chrome::overlay_rect(&state.chrome, state.overlay_mode)
+    else {
+        return Ok(None);
+    };
+    if x < ox || y < oy || x >= ox + ow || y >= oy + oh {
+        return Ok(None);
+    }
+    let local_x = x - ox;
+    let local_y = y - oy;
+    match state.overlay_mode {
+        OverlayMode::ClipboardHistory => clipboard_click(state, local_y),
+        OverlayMode::Notifications => notification_click(state, local_x, local_y),
+        OverlayMode::CommandPalette => palette_click(state, local_y),
+        _ => Ok(None),
+    }
+}
+
+fn clipboard_click(state: &mut DesktopState, local_y: i32) -> rt::Result<Option<u32>> {
+    let Some(row) = crate::chrome::overlay_row_at(local_y, CLIPBOARD_HISTORY_LINES) else {
+        return Ok(None);
+    };
+    if state.clipboard_service_handle == rt::INVALID_HANDLE {
+        return Ok(None);
+    }
+    if rt::clipboard_history_entry(state.clipboard_service_handle, row as u32).is_err() {
+        return Ok(Some(focused_surface_id(state)));
+    }
+    overlays::paste_clipboard_selection(state, row).map(Some)
+}
+
+fn notification_click(
+    state: &mut DesktopState,
+    local_x: i32,
+    local_y: i32,
+) -> rt::Result<Option<u32>> {
+    if local_y >= NOTIF_QA_LOCAL_Y && local_y < NOTIF_QA_LOCAL_Y + NOTIF_QA_HEIGHT {
+        if local_x < crate::HISTORY_WIDTH as i32 / 2 {
+            overlays::dismiss_all_notifications_now(state)?;
+        } else if state.notification_history_len != 0 {
+            return overlays::focus_notification_source(state).map(Some);
+        }
+        return Ok(Some(focused_surface_id(state)));
+    }
+    let Some(row) = crate::chrome::overlay_row_at(local_y, crate::NOTIFICATION_HISTORY_MAX) else {
+        return Ok(None);
+    };
+    if row >= state.notification_history_len {
+        return Ok(Some(focused_surface_id(state)));
+    }
+    state.overlay_selection = row;
+    render_overlays_only(state)?;
+    overlays::focus_notification_source(state).map(Some)
+}
+
+fn palette_click(state: &mut DesktopState, local_y: i32) -> rt::Result<Option<u32>> {
+    let Some(row) = crate::chrome::overlay_row_at(local_y, crate::OVERLAY_RESULT_MAX) else {
+        return Ok(None);
+    };
+    state.overlay_selection = row.min(crate::OVERLAY_RESULT_MAX - 1);
+    overlays::handle_palette_key(state, KEY_ENTER).map(Some)
 }

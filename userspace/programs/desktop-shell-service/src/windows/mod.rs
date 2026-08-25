@@ -36,5 +36,7 @@ pub(crate) use lifecycle::{
     move_app, move_focused_to_workspace, open_path_in_files, refresh_apps, resize_app, restore_app,
     schedule_launch_or_focus_app, switch_workspace,
 };
-pub(crate) use notifications::{post_notification, push_recent_focus};
+pub(crate) use notifications::{dismiss_all_notifications, post_notification, push_recent_focus};
+#[cfg(test)]
+pub(crate) use notifications::mru_promote;
 pub(crate) use shadow::sync_focus_shadow;

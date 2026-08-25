@@ -34,8 +34,11 @@ pub(crate) const NOTIFICATION_HISTORY_TEXT_MAX: usize = 64;
 pub(crate) const CLIPBOARD_HISTORY_LINES: usize = 5;
 pub(crate) const PALETTE_QUERY_MAX: usize = 32;
 pub(crate) const OVERLAY_RESULT_MAX: usize = 6;
-pub(crate) const SWITCHER_WIDTH: u32 = 280;
-pub(crate) const SWITCHER_HEIGHT: u32 = 132;
+pub(crate) const SWITCHER_WIDTH: u32 = 420;
+pub(crate) const SWITCHER_HEIGHT: u32 = 150;
+pub(crate) const SWITCHER_TILE_WIDTH: u32 = 68;
+pub(crate) const SWITCHER_TILE_HEIGHT: u32 = 84;
+pub(crate) const SWITCHER_TILE_PAD: i32 = 8;
 pub(crate) const PALETTE_WIDTH: u32 = 360;
 pub(crate) const PALETTE_HEIGHT: u32 = 188;
 pub(crate) const PALETTE_BUFFER_SLOTS: usize = 2;
@@ -51,6 +54,8 @@ pub(crate) const KEY_BACKSPACE: u32 = 14;
 pub(crate) const KEY_ENTER: u32 = 28;
 pub(crate) const KEY_SPACE: u32 = 57;
 pub(crate) const KEY_V: u32 = 47;
+pub(crate) const KEY_A: u32 = 30;
+pub(crate) const KEY_F: u32 = 33;
 pub(crate) const KEY_N: u32 = 49;
 pub(crate) const KEY_M: u32 = 50;
 pub(crate) const KEY_UP: u32 = 103;
@@ -312,6 +317,7 @@ pub(crate) struct DesktopState {
     pub(crate) next_notification_sequence: u32,
     pub(crate) overlay_mode: OverlayMode,
     pub(crate) overlay_selection: usize,
+    pub(crate) switcher_selection: usize,
     pub(crate) palette_query: [u8; PALETTE_QUERY_MAX],
     pub(crate) palette_query_len: usize,
     pub(crate) master_volume: u8,
@@ -330,9 +336,17 @@ pub(crate) enum PaletteAction {
     ShowNotifications,
     ShowClipboardHistory,
     ShowMedia,
+    ToggleMedia,
+    ToggleNotifications,
+    ToggleClipboardHistory,
+    DismissAllNotifications,
+    CycleSettingsPage,
+    LockSession,
     SwitchWorkspace(u32),
     FocusNext,
 }
+
+pub(crate) const PALETTE_ACTION_MAX: usize = 19;
 
 pub(crate) fn list_apps_page(start: usize, total: usize) -> (usize, usize) {
     let page = APP_PAGE_SIZE.min(LIST_APPS_MAX_PAGE);

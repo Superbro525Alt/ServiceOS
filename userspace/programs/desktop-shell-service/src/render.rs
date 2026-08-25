@@ -12,7 +12,7 @@ use crate::{
     media::{MEDIA_LINE_COUNT, MEDIA_OVERLAY_HEIGHT, MEDIA_OVERLAY_WIDTH},
     palette_action_label, palette_matches,
     windows::{
-        app_title, launcher_line, running_app_count, sync_focus_shadow, visible_on_workspace,
+        app_title, launcher_line, running_app_count, sync_focus_shadow,
     },
 };
 
@@ -256,28 +256,77 @@ fn render_overlays(state: &mut DesktopState) -> rt::Result<()> {
 }
 
 fn render_switcher_overlay(state: &DesktopState) -> rt::Result<()> {
-    let mut lines: [FixedLogBuffer<48>; 5] = array::from_fn(|_| FixedLogBuffer::new());
-    let mut count = 0usize;
-    for app_id in state.recent_focus[..state.recent_focus_len].iter().copied() {
-        if !visible_on_workspace(state, app_id) {
-            continue;
-        }
-        let _ = write!(&mut lines[count], "{}", app_title(app_id));
-        count += 1;
-        if count == lines.len() {
-            break;
-        }
-    }
-    if count == 0 {
-        let _ = write!(&mut lines[0], "NO VISIBLE WINDOWS");
-        count = 1;
-    }
-    render_overlay_panel(
-        state.chrome.switcher_handle,
+    let model = crate::switcher::switcher_model(state);
+    let surface = state.chrome.switcher_handle;
+    rt::surface_set_fill(surface, ui::BG_PANEL)?;
+    rt::surface_clear_scene(surface)?;
+    rt::surface_set_rect(
+        surface,
+        0,
+        0,
+        0,
         SWITCHER_WIDTH,
-        SWITCHER_HEIGHT,
-        "TASK SWITCHER",
-        &lines[..count],
+        ui::TITLEBAR_HEIGHT,
+        ui::ACCENT_DIM,
+        true,
+    )?;
+    rt::surface_set_label(surface, 0, 10, 9, ui::TEXT_PRIMARY, "TASK SWITCHER")?;
+
+    if model.count == 0 {
+        rt::surface_set_label(
+            surface,
+            1,
+            12,
+            ui::PANEL_LINE_START_Y,
+            ui::TEXT_SECONDARY,
+            "NO VISIBLE WINDOWS",
+        )?;
+        return Ok(());
+    }
+
+    for index in 0..model.count {
+        let selected = index == state.switcher_selection % model.count;
+        let tile_x =
+            crate::SWITCHER_TILE_PAD + index as i32 * (crate::SWITCHER_TILE_WIDTH as i32 + crate::SWITCHER_TILE_PAD);
+        let tile_y = ui::TITLEBAR_HEIGHT as i32 + 10;
+        rt::surface_set_rect(
+            surface,
+            (index * 2 + 1) as u32,
+            tile_x,
+            tile_y,
+            crate::SWITCHER_TILE_WIDTH,
+            crate::SWITCHER_TILE_HEIGHT,
+            if selected {
+                ui::ACCENT_DIM
+            } else {
+                ui::BG_WINDOW_ALT
+            },
+            true,
+        )?;
+        let title = app_title(model.candidates[index]);
+        let initial = title.as_bytes().first().copied().unwrap_or(b'?');
+        let mut initial_buf: FixedLogBuffer<4> = FixedLogBuffer::new();
+        let _ = write!(&mut initial_buf, "{}", initial as char);
+        rt::surface_set_label(
+            surface,
+            (index * 2 + 2) as u32,
+            tile_x + crate::SWITCHER_TILE_WIDTH as i32 / 2 - 6,
+            tile_y + crate::SWITCHER_TILE_HEIGHT as i32 / 2 - 8,
+            if selected { ui::TEXT_PRIMARY } else { ui::TEXT_MUTED },
+            initial_buf.as_str(),
+        )?;
+    }
+
+    let mut footer: FixedLogBuffer<48> = FixedLogBuffer::new();
+    let selected_title = app_title(model.candidates[state.switcher_selection % model.count]);
+    let _ = write!(&mut footer, "{} · TAB CYCLES · ALT RELEASE COMMITS", selected_title);
+    rt::surface_set_label(
+        surface,
+        11,
+        12,
+        SWITCHER_HEIGHT as i32 - 18,
+        ui::TEXT_SECONDARY,
+        footer.as_str(),
     )
 }
 
@@ -360,7 +409,7 @@ fn render_palette_overlay(state: &mut DesktopState) -> rt::Result<()> {
 }
 
 fn render_notification_overlay(state: &DesktopState) -> rt::Result<()> {
-    let mut lines: [FixedLogBuffer<80>; 6] = array::from_fn(|_| FixedLogBuffer::new());
+    let mut lines: [FixedLogBuffer<80>; 7] = array::from_fn(|_| FixedLogBuffer::new());
     let mut count = 0usize;
     for entry in state
         .notification_history
@@ -369,7 +418,7 @@ fn render_notification_overlay(state: &DesktopState) -> rt::Result<()> {
         .take(state.notification_history_len)
         .filter(|entry| entry.occupied)
     {
-        if count == lines.len() {
+        if count == 6 {
             break;
         }
         let prefix = if count == state.overlay_selection {
@@ -385,12 +434,13 @@ fn render_notification_overlay(state: &DesktopState) -> rt::Result<()> {
         let _ = write!(&mut lines[0], "NO NOTIFICATIONS");
         count = 1;
     }
+    let _ = write!(&mut lines[count], "[A] DISMISS ALL   [F] FOCUS SOURCE");
     render_overlay_panel(
         state.chrome.notifications_handle,
         HISTORY_WIDTH,
         HISTORY_HEIGHT,
         "NOTIFICATION HISTORY",
-        &lines[..count],
+        &lines[..count + 1],
     )
 }
 

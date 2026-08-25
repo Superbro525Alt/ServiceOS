@@ -141,6 +141,106 @@ pub(crate) fn create_chrome(
     })
 }
 
+/// Screen-space rect (x, y, width, height) of an overlay surface, mirroring
+/// the geometry chosen in `create_chrome`.
+pub(crate) fn overlay_rect(
+    chrome: &Chrome,
+    mode: crate::OverlayMode,
+) -> Option<(i32, i32, i32, i32)> {
+    let output_width = chrome.output_width;
+    let output_height = chrome.output_height;
+    match mode {
+        crate::OverlayMode::None => None,
+        crate::OverlayMode::Switcher => Some((
+            ((output_width.saturating_sub(crate::SWITCHER_WIDTH)) / 2) as i32,
+            ((output_height.saturating_sub(crate::SWITCHER_HEIGHT)) / 2) as i32,
+            crate::SWITCHER_WIDTH as i32,
+            crate::SWITCHER_HEIGHT as i32,
+        )),
+        crate::OverlayMode::CommandPalette => Some((
+            ((output_width.saturating_sub(crate::PALETTE_WIDTH)) / 2) as i32,
+            72,
+            crate::PALETTE_WIDTH as i32,
+            crate::PALETTE_HEIGHT as i32,
+        )),
+        crate::OverlayMode::Notifications => Some((
+            output_width.saturating_sub(crate::HISTORY_WIDTH + PANEL_MARGIN) as i32,
+            TOPBAR_HEIGHT as i32 + PANEL_MARGIN as i32 + crate::STATUS_PANEL_HEIGHT as i32 + 12,
+            crate::HISTORY_WIDTH as i32,
+            crate::HISTORY_HEIGHT as i32,
+        )),
+        crate::OverlayMode::ClipboardHistory => Some((
+            output_width.saturating_sub(crate::HISTORY_WIDTH + PANEL_MARGIN) as i32,
+            TOPBAR_HEIGHT as i32 + PANEL_MARGIN as i32,
+            crate::HISTORY_WIDTH as i32,
+            crate::HISTORY_HEIGHT as i32,
+        )),
+        crate::OverlayMode::Media => Some((
+            ((output_width.saturating_sub(MEDIA_OVERLAY_WIDTH)) / 2) as i32,
+            72,
+            MEDIA_OVERLAY_WIDTH as i32,
+            MEDIA_OVERLAY_HEIGHT as i32,
+        )),
+    }
+}
+
+/// Local row index under an overlay panel's line layout, if any.
+pub(crate) fn overlay_row_at(local_y: i32, max_rows: usize) -> Option<usize> {
+    for index in 0..max_rows {
+        let line_y = ui::PANEL_LINE_START_Y + (index as i32 * ui::PANEL_LINE_STEP);
+        if local_y >= line_y - 2 && local_y < line_y - 2 + ui::PANEL_LINE_STEP {
+            return Some(index);
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{CLIPBOARD_HISTORY_LINES, OverlayMode};
+
+    fn chrome() -> Chrome {
+        Chrome {
+            desktop_handle: 0,
+            topbar_handle: 0,
+            launcher_handle: 0,
+            status_handle: 0,
+            switcher_handle: 0,
+            palette_handle: 0,
+            notifications_handle: 0,
+            clipboard_handle: 0,
+            media_handle: 0,
+            cursor_handle: 0,
+            output_width: 1280,
+            output_height: 800,
+        }
+    }
+
+    #[test]
+    fn overlay_rects_match_chrome_geometry() {
+        let chrome = chrome();
+        let (sx, sy, sw, sh) = overlay_rect(&chrome, OverlayMode::Switcher).unwrap();
+        assert_eq!((sw, sh), (crate::SWITCHER_WIDTH as i32, crate::SWITCHER_HEIGHT as i32));
+        assert_eq!(sx, (1280 - crate::SWITCHER_WIDTH as i32) / 2);
+        assert_eq!(sy, (800 - crate::SWITCHER_HEIGHT as i32) / 2);
+        let (cx, cy, _, _) = overlay_rect(&chrome, OverlayMode::ClipboardHistory).unwrap();
+        assert_eq!(cx, 1280 - crate::HISTORY_WIDTH as i32 - PANEL_MARGIN as i32);
+        assert_eq!(cy, (TOPBAR_HEIGHT + PANEL_MARGIN) as i32);
+        assert!(overlay_rect(&chrome, OverlayMode::None).is_none());
+    }
+
+    #[test]
+    fn overlay_rows_stay_inside_panel_line_grid() {
+        assert_eq!(overlay_row_at(ui::PANEL_LINE_START_Y, 5), Some(0));
+        assert_eq!(
+            overlay_row_at(ui::PANEL_LINE_START_Y + ui::PANEL_LINE_STEP * 4, 5),
+            Some(4)
+        );
+        assert_eq!(overlay_row_at(0, CLIPBOARD_HISTORY_LINES), None);
+    }
+}
+
 pub(crate) fn show_chrome(chrome: &Chrome) -> rt::Result<()> {
     rt::surface_set_visibility(chrome.desktop_handle, true)?;
     rt::surface_set_visibility(chrome.topbar_handle, true)?;

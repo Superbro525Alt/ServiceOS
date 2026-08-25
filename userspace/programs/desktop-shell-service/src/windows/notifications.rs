@@ -1,25 +1,39 @@
 use super::*;
 
-pub(crate) fn push_recent_focus(state: &mut DesktopState, app_id: DesktopAppId) {
-    if let Some(index) = state.recent_focus[..state.recent_focus_len]
-        .iter()
-        .position(|candidate| *candidate == app_id)
-    {
+pub(crate) fn mru_promote(
+    recent: &mut [DesktopAppId],
+    len: &mut usize,
+    app_id: DesktopAppId,
+) {
+    if let Some(index) = recent[..*len].iter().position(|candidate| *candidate == app_id) {
         for scan in (1..=index).rev() {
-            state.recent_focus[scan] = state.recent_focus[scan - 1];
+            recent[scan] = recent[scan - 1];
         }
-        state.recent_focus[0] = app_id;
+        recent[0] = app_id;
         return;
     }
 
-    let limit = state.recent_focus_len.min(APP_COUNT - 1);
+    let capacity = recent.len();
+    let limit = (*len).min(capacity - 1);
     for index in (0..limit).rev() {
-        state.recent_focus[index + 1] = state.recent_focus[index];
+        recent[index + 1] = recent[index];
     }
-    state.recent_focus[0] = app_id;
-    if state.recent_focus_len < APP_COUNT {
-        state.recent_focus_len += 1;
+    recent[0] = app_id;
+    if *len < capacity {
+        *len += 1;
     }
+}
+
+pub(crate) fn push_recent_focus(state: &mut DesktopState, app_id: DesktopAppId) {
+    mru_promote(&mut state.recent_focus, &mut state.recent_focus_len, app_id);
+}
+
+pub(crate) fn dismiss_all_notifications(state: &mut DesktopState) {
+    for index in 0..state.notification_history_len {
+        state.notification_history[index] = NotificationEntry::empty();
+    }
+    state.notification_history_len = 0;
+    state.overlay_selection = 0;
 }
 
 pub(crate) fn post_notification(

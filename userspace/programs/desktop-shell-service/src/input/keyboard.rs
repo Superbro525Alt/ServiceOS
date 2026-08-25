@@ -1,5 +1,34 @@
 use super::*;
 
+pub(super) fn commit_switcher(state: &mut DesktopState) -> rt::Result<u32> {
+    let model = crate::switcher::switcher_model(state);
+    let target = model.target(state.switcher_selection);
+    state.overlay_mode = OverlayMode::None;
+    state.switcher_selection = 0;
+    state.overlay_selection = 0;
+    match target {
+        Some(app_id) => focus_app(state, app_id),
+        None => Ok(focused_surface_id(state)),
+    }
+}
+
+fn handle_switcher_key(
+    state: &mut DesktopState,
+    key_code: u32,
+    modifiers: u32,
+) -> rt::Result<u32> {
+    let model = crate::switcher::switcher_model(state);
+    if key_code != KEY_TAB || model.count == 0 {
+        return Ok(focused_surface_id(state));
+    }
+    state.switcher_selection = crate::switcher::advance_selection(
+        model.count,
+        state.switcher_selection,
+        modifiers & MOD_SHIFT == 0,
+    );
+    Ok(focused_surface_id(state))
+}
+
 pub(super) fn handle_key_input(
     state: &mut DesktopState,
     action: AppKeyAction,
@@ -10,15 +39,14 @@ pub(super) fn handle_key_input(
         && state.overlay_mode == OverlayMode::Switcher
         && (key_code == KEY_LEFT_ALT || key_code == KEY_RIGHT_ALT)
     {
-        state.overlay_mode = OverlayMode::None;
-        state.overlay_selection = 0;
-        return Ok(focused_surface_id(state));
+        return commit_switcher(state);
     }
 
     if action == AppKeyAction::Down {
         if key_code == KEY_ESC && state.overlay_mode != OverlayMode::None {
             state.overlay_mode = OverlayMode::None;
             state.overlay_selection = 0;
+            state.switcher_selection = 0;
             state.palette_query_len = 0;
             return Ok(focused_surface_id(state));
         }
@@ -84,11 +112,13 @@ pub(super) fn handle_key_input(
 
     if action == AppKeyAction::Down && modifiers & MOD_ALT != 0 {
         if key_code == KEY_TAB {
-            state.overlay_mode = OverlayMode::Switcher;
-            if modifiers & MOD_SHIFT != 0 {
-                return focus_previous_app(state);
+            if state.overlay_mode != OverlayMode::Switcher {
+                let model = crate::switcher::switcher_model(state);
+                state.overlay_mode = OverlayMode::Switcher;
+                state.switcher_selection = crate::switcher::open_selection(&model, state.focused_app);
+                return Ok(focused_surface_id(state));
             }
-            return focus_next_app(state);
+            return handle_switcher_key(state, key_code, modifiers);
         }
         if key_code == KEY_F4 {
             if let Some(app_id) = state.focused_app {

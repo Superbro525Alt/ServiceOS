@@ -9,10 +9,11 @@ use serviceos_userspace_runtime as rt;
 
 use crate::{
     APP_COUNT, CLIPBOARD_HISTORY_LINES, ContentCapture, DesktopState, DragState, HitTarget, KEY_1,
-    KEY_2, KEY_3, KEY_4, KEY_5, KEY_BACKSPACE, KEY_DOWN, KEY_ENTER, KEY_ESC, KEY_F4, KEY_LEFT_ALT,
-    KEY_M, KEY_N, KEY_RIGHT_ALT, KEY_SPACE, KEY_TAB, KEY_UP, KEY_V, MOD_ALT, MOD_CTRL, MOD_SHIFT,
-    OVERLAY_RESULT_MAX, OverlayMode, PANEL_MARGIN, PaletteAction, RESIZE_GRIP_SIZE, ResizeEdges,
-    TOPBAR_HEIGHT, WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH, WindowState, palette_matches,
+    KEY_2, KEY_3, KEY_4, KEY_5, KEY_A, KEY_BACKSPACE, KEY_DOWN, KEY_ENTER, KEY_ESC, KEY_F, KEY_F4,
+    KEY_LEFT_ALT, KEY_M, KEY_N, KEY_RIGHT_ALT, KEY_SPACE, KEY_TAB, KEY_UP, KEY_V, MOD_ALT,
+    MOD_CTRL, MOD_SHIFT, OVERLAY_RESULT_MAX, OverlayMode, PANEL_MARGIN, PaletteAction,
+    RESIZE_GRIP_SIZE, ResizeEdges, TOPBAR_HEIGHT, WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH, WindowState,
+    palette_matches,
     render::{render_desktop, render_overlays_only, sync_cursor},
     windows::{
         app_slot_index, clamp_window_x, clamp_window_y, close_app, focus_app, focused_surface_id,
@@ -31,6 +32,7 @@ pub(crate) fn handle_input(
     let overlay_before = state.overlay_mode;
     let overlay_selection_before = state.overlay_selection;
     let palette_query_len_before = state.palette_query_len;
+    let switcher_selection_before = state.switcher_selection;
     let active_workspace_before = state.active_workspace;
     let focused_app_before = state.focused_app;
 
@@ -79,11 +81,13 @@ pub(crate) fn handle_input(
     let shell_changed = state.overlay_mode != overlay_before
         || state.overlay_selection != overlay_selection_before
         || state.palette_query_len != palette_query_len_before
+        || state.switcher_selection != switcher_selection_before
         || state.active_workspace != active_workspace_before
         || state.focused_app != focused_app_before;
     let overlay_changed = state.overlay_mode != overlay_before
         || state.overlay_selection != overlay_selection_before
-        || state.palette_query_len != palette_query_len_before;
+        || state.palette_query_len != palette_query_len_before
+        || state.switcher_selection != switcher_selection_before;
     let shell_core_changed = state.active_workspace != active_workspace_before
         || state.focused_app != focused_app_before;
     let focus_only_changed = state.focused_app != focused_app_before
@@ -123,10 +127,6 @@ pub(crate) fn handle_input(
 
 pub(crate) fn focus_next_app(state: &mut DesktopState) -> rt::Result<u32> {
     overlays::focus_recent_app(state, 1)
-}
-
-pub(crate) fn focus_previous_app(state: &mut DesktopState) -> rt::Result<u32> {
-    overlays::focus_recent_app(state, APP_COUNT - 1)
 }
 
 pub(crate) fn focus_next_visible_without_cycle(state: &mut DesktopState) -> rt::Result<u32> {

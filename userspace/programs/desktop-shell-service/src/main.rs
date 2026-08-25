@@ -9,6 +9,7 @@ mod palette;
 mod render;
 mod requests;
 mod state;
+mod switcher;
 mod windows;
 
 pub(crate) use palette::{palette_action_label, palette_matches};
@@ -128,6 +129,7 @@ fn main() -> u64 {
         next_notification_sequence: 1,
         overlay_mode: OverlayMode::None,
         overlay_selection: 0,
+        switcher_selection: 0,
         palette_query: [0; PALETTE_QUERY_MAX],
         palette_query_len: 0,
         master_volume: media::MASTER_VOLUME_DEFAULT,

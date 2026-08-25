@@ -41,6 +41,12 @@ pub mod audio_stream_write_flag {
     pub const BLOCKING: u64 = 1 << 0;
 }
 
+pub mod audio_stream_read_flag {
+    /// Block until at least one frame is due instead of answering
+    /// `Busy` when the capture source has not caught up yet.
+    pub const BLOCKING: u64 = 1 << 0;
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AudioEndpointInfo {
@@ -93,10 +99,18 @@ pub enum AudioTag {
     StreamSetVolumeReply = 0x895,
     EndpointVolumeSetRequest = 0x896,
     EndpointVolumeSetReply = 0x897,
-    /// Reserved groundwork: capture-stream open negotiation. Services must
-    /// answer these with `AudioStatus::Unsupported` until capture lands.
+    /// Capture-stream open with inline format negotiation (words:
+    /// format, rate Hz, channels; optional session id). The reply
+    /// carries the negotiated triple plus a per-stream control handle
+    /// for reads and close.
     CaptureOpenRequest = 0x898,
     CaptureOpenReply = 0x899,
+    /// Read captured PCM from a stream opened via `CaptureOpenRequest`
+    /// (words: frame count, flags — the blocking flag mirrors
+    /// `audio_stream_read_flag::BLOCKING`). Reply words: status,
+    /// frames read, first-frame tick, then packed sample payload.
+    CaptureReadRequest = 0x89a,
+    CaptureReadReply = 0x89b,
 }
 
 #[repr(u32)]

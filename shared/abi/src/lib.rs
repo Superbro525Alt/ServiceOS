@@ -1,6 +1,7 @@
 #![no_std]
 
 mod audio;
+mod audio_capture;
 mod audio_pcm;
 mod bootstrap;
 mod clipboard;
@@ -21,6 +22,7 @@ mod storage;
 mod terminal;
 
 pub use audio::*;
+pub use audio_capture::*;
 pub use audio_pcm::*;
 pub use bootstrap::*;
 pub use clipboard::*;

@@ -3,8 +3,8 @@ use rt::{
     ServiceId,
 };
 use serviceos_abi::{
-    MIX_BATCH_FRAMES, PcmNullSink, PcmStreamState, audio_capability, run_pcm_mix_selftest,
-    run_pcm_mix_selftest_emit,
+    MIX_BATCH_FRAMES, PcmNullSink, PcmStreamState, audio_capability, run_capture_selftest,
+    run_pcm_mix_selftest, run_pcm_mix_selftest_emit,
 };
 use serviceos_userspace_runtime as rt;
 
@@ -65,6 +65,23 @@ pub(crate) fn run() -> u64 {
             mix_selftest.checksum_a,
             mix_selftest.checksum_b,
             mix_selftest.checksum_mixed,
+        ),
+    );
+
+    // Capture selftest: pace a sweep of null-capture reads (silence
+    // frames with real timestamps) and print the checksum evidence.
+    // The virtio-drivers crate has no RX transfer path yet, so this
+    // exercises the capture pacing/checksum pipeline end to end.
+    let capture_selftest = run_capture_selftest();
+    let _ = rt::write_logf(
+        "audio",
+        format_args!(
+            "selftest capture {} reads={} frames={} sum={:#018x} tick={}",
+            if capture_selftest.ok { "ok" } else { "FAILED" },
+            capture_selftest.reads,
+            capture_selftest.frames,
+            capture_selftest.checksum,
+            capture_selftest.last_frame_tick,
         ),
     );
 

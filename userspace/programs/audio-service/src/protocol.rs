@@ -1,16 +1,21 @@
 use rt::{
-    AudioEndpointStatusInfo, AudioStatus, AudioStreamDirection, AudioStreamState, AudioTag,
-    LogEvent, LogSeverity, RawMessage,
+    AudioEndpointStatusInfo, AudioStatus, AudioStreamState, AudioTag, LogEvent, LogSeverity,
+    RawMessage,
 };
 use serviceos_abi::{
-    AudioSampleFormat, PCM_RING_FRAMES, PcmNullSink, PcmStreamState, SINK_RATE_HZ,
-    audio_stream_write_flag, pcm_resampled_len,
+    AudioSampleFormat, AudioStreamDirection, CHECKSUM_SEED, IPC_MAX_WORDS, PCM_RING_FRAMES,
+    PcmNullSink, PcmStreamState, SINK_RATE_HZ, audio_stream_read_flag, audio_stream_write_flag,
+    capture_checksum_silence, capture_frame_tick, capture_frames_due, capture_pack_silence,
+    pcm_resampled_len, pcm_samples_per_word,
 };
 use serviceos_userspace_runtime as rt;
 
 use crate::{
-    consts::MAX_AUDIO_STREAMS,
-    types::StreamSlot,
+    consts::{
+        CAPTURE_BLOCK_TICKS, CAPTURE_MAX_READ_FRAMES, CAPTURE_REPLY_HEADER_WORDS,
+        MAX_AUDIO_STREAMS,
+    },
+    types::{CaptureStreamState, StreamSlot},
     util::{emit_log, ticks_from_ms},
 };
 
@@ -96,7 +101,8 @@ pub(crate) fn handle_public_request(
             let reply_handle = request.handles[0];
             let mut reply = RawMessage::empty(AudioTag::StreamOpenReply as u32);
             reply.word_count = 1;
-            // Capture streams are reserved groundwork; only playback opens.
+            // Generic opens are playback-only; capture opens go through
+            // the dedicated CaptureOpen contract above.
             if request.words[0] == AudioStreamDirection::Capture as u32 as u64 {
                 reply.words[0] = AudioStatus::Unsupported as u32 as u64;
                 let _ = rt::channel_send(reply_handle, &reply);
@@ -155,7 +161,7 @@ pub(crate) fn handle_public_request(
                     break;
                 }
                 reply.words[cursor] = slot as u64;
-                reply.words[cursor + 1] = AudioStreamDirection::Playback as u32 as u64;
+                reply.words[cursor + 1] = stream.direction as u32 as u64;
                 reply.words[cursor + 2] = stream.state as u32 as u64;
                 reply.words[cursor + 3] = stream.session_id as u64;
                 reply.words[cursor + 4] = stream.endpoint_index as u64;
@@ -170,14 +176,71 @@ pub(crate) fn handle_public_request(
             let _ = rt::handle_close(reply_handle);
         }
         x if x == AudioTag::CaptureOpenRequest as u32 => {
-            // Reserved contract tag: answered honestly until capture lands.
-            if request.handle_count < 1 {
+            // Capture open carries inline format negotiation, mirroring
+            // the playback StreamConfigure contract.
+            if request.handle_count < 1 || request.word_count < 3 {
                 return Ok(());
             }
             let reply_handle = request.handles[0];
             let mut reply = RawMessage::empty(AudioTag::CaptureOpenReply as u32);
-            reply.word_count = 1;
-            reply.words[0] = AudioStatus::Unsupported as u32 as u64;
+            reply.word_count = 5;
+            let format = match request.words[0] {
+                x if x == AudioSampleFormat::U8 as u32 as u64 => Some(AudioSampleFormat::U8),
+                x if x == AudioSampleFormat::S16Le as u32 as u64 => Some(AudioSampleFormat::S16Le),
+                x if x == AudioSampleFormat::S32Le as u32 as u64 => Some(AudioSampleFormat::S32Le),
+                x if x == AudioSampleFormat::F32Le as u32 as u64 => Some(AudioSampleFormat::F32Le),
+                _ => None,
+            };
+            let session_id = if request.word_count > 3 {
+                request.words[3] as u32
+            } else {
+                0
+            };
+            let negotiated = format.and_then(|format| {
+                PcmStreamState::negotiate(format, request.words[1] as u32, request.words[2] as u32)
+            });
+            match negotiated {
+                Some((format, rate, channels)) => {
+                    match allocate_capture_stream(
+                        streams,
+                        pcm,
+                        session_id,
+                        format,
+                        rate,
+                        channels,
+                    ) {
+                        Ok((slot, client_handle, capture)) => {
+                            reply.words[0] = AudioStatus::Ok as u32 as u64;
+                            reply.words[1] = slot as u64;
+                            reply.words[2] = capture.format as u32 as u64;
+                            reply.words[3] = capture.rate_hz as u64;
+                            reply.words[4] = capture.channels as u64;
+                            reply.handle_count = 1;
+                            reply.handles[0] = client_handle;
+                            let _ = emit_log(
+                                log_handle,
+                                LogSeverity::Info,
+                                LogEvent::AudioStreamOpened,
+                                slot as u64,
+                                capture.rate_hz as u64,
+                            );
+                        }
+                        Err(error) => {
+                            reply.words[0] = match error {
+                                rt::Error::CapacityExceeded => {
+                                    AudioStatus::CapacityExceeded as u32 as u64
+                                }
+                                rt::Error::PermissionDenied => AudioStatus::Denied as u32 as u64,
+                                rt::Error::Unsupported => AudioStatus::Unsupported as u32 as u64,
+                                _ => AudioStatus::Busy as u32 as u64,
+                            };
+                        }
+                    }
+                }
+                None => {
+                    reply.words[0] = AudioStatus::Unsupported as u32 as u64;
+                }
+            }
             let _ = rt::channel_send(reply_handle, &reply);
             let _ = rt::handle_close(reply_handle);
         }
@@ -195,6 +258,11 @@ pub(crate) fn handle_stream_request(
     pcm: &mut [PcmStreamState; MAX_AUDIO_STREAMS],
     sink: &mut PcmNullSink,
 ) -> rt::Result<()> {
+    // Capture slots speak the capture read contract; playback-only tags
+    // are answered Unsupported with the mirrored reply tag.
+    if streams[slot_index].capture.is_some() {
+        return handle_capture_stream_request(slot_index, request, log_handle, streams, pcm);
+    }
     match request.tag {
         x if x == AudioTag::StreamStatusRequest as u32 => {
             if request.handle_count < 1 {
@@ -207,7 +275,7 @@ pub(crate) fn handle_stream_request(
             reply.word_count = 14;
             reply.words[0] = AudioStatus::Ok as u32 as u64;
             reply.words[1] = slot_index as u64;
-            reply.words[2] = AudioStreamDirection::Playback as u32 as u64;
+            reply.words[2] = stream.direction as u32 as u64;
             reply.words[3] = stream.state as u32 as u64;
             reply.words[4] = stream.session_id as u64;
             reply.words[5] = stream.endpoint_index as u64;
@@ -221,7 +289,10 @@ pub(crate) fn handle_stream_request(
             reply.words[10] = state.format as u32 as u64;
             reply.words[11] = state.volume as u64;
             reply.words[12] = state.muted as u64;
-            reply.words[13] = state.frames_written;
+            reply.words[13] = match streams[slot_index].capture {
+                Some(capture) => capture.frames_produced,
+                None => state.frames_written,
+            };
             let _ = rt::channel_send(reply_handle, &reply);
             let _ = rt::handle_close(reply_handle);
         }
@@ -466,9 +537,232 @@ fn allocate_stream(
         until_tick: 0,
         state: AudioStreamState::Idle,
         pcm_configured: false,
+        direction: AudioStreamDirection::Playback,
+        capture: None,
     };
     pcm[slot_index].reset();
     Ok((slot_index, pair.second))
+}
+
+/// Allocate a slot for a null-capture stream with the negotiated
+/// configuration; the pacing clock starts now so readers only ever see
+/// frames that wall-clock time justifies.
+fn allocate_capture_stream(
+    streams: &mut [StreamSlot; MAX_AUDIO_STREAMS],
+    pcm: &mut [PcmStreamState; MAX_AUDIO_STREAMS],
+    session_id: u32,
+    format: AudioSampleFormat,
+    rate_hz: u32,
+    channels: u32,
+) -> rt::Result<(usize, rt::Handle, CaptureStreamState)> {
+    let Some(slot_index) = (0..streams.len()).find(|index| !streams[*index].active) else {
+        return Err(rt::Error::CapacityExceeded);
+    };
+    let pair = rt::channel_create()?;
+    let capture = CaptureStreamState {
+        format,
+        rate_hz,
+        channels,
+        start_tick: rt::monotonic_now().unwrap_or(0),
+        frames_produced: 0,
+        checksum: CHECKSUM_SEED,
+    };
+    streams[slot_index] = StreamSlot {
+        active: true,
+        control_handle: pair.first,
+        session_id,
+        endpoint_index: 0,
+        frequency_hz: 0,
+        until_tick: 0,
+        state: AudioStreamState::Idle,
+        pcm_configured: false,
+        direction: AudioStreamDirection::Capture,
+        capture: Some(capture),
+    };
+    pcm[slot_index].reset();
+    Ok((slot_index, pair.second, capture))
+}
+
+/// Per-slot request handling for capture streams: reads (blocking or
+/// not), status, and close. Any playback-only tag is answered
+/// Unsupported with the mirrored reply tag.
+fn handle_capture_stream_request(
+    slot_index: usize,
+    request: &RawMessage,
+    log_handle: rt::Handle,
+    streams: &mut [StreamSlot; MAX_AUDIO_STREAMS],
+    pcm: &mut [PcmStreamState; MAX_AUDIO_STREAMS],
+) -> rt::Result<()> {
+    match request.tag {
+        x if x == AudioTag::CaptureReadRequest as u32 => {
+            if request.handle_count < 1 || request.word_count < 2 {
+                return Ok(());
+            }
+            let reply_handle = request.handles[0];
+            let mut reply = RawMessage::empty(AudioTag::CaptureReadReply as u32);
+            reply.word_count = CAPTURE_REPLY_HEADER_WORDS as u32;
+            // Copy the config out; counters are written back below.
+            let mut capture = streams[slot_index].capture.unwrap_or(CaptureStreamState {
+                format: AudioSampleFormat::S16Le,
+                rate_hz: SINK_RATE_HZ,
+                channels: 2,
+                start_tick: 0,
+                frames_produced: 0,
+                checksum: CHECKSUM_SEED,
+            });
+            let requested = (request.words[0] as usize).min(CAPTURE_MAX_READ_FRAMES);
+            let blocking =
+                request.words[1] & audio_stream_read_flag::BLOCKING != 0;
+            // One reply carries at most the sample payload that fits in
+            // the IPC word budget after the header words.
+            let payload_words = IPC_MAX_WORDS - CAPTURE_REPLY_HEADER_WORDS;
+            let capacity_frames = payload_words
+                .saturating_mul(pcm_samples_per_word(capture.format))
+                / capture.channels.max(1) as usize;
+            let take_max = requested.min(capacity_frames);
+            let mut now = rt::monotonic_now().unwrap_or(0);
+            let deadline = now.saturating_add(CAPTURE_BLOCK_TICKS);
+            // Hard iteration cap keeps a stalled clock from wedging the
+            // service loop even with the blocking flag set.
+            let mut spins = 0u64;
+            let take = loop {
+                let due = capture_frames_due(
+                    capture.frames_produced,
+                    capture.start_tick,
+                    now,
+                    capture.rate_hz,
+                ) as usize;
+                let take = due.min(take_max);
+                if take > 0 {
+                    break take;
+                }
+                spins += 1;
+                if !blocking
+                    || now >= deadline
+                    || spins >= CAPTURE_BLOCK_TICKS * 16
+                {
+                    break 0;
+                }
+                let _ = rt::yield_current();
+                now = rt::monotonic_now().unwrap_or(0);
+            };
+            if take > 0 {
+                let first_tick =
+                    capture_frame_tick(capture.start_tick, capture.frames_produced, capture.rate_hz);
+                let packed =
+                    capture_pack_silence(capture.format, capture.channels, take, &mut reply.words[CAPTURE_REPLY_HEADER_WORDS..]);
+                capture.checksum = capture_checksum_silence(capture.checksum, take);
+                capture.frames_produced += take as u64;
+                streams[slot_index].capture = Some(capture);
+                streams[slot_index].state = AudioStreamState::Active;
+                reply.words[0] = AudioStatus::Ok as u32 as u64;
+                reply.words[1] = take as u64;
+                reply.words[2] = first_tick;
+                reply.word_count = (CAPTURE_REPLY_HEADER_WORDS + packed) as u32;
+            } else {
+                // Real-time pacing has nothing due yet (or the read asked
+                // for zero frames); Busy mirrors the nonblocking write path.
+                reply.words[0] = AudioStatus::Busy as u32 as u64;
+                reply.words[1] = 0;
+                reply.words[2] = capture_frame_tick(
+                    capture.start_tick,
+                    capture.frames_produced,
+                    capture.rate_hz,
+                );
+            }
+            let _ = rt::channel_send(reply_handle, &reply);
+            let _ = rt::handle_close(reply_handle);
+        }
+        x if x == AudioTag::StreamStatusRequest as u32 => {
+            if request.handle_count < 1 {
+                return Ok(());
+            }
+            let reply_handle = request.handles[0];
+            let stream = streams[slot_index];
+            let capture = stream.capture.unwrap_or(CaptureStreamState {
+                format: AudioSampleFormat::S16Le,
+                rate_hz: SINK_RATE_HZ,
+                channels: 2,
+                start_tick: 0,
+                frames_produced: 0,
+                checksum: CHECKSUM_SEED,
+            });
+            let mut reply = RawMessage::empty(AudioTag::StreamStatusReply as u32);
+            reply.word_count = 14;
+            reply.words[0] = AudioStatus::Ok as u32 as u64;
+            reply.words[1] = slot_index as u64;
+            reply.words[2] = AudioStreamDirection::Capture as u32 as u64;
+            reply.words[3] = stream.state as u32 as u64;
+            reply.words[4] = stream.session_id as u64;
+            reply.words[5] = stream.endpoint_index as u64;
+            reply.words[6] = 0;
+            reply.words[7] = 0;
+            reply.words[8] = capture.rate_hz as u64;
+            reply.words[9] = capture.channels as u64;
+            reply.words[10] = capture.format as u32 as u64;
+            reply.words[11] = 100;
+            reply.words[12] = 0;
+            reply.words[13] = capture.frames_produced;
+            let _ = rt::channel_send(reply_handle, &reply);
+            let _ = rt::handle_close(reply_handle);
+        }
+        x if x == AudioTag::StreamCloseRequest as u32 => {
+            if request.handle_count < 1 {
+                return Ok(());
+            }
+            let reply_handle = request.handles[0];
+            let produced = streams[slot_index]
+                .capture
+                .map(|capture| capture.frames_produced)
+                .unwrap_or(0);
+            close_stream_slot(streams, pcm, slot_index);
+            let mut reply = RawMessage::empty(AudioTag::StreamCloseReply as u32);
+            reply.word_count = 2;
+            reply.words[0] = AudioStatus::Closed as u32 as u64;
+            reply.words[1] = produced;
+            let _ = emit_log(
+                log_handle,
+                LogSeverity::Info,
+                LogEvent::AudioStreamClosed,
+                slot_index as u64,
+                produced,
+            );
+            let _ = rt::channel_send(reply_handle, &reply);
+            let _ = rt::handle_close(reply_handle);
+        }
+        _ => {
+            if let Some(reply_tag) = mirrored_playback_reply_tag(request.tag) {
+                if request.handle_count > 0 {
+                    let reply_handle = request.handles[0];
+                    let mut reply = RawMessage::empty(reply_tag);
+                    reply.word_count = 1;
+                    reply.words[0] = AudioStatus::Unsupported as u32 as u64;
+                    let _ = rt::channel_send(reply_handle, &reply);
+                    let _ = rt::handle_close(reply_handle);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Reply tag matching a playback-only request tag, for honest
+/// Unsupported answers on capture slots.
+fn mirrored_playback_reply_tag(tag: u32) -> Option<u32> {
+    match tag {
+        x if x == AudioTag::StreamPlayToneRequest as u32 => {
+            Some(AudioTag::StreamPlayToneReply as u32)
+        }
+        x if x == AudioTag::StreamConfigureRequest as u32 => {
+            Some(AudioTag::StreamConfigureReply as u32)
+        }
+        x if x == AudioTag::StreamWriteRequest as u32 => Some(AudioTag::StreamWriteReply as u32),
+        x if x == AudioTag::StreamDrainRequest as u32 => Some(AudioTag::StreamDrainReply as u32),
+        x if x == AudioTag::StreamSetVolumeRequest as u32 => {
+            Some(AudioTag::StreamSetVolumeReply as u32)
+        }
+        _ => None,
+    }
 }
 
 pub(crate) fn close_stream_slot(

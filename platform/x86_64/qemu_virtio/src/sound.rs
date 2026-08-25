@@ -42,6 +42,10 @@ pub struct SoundBringupSummary {
     pub stream_id: u32,
     pub rate_hz: u32,
     pub channels: u32,
+    /// Input streams the device advertises (a QEMU mic exists only when
+    /// the host `-audiodev` supplies input). The virtio-drivers crate
+    /// cannot read from them yet; see the capture note below.
+    pub input_streams: u32,
 }
 
 pub fn initialize() -> Option<Arc<dyn AudioBackend>> {
@@ -61,8 +65,20 @@ pub fn initialize() -> Option<Arc<dyn AudioBackend>> {
 
             let transport = PciTransport::new::<KernelHal, _>(&mut root, device_function).ok()?;
             let mut device = VirtIOSound::<KernelHal, _>::new(transport).ok()?;
-            // Prefer the first advertised output stream; capture streams are
-            // reserved groundwork and never selected here.
+            // Capture: the device may advertise input streams (QEMU only
+            // provides a mic when the host `-audiodev` carries input, e.g.
+            // QEMU_AUDIODEV="driver=pa,id=speaker,in.rate=48000"). The
+            // virtio-drivers 0.13 PCM path is TX-only — `pcm_xfer` and
+            // `pcm_xfer_nb` queue descriptors exclusively on the transmit
+            // queue — so input streams are enumerated for honesty but never
+            // read here; audio-service runs capture as a paced null source
+            // (digital silence, real timestamps) until the crate grows an
+            // RX transfer.
+            let input_streams = device
+                .input_streams()
+                .map(|streams| streams.len() as u32)
+                .unwrap_or(0);
+            // Prefer the first advertised output stream for playback.
             let stream_id = *device.output_streams().ok()?.first()?;
             device
                 .pcm_set_params(
@@ -86,6 +102,7 @@ pub fn initialize() -> Option<Arc<dyn AudioBackend>> {
                 stream_id,
                 rate_hz: SINK_RATE_HZ,
                 channels: 2,
+                input_streams,
             };
             let backend = Arc::new(VirtioSoundBackend {
                 state: Mutex::new(VirtioSoundState {

@@ -62,8 +62,9 @@ pub(crate) fn update_stream_expiry(
         if !slot.active {
             continue;
         }
-        // PCM streams are driven by the mixer, not by speaker tone expiry.
-        if slot.pcm_configured {
+        // PCM streams are driven by the mixer, not by speaker tone expiry;
+        // capture streams are paced by the read contract instead.
+        if slot.pcm_configured || slot.capture.is_some() {
             continue;
         }
         let expired = slot.until_tick != 0 && now >= slot.until_tick;

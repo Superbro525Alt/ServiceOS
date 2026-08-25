@@ -133,7 +133,7 @@ impl SurfaceSlot {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct DamageRect {
     pub(crate) x: i32,
     pub(crate) y: i32,

@@ -10,9 +10,20 @@ use crate::types::{
 
 use super::common::{merge_region_dirty, reply_surface_status, unpack_bytes};
 
+fn decorated_surface_damage(surface: &SurfaceSlot) -> crate::types::DamageRect {
+    let mut damage = surface_bounds(surface);
+    for slot in &surface.rects {
+        damage = damage.merge(scene_rect_damage(surface, *slot));
+    }
+    for slot in &surface.labels {
+        damage = damage.merge(scene_label_damage(surface, *slot));
+    }
+    damage
+}
+
 fn visible_surface_damage(surface: &SurfaceSlot) -> crate::types::DamageRect {
     if surface.visible {
-        surface_bounds(surface)
+        decorated_surface_damage(surface)
     } else {
         crate::types::DamageRect::empty()
     }
@@ -155,7 +166,7 @@ fn handle_surface_request(
             if message.word_count < 5 {
                 return Ok(());
             }
-            let old_rect = surface_bounds(surface);
+            let old_rect = visible_surface_damage(surface);
             let new_x = message.words[0] as i64 as i32;
             let new_y = message.words[1] as i64 as i32;
             let new_width = message.words[2] as u32;
@@ -180,7 +191,7 @@ fn handle_surface_request(
             surface.width = new_width;
             surface.height = new_height;
             surface.z_order = new_z;
-            let new_rect = surface_bounds(surface);
+            let new_rect = visible_surface_damage(surface);
             let damage = old_rect.merge(new_rect);
             if is_cursor_surface(surface) && !matches!(dirty, DirtyState::Full { .. }) {
                 *dirty = match *dirty {
@@ -513,4 +524,137 @@ fn handle_surface_request(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{LabelSlot, RectSlot, SurfaceSlot};
+
+    fn surface(x: i32, y: i32, width: u32, height: u32) -> SurfaceSlot {
+        let mut slot = SurfaceSlot::empty();
+        slot.visible = true;
+        slot.occupied = true;
+        slot.x = x;
+        slot.y = y;
+        slot.width = width;
+        slot.height = height;
+        slot
+    }
+
+    fn rect_slot(
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+        visible: bool,
+        occupied: bool,
+    ) -> RectSlot {
+        let mut slot = RectSlot::empty();
+        slot.x = x;
+        slot.y = y;
+        slot.width = width;
+        slot.height = height;
+        slot.color_rgb = 0x0d1626;
+        slot.visible = visible;
+        slot.occupied = occupied;
+        slot
+    }
+
+    fn contains(rect: crate::types::DamageRect, x: i32, y: i32) -> bool {
+        x >= rect.x
+            && y >= rect.y
+            && x < rect.x.saturating_add(rect.width as i32)
+            && y < rect.y.saturating_add(rect.height as i32)
+    }
+
+    #[test]
+    fn decorated_damage_includes_out_of_bounds_shadow_strip() {
+        let mut subject = surface(50, 60, 100, 100);
+        subject.rects[0] = rect_slot(-4, -4, 108, 4, true, true);
+        let damage = decorated_surface_damage(&subject);
+        assert_eq!(damage.x, 46);
+        assert_eq!(damage.y, 56);
+        assert!(contains(damage, 46, 56));
+        assert!(contains(damage, 153, 59));
+        assert!(contains(damage, 149, 159));
+    }
+
+    #[test]
+    fn decorated_damage_ignores_empty_and_hidden_scene_slots() {
+        let mut subject = surface(50, 60, 100, 100);
+        subject.rects[0] = rect_slot(-4, -4, 108, 4, true, false);
+        subject.rects[1] = rect_slot(0, 0, 0, 0, true, true);
+        subject.labels[0] = {
+            let mut label = LabelSlot::empty();
+            label.len = 0;
+            label.occupied = false;
+            label
+        };
+        assert_eq!(
+            decorated_surface_damage(&subject).width,
+            subject.width
+        );
+    }
+
+    #[test]
+    fn decorated_damage_includes_labels_outside_bounds() {
+        let mut subject = surface(50, 60, 100, 100);
+        subject.labels[0] = {
+            let mut label = LabelSlot::empty();
+            label.x = -8;
+            label.y = -8;
+            label.len = 5;
+            label.occupied = true;
+            label
+        };
+        let damage = decorated_surface_damage(&subject);
+        assert_eq!(damage.x, 42);
+        assert_eq!(damage.y, 52);
+        assert!(contains(damage, 42, 52));
+        assert!(contains(
+            damage,
+            41 + (5 * rt::BITMAP_GLYPH_ADVANCE) as i32,
+            52
+        ));
+    }
+
+    #[test]
+    fn geometry_change_damage_covers_old_decoration_band() {
+        let mut before = surface(100, 100, 200, 100);
+        before.rects[0] = rect_slot(-4, -4, 208, 4, true, true);
+        before.rects[1] = rect_slot(-2, -2, 204, 2, true, true);
+        before.rects[2] = rect_slot(200, 0, 4, 100, true, true);
+        let old_damage = visible_surface_damage(&before);
+
+        before.x += 40;
+        let new_damage = visible_surface_damage(&before);
+        let merged = old_damage.merge(new_damage);
+
+        for point in [
+            (96, 96),
+            (150, 97),
+            (303, 120),
+            (297, 199),
+            (136, 96),
+            (340, 150),
+        ] {
+            assert!(
+                contains(merged, point.0, point.1),
+                "merged damage {:?} misses {:?}",
+                merged,
+                point
+            );
+        }
+        assert!(!contains(old_damage, 340, 150));
+    }
+
+    #[test]
+    fn invisible_surface_yields_empty_damage() {
+        let mut subject = surface(50, 60, 100, 100);
+        subject.rects[0] = rect_slot(-4, -4, 108, 4, true, true);
+        subject.visible = false;
+        assert_eq!(visible_surface_damage(&subject).width, 0);
+        assert_eq!(visible_surface_damage(&subject).height, 0);
+    }
 }

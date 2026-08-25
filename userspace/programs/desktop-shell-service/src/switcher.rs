@@ -82,6 +82,7 @@ mod tests {
         for app_id in [
             DesktopAppId::Settings,
             DesktopAppId::Files,
+            DesktopAppId::Media,
             DesktopAppId::Monitor,
             DesktopAppId::Terminal,
             DesktopAppId::SoftwareCenter,
@@ -98,6 +99,7 @@ mod tests {
                 DesktopAppId::SoftwareCenter,
                 DesktopAppId::Terminal,
                 DesktopAppId::Monitor,
+                DesktopAppId::Media,
                 DesktopAppId::Files,
             ],
         );
@@ -145,13 +147,14 @@ mod tests {
                 DesktopAppId::Files,
                 DesktopAppId::Monitor,
                 DesktopAppId::SoftwareCenter,
+                DesktopAppId::Media,
             ],
-            count: 5,
+            count: 6,
         };
         assert_eq!(open_selection(&model, Some(DesktopAppId::Settings)), 1);
         assert_eq!(
             open_selection(&model, Some(DesktopAppId::SoftwareCenter)),
-            0
+            5
         );
         assert_eq!(open_selection(&model, None), 0);
     }

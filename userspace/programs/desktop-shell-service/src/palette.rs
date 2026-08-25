@@ -2,20 +2,27 @@ use serviceos_userspace_runtime::DesktopAppId;
 
 use crate::{
     state::{APP_COUNT, AppSlot, OVERLAY_RESULT_MAX, PALETTE_ACTION_MAX, PaletteAction},
-    windows,
+    windows::{self},
+    PaletteEntry,
 };
 
 pub(crate) fn palette_matches(
     state: &crate::DesktopState,
-    results: &mut [PaletteAction; OVERLAY_RESULT_MAX],
+    results: &mut [PaletteEntry; OVERLAY_RESULT_MAX],
 ) -> usize {
     let query = core::str::from_utf8(&state.palette_query[..state.palette_query_len]).unwrap_or("");
-    rank_palette(
+    let mut actions = [PaletteAction::ShowNotifications; OVERLAY_RESULT_MAX];
+    let action_count = rank_palette(
         &state.apps,
         state.focused_app,
         &state.recent_focus,
         state.recent_focus_len,
         query,
+        &mut actions,
+    );
+    crate::palette_docs::merge_palette_entries(
+        &actions[..action_count],
+        &state.doc_hits[..state.doc_hits_len.min(state.doc_hits.len())],
         results,
     )
 }
@@ -111,6 +118,7 @@ pub(crate) fn palette_action_label(action: PaletteAction) -> &'static str {
         PaletteAction::Launch(DesktopAppId::Monitor) => "Open Monitor",
         PaletteAction::Launch(DesktopAppId::Terminal) => "Open Terminal",
         PaletteAction::Launch(DesktopAppId::SoftwareCenter) => "Open Software Center",
+        PaletteAction::Launch(DesktopAppId::Media) => "Open Media",
         PaletteAction::ShowNotifications => "Show Notification History",
         PaletteAction::ShowClipboardHistory => "Show Clipboard History",
         PaletteAction::ShowMedia => "Show Media and Volume",
@@ -167,10 +175,11 @@ mod tests {
     use super::*;
     use serviceos_userspace_runtime::ServiceImageId;
 
-    fn slots() -> [AppSlot; 5] {
+    fn slots() -> [AppSlot; 6] {
         [
             AppSlot::new(DesktopAppId::Settings, ServiceImageId::SettingsApp),
             AppSlot::new(DesktopAppId::Files, ServiceImageId::FilesApp),
+            AppSlot::new(DesktopAppId::Media, ServiceImageId::MediaApp),
             AppSlot::new(DesktopAppId::Monitor, ServiceImageId::MonitorApp),
             AppSlot::new(DesktopAppId::Terminal, ServiceImageId::TerminalApp),
             AppSlot::new(
@@ -233,7 +242,7 @@ mod tests {
         let mut apps = slots();
         let terminal = windows::app_slot_index(&apps, DesktopAppId::Terminal).unwrap();
         apps[terminal].running = true;
-        let recent = [DesktopAppId::Terminal; 5];
+        let recent = [DesktopAppId::Terminal; 6];
         let (results, count) = rank(&apps, Some(DesktopAppId::Terminal), &recent, 1, "te");
         assert!(count >= 2);
         assert_eq!(results[0], PaletteAction::Launch(DesktopAppId::Terminal));

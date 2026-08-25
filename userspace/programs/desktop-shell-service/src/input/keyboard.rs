@@ -44,6 +44,7 @@ pub(super) fn handle_key_input(
             state.overlay_selection = 0;
             state.switcher_selection = 0;
             state.palette_query_len = 0;
+            crate::palette_docs::clear_doc_hits(state);
             return Ok(focused_surface_id(state));
         }
 
@@ -79,6 +80,7 @@ pub(super) fn handle_key_input(
             state.overlay_mode = OverlayMode::CommandPalette;
             state.overlay_selection = 0;
             state.palette_query_len = 0;
+            crate::palette_docs::refresh_doc_hits(state);
             return Ok(focused_surface_id(state));
         }
 
@@ -168,6 +170,7 @@ pub(super) fn handle_text_input(state: &mut DesktopState, scalar: u32) -> rt::Re
             state.palette_query[state.palette_query_len] = ch as u8;
             state.palette_query_len += 1;
             state.overlay_selection = 0;
+            crate::palette_docs::refresh_doc_hits(state);
         }
         return Ok(focused_surface_id(state));
     }

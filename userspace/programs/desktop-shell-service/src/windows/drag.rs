@@ -63,6 +63,7 @@ pub(crate) fn app_from_hint(hint: u8) -> Option<DesktopAppId> {
         x if x == DesktopAppId::Monitor as u32 => Some(DesktopAppId::Monitor),
         x if x == DesktopAppId::Terminal as u32 => Some(DesktopAppId::Terminal),
         x if x == DesktopAppId::SoftwareCenter as u32 => Some(DesktopAppId::SoftwareCenter),
+        x if x == DesktopAppId::Media as u32 => Some(DesktopAppId::Media),
         _ => None,
     }
 }
@@ -194,10 +195,11 @@ mod tests {
             DesktopAppId::Monitor,
             DesktopAppId::Terminal,
             DesktopAppId::SoftwareCenter,
+            DesktopAppId::Media,
         ] {
             assert_eq!(app_from_hint(hint_for_app(app)), Some(app));
         }
-        assert_eq!(app_from_hint(b'6'), None);
+        assert_eq!(app_from_hint(b'7'), None);
         assert_eq!(app_from_hint(b'9'), None);
     }
 

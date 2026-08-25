@@ -78,6 +78,13 @@ pub(crate) fn initial_window_layout(
         ),
         DesktopAppId::Terminal => (220, 96, 720, 420, 0x11161f),
         DesktopAppId::SoftwareCenter => (248, 84, 680, 408, ui::BG_WINDOW_ALT),
+        DesktopAppId::Media => (
+            output_width.saturating_sub(800 + PANEL_MARGIN) as i32,
+            88,
+            800.min(output_width.saturating_sub(2 * PANEL_MARGIN)),
+            480,
+            ui::BG_WINDOW_ALT,
+        ),
     }
 }
 
@@ -111,6 +118,9 @@ pub(crate) fn launcher_line(slot: AppSlot) -> &'static str {
         (DesktopAppId::SoftwareCenter, true, false) => "SOFTWARE  OPEN",
         (DesktopAppId::SoftwareCenter, true, true) => "SOFTWARE  MIN",
         (DesktopAppId::SoftwareCenter, false, _) => "SOFTWARE",
+        (DesktopAppId::Media, true, false) => "MEDIA     OPEN",
+        (DesktopAppId::Media, true, true) => "MEDIA     MIN",
+        (DesktopAppId::Media, false, _) => "MEDIA",
     }
 }
 
@@ -129,5 +139,6 @@ pub(crate) fn app_title(app_id: DesktopAppId) -> &'static str {
         DesktopAppId::Monitor => "MONITOR",
         DesktopAppId::Terminal => "TERMINAL",
         DesktopAppId::SoftwareCenter => "SOFTWARE",
+        DesktopAppId::Media => "MEDIA",
     }
 }

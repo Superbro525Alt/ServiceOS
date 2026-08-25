@@ -7,6 +7,7 @@ mod input;
 mod logging;
 mod media;
 mod palette;
+mod palette_docs;
 mod render;
 mod requests;
 mod state;
@@ -14,6 +15,7 @@ mod switcher;
 mod windows;
 
 pub(crate) use palette::{palette_action_label, palette_matches};
+pub(crate) use palette_docs::PaletteEntry;
 pub(crate) use state::*;
 
 use rt::{ControlTag, DesktopAppId, RawMessage, ServiceId, ServiceImageId};
@@ -108,6 +110,7 @@ fn main() -> u64 {
         apps: [
             AppSlot::new(DesktopAppId::Settings, ServiceImageId::SettingsApp),
             AppSlot::new(DesktopAppId::Files, ServiceImageId::FilesApp),
+            AppSlot::new(DesktopAppId::Media, ServiceImageId::MediaApp),
             AppSlot::new(DesktopAppId::Monitor, ServiceImageId::MonitorApp),
             AppSlot::new(DesktopAppId::Terminal, ServiceImageId::TerminalApp),
             AppSlot::new(
@@ -143,6 +146,14 @@ fn main() -> u64 {
         switcher_selection: 0,
         palette_query: [0; PALETTE_QUERY_MAX],
         palette_query_len: 0,
+        storage_handle,
+        doc_hits: [crate::palette_docs::DocHit {
+            path: [0; crate::palette_docs::DOC_PATH_MAX],
+            path_len: 0,
+            kind: 0,
+            line: 0,
+        }; crate::palette_docs::DOC_HITS_MAX],
+        doc_hits_len: 0,
         master_volume: media::MASTER_VOLUME_DEFAULT,
         master_muted: false,
         pending_media_refresh: rt::PendingFlag::new(),

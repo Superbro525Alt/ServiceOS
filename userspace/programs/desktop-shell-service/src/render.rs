@@ -515,7 +515,8 @@ fn render_switcher_overlay(state: &DesktopState) -> rt::Result<()> {
 }
 
 fn render_palette_overlay(state: &mut DesktopState) -> rt::Result<()> {
-    let mut results = [crate::PaletteAction::ShowNotifications; OVERLAY_RESULT_MAX];
+    let mut results =
+        [crate::PaletteEntry::Action(crate::PaletteAction::ShowNotifications); OVERLAY_RESULT_MAX];
     let count = palette_matches(state, &mut results);
     let query = str::from_utf8(&state.palette_query[..state.palette_query_len]).unwrap_or("");
     let t = theme_of(state);
@@ -567,12 +568,21 @@ fn render_palette_overlay(state: &mut DesktopState) -> rt::Result<()> {
                 "  "
             };
             let mut line = FixedLogBuffer::<64>::new();
-            let _ = write!(
-                &mut line,
-                "{}{}",
-                prefix,
-                palette_action_label(results[index])
-            );
+            let _ = write!(&mut line, "{}", prefix);
+            match results[index] {
+                crate::PaletteEntry::Action(action) => {
+                    let _ = write!(&mut line, "{}", palette_action_label(action));
+                }
+                crate::PaletteEntry::Doc(doc_hit) => {
+                    let path = doc_hit.path_str();
+                    let icon = crate::palette_docs::doc_kind_icon(doc_hit.kind);
+                    if doc_hit.line != 0 {
+                        let _ = write!(&mut line, "{} {} :{}", icon, path, doc_hit.line);
+                    } else {
+                        let _ = write!(&mut line, "{} {}", icon, path);
+                    }
+                }
+            }
             rt::draw_text_rgba8888(
                 bytes,
                 PALETTE_WIDTH as usize,

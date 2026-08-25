@@ -6,7 +6,7 @@ use crate::access::{AccessSettings, CornerDwell};
 use crate::windows::{ANIM_QUEUE_MAX, ContentDrag, WindowAnim};
 
 pub(crate) const SESSION_ID: u32 = 1;
-pub(crate) const APP_COUNT: usize = 5;
+pub(crate) const APP_COUNT: usize = 6;
 pub(crate) const APP_PAGE_SIZE: usize = 4;
 pub(crate) const LIST_APPS_HEADER_WORDS: usize = 3;
 pub(crate) const LIST_APPS_ENTRY_WORDS: usize = 4;
@@ -329,6 +329,9 @@ pub(crate) struct DesktopState {
     pub(crate) switcher_selection: usize,
     pub(crate) palette_query: [u8; PALETTE_QUERY_MAX],
     pub(crate) palette_query_len: usize,
+    pub(crate) storage_handle: rt::Handle,
+    pub(crate) doc_hits: [crate::palette_docs::DocHit; crate::palette_docs::DOC_HITS_MAX],
+    pub(crate) doc_hits_len: usize,
     pub(crate) master_volume: u8,
     pub(crate) master_muted: bool,
     pub(crate) pending_media_refresh: rt::PendingFlag,

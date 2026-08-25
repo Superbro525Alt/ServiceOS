@@ -82,13 +82,14 @@ pub(crate) fn paste_clipboard_selection(state: &mut DesktopState, row: usize) ->
 }
 
 pub(super) fn handle_palette_key(state: &mut DesktopState, key_code: u32) -> rt::Result<u32> {
-    let mut results = [PaletteAction::ShowNotifications; OVERLAY_RESULT_MAX];
+    let mut results = [PaletteEntry::Action(PaletteAction::ShowNotifications); OVERLAY_RESULT_MAX];
     let count = palette_matches(state, &mut results);
     match key_code {
         KEY_BACKSPACE => {
             if state.palette_query_len > 0 {
                 state.palette_query_len -= 1;
                 state.overlay_selection = 0;
+                crate::palette_docs::refresh_doc_hits(state);
             }
             Ok(focused_surface_id(state))
         }
@@ -108,11 +109,18 @@ pub(super) fn handle_palette_key(state: &mut DesktopState, key_code: u32) -> rt:
             if count == 0 {
                 return Ok(focused_surface_id(state));
             }
-            let action = results[state.overlay_selection.min(count - 1)];
+            let entry = results[state.overlay_selection.min(count - 1)];
             state.overlay_mode = OverlayMode::None;
             state.overlay_selection = 0;
             state.palette_query_len = 0;
-            perform_palette_action(state, action)
+            crate::palette_docs::clear_doc_hits(state);
+            match entry {
+                PaletteEntry::Doc(hit) => {
+                    let path = hit.path_str();
+                    open_path_in_files(state, path)
+                }
+                PaletteEntry::Action(action) => perform_palette_action(state, action),
+            }
         }
         _ => Ok(focused_surface_id(state)),
     }

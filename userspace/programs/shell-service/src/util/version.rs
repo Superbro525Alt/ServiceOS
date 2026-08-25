@@ -128,12 +128,12 @@ mod tests {
 
     #[test]
     fn update_decision_maps_missing_data_to_unknown() {
+        assert_eq!(decide_update(Some("1.0.0"), None), UpdateDecision::Unknown);
+        assert_eq!(decide_update(None, Some("1.0.0")), UpdateDecision::Unknown);
         assert_eq!(
-            decide_update(Some("1.0.0"), None),
+            decide_update(Some(""), Some("1.0.0")),
             UpdateDecision::Unknown
         );
-        assert_eq!(decide_update(None, Some("1.0.0")), UpdateDecision::Unknown);
-        assert_eq!(decide_update(Some(""), Some("1.0.0")), UpdateDecision::Unknown);
     }
 
     #[test]

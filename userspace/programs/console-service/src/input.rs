@@ -282,3 +282,60 @@ pub(crate) fn write_session_bytes(session: &mut Session, bytes: &[u8]) -> rt::Re
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn append_history_skips_empty_and_duplicate_lines() {
+        let mut session = Session::empty();
+        session.line_len = 0;
+        append_history(&mut session);
+        assert_eq!(session.history_count, 0);
+
+        session.line[..5].copy_from_slice(b"echo ");
+        session.line_len = 5;
+        append_history(&mut session);
+        append_history(&mut session);
+        assert_eq!(session.history_count, 1, "consecutive duplicates collapse");
+    }
+
+    #[test]
+    fn history_ring_wraps_and_preserves_order() {
+        let mut session = Session::empty();
+        for index in 0..(MAX_HISTORY + 2) {
+            let text = format!("cmd{index:02}");
+            session.line[..text.len()].copy_from_slice(text.as_bytes());
+            session.line_len = text.len();
+            append_history(&mut session);
+        }
+        assert_eq!(session.history_count, MAX_HISTORY);
+        // Oldest retained entry is cmd02; newest is the last one written.
+        let oldest = history_slot(&session, 0);
+        assert_eq!(&session.history[oldest][..5], b"cmd02");
+        let newest = history_slot(&session, session.history_count - 1);
+        let newest_len = session.history_lens[newest];
+        assert_eq!(
+            &session.history[newest][..newest_len],
+            format!("cmd{:02}", MAX_HISTORY + 1).as_bytes()
+        );
+    }
+
+    #[test]
+    fn detach_keeps_history_and_marks_row_for_handoff() {
+        let mut sessions = [Session::empty(); MAX_SESSIONS];
+        let session = &mut sessions[0];
+        session.occupied = true;
+        session.grid_sub = true;
+        session.history[0][..4].copy_from_slice(b"ls -");
+        session.history_lens[0] = 4;
+        session.history_count = 1;
+        crate::state::detach_session(session);
+        // Row stays occupied+detached so SessionOpen adopts it; ring survives.
+        assert!(session.occupied && session.detached && !session.grid_sub);
+        assert_eq!(session.history_count, 1);
+        assert_eq!(&session.history[0][..4], b"ls -");
+        assert_eq!(session.endpoint, rt::INVALID_HANDLE);
+    }
+}

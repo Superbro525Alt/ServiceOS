@@ -114,6 +114,11 @@ pub(crate) struct Session {
     pub(crate) history_stash: [u8; MAX_LINE_BYTES],
     pub(crate) history_stash_len: usize,
     pub(crate) escape_state: EscapeState,
+    /// Subscribed to the retained VT console grid stream (server pushes).
+    pub(crate) grid_sub: bool,
+    /// Client endpoint closed but the row is retained for handoff: a future
+    /// SessionOpen adopts it so line history survives detach/reattach.
+    pub(crate) detached: bool,
     pub(crate) occupied: bool,
 }
 
@@ -136,6 +141,8 @@ impl Session {
             history_stash: [0; MAX_LINE_BYTES],
             history_stash_len: 0,
             escape_state: EscapeState::None,
+            grid_sub: false,
+            detached: false,
             occupied: false,
         }
     }
@@ -147,13 +154,22 @@ pub(crate) fn active_session(sessions: &[Session; MAX_SESSIONS]) -> Option<&Sess
     })
 }
 
-pub(crate) fn release_session(session: &mut Session) {
+/// Client endpoint went away without a close: keep the row (history ring
+/// included) marked detached so a later SessionOpen adopts it. Only the
+/// transient input/display state is dropped; retained history survives
+/// detach/reattach cycles like terminal-service panes.
+pub(crate) fn detach_session(session: &mut Session) {
+    if !session.occupied {
+        return;
+    }
     let endpoint = session.endpoint;
     reset_input_state(session);
+    session.grid_sub = false;
     if endpoint != rt::INVALID_HANDLE {
         let _ = rt::handle_close(endpoint);
     }
-    *session = Session::empty();
+    session.endpoint = rt::INVALID_HANDLE;
+    session.detached = true;
 }
 
 pub(crate) fn begin_input_session(session: &mut Session) {

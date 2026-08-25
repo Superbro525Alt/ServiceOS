@@ -795,7 +795,8 @@ pub(crate) fn cmd_run_package(
     }
 
     let image_path = package_program_image_path(name);
-    match rt::manager_launch_stored_program_with_payload(bootstrap, image_path.as_str(), &[0], &[]) {
+    match rt::manager_launch_stored_program_with_payload(bootstrap, image_path.as_str(), &[0], &[])
+    {
         Ok(task_handle) => {
             let _ = rt::handle_close(task_handle);
             write_output_linef(

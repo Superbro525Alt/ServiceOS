@@ -1,7 +1,8 @@
-#![no_std]
-#![no_main]
+#![cfg_attr(not(test), no_std)]
+#![cfg_attr(not(test), no_main)]
 
 mod format;
+mod grid;
 mod input;
 mod lifecycle;
 mod public;
@@ -15,8 +16,9 @@ use crate::input::handle_input_byte;
 use crate::lifecycle::poll_lifecycle;
 use crate::public::handle_public_message;
 use crate::session::handle_session_message;
-use crate::state::{BootProgress, MAX_SESSIONS, Session, release_session};
+use crate::state::{BootProgress, MAX_SESSIONS, Session, detach_session};
 
+#[cfg(not(test))]
 rt::entry!(main);
 
 fn main() -> u64 {
@@ -67,7 +69,9 @@ fn main() -> u64 {
                     }
                 }
                 Err(rt::Error::QueueEmpty) => {}
-                Err(_) => release_session(session),
+                // Client endpoint went away: retain the row (detached) so the
+                // next SessionOpen adopts it and history survives handoff.
+                Err(_) => detach_session(session),
             }
         }
 

@@ -210,7 +210,9 @@ fn next_action_text(
             );
         }
         (DenialReasonClass::RuntimePendingApproval, _) => {
-            text.push_str("review the queue: runtime envs; decide via security runtime <id> approve");
+            text.push_str(
+                "review the queue: runtime envs; decide via security runtime <id> approve",
+            );
         }
         (DenialReasonClass::RuntimeEnvDenied, DenialSubject::RuntimeLaunch { env_id, .. }) => {
             let _ = fmt::write(&mut text, format_args!("security runtime {} reset", env_id));

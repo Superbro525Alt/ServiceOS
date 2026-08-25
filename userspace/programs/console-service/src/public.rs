@@ -1,3 +1,5 @@
+use core::fmt::Write as _;
+
 use rt::{ConsoleTag, LogEvent, RawMessage};
 use serviceos_userspace_runtime as rt;
 
@@ -6,7 +8,7 @@ use crate::format::{
     service_id_from_word, service_name, severity_from_word, severity_name, unpack_mac,
 };
 use crate::input::render_session_line;
-use crate::session::handle_session_open;
+use crate::session::{broadcast_grid_line, handle_session_open};
 use crate::state::{BootProgress, MAX_SESSIONS, Session, active_session};
 
 pub(crate) fn handle_public_message(
@@ -340,7 +342,7 @@ fn should_suppress_console_record(
 }
 
 fn write_boot_progress_line(
-    sessions: &[Session; MAX_SESSIONS],
+    sessions: &mut [Session; MAX_SESSIONS],
     boot_progress: BootProgress,
 ) -> rt::Result<()> {
     let total = boot_progress.total_services();
@@ -369,14 +371,30 @@ fn write_boot_progress_line(
             bar, ready, total, starting, failed
         ),
     )?;
+    feed_grid_and_broadcast(
+        sessions,
+        format_args!(
+            "boot [{}] ready={}/{} starting={} failed={}",
+            bar, ready, total, starting, failed
+        ),
+    );
     if let Some(session) = active_session(sessions) {
         let _ = render_session_line(session);
     }
     Ok(())
 }
 
+/// Mirror one rendered console line into the retained VT grid and stream it
+/// to subscribed console-session clients (graphical surfaces).
+fn feed_grid_and_broadcast(sessions: &mut [Session; MAX_SESSIONS], args: core::fmt::Arguments<'_>) {
+    let mut buffer = rt::FixedLogBuffer::<192>::new();
+    let _ = buffer.write_fmt(args);
+    crate::grid::record_line(buffer.as_bytes());
+    broadcast_grid_line(sessions, buffer.as_bytes());
+}
+
 fn write_structured_line(
-    sessions: &[Session; MAX_SESSIONS],
+    sessions: &mut [Session; MAX_SESSIONS],
     domain: &str,
     args: core::fmt::Arguments<'_>,
 ) -> rt::Result<()> {
@@ -384,6 +402,7 @@ fn write_structured_line(
         let _ = rt::debug_console_write(b"\r\n");
     }
     rt::write_logf(domain, args)?;
+    feed_grid_and_broadcast(sessions, args);
     if let Some(session) = active_session(sessions) {
         let _ = render_session_line(session);
     }

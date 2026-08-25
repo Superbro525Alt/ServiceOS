@@ -1,4 +1,6 @@
+mod account;
 mod audio;
+mod console;
 mod core;
 mod deny;
 mod desktop;
@@ -6,6 +8,7 @@ mod developer;
 mod diagnostics;
 mod graphics;
 mod network;
+mod operator;
 mod package;
 mod runtime;
 mod security;
@@ -170,6 +173,17 @@ pub(crate) fn execute_command(
             },
             _ => write_output_linef(output, format_args!("usage: run <sysinfo|pkg|image>")),
         },
+        "sessions" => operator::cmd_sessions(output),
+        "history" => {
+            let count = parts.next().and_then(|value| value.parse::<usize>().ok());
+            operator::cmd_history(output, count)
+        }
+        "login" => match (parts.next(), parts.next()) {
+            (name, secret) => operator::cmd_login(bootstrap, output, name, secret),
+        },
+        "whoami" => operator::cmd_whoami(output),
+        "logout" => operator::cmd_logout(bootstrap, output),
+        "console" => console::cmd_console(bootstrap, output, parts.next()),
         _ => write_output_linef(output, format_args!("unknown command: {command}")),
     }
 }

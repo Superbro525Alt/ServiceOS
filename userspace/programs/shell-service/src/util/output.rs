@@ -25,6 +25,13 @@ impl ShellOutput {
 
 pub const HELP_TEXT: &str = "\
 help: show this command list\r\n\
+sessions: list operator sessions hosted by this shell\r\n\
+history [count]: show this session's command history (oldest first)\r\n\
+login <name> <secret>: bind an account identity to this operator session\r\n\
+whoami: show the owning identity of this operator session\r\n\
+logout: unbind this session's account identity\r\n\
+console grid: render the kernel console VT grid snapshot\r\n\
+console follow: stream live kernel console records until idle timeout\r\n\
 services: list managed services\r\n\
 service <name>: show one service state\r\n\
 service-caps <name>: inspect delegated lookup capabilities for one service\r\n\

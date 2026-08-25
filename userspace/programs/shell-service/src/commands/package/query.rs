@@ -2,8 +2,8 @@ use rt::ServiceId;
 use serviceos_userspace_runtime as rt;
 
 use crate::util::{
-    MAX_VERSION_BYTES, ShellOutput, UpdateDecision, decide_update, printable_version,
-    service_name, write_output_linef,
+    MAX_VERSION_BYTES, ShellOutput, UpdateDecision, decide_update, printable_version, service_name,
+    write_output_linef,
 };
 
 use super::parse::{

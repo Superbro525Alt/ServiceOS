@@ -1,4 +1,5 @@
 mod anim;
+mod drag;
 mod encode;
 mod layout;
 mod lifecycle;
@@ -24,6 +25,9 @@ pub(crate) use anim::{
     ANIM_QUEUE_MAX, WindowAnim, begin_close_animation, begin_minimize_animation,
     begin_open_animation, begin_restore_animation, cancel_animations, step_animations,
 };
+pub(crate) use drag::{
+    CONTENT_DRAG_TIMEOUT_TICKS, ContentDrag, DropDecision, drop_decision, parse_content_intent,
+};
 pub(crate) use encode::{encode_window_page, pack_i32_pair};
 pub(crate) use layout::{
     allocate_z_order, app_slot_index, app_title, apply_window_geometry,
@@ -32,9 +36,9 @@ pub(crate) use layout::{
     sync_workspace_visibility, visible_on_workspace,
 };
 pub(crate) use lifecycle::{
-    close_app, flush_pending_resize, focus_app, launch_or_focus_app, maximize_app, minimize_app,
-    move_app, move_focused_to_workspace, open_path_in_files, refresh_apps, resize_app, restore_app,
-    schedule_launch_or_focus_app, switch_workspace,
+    close_app, deliver_open_intent, flush_pending_resize, focus_app, launch_or_focus_app,
+    maximize_app, minimize_app, move_app, move_focused_to_workspace, open_path_in_files,
+    refresh_apps, resize_app, restore_app, schedule_launch_or_focus_app, switch_workspace,
 };
 #[cfg(test)]
 pub(crate) use notifications::mru_promote;

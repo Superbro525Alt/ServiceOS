@@ -115,6 +115,12 @@ fn launcher_hit_app(state: &DesktopState, x: i32, y: i32) -> Option<DesktopAppId
     None
 }
 
+/// Launcher icon currently under the pointer, used for drop-target
+/// highlighting while a content drag is armed.
+pub(crate) fn launcher_hover_app(state: &DesktopState) -> Option<DesktopAppId> {
+    launcher_hit_app(state, state.pointer_x, state.pointer_y)
+}
+
 fn resize_hit_edges(window: &WindowState, local_x: i32, local_y: i32) -> ResizeEdges {
     let mut edges = ResizeEdges::NONE;
     if local_x <= ui::WINDOW_BORDER_THICKNESS {

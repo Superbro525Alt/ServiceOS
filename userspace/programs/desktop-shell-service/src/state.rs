@@ -2,7 +2,7 @@ use rt::{DesktopAppId, ServiceImageId};
 use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
 
-use crate::windows::{ANIM_QUEUE_MAX, WindowAnim};
+use crate::windows::{ANIM_QUEUE_MAX, ContentDrag, WindowAnim};
 
 pub(crate) const SESSION_ID: u32 = 1;
 pub(crate) const APP_COUNT: usize = 5;
@@ -308,6 +308,7 @@ pub(crate) struct DesktopState {
     pub(crate) pointer_y: i32,
     pub(crate) drag_state: Option<DragState>,
     pub(crate) content_capture: Option<ContentCapture>,
+    pub(crate) content_drag: Option<ContentDrag>,
     pub(crate) pending_resize: Option<PendingResize>,
     pub(crate) notification: [u8; MAX_NOTIFICATION_BYTES],
     pub(crate) notification_len: usize,

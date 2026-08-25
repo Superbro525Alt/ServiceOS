@@ -8,9 +8,10 @@ use crate::{
     DesktopState, SESSION_ID,
     input::{focus_next_app, handle_input},
     windows::{
-        close_app, encode_window_page, focus_app, focused_surface_id, launch_or_focus_app,
-        maximize_app, minimize_app, move_app, move_focused_to_workspace, open_path_in_files,
-        post_notification, resize_app, restore_app, running_app_count, switch_workspace,
+        close_app, deliver_open_intent, encode_window_page, focus_app, focused_surface_id,
+        launch_or_focus_app, maximize_app, minimize_app, move_app, move_focused_to_workspace,
+        open_path_in_files, parse_content_intent, post_notification, refresh_apps, resize_app,
+        restore_app, running_app_count, switch_workspace,
     },
 };
 
@@ -228,6 +229,7 @@ pub(crate) fn handle_request(state: &mut DesktopState, request: &RawMessage) -> 
             }
             let reply_handle = request.handles[0];
             let text_len = request.words[0] as usize;
+            let mut text = [0u8; crate::MAX_NOTIFICATION_BYTES];
             let status = if text_len > crate::MAX_NOTIFICATION_BYTES {
                 DesktopStatus::Busy
             } else if unpack_bytes(
@@ -239,10 +241,11 @@ pub(crate) fn handle_request(state: &mut DesktopState, request: &RawMessage) -> 
             {
                 DesktopStatus::Busy
             } else {
-                let mut text = [0u8; crate::MAX_NOTIFICATION_BYTES];
                 text[..text_len].copy_from_slice(&state.notification[..text_len]);
-                post_notification(state, None, false, &text[..text_len])?;
-                DesktopStatus::Ok
+                match handle_content_intent_or_notify(state, &text[..text_len]) {
+                    ContentOutcome::Notified | ContentOutcome::Accepted => DesktopStatus::Ok,
+                    ContentOutcome::Rejected => DesktopStatus::Busy,
+                }
             };
             let mut reply = RawMessage::empty(DesktopTag::NotifyReply as u32);
             reply.word_count = 1;
@@ -431,6 +434,45 @@ fn desktop_input_action_from_word(value: u64) -> Option<DesktopInputAction> {
         }
         _ => None,
     }
+}
+
+/// Outcome of inspecting notify-channel text for a reserved content intent.
+enum ContentOutcome {
+    /// Plain notification text; was posted as usual.
+    Notified,
+    /// Content intent accepted (drag armed or open-with delivered).
+    Accepted,
+    /// Content-intent framing but malformed or undeliverable payload.
+    Rejected,
+}
+
+fn handle_content_intent_or_notify(state: &mut DesktopState, text: &[u8]) -> ContentOutcome {
+    let Some(intent) = parse_content_intent(text) else {
+        if post_notification(state, None, false, text).is_err() {
+            return ContentOutcome::Rejected;
+        }
+        return ContentOutcome::Notified;
+    };
+    match intent.target_app() {
+        Some(app_id) => {
+            let path = core::str::from_utf8(intent.path_bytes())
+                .map(|value| value.trim_matches(char::is_whitespace))
+                .unwrap_or("");
+            if path.is_empty() || deliver_open_intent(state, app_id, path).is_err() {
+                return ContentOutcome::Rejected;
+            }
+        }
+        None => {
+            let now = rt::monotonic_now().unwrap_or(0);
+            state.content_drag = Some(crate::windows::ContentDrag {
+                path_len: intent.path_len,
+                path: intent.path,
+                deadline: now.saturating_add(crate::windows::CONTENT_DRAG_TIMEOUT_TICKS),
+            });
+            state.pending_shell_refresh.set();
+        }
+    }
+    ContentOutcome::Accepted
 }
 
 pub(crate) fn poll_lifecycle(bootstrap: rt::Handle) -> rt::Result<bool> {

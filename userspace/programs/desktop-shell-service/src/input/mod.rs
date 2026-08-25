@@ -22,6 +22,8 @@ use crate::{
     },
 };
 
+pub(crate) use hit_test::launcher_hover_app;
+
 pub(crate) fn handle_input(
     state: &mut DesktopState,
     action: DesktopInputAction,

@@ -400,6 +400,10 @@ pub(crate) fn refresh_apps(state: &mut DesktopState) -> rt::Result<()> {
         let exited_app = state.apps[index].app_id;
         let exit_code = status.exit_code;
         let faulted = status.state == rt::TaskStateCode::Faulted;
+        if state.content_drag.is_some() && exited_app == DesktopAppId::Files {
+            // The drag source died; the pending drop has nothing to deliver.
+            state.content_drag = None;
+        }
         cancel_animations(&mut state.animations, exited_app);
         if state.apps[index].window.surface_handle != rt::INVALID_HANDLE {
             let _ = rt::surface_close(state.apps[index].window.surface_handle);
@@ -521,6 +525,30 @@ pub(crate) fn move_focused_to_workspace(
 pub(crate) fn open_path_in_files(state: &mut DesktopState, path: &str) -> rt::Result<u32> {
     let surface_id = launch_or_focus_app(state, DesktopAppId::Files)?;
     let Some(index) = app_slot_index(&state.apps, DesktopAppId::Files) else {
+        return Err(rt::Error::NotFound);
+    };
+    let control = state.apps[index].window.control_handle;
+    if control == rt::INVALID_HANDLE {
+        return Err(rt::Error::NotFound);
+    }
+    rt::app_control_open_path(control, path)?;
+    Ok(surface_id)
+}
+
+/// Delivers an open-path intent to any desktop app: launches or focuses the
+/// target and queues the existing app-control OpenPath message. Apps that do
+/// not consume file intents ignore the message harmlessly until per-app
+/// consumers land.
+pub(crate) fn deliver_open_intent(
+    state: &mut DesktopState,
+    app_id: DesktopAppId,
+    path: &str,
+) -> rt::Result<u32> {
+    if path.is_empty() || path.len() > rt::IPC_MAX_WORDS * 8 {
+        return Err(rt::Error::InvalidArgument);
+    }
+    let surface_id = launch_or_focus_app(state, app_id)?;
+    let Some(index) = app_slot_index(&state.apps, app_id) else {
         return Err(rt::Error::NotFound);
     };
     let control = state.apps[index].window.control_handle;

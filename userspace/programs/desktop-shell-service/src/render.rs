@@ -94,20 +94,64 @@ fn render_shell_chrome(
 }
 
 fn render_launcher(state: &DesktopState) -> rt::Result<()> {
-    let launcher_lines = [
+    let dragging = state.content_drag.is_some();
+    let hover = if dragging {
+        crate::input::launcher_hover_app(state)
+    } else {
+        None
+    };
+    let static_lines = [
         launcher_line(state.apps[0]),
         launcher_line(state.apps[1]),
         launcher_line(state.apps[2]),
         launcher_line(state.apps[3]),
         launcher_line(state.apps[4]),
     ];
+    let mut marked: [FixedLogBuffer<20>; crate::APP_COUNT] =
+        core::array::from_fn(|_| FixedLogBuffer::new());
+    if dragging {
+        for index in 0..crate::APP_COUNT {
+            let hovered = hover == Some(state.apps[index].app_id);
+            let _ = write!(
+                &mut marked[index],
+                "{}{}",
+                if hovered { "> " } else { "  " },
+                static_lines[index]
+            );
+        }
+    }
+    let lines: [&str; crate::APP_COUNT] = core::array::from_fn(|index| {
+        if dragging {
+            marked[index].as_str()
+        } else {
+            static_lines[index]
+        }
+    });
+    let mut title_buf = FixedLogBuffer::<24>::new();
+    let title = if !dragging {
+        "APPS"
+    } else {
+        let _ = write!(
+            &mut title_buf,
+            "DROP ON {}",
+            match hover {
+                Some(app_id) => app_title(app_id),
+                None => "APP",
+            }
+        );
+        title_buf.as_str()
+    };
     ui::render_panel_uniform(
         state.chrome.launcher_handle,
         LAUNCHER_WIDTH,
         LAUNCHER_HEIGHT,
-        "APPS",
-        &launcher_lines,
-        ui::TEXT_PRIMARY,
+        title,
+        &lines,
+        if dragging {
+            ui::ACCENT
+        } else {
+            ui::TEXT_PRIMARY
+        },
     )
 }
 

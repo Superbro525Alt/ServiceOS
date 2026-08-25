@@ -1,8 +1,12 @@
-#![no_std]
-#![no_main]
+#![cfg_attr(not(test), no_std)]
+#![cfg_attr(not(test), no_main)]
 
+mod assoc;
+mod bridge;
 mod control;
 mod navigation;
+mod persist;
+mod recent;
 mod render;
 mod state;
 
@@ -10,11 +14,14 @@ use rt::{ControlTag, RawMessage};
 use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
 
+use crate::assoc::AssocTable;
 use crate::control::{ControlFlow, poll_control};
 use crate::navigation::{reload_directory, reopen_directory};
+use crate::recent::RecentRing;
 use crate::render::render;
 use crate::state::{
     BUFFER_BYTES, BUFFER_HEIGHT, BUFFER_WIDTH, ExplorerEntry, ExplorerState, SURFACE_BUFFER_SLOTS,
+    ViewMode,
 };
 
 rt::entry!(main);
@@ -35,6 +42,8 @@ fn main() -> u64 {
     let surface_handle = startup.handles[0];
     let control_handle = startup.handles[1];
     let storage_handle = startup.handles[2];
+    let desktop_handle =
+        rt::lookup_service(bootstrap, rt::ServiceId::DesktopShell).unwrap_or(rt::INVALID_HANDLE);
     let mut state = ExplorerState {
         width: startup.words[1] as u32,
         height: startup.words[2] as u32,
@@ -48,6 +57,14 @@ fn main() -> u64 {
         selected_index: 0,
         scroll_offset: 0,
         load_failed: false,
+        view_mode: ViewMode::Directory,
+        recent_sel: 0,
+        press: None,
+        dragging: false,
+        open_with_pick: None,
+        assoc: AssocTable::empty(),
+        recent: RecentRing::empty(),
+        persist_dir: rt::INVALID_HANDLE,
     };
 
     let mut buffers = match ui::SurfaceBuffers::<SURFACE_BUFFER_SLOTS>::new(
@@ -77,6 +94,7 @@ fn main() -> u64 {
             &mut buffers,
             &mut presenter,
             storage_handle,
+            desktop_handle,
             &mut state,
         ) {
             Ok(ControlFlow::Idle) => {}
@@ -86,6 +104,9 @@ fn main() -> u64 {
         }
 
         match startup.run(|| {
+            state.persist_dir = persist::ensure_store_dir(storage_handle);
+            persist::load_associations(state.persist_dir, &mut state.assoc);
+            persist::load_recent(state.persist_dir, &mut state.recent);
             let result = reopen_directory(&mut state, storage_handle)
                 .and_then(|_| reload_directory(&mut state));
             state.loading_initial_directory = false;

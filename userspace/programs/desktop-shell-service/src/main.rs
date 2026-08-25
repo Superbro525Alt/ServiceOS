@@ -120,6 +120,7 @@ fn main() -> u64 {
         pointer_y: (output.height / 2) as i32,
         drag_state: None,
         content_capture: None,
+        content_drag: None,
         pending_resize: None,
         notification: [0; MAX_NOTIFICATION_BYTES],
         notification_len: 0,
@@ -256,6 +257,16 @@ fn main() -> u64 {
                 state.notification_len = 0;
                 if render::render_desktop(&mut state).is_err() {
                     return 0xfe15;
+                }
+            }
+            if state
+                .content_drag
+                .as_ref()
+                .is_some_and(|drag| drag.expired(now))
+            {
+                state.content_drag = None;
+                if render::render_desktop(&mut state).is_err() {
+                    return 0xfe1b;
                 }
             }
             if now >= state.next_status_refresh {

@@ -149,10 +149,34 @@ pub(super) fn handle_pointer_up(state: &mut DesktopState, x: i32, y: i32) -> rt:
             0,
         )?;
     }
+    complete_content_drop(state, x, y)?;
     if let Some(DragState::Resize { .. }) = state.drag_state {
         crate::windows::flush_pending_resize(state)?;
     }
     Ok(focused_surface_id(state))
+}
+
+/// Finishes an armed content drag (file dragged out of files-app): the drop
+/// target is whatever sits under the pointer now. Launcher icons receive the
+/// open-path intent, the bare desktop canvas reveals the file in files-app,
+/// and dropping back over any window cancels.
+fn complete_content_drop(state: &mut DesktopState, x: i32, y: i32) -> rt::Result<()> {
+    let Some(drag) = state.content_drag.take() else {
+        return Ok(());
+    };
+    let Ok(path) = core::str::from_utf8(&drag.path[..drag.path_len]) else {
+        return Ok(());
+    };
+    match crate::windows::drop_decision(&hit_test::hit_test(state, x, y)) {
+        crate::windows::DropDecision::Deliver(app_id) => {
+            crate::windows::deliver_open_intent(state, app_id, path)?;
+            state.pending_shell_refresh.set();
+        }
+        crate::windows::DropDecision::Cancel => {
+            state.pending_shell_refresh.set();
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn handle_pointer_scroll(

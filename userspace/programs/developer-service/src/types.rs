@@ -35,6 +35,15 @@ impl<const N: usize> FixedBytes<N> {
     }
 }
 
+/// Where a job's build output lives: local artifact handle once the worker
+/// reports one, or an exported-pending reference at the remote farm
+/// endpoint that owns the artifact.
+#[derive(Clone, Copy)]
+pub(crate) enum ExportState {
+    Local,
+    PendingRemote { endpoint: FixedBytes<MAX_PATH> },
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct ToolchainSlot {
     pub(crate) occupied: bool,
@@ -43,6 +52,9 @@ pub(crate) struct ToolchainSlot {
     pub(crate) format: DeveloperArtifactFormat,
     pub(crate) name: FixedBytes<MAX_NAME>,
     pub(crate) sdk_root: FixedBytes<MAX_PATH>,
+    /// Optional connection config from the descriptor (`remote_endpoint=`),
+    /// e.g. "farm@10.0.0.9:7900"; empty until a descriptor provides it.
+    pub(crate) remote_endpoint: FixedBytes<MAX_PATH>,
 }
 
 impl ToolchainSlot {
@@ -54,7 +66,12 @@ impl ToolchainSlot {
             format: DeveloperArtifactFormat::ServiceOsFlat,
             name: FixedBytes::empty(),
             sdk_root: FixedBytes::empty(),
+            remote_endpoint: FixedBytes::empty(),
         }
+    }
+
+    pub(crate) fn configured(&self) -> bool {
+        !self.remote_endpoint.as_bytes().is_empty()
     }
 }
 
@@ -93,6 +110,7 @@ pub(crate) struct JobSlot {
     pub(crate) report_handle: rt::Handle,
     pub(crate) sandbox: SandboxDecision,
     pub(crate) route: BuildRoute,
+    pub(crate) export: ExportState,
 }
 
 impl JobSlot {
@@ -113,6 +131,18 @@ impl JobSlot {
                 scope_count: 0,
             },
             route: routing::BuildRoute::DirectSpawn,
+            export: ExportState::Local,
+        }
+    }
+
+    pub(crate) fn exported_pending(&self) -> bool {
+        matches!(self.export, ExportState::PendingRemote { .. })
+    }
+
+    pub(crate) fn endpoint_bytes(&self) -> &[u8] {
+        match &self.export {
+            ExportState::Local => &[],
+            ExportState::PendingRemote { endpoint } => endpoint.as_bytes(),
         }
     }
 }

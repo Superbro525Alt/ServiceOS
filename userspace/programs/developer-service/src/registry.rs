@@ -94,7 +94,9 @@ pub(crate) fn family_of(name: &[u8], sdk_root: &[u8]) -> ToolchainFamily {
 }
 
 fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
-    haystack.windows(needle.len()).any(|window| window == needle)
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
 }
 
 /// Extract a dotted numeric version from the trailing "-" separated segments
@@ -137,7 +139,9 @@ pub(crate) fn parse_version(text: &[u8]) -> Option<ToolchainVersion> {
         }
         let mut value = 0u16;
         for byte in part {
-            value = value.saturating_mul(10).saturating_add((*byte - b'0') as u16);
+            value = value
+                .saturating_mul(10)
+                .saturating_add((*byte - b'0') as u16);
         }
         version.parts[version.len] = value;
         version.len += 1;
@@ -213,10 +217,7 @@ pub(crate) fn build_registry(
 }
 
 /// Render a parsed version back to dotted text for control-contract replies.
-pub(crate) fn format_version_text<'a>(
-    version: &ToolchainVersion,
-    out: &'a mut [u8],
-) -> &'a [u8] {
+pub(crate) fn format_version_text<'a>(version: &ToolchainVersion, out: &'a mut [u8]) -> &'a [u8] {
     let mut len = 0usize;
     for (index, part) in version.parts[..version.len].iter().enumerate() {
         if index > 0 {
@@ -303,14 +304,23 @@ mod tests {
 
     #[test]
     fn family_from_name_prefix() {
-        assert_eq!(family_of(b"rust-std-1.78", b"sdk/rust"), ToolchainFamily::Rust);
+        assert_eq!(
+            family_of(b"rust-std-1.78", b"sdk/rust"),
+            ToolchainFamily::Rust
+        );
         assert_eq!(family_of(b"gcc-cross", b"sdk/gcc"), ToolchainFamily::Gcc);
-        assert_eq!(family_of(b"llvm-17.1", b"sdk/llvm-17.1"), ToolchainFamily::Llvm);
+        assert_eq!(
+            family_of(b"llvm-17.1", b"sdk/llvm-17.1"),
+            ToolchainFamily::Llvm
+        );
     }
 
     #[test]
     fn family_from_sdk_root_fallback() {
-        assert_eq!(family_of(b"rustc-host", b"tools/rust/1.78"), ToolchainFamily::Rust);
+        assert_eq!(
+            family_of(b"rustc-host", b"tools/rust/1.78"),
+            ToolchainFamily::Rust
+        );
     }
 
     #[test]
@@ -319,7 +329,10 @@ mod tests {
             family_of(b"serviceos-native", b"packages/d/1.0.0/sdk/native"),
             ToolchainFamily::Native
         );
-        assert_eq!(family_of(b"linux-x64", b"packages/d/1.0.0/sdk/linux"), ToolchainFamily::Other);
+        assert_eq!(
+            family_of(b"linux-x64", b"packages/d/1.0.0/sdk/linux"),
+            ToolchainFamily::Other
+        );
     }
 
     #[test]
@@ -343,7 +356,10 @@ mod tests {
 
     #[test]
     fn version_absent_for_plain_names() {
-        assert_eq!(version_of(b"linux-x64", b"packages/d/1.0.0/sdk/linux"), None);
+        assert_eq!(
+            version_of(b"linux-x64", b"packages/d/1.0.0/sdk/linux"),
+            None
+        );
     }
 
     #[test]
@@ -383,7 +399,10 @@ mod tests {
 
     #[test]
     fn versionless_sorts_before_versioned() {
-        assert_eq!(compare_versions(None, Some(&parse_version(b"1").unwrap())), Ordering::Less);
+        assert_eq!(
+            compare_versions(None, Some(&parse_version(b"1").unwrap())),
+            Ordering::Less
+        );
         assert_eq!(compare_versions(None, None), Ordering::Equal);
     }
 

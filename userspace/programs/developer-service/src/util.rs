@@ -106,6 +106,7 @@ fn parse_toolchain_descriptor(text: &str) -> rt::Result<ToolchainSlot> {
             "state" => slot.state = parse_toolchain_state(value)?,
             "format" => slot.format = parse_format(value)?,
             "sdk_root" => slot.sdk_root.set(value.as_bytes())?,
+            "remote_endpoint" => slot.remote_endpoint.set(value.as_bytes())?,
             _ => {}
         }
     }
@@ -242,4 +243,23 @@ pub(crate) fn create_memory_from_bytes(bytes: &[u8]) -> rt::Result<rt::Handle> {
 
 pub(crate) fn duplicate_artifact_for_reply(handle: rt::Handle) -> rt::Result<rt::Handle> {
     rt::handle_duplicate(handle, rights::READ | rights::DUPLICATE | rights::TRANSFER)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn toolchain_descriptor_parses_remote_endpoint() {
+        let text = "name=macos-x64\r\ntarget=macos-x64\r\nstate=remote-only\r\nformat=macho64\r\nsdk_root=sdk/macos\r\nremote_endpoint=farm@10.0.0.9:7900\r\n";
+        let slot = parse_toolchain_descriptor(text).unwrap();
+        assert_eq!(slot.remote_endpoint.as_bytes(), b"farm@10.0.0.9:7900");
+        assert_eq!(slot.state, DeveloperToolchainState::RemoteOnly);
+    }
+
+    #[test]
+    fn toolchain_descriptor_defaults_to_unconfigured() {
+        let slot = parse_toolchain_descriptor("name=macos-x64\nstate=remote-only\n").unwrap();
+        assert!(!slot.configured());
+    }
 }

@@ -2,6 +2,7 @@
 #![cfg_attr(not(test), no_main)]
 
 mod consts;
+mod farm;
 mod protocol;
 mod registry;
 mod routing;

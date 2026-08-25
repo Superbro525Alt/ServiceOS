@@ -10,14 +10,35 @@ pub(crate) const RUNTIME_PROFILE_NONE: u32 = 0;
 pub(crate) enum BuildRoute {
     DirectSpawn,
     RuntimeEnv { env_id: u32 },
+    RemoteFarm { endpoint_id: u32 },
+}
+
+/// Route-kind codes used by the IDE reply tails: direct spawn, runtime
+/// environment, remote farm endpoint.
+pub(crate) const ROUTE_KIND_DIRECT: u64 = 0;
+pub(crate) const ROUTE_KIND_RUNTIME_ENV: u64 = 1;
+pub(crate) const ROUTE_KIND_REMOTE_FARM: u64 = 2;
+
+pub(crate) fn route_kind(route: BuildRoute) -> u64 {
+    match route {
+        BuildRoute::DirectSpawn => ROUTE_KIND_DIRECT,
+        BuildRoute::RuntimeEnv { .. } => ROUTE_KIND_RUNTIME_ENV,
+        BuildRoute::RemoteFarm { .. } => ROUTE_KIND_REMOTE_FARM,
+    }
 }
 
 /// Wire encoding carried to the worker: nonzero = routed through the
-/// runtime-service environment (env_id + 1), zero = direct spawn.
+/// runtime-service environment (env_id + 1), zero = direct spawn. Remote
+/// farm routes never spawn a local worker; their reserved range starts at
+/// 0x4000_0000 (endpoint_id + 1) so the encoding can never collide with an
+/// environment id.
 pub(crate) fn encode_route_word(route: BuildRoute) -> u64 {
     match route {
         BuildRoute::DirectSpawn => 0,
         BuildRoute::RuntimeEnv { env_id } => u64::from(env_id.wrapping_add(1)),
+        BuildRoute::RemoteFarm { endpoint_id } => {
+            0x4000_0000 | u64::from(endpoint_id.wrapping_add(1))
+        }
     }
 }
 
@@ -57,9 +78,7 @@ pub(crate) fn route_for(profile: u32, envs: &[RuntimeEnvSnapshot]) -> BuildRoute
         };
     }
     match best {
-        Some(env) => BuildRoute::RuntimeEnv {
-            env_id: env.env_id,
-        },
+        Some(env) => BuildRoute::RuntimeEnv { env_id: env.env_id },
         None => BuildRoute::DirectSpawn,
     }
 }
@@ -67,7 +86,9 @@ pub(crate) fn route_for(profile: u32, envs: &[RuntimeEnvSnapshot]) -> BuildRoute
 /// Probe the live runtime-service environment table. Returns None when the
 /// runtime service is unavailable or its contract answers unexpectedly; the
 /// caller treats that as the direct-spawn fallback.
-pub(crate) fn probe_runtime_envs(bootstrap: rt::Handle) -> Option<[RuntimeEnvSnapshot; MAX_RUNTIMES]> {
+pub(crate) fn probe_runtime_envs(
+    bootstrap: rt::Handle,
+) -> Option<[RuntimeEnvSnapshot; MAX_RUNTIMES]> {
     let runtime_handle = rt::lookup_service(bootstrap, rt::ServiceId::Runtime).ok()?;
     let result = list_envs(runtime_handle);
     let _ = rt::handle_close(runtime_handle);
@@ -145,8 +166,14 @@ mod tests {
     #[test]
     fn no_profile_routes_direct() {
         let envs = [ready(0, RuntimeKind::Posix)];
-        assert_eq!(route_for(RUNTIME_PROFILE_NONE, &envs), BuildRoute::DirectSpawn);
-        assert_eq!(route_for(RUNTIME_PROFILE_NONE, &[]), BuildRoute::DirectSpawn);
+        assert_eq!(
+            route_for(RUNTIME_PROFILE_NONE, &envs),
+            BuildRoute::DirectSpawn
+        );
+        assert_eq!(
+            route_for(RUNTIME_PROFILE_NONE, &[]),
+            BuildRoute::DirectSpawn
+        );
     }
 
     #[test]
@@ -165,13 +192,19 @@ mod tests {
             RuntimeEnvSnapshot::new(3, RuntimeKind::Posix, RuntimeEnvState::Denied),
             RuntimeEnvSnapshot::new(4, RuntimeKind::Posix, RuntimeEnvState::Destroyed),
         ];
-        assert_eq!(route_for(RuntimeKind::Posix as u32, &envs), BuildRoute::DirectSpawn);
+        assert_eq!(
+            route_for(RuntimeKind::Posix as u32, &envs),
+            BuildRoute::DirectSpawn
+        );
     }
 
     #[test]
     fn kind_mismatch_falls_back_direct() {
         let envs = [ready(1, RuntimeKind::Posix)];
-        assert_eq!(route_for(RuntimeKind::Windows as u32, &envs), BuildRoute::DirectSpawn);
+        assert_eq!(
+            route_for(RuntimeKind::Windows as u32, &envs),
+            BuildRoute::DirectSpawn
+        );
     }
 
     #[test]
@@ -190,15 +223,39 @@ mod tests {
     #[test]
     fn unavailable_probe_maps_to_direct_spawn() {
         assert_eq!(probe_runtime_envs(0), None);
-        assert_eq!(route_for(RuntimeKind::Posix as u32, &[]), BuildRoute::DirectSpawn);
+        assert_eq!(
+            route_for(RuntimeKind::Posix as u32, &[]),
+            BuildRoute::DirectSpawn
+        );
     }
 
     #[test]
     fn route_word_encoding_round_trips() {
         assert_eq!(encode_route_word(BuildRoute::DirectSpawn), 0);
+        assert_eq!(encode_route_word(BuildRoute::RuntimeEnv { env_id: 3 }), 4);
+    }
+
+    #[test]
+    fn farm_routes_use_reserved_encoding_range() {
+        let word = encode_route_word(BuildRoute::RemoteFarm { endpoint_id: 0 });
+        assert_eq!(word, 0x4000_0001);
+        assert!(word >= 0x4000_0000);
+        assert_ne!(
+            word,
+            encode_route_word(BuildRoute::RuntimeEnv { env_id: u32::MAX })
+        );
+    }
+
+    #[test]
+    fn route_kind_maps_each_variant() {
+        assert_eq!(route_kind(BuildRoute::DirectSpawn), ROUTE_KIND_DIRECT);
         assert_eq!(
-            encode_route_word(BuildRoute::RuntimeEnv { env_id: 3 }),
-            4
+            route_kind(BuildRoute::RuntimeEnv { env_id: 9 }),
+            ROUTE_KIND_RUNTIME_ENV
+        );
+        assert_eq!(
+            route_kind(BuildRoute::RemoteFarm { endpoint_id: 2 }),
+            ROUTE_KIND_REMOTE_FARM
         );
     }
 }

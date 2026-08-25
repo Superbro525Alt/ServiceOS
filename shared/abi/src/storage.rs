@@ -211,6 +211,19 @@ pub fn storage_find_mount_by_path(mounts: &[StorageMount], path: &[u8]) -> Optio
     })
 }
 
+/// True when `path` names a mounted namespace root exactly (e.g. `data/`,
+/// `home/`). Enumeration advertises these as virtual directories even when no
+/// concrete entry backs them yet, so opening one must not require an existing
+/// entry.
+pub fn storage_path_is_mount_root(mounts: &[StorageMount], path: &[u8]) -> bool {
+    !path.is_empty()
+        && storage_resolve_mount(mounts, path).is_some_and(|mount| {
+            mount.path_len > 0
+                && path.len() == mount.path_len
+                && path == &mount.path[..mount.path_len]
+        })
+}
+
 pub fn storage_unmount_busy(open_paths: &[&[u8]], prefix: &[u8]) -> bool {
     open_paths
         .iter()
@@ -311,6 +324,20 @@ mod tests {
         assert_eq!(resolve(b"tmp/x").as_deref(), Some(&b"tmp/"[..]));
         assert_eq!(resolve(b"scratch/f").as_deref(), Some(&b"scratch/"[..]));
         assert_eq!(resolve(b"boot.bin").as_deref(), Some(&b""[..]));
+    }
+
+    #[test]
+    fn mount_roots_identified_without_backing_entries() {
+        let mounts = table();
+        assert!(storage_path_is_mount_root(&mounts, b"home/"));
+        assert!(storage_path_is_mount_root(&mounts, b"tmp/"));
+        // Child inside a mount is not itself a mount root.
+        assert!(!storage_path_is_mount_root(&mounts, b"home/user/a.txt"));
+        // Look-alikes and non-paths are not mount roots.
+        assert!(!storage_path_is_mount_root(&mounts, b"homes/"));
+        assert!(!storage_path_is_mount_root(&mounts, b"home"));
+        assert!(!storage_path_is_mount_root(&mounts, b"boot.bin"));
+        assert!(!storage_path_is_mount_root(&mounts, b""));
     }
 
     #[test]

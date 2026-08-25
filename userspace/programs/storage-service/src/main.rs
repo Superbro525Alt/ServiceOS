@@ -143,6 +143,7 @@ fn main() -> u64 {
 
     selftest::run_boot_selftest(
         &mut mounts,
+        &entries[..entry_count],
         &mut mutable_entries,
         &mut blob_sessions,
         &mut directory_sessions,

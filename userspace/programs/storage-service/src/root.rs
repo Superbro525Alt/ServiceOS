@@ -9,8 +9,9 @@ use crate::{
     BlobSession, DirectorySession, EntrySlot, MAX_BLOB_SESSIONS, MAX_DIRECTORY_SESSIONS,
     MAX_MUTABLE_ENTRIES, MAX_STORAGE_PATH, MountTable, MutableEntry, PersistentStore,
     path::{
-        directory_child_from_path, directory_exists, find_mutable_entry, is_mutable_path,
-        path_matches_prefix, resolve_mount, subtree_has_entries, valid_directory_path,
+        directory_child_from_path, directory_exists, directory_openable, find_mutable_entry,
+        is_mutable_path, path_matches_prefix, resolve_mount, subtree_has_entries,
+        valid_directory_path,
     },
     persistent::{ensure_boot_root, persist_state},
     util::{
@@ -572,7 +573,7 @@ pub(crate) fn stamp_blob_session(
     session
 }
 
-fn handle_directory_open_request(
+pub(crate) fn handle_directory_open_request(
     mounts: &mut MountTable,
     entries: &[EntrySlot],
     mutable_entries: &[MutableEntry; MAX_MUTABLE_ENTRIES],
@@ -603,7 +604,7 @@ fn handle_directory_open_request(
         return Ok(());
     }
 
-    if !directory_exists(entries, mutable_entries, path) {
+    if !directory_openable(mounts, entries, mutable_entries, path) {
         send_directory_open_reply(reply_handle, StorageStatus::NotFound, None);
         return Ok(());
     }

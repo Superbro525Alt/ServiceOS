@@ -144,8 +144,9 @@ fn handle_pointer_down(
     if matches!(
         state.entries[index].kind,
         crate::state::EntryKind::Parent | crate::state::EntryKind::Directory
-    ) {
-        open_selected(state, storage_handle)?;
+    ) && open_selected(state, storage_handle).is_err()
+    {
+        state.load_failed = true;
     }
     Ok(true)
 }
@@ -186,7 +187,10 @@ fn handle_key_down(
             return Ok(true);
         }
         KEY_ENTER | KEY_RIGHT => {
-            return open_selected(state, storage_handle).map(|_| true);
+            if open_selected(state, storage_handle).is_err() {
+                state.load_failed = true;
+            }
+            return Ok(true);
         }
         KEY_LEFT | KEY_BACKSPACE => {
             if modifiers & MOD_SHIFT != 0 {
@@ -196,8 +200,11 @@ fn handle_key_down(
             }
             if state.current_path_len != 0 {
                 navigate_parent(state);
-                reopen_directory(state, storage_handle)?;
-                reload_directory(state)?;
+                let result =
+                    reopen_directory(state, storage_handle).and_then(|_| reload_directory(state));
+                if result.is_err() {
+                    state.load_failed = true;
+                }
                 return Ok(true);
             }
         }

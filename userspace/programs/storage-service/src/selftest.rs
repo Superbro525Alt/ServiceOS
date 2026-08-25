@@ -5,10 +5,10 @@ use rt::{
 use serviceos_userspace_runtime as rt;
 
 use crate::{
-    BlobSession, DirectorySession, INITIAL_FILE_CAPACITY, MAX_BLOB_SESSIONS,
+    BlobSession, DirectorySession, EntrySlot, INITIAL_FILE_CAPACITY, MAX_BLOB_SESSIONS,
     MAX_DIRECTORY_SESSIONS, MAX_MUTABLE_ENTRIES, MountTable, MutableEntry, PersistentStore,
     path::find_mutable_entry,
-    persistent::{persist_state, release_blob_session},
+    persistent::{persist_state, release_blob_session, release_directory_session},
     root::try_unmount,
 };
 
@@ -19,6 +19,7 @@ const SELFTEST_PAYLOAD: &[u8] = b"serviceos-mount-selftest";
 
 pub(crate) fn run_boot_selftest(
     mounts: &mut MountTable,
+    entries: &[EntrySlot],
     mutable_entries: &mut [MutableEntry; MAX_MUTABLE_ENTRIES],
     blob_sessions: &mut [BlobSession; MAX_BLOB_SESSIONS],
     directory_sessions: &mut [DirectorySession; MAX_DIRECTORY_SESSIONS],
@@ -190,7 +191,85 @@ pub(crate) fn run_boot_selftest(
         )),
     }
 
+    // 7. Mounted namespace roots must open even without backing entries
+    // (this is how the files app opens `data/` and `home/`).
+    for root_path in [SELFTEST_PREFIX, b"home/" as &[u8]] {
+        let opened = probe_mount_root_open(
+            mounts,
+            entries,
+            mutable_entries,
+            directory_sessions,
+            root_path,
+        );
+        let shown = core::str::from_utf8(root_path).unwrap_or("?");
+        logf_args(format_args!(
+            "selftest mount-root-open {shown} ok={}",
+            opened as u32
+        ));
+    }
+
     let _ = persist_state(persistent_store, mounts, mutable_entries);
+}
+
+/// Drive the real `DirectoryOpenRequest` handler for a mounted namespace root
+/// and report whether it answered `Ok`.
+fn probe_mount_root_open(
+    mounts: &mut MountTable,
+    entries: &[EntrySlot],
+    mutable_entries: &[MutableEntry; MAX_MUTABLE_ENTRIES],
+    directory_sessions: &mut [DirectorySession; MAX_DIRECTORY_SESSIONS],
+    path: &[u8],
+) -> bool {
+    let Some(pair) = rt::channel_create().ok() else {
+        return false;
+    };
+    let mut request = rt::RawMessage::empty(rt::StorageTag::DirectoryOpenRequest as u32);
+    let packed = match crate::util::pack_bytes(path, &mut request.words[2..]) {
+        Ok(packed) => packed,
+        Err(_) => {
+            let _ = rt::handle_close(pair.first);
+            let _ = rt::handle_close(pair.second);
+            return false;
+        }
+    };
+    request.word_count = 2 + packed;
+    request.words[0] = path.len() as u64;
+    request.words[1] = 0;
+    request.handle_count = 1;
+    request.handles[0] = pair.second;
+    request.handle_rights[0] = rt::rights::SEND;
+
+    // The handler consumes and closes `pair.second` when it sends its reply.
+    if crate::root::handle_directory_open_request(
+        mounts,
+        entries,
+        mutable_entries,
+        directory_sessions,
+        &request,
+    )
+    .is_err()
+    {
+        return false;
+    }
+
+    let mut reply = rt::RawMessage::empty(0);
+    let received = rt::channel_receive_blocking(pair.first, &mut reply).is_ok();
+    let _ = rt::handle_close(pair.first);
+    if !received {
+        return false;
+    }
+    if reply.handle_count > 0 {
+        // We own the received session-endpoint capability; drop it.
+        let _ = rt::handle_close(reply.handles[0]);
+    }
+    let opened = reply.word_count >= 1 && reply.words[0] == StorageStatus::Ok as u32 as u64;
+    if let Some(session) = directory_sessions
+        .iter_mut()
+        .find(|session| session.occupied && &session.path[..session.path_len] == path)
+    {
+        release_directory_session(session);
+    }
+    opened
 }
 
 fn ensure_selftest_file(

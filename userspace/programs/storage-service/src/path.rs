@@ -41,6 +41,27 @@ pub(crate) fn valid_directory_path(path: &[u8]) -> bool {
     path.is_empty() || path.ends_with(b"/")
 }
 
+/// True when `path` names a mounted namespace root exactly (e.g. `data/`,
+/// `home/`). Mount roots are advertised by directory enumeration as virtual
+/// directories even when no concrete entry backs them yet, so opening them
+/// must not require an existing entry.
+pub(crate) fn path_is_mount_root(mounts: &MountTable, path: &[u8]) -> bool {
+    serviceos_userspace_runtime::storage_path_is_mount_root(mounts, path)
+}
+
+/// A directory can be opened when it is the root, a concrete boot/mutable
+/// directory, or the root of a mounted namespace.
+pub(crate) fn directory_openable(
+    mounts: &MountTable,
+    entries: &[EntrySlot],
+    mutable_entries: &[MutableEntry; MAX_MUTABLE_ENTRIES],
+    path: &[u8],
+) -> bool {
+    path.is_empty()
+        || path_is_mount_root(mounts, path)
+        || directory_exists(entries, mutable_entries, path)
+}
+
 pub(crate) fn path_matches_prefix(path: &[u8], prefix: &[u8]) -> bool {
     prefix.len() <= path.len() && path[..prefix.len()] == *prefix
 }

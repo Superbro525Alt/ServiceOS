@@ -63,7 +63,12 @@ pub(super) fn handle_lookup_request(
                 reply.words[1] = LookupStatus::Ok as u32 as u64;
                 reply.handle_count = 1;
                 reply.handles[0] = duplicated;
-                reply.handle_rights[0] = rights;
+                // Announce the full granted mask so the kernel installs the
+                // transferred capability with the duplicate/transfer rights
+                // this lookup intends to grant; a send-only mask yields
+                // receive-side capabilities that cannot be re-duplicated or
+                // forwarded by the client (first-boot setup launch failure).
+                reply.handle_rights[0] = rights | rt::rights::DUPLICATE | rt::rights::TRANSFER;
                 rt::channel_send(slots[service_index].control_handle, &reply)?;
                 let _ = rt::handle_close(duplicated);
                 let _ = emit_manager_event(

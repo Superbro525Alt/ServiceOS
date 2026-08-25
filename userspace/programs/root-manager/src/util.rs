@@ -338,6 +338,8 @@ pub(crate) fn service_id_from_word(value: u64) -> ServiceId {
         x if x == ServiceId::Developer as u32 => ServiceId::Developer,
         x if x == ServiceId::Clipboard as u32 => ServiceId::Clipboard,
         x if x == ServiceId::Security as u32 => ServiceId::Security,
+        x if x == ServiceId::SetupWizard as u32 => ServiceId::SetupWizard,
+        x if x == ServiceId::Backup as u32 => ServiceId::Backup,
         _ => ServiceId::RootManager,
     }
 }
@@ -370,6 +372,8 @@ pub(crate) fn image_id_from_word(value: u64) -> ServiceImageId {
         x if x == ServiceImageId::ClipboardService as u32 => ServiceImageId::ClipboardService,
         x if x == ServiceImageId::SoftwareCenterApp as u32 => ServiceImageId::SoftwareCenterApp,
         x if x == ServiceImageId::SecurityService as u32 => ServiceImageId::SecurityService,
+        x if x == ServiceImageId::SetupWizard as u32 => ServiceImageId::SetupWizard,
+        x if x == ServiceImageId::BackupService as u32 => ServiceImageId::BackupService,
         _ => ServiceImageId::RootManager,
     }
 }
@@ -430,6 +434,8 @@ pub(crate) fn service_name(service_id: ServiceId) -> &'static str {
         ServiceId::Developer => "developer-service",
         ServiceId::Clipboard => "clipboard-service",
         ServiceId::Security => "security-service",
+        ServiceId::SetupWizard => "setup-wizard",
+        ServiceId::Backup => "backup-service",
     }
 }
 

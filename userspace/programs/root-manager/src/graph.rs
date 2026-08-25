@@ -69,6 +69,7 @@ pub(crate) fn activate_base_service_graph(
     graph_status: &mut GraphStatus,
     boot_ui: &mut crate::boot_ui::BootUi,
     timing: &mut crate::timing::BringUpTiming,
+    include_on_demand: bool,
 ) -> rt::Result<()> {
     loop {
         let _ = crate::boot_ui::update(boot_ui, slots, *service_count, *graph_status);
@@ -95,7 +96,7 @@ pub(crate) fn activate_base_service_graph(
                 ServicePhase::Degraded | ServicePhase::Exited => continue,
             }
 
-            if slots[index].manifest.startup == ServiceStartupMode::OnDemand {
+            if slots[index].manifest.startup == ServiceStartupMode::OnDemand && !include_on_demand {
                 continue;
             }
             pending_eager = true;
@@ -523,16 +524,9 @@ pub(crate) fn supervision_loop(
                 continue;
             }
 
-            let _ = emit_manager_event(
-                slots,
-                *service_count,
-                LogSeverity::Error,
-                LogEvent::ServiceFailed,
-                service_id,
-                status.exit_code,
-            );
-
             if status.exit_code == 0 {
+                // Clean exits (setup wizard finishing first-boot setup,
+                // one-shot helpers) are lifecycle events, not failures.
                 slots[index].phase = ServicePhase::Exited;
                 slots[index].restart_requested = false;
                 publish_manager_status(
@@ -546,6 +540,15 @@ pub(crate) fn supervision_loop(
                 );
                 continue;
             }
+
+            let _ = emit_manager_event(
+                slots,
+                *service_count,
+                LogSeverity::Error,
+                LogEvent::ServiceFailed,
+                service_id,
+                status.exit_code,
+            );
 
             slots[index].consecutive_failures = slots[index].consecutive_failures.saturating_add(1);
             slots[index].crash_window.record(now);

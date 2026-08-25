@@ -105,6 +105,7 @@ pub(super) fn launch_is_authorized(caller: ServiceId, image_id: ServiceImageId) 
                 | ServiceImageId::MonitorApp
                 | ServiceImageId::TerminalApp
                 | ServiceImageId::SoftwareCenterApp
+                | ServiceImageId::MediaApp
         ),
         _ => false,
     }
@@ -113,7 +114,7 @@ pub(super) fn launch_is_authorized(caller: ServiceId, image_id: ServiceImageId) 
 pub(super) fn launch_image_is_authorized(caller: ServiceId) -> bool {
     matches!(
         caller,
-        ServiceId::Shell | ServiceId::Runtime | ServiceId::Developer
+        ServiceId::Shell | ServiceId::Runtime | ServiceId::Developer | ServiceId::SetupWizard
     )
 }
 
@@ -265,6 +266,16 @@ fn append_launch_grants(
                 handle_index,
             )?;
         }
+        ServiceImageId::MediaApp => {
+            append_service_launch_handle(
+                slots,
+                service_count,
+                ServiceId::Storage,
+                rights::SEND | rights::TRANSFER,
+                startup,
+                handle_index,
+            )?;
+        }
         ServiceImageId::MonitorApp => {
             append_service_launch_handle(
                 slots,
@@ -329,6 +340,17 @@ fn append_dynamic_launch_grants(
             slots,
             service_count,
             ServiceId::Console,
+            rights::SEND | rights::TRANSFER,
+            startup,
+            handle_index,
+        ),
+        // Setup-wizard launches (account-service during first-boot setup)
+        // receive the storage channel so the launched image can persist its
+        // own state; handles[0] stays the storage convention.
+        ServiceId::SetupWizard => append_service_launch_handle(
+            slots,
+            service_count,
+            ServiceId::Storage,
             rights::SEND | rights::TRANSFER,
             startup,
             handle_index,

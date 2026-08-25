@@ -184,13 +184,8 @@ fn render_launcher(state: &DesktopState) -> rt::Result<()> {
     } else {
         None
     };
-    let static_lines = [
-        launcher_line(state.apps[0]),
-        launcher_line(state.apps[1]),
-        launcher_line(state.apps[2]),
-        launcher_line(state.apps[3]),
-        launcher_line(state.apps[4]),
-    ];
+    let static_lines: [&str; crate::APP_COUNT] =
+        core::array::from_fn(|index| launcher_line(state.apps[index]));
     let mut marked: [FixedLogBuffer<20>; crate::APP_COUNT] =
         core::array::from_fn(|_| FixedLogBuffer::new());
     if dragging {

@@ -166,11 +166,13 @@ impl SourceKeys {
         if self.find_key(key_id).is_some() {
             return Err(KeystoreError::DuplicateKey);
         }
-        let has_active = self
-            .keys[..self.key_count]
+        let has_active = self.keys[..self.key_count]
             .iter()
             .any(|key| key.state == KeyState::Active);
-        let slot = match self.keys[..self.key_count].iter_mut().find(|key| key.key_id.is_empty()) {
+        let slot = match self.keys[..self.key_count]
+            .iter_mut()
+            .find(|key| key.key_id.is_empty())
+        {
             Some(slot) => slot,
             None if self.key_count < MAX_KEYS_PER_SOURCE => {
                 self.key_count += 1;
@@ -180,7 +182,11 @@ impl SourceKeys {
         };
         slot.key_id.set(key_id);
         slot.key_hex.set(key_hex);
-        slot.state = if has_active { KeyState::Retired } else { KeyState::Active };
+        slot.state = if has_active {
+            KeyState::Retired
+        } else {
+            KeyState::Active
+        };
         slot.retired_tick = 0;
         Ok(())
     }
@@ -192,8 +198,7 @@ impl SourceKeys {
         if self.find_key(new_key_id).is_none() {
             return Err(KeystoreError::UnknownKey);
         }
-        let Some(current_active) = self
-            .keys[..self.key_count]
+        let Some(current_active) = self.keys[..self.key_count]
             .iter()
             .position(|key| key.state == KeyState::Active)
         else {
@@ -204,8 +209,7 @@ impl SourceKeys {
         }
         self.keys[current_active].state = KeyState::Retired;
         self.keys[current_active].retired_tick = now;
-        let promoted = self
-            .keys[..self.key_count]
+        let promoted = self.keys[..self.key_count]
             .iter_mut()
             .find(|key| key.key_id.as_str() == new_key_id)
             .map(|key| {
@@ -560,14 +564,22 @@ impl RejectJournal {
             let Some(digest) = parts.next().and_then(parse_hex_u64) else {
                 continue;
             };
-            let tick = parts.next().and_then(|value| value.parse::<u64>().ok()).unwrap_or(0);
+            let tick = parts
+                .next()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(0);
             journal.record(source, reason, digest, tick);
         }
         // Rebuild recency from tick order: `recent()` derives order from the
         // write cursor, which a serialized dump cannot preserve.
         let mut kept = [RejectRecord::empty(); REJECT_RECORDS_MAX];
         let mut count = 0usize;
-        for record in journal.records.iter().copied().filter(|record| record.occupied) {
+        for record in journal
+            .records
+            .iter()
+            .copied()
+            .filter(|record| record.occupied)
+        {
             let mut position = count;
             while position > 0 && kept[position - 1].tick > record.tick {
                 kept[position] = kept[position - 1];
@@ -629,7 +641,10 @@ fn key_state_from_word(word: u64) -> (KeyState, u64) {
 
 #[test]
 fn key_state_words_roundtrip() {
-    assert_eq!(key_state_from_word(key_state_word(KeyState::Active, 0)), (KeyState::Active, 0));
+    assert_eq!(
+        key_state_from_word(key_state_word(KeyState::Active, 0)),
+        (KeyState::Active, 0)
+    );
     assert_eq!(
         key_state_from_word(key_state_word(KeyState::Retired, 9_999)),
         (KeyState::Retired, 9_999)
@@ -648,16 +663,13 @@ pub fn parse_keystore(text: &str) -> Keystore {
         if let Some(payload) = line.strip_prefix("window ") {
             let mut parts = payload.split(' ');
             if let (Some(name), Some(window)) = (parts.next(), parts.next()) {
-                current = keystore
-                    .sources[..keystore.source_count]
+                current = keystore.sources[..keystore.source_count]
                     .iter()
                     .position(|entry| entry.source.as_str() == name);
                 if current.is_none() && keystore.ensure_source(name).is_ok() {
                     current = Some(keystore.source_count - 1);
                 }
-                if let (Some(index), Ok(ticks)) =
-                    (current, window.parse::<u64>())
-                {
+                if let (Some(index), Ok(ticks)) = (current, window.parse::<u64>()) {
                     keystore.sources[index].accept_retired_ticks = ticks;
                 }
             }
@@ -667,9 +679,11 @@ pub fn parse_keystore(text: &str) -> Keystore {
             continue;
         };
         let mut parts = payload.split(' ');
-        let (Some(key_id), Some(key_hex), Some(state_word)) =
-            (parts.next(), parts.next(), parts.next().and_then(|v| v.parse::<u64>().ok()))
-        else {
+        let (Some(key_id), Some(key_hex), Some(state_word)) = (
+            parts.next(),
+            parts.next(),
+            parts.next().and_then(|v| v.parse::<u64>().ok()),
+        ) else {
             continue;
         };
         let Some(index) = current else { continue };
@@ -694,7 +708,11 @@ pub fn parse_keystore(text: &str) -> Keystore {
 
 #[cfg(test)]
 mod tests {
+    // Host-test shims: the service binary is `#![no_std]`, but these unit
+    // tests build against std for String/format! convenience.
+    extern crate std;
     use super::*;
+    use std::{format, string::String};
 
     const KEY_A: &str = "00112233445566778899aabbccddeeff";
     const KEY_B: &str = "ffeeddccbbaa99887766554433221100";
@@ -746,11 +764,14 @@ mod tests {
     #[test]
     fn signature_lines_are_excluded_from_canonical_form() {
         let feed = signed_feed(KEY_A);
-        assert_eq!(parse_feed_signature(&feed).map(|signature| signature.digest), {
-            let mut lines = [""; MAX_CANON_LINES];
-            let count = canonical_lines(sample_feed(), &mut lines);
-            Some(compute_feed_digest(KEY_A, &lines, count))
-        });
+        assert_eq!(
+            parse_feed_signature(&feed).map(|signature| signature.digest),
+            {
+                let mut lines = [""; MAX_CANON_LINES];
+                let count = canonical_lines(sample_feed(), &mut lines);
+                Some(compute_feed_digest(KEY_A, &lines, count))
+            }
+        );
         assert_eq!(
             parse_feed_signature("no signatures here"),
             None,
@@ -762,7 +783,10 @@ mod tests {
     fn tampered_feed_is_rejected() {
         let entry = source_with(&[("k1", KEY_A)], 0);
         let good = signed_feed(KEY_A);
-        assert_eq!(verify_signed_feed(&good, Some(&entry), 100), FeedVerdict::Accepted);
+        assert_eq!(
+            verify_signed_feed(&good, Some(&entry), 100),
+            FeedVerdict::Accepted
+        );
 
         // Flip a manifest field without updating the digest.
         let tampered = good.replace("1.2.0", "1.2.1");
@@ -772,8 +796,13 @@ mod tests {
         );
 
         // Corrupt the recorded digest itself (still parseable hex).
-        let good_digest = parse_feed_signature(&good).map(|signature| signature.digest).unwrap_or(0);
-        let corrupted = good.replace(&format!("{:016x}", good_digest), &format!("{:016x}", good_digest ^ 1));
+        let good_digest = parse_feed_signature(&good)
+            .map(|signature| signature.digest)
+            .unwrap_or(0);
+        let corrupted = good.replace(
+            &format!("{:016x}", good_digest),
+            &format!("{:016x}", good_digest ^ 1),
+        );
         assert_eq!(
             verify_signed_feed(&corrupted, Some(&entry), 100),
             FeedVerdict::RejectedTampered
@@ -796,7 +825,10 @@ mod tests {
             entry.find_key("k1").map(|key| key.state),
             Some(KeyState::Retired)
         );
-        assert_eq!(entry.find_key("k1").map(|key| key.retired_tick), Some(1_000));
+        assert_eq!(
+            entry.find_key("k1").map(|key| key.retired_tick),
+            Some(1_000)
+        );
 
         // Old key signs still valid inside the window...
         let old_sig = signed_feed(KEY_A);
@@ -812,7 +844,10 @@ mod tests {
 
         // New key verifies as active across the whole span.
         let new_sig = signed_feed_with_id("k2", KEY_B);
-        assert_eq!(verify_signed_feed(&new_sig, Some(&entry), 5_000), FeedVerdict::Accepted);
+        assert_eq!(
+            verify_signed_feed(&new_sig, Some(&entry), 5_000),
+            FeedVerdict::Accepted
+        );
 
         // A zero window disables old-key acceptance entirely.
         entry.accept_retired_ticks = 0;
@@ -825,11 +860,20 @@ mod tests {
     #[test]
     fn rotation_errors_are_distinct() {
         let mut entry = source_with(&[("k1", KEY_A)], 0);
-        assert_eq!(entry.rotate_active("missing", 10), Err(KeystoreError::UnknownKey));
-        assert_eq!(entry.rotate_active("k1", 10), Err(KeystoreError::SameKeyActive));
+        assert_eq!(
+            entry.rotate_active("missing", 10),
+            Err(KeystoreError::UnknownKey)
+        );
+        assert_eq!(
+            entry.rotate_active("k1", 10),
+            Err(KeystoreError::SameKeyActive)
+        );
         let _ = entry.enroll("k2", KEY_B);
         assert_eq!(entry.rotate_active("k2", 20), Ok(()));
-        assert_eq!(entry.rotate_active("k2", 30), Err(KeystoreError::SameKeyActive));
+        assert_eq!(
+            entry.rotate_active("k2", 30),
+            Err(KeystoreError::SameKeyActive)
+        );
         assert_eq!(entry.enroll("k2", KEY_A), Err(KeystoreError::DuplicateKey));
         assert_eq!(entry.enroll("bad", "zz"), Err(KeystoreError::InvalidKeyHex));
     }
@@ -888,16 +932,31 @@ mod tests {
         assert_eq!(parsed.source_count, 1);
         let parsed_entry = parsed.source_keys("extra").expect("entry");
         assert_eq!(parsed_entry.key_count, 2);
-        assert_eq!(parsed_entry.find_key("k2").map(|key| key.state), Some(KeyState::Active));
-        assert_eq!(parsed_entry.find_key("k1").map(|key| key.retired_tick), Some(1_000));
+        assert_eq!(
+            parsed_entry.find_key("k2").map(|key| key.state),
+            Some(KeyState::Active)
+        );
+        assert_eq!(
+            parsed_entry.find_key("k1").map(|key| key.retired_tick),
+            Some(1_000)
+        );
         assert_eq!(parsed_entry.accept_retired_ticks, 500);
 
         // Verdicts survive the roundtrip.
         let new_sig = signed_feed_with_id("k2", KEY_B);
         let old_sig = signed_feed(KEY_A);
-        assert_eq!(verify_signed_feed(&new_sig, parsed.source_keys("extra"), 2_000), FeedVerdict::Accepted);
-        assert_eq!(verify_signed_feed(&old_sig, parsed.source_keys("extra"), 1_200), FeedVerdict::AcceptedRetired);
-        assert_eq!(verify_signed_feed(&old_sig, parsed.source_keys("extra"), 2_000), FeedVerdict::RejectedStaleSignature);
+        assert_eq!(
+            verify_signed_feed(&new_sig, parsed.source_keys("extra"), 2_000),
+            FeedVerdict::Accepted
+        );
+        assert_eq!(
+            verify_signed_feed(&old_sig, parsed.source_keys("extra"), 1_200),
+            FeedVerdict::AcceptedRetired
+        );
+        assert_eq!(
+            verify_signed_feed(&old_sig, parsed.source_keys("extra"), 2_000),
+            FeedVerdict::RejectedStaleSignature
+        );
     }
 
     #[test]
@@ -930,6 +989,12 @@ mod tests {
         assert_eq!(parse_hex_u64("deadbeef"), Some(0xdeadbeef));
         assert_eq!(decode_key_hex("abc"), None);
         assert_eq!(decode_key_hex("zz"), None);
-        assert_eq!(decode_key_hex(KEY_A), Some([0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff]));
+        assert_eq!(
+            decode_key_hex(KEY_A),
+            Some([
+                0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
+                0xee, 0xff
+            ])
+        );
     }
 }

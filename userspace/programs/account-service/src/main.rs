@@ -48,31 +48,49 @@ fn main() -> u64 {
         return EXIT_STARTUP;
     }
 
-    let storage_handle = if startup.handle_count >= 1 {
+    // Launch contract (positional): handles[0] = launcher handshake channel,
+    // handles[1] = storage-service channel (manager launch grant for the
+    // setup-wizard launch); single-handle launches keep the historical
+    // handles[0] = storage convention. With fewer handles the store lives in
+    // memory.
+    let mut storage_handle = if startup.handle_count >= 2 {
+        Some(startup.handles[1])
+    } else if startup.handle_count == 1 {
         Some(startup.handles[0])
     } else {
         None
     };
 
-    let mut store = match load_store(storage_handle) {
-        Ok(store) => store,
-        Err(_) => return EXIT_STORE,
-    };
-
-    // Public control channel; handed to clients by whoever spawns us.
+    // Public control channel; handed to clients by whoever spawns us. For
+    // launcher handshakes the send-half goes out over handles[0] (legacy
+    // wizard launches); shell-driven launches publish nothing and rely on
+    // per-launcher delivery.
     let public = match rt::channel_create() {
         Ok(pair) => pair,
         Err(_) => return EXIT_STORE,
     };
-    // The launcher receives the reply channel via LaunchStoredImageReply
-    // semantics only when launched through the manager; standalone spawns can
-    // duplicate public.second before we close our side.
-    let _ = public.second;
+    if startup.handle_count >= 2 {
+        let mut announce = RawMessage::empty(0);
+        announce.word_count = 1;
+        announce.handle_count = 1;
+        announce.handles[0] = public.second;
+        announce.handle_rights[0] = rt::rights::SEND | rt::rights::DUPLICATE | rt::rights::TRANSFER;
+        let _ = rt::channel_send(startup.handles[0], &announce);
+    }
+
+    let mut store = match load_store(storage_handle) {
+        Ok(store) => store,
+        // Unreadable or malformed persisted state: keep serving identities
+        // from an in-memory default store instead of refusing to start.
+        Err(_) => {
+            storage_handle = None;
+            AccountStore::seed_defaults()
+        }
+    };
 
     loop {
         if lifecycle_stop_requested(bootstrap) {
             persist_store(storage_handle, &store);
-            let _ = rt::handle_close(public.first);
             if let Some(handle) = storage_handle {
                 let _ = rt::handle_close(handle);
             }
@@ -82,11 +100,24 @@ fn main() -> u64 {
         let mut request = RawMessage::empty(0);
         match rt::channel_receive_nonblocking(public.first, &mut request) {
             Ok(()) => {
+                let _ = rt::write_logf(
+                    "account",
+                    format_args!(
+                        "request tag={:#x} words={} handles={}",
+                        request.tag, request.word_count, request.handle_count
+                    ),
+                );
                 let mut scratch = RequestScratch::new();
                 let mut response = RawMessage::empty(0);
                 protocol::handle_request(&mut store, &request, &mut response, &mut scratch);
                 if response.tag != 0 {
-                    let _ = rt::channel_send(request.handles[0], &response);
+                    let sent = rt::channel_send(request.handles[0], &response);
+                    if sent.is_err() {
+                        let _ = rt::write_logf(
+                            "account",
+                            format_args!("reply send failed tag={:#x}", response.tag),
+                        );
+                    }
                     let _ = rt::handle_close(request.handles[0]);
                 }
             }
@@ -113,16 +144,77 @@ fn lifecycle_stop_requested(bootstrap: rt::Handle) -> bool {
     }
 }
 
+/// Bounded storage round-trip: send `request` and poll for the reply until
+/// `timeout_ticks` elapse. The kernel's timed-receive flag is unreliable, so
+/// bounded waits are built from nonblocking receives plus yields.
+fn storage_rpc(
+    endpoint: rt::Handle,
+    request: &mut RawMessage,
+    timeout_ticks: u64,
+) -> Result<RawMessage, ()> {
+    let pair = rt::channel_create().map_err(|_| ())?;
+    request.handle_count = 1;
+    request.handles[0] = pair.second;
+    request.handle_rights[0] = rt::rights::SEND;
+    let send_result = rt::channel_send(endpoint, request);
+    let _ = rt::handle_close(pair.second);
+    send_result.map_err(|_| ())?;
+
+    let deadline = rt::monotonic_now()
+        .unwrap_or(0)
+        .saturating_add(timeout_ticks);
+    let response = loop {
+        let mut received = RawMessage::empty(0);
+        match rt::channel_receive_nonblocking(pair.first, &mut received) {
+            Ok(()) => break received,
+            Err(rt::Error::QueueEmpty) => {}
+            Err(_) => {
+                let _ = rt::handle_close(pair.first);
+                return Err(());
+            }
+        }
+        if rt::monotonic_now().unwrap_or(0) >= deadline {
+            let _ = rt::handle_close(pair.first);
+            return Err(());
+        }
+        let _ = rt::yield_current();
+    };
+    let _ = rt::handle_close(pair.first);
+    Ok(response)
+}
+
 fn load_store(storage_handle: Option<rt::Handle>) -> Result<AccountStore, ()> {
+    const OPEN_REQUEST: u32 = 0x500;
+    const OPEN_REPLY: u32 = 0x501;
+    const OPEN_OK: u32 = 0;
+    const OPEN_NOT_FOUND: u32 = 1;
+
     let Some(storage_handle) = storage_handle else {
         return Ok(AccountStore::seed_defaults());
     };
     let mut bytes = [0u8; MAX_STORE_BYTES];
-    let loaded = match rt::storage_open(storage_handle, ACCOUNTS_PATH) {
-        Ok((blob, _)) => {
+    let mut request = RawMessage::empty(OPEN_REQUEST);
+    request.word_count = 1 + ((ACCOUNTS_PATH.len() + 7) / 8) as u32;
+    request.words[0] = ACCOUNTS_PATH.len() as u64;
+    let mut cursor = 1usize;
+    for group in ACCOUNTS_PATH.as_bytes().chunks(8) {
+        let mut packed = [0u8; 8];
+        packed[..group.len()].copy_from_slice(group);
+        request.words[cursor] = u64::from_le_bytes(packed);
+        cursor += 1;
+    }
+    let response = storage_rpc(storage_handle, &mut request, 300)?;
+    if response.tag != OPEN_REPLY || response.word_count < 2 {
+        return Err(());
+    }
+    match response.words[0] as u32 {
+        OPEN_NOT_FOUND => 0,
+        OPEN_OK => {
+            let blob = response.handles[0];
+            let len = (response.words[1] as usize).min(bytes.len());
             let mut offset = 0usize;
-            while offset < bytes.len() {
-                match rt::storage_read(blob, offset, &mut bytes[offset..]) {
+            while offset < len {
+                match rt::storage_read(blob, offset, &mut bytes[offset..len]) {
                     Ok(0) => break,
                     Ok(read) => offset += read,
                     Err(_) => {
@@ -132,16 +224,16 @@ fn load_store(storage_handle: Option<rt::Handle>) -> Result<AccountStore, ()> {
                 }
             }
             let _ = rt::storage_blob_close(blob);
-            offset
+            len
         }
-        Err(rt::Error::NotFound) => 0,
-        Err(_) => return Err(()),
+        _ => return Err(()),
     };
-    if loaded == 0 {
+    if bytes.iter().all(|&byte| byte == 0) {
         // First boot: seed defaults so the next mutation persists them.
         return Ok(AccountStore::seed_defaults());
     }
-    let text = str::from_utf8(&bytes[..loaded]).map_err(|_| ())?;
+    let text = str::from_utf8(&bytes).map_err(|_| ())?;
+    let text = text.trim_end_matches('\0');
     parse_store(text).map_err(|_| ())
 }
 

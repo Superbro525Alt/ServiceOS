@@ -23,6 +23,8 @@ pub(crate) fn service_id_from_word(value: u64) -> ServiceId {
         x if x == ServiceId::Developer as u32 => ServiceId::Developer,
         x if x == ServiceId::Clipboard as u32 => ServiceId::Clipboard,
         x if x == ServiceId::Security as u32 => ServiceId::Security,
+        x if x == ServiceId::SetupWizard as u32 => ServiceId::SetupWizard,
+        x if x == ServiceId::Backup as u32 => ServiceId::Backup,
         _ => ServiceId::RootManager,
     }
 }
@@ -161,6 +163,8 @@ pub(crate) fn service_name(service_id: ServiceId) -> &'static str {
         ServiceId::Developer => "developer-service",
         ServiceId::Clipboard => "clipboard-service",
         ServiceId::Security => "security-service",
+        ServiceId::SetupWizard => "setup-wizard",
+        ServiceId::Backup => "backup-service",
     }
 }
 

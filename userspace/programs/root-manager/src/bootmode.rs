@@ -30,11 +30,19 @@ pub(crate) const REDUCED_CORE: [ServiceId; 9] = [
     ServiceId::Security,
 ];
 
+/// Minimal recovery bring-up: persistent storage for restore sources and
+/// targets, a serial console for the operator, and the backup service that
+/// exposes export/restore operations over its public channel. Everything else
+/// in the catalog is pruned.
+pub(crate) const RECOVERY_CORE: [ServiceId; 3] =
+    [ServiceId::Storage, ServiceId::Console, ServiceId::Backup];
+
 #[derive(Clone, Copy, Eq, PartialEq, Debug)]
 pub(crate) enum BootMode {
     Full,
     Reduced,
     Safe,
+    Recovery,
 }
 
 impl BootMode {
@@ -42,6 +50,7 @@ impl BootMode {
         match word {
             1 => BootMode::Reduced,
             2 => BootMode::Safe,
+            3 => BootMode::Recovery,
             _ => BootMode::Full,
         }
     }
@@ -51,7 +60,15 @@ impl BootMode {
             BootMode::Full => "full",
             BootMode::Reduced => "reduced",
             BootMode::Safe => "safe",
+            BootMode::Recovery => "recovery",
         }
+    }
+
+    /// True when on-demand services in the kept set should be started during
+    /// graph activation (recovery needs the on-demand backup service running
+    /// so its restore operations are reachable without the shell).
+    pub(crate) fn activates_on_demand(self) -> bool {
+        matches!(self, BootMode::Recovery)
     }
 
     pub(crate) fn core_set(self) -> &'static [ServiceId] {
@@ -59,6 +76,7 @@ impl BootMode {
             BootMode::Full => &[],
             BootMode::Reduced => &REDUCED_CORE,
             BootMode::Safe => &SAFE_CORE,
+            BootMode::Recovery => &RECOVERY_CORE,
         }
     }
 }

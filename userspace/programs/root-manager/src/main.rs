@@ -167,6 +167,7 @@ fn main() -> u64 {
         &mut graph_status,
         &mut boot_ui,
         &mut timing,
+        boot_mode.activates_on_demand(),
     )
     .is_err()
     {

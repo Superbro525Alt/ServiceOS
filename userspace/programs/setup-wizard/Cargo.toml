@@ -1,0 +1,17 @@
+[package]
+name = "serviceos-setup-wizard"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+serviceos-userspace-runtime = { path = "../runtime" }
+serviceos-account-service = { path = "../account-service" }
+
+[lib]
+name = "serviceos_setup_wizard"
+path = "src/lib.rs"
+test = true
+
+[[bin]]
+name = "serviceos-setup-wizard"
+path = "src/main.rs"

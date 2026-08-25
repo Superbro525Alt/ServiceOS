@@ -5,7 +5,7 @@ use serviceos_bundle::{
 };
 use serviceos_userspace_runtime as rt;
 
-pub(crate) const MAX_SERVICE_SLOTS: usize = 16;
+pub(crate) const MAX_SERVICE_SLOTS: usize = 20;
 pub(crate) const MAX_INDEX_BYTES: usize = BOOT_STORE_INDEX_TEXT_MAX;
 pub(crate) const MAX_MANIFEST_BYTES: usize = BOOT_STORE_MANIFEST_TEXT_MAX;
 

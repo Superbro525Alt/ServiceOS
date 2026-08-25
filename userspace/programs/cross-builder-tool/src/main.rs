@@ -609,9 +609,7 @@ out=packages/developer-service/1.0.0/projects/hello-cross/hello-cross\n";
     #[test]
     fn out_of_scope_request_is_rejected() {
         let mut spec = parse(HOST_TEXT);
-        assert!(spec
-            .request_out
-            .set(b"packages/elsewhere/escape.bin"));
+        assert!(spec.request_out.set(b"packages/elsewhere/escape.bin"));
         assert!(!path_in_scopes(
             &spec.scopes[..spec.scope_count],
             &spec.request_out
@@ -621,9 +619,10 @@ out=packages/developer-service/1.0.0/projects/hello-cross/hello-cross\n";
     #[test]
     fn sibling_prefix_is_not_contained() {
         let mut spec = parse(HOST_TEXT);
-        assert!(spec
-            .request_in
-            .set(b"packages/developer-service/1.0.0/projects/hello-crossx/f.txt"));
+        assert!(
+            spec.request_in
+                .set(b"packages/developer-service/1.0.0/projects/hello-crossx/f.txt")
+        );
         assert!(!path_in_scopes(
             &spec.scopes[..spec.scope_count],
             &spec.request_in
@@ -633,23 +632,32 @@ out=packages/developer-service/1.0.0/projects/hello-cross/hello-cross\n";
     #[test]
     fn net_allowed_fails_validation_gate() {
         let text = *b"fs=ws/src\nnet=allowed\nin=ws/src/a.txt\nout=ws/src/a.out\n";
-        let end = text.iter().position(|byte| *byte == 0).unwrap_or(text.len());
+        let end = text
+            .iter()
+            .position(|byte| *byte == 0)
+            .unwrap_or(text.len());
         let spec = parse(&text[..end]);
         assert!(!spec.net_denied);
-        assert!(path_in_scopes(&spec.scopes[..spec.scope_count], &spec.request_in));
+        assert!(path_in_scopes(
+            &spec.scopes[..spec.scope_count],
+            &spec.request_in
+        ));
     }
 
     #[test]
     fn malformed_text_is_rejected() {
         for bad in [
             &b""[..],
-            b"net=denied\nin=x\nout=y\n",           // no scopes
-            b"fs=ws/src\nnet=denied\nin=x\n",       // no out
-            b"fs=\nnet=denied\nin=x\nout=y\n",      // empty scope value
-            b"garbage without equals\n",            // no key=value lines
-            &[0u8; 8][..],                          // nul-terminated empty
+            b"net=denied\nin=x\nout=y\n",      // no scopes
+            b"fs=ws/src\nnet=denied\nin=x\n",  // no out
+            b"fs=\nnet=denied\nin=x\nout=y\n", // empty scope value
+            b"garbage without equals\n",       // no key=value lines
+            &[0u8; 8][..],                     // nul-terminated empty
         ] {
-            assert!(parse_sandbox_text(bad).is_none(), "expected reject: {bad:?}");
+            assert!(
+                parse_sandbox_text(bad).is_none(),
+                "expected reject: {bad:?}"
+            );
         }
     }
 

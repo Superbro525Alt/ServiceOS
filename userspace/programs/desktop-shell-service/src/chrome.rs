@@ -221,7 +221,10 @@ mod tests {
     fn overlay_rects_match_chrome_geometry() {
         let chrome = chrome();
         let (sx, sy, sw, sh) = overlay_rect(&chrome, OverlayMode::Switcher).unwrap();
-        assert_eq!((sw, sh), (crate::SWITCHER_WIDTH as i32, crate::SWITCHER_HEIGHT as i32));
+        assert_eq!(
+            (sw, sh),
+            (crate::SWITCHER_WIDTH as i32, crate::SWITCHER_HEIGHT as i32)
+        );
         assert_eq!(sx, (1280 - crate::SWITCHER_WIDTH as i32) / 2);
         assert_eq!(sy, (800 - crate::SWITCHER_HEIGHT as i32) / 2);
         let (cx, cy, _, _) = overlay_rect(&chrome, OverlayMode::ClipboardHistory).unwrap();

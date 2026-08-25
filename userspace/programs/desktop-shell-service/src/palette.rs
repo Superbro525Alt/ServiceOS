@@ -1,7 +1,7 @@
 use serviceos_userspace_runtime::DesktopAppId;
 
 use crate::{
-    state::{AppSlot, OVERLAY_RESULT_MAX, PaletteAction, PALETTE_ACTION_MAX, APP_COUNT},
+    state::{APP_COUNT, AppSlot, OVERLAY_RESULT_MAX, PALETTE_ACTION_MAX, PaletteAction},
     windows,
 };
 
@@ -9,8 +9,7 @@ pub(crate) fn palette_matches(
     state: &crate::DesktopState,
     results: &mut [PaletteAction; OVERLAY_RESULT_MAX],
 ) -> usize {
-    let query =
-        core::str::from_utf8(&state.palette_query[..state.palette_query_len]).unwrap_or("");
+    let query = core::str::from_utf8(&state.palette_query[..state.palette_query_len]).unwrap_or("");
     rank_palette(
         &state.apps,
         state.focused_app,
@@ -201,7 +200,10 @@ mod tests {
         let (results, count) = rank(&apps, Some(DesktopAppId::Terminal), &[], 0, "");
         assert_eq!(count, OVERLAY_RESULT_MAX);
         assert_eq!(results[0], PaletteAction::Launch(DesktopAppId::Terminal));
-        let launches = results[..count].iter().filter(|action| matches!(action, PaletteAction::Launch(_))).count();
+        let launches = results[..count]
+            .iter()
+            .filter(|action| matches!(action, PaletteAction::Launch(_)))
+            .count();
         let system = count - launches;
         assert!(launches >= 1);
         assert!(system >= 1, "system actions must rank alongside apps");

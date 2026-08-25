@@ -173,7 +173,10 @@ struct RemoveSnapshot {
     was_active: bool,
 }
 
-fn capture_remove_snapshot(package_handle: rt::Handle, service_id: ServiceId) -> Option<RemoveSnapshot> {
+fn capture_remove_snapshot(
+    package_handle: rt::Handle,
+    service_id: ServiceId,
+) -> Option<RemoveSnapshot> {
     let mut installed = [0u8; 24];
     let mut active = [0u8; 24];
     let mut rollback = [0u8; 24];
@@ -203,14 +206,21 @@ fn remove_cleanup_summary(snapshot: Option<RemoveSnapshot>) -> heapless_string::
     let mut text = heapless_string::String::new();
     match snapshot {
         Some(snapshot) => {
-            let version = str::from_utf8(&snapshot.version[..snapshot.version_len])
-                .unwrap_or("-");
+            let version = str::from_utf8(&snapshot.version[..snapshot.version_len]).unwrap_or("-");
             let _ = core::fmt::Write::write_fmt(
                 &mut text,
                 format_args!(
                     "v{} deactivated={} journal-cleared rollback-kept gc=reclaims",
-                    if snapshot.version_len > 0 { version } else { "-" },
-                    if snapshot.was_active { "yes" } else { "not-running" },
+                    if snapshot.version_len > 0 {
+                        version
+                    } else {
+                        "-"
+                    },
+                    if snapshot.was_active {
+                        "yes"
+                    } else {
+                        "not-running"
+                    },
                 ),
             );
         }

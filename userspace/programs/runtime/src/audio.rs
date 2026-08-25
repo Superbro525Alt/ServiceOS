@@ -1,7 +1,8 @@
 use crate::{
     AudioEndpointStatusInfo, AudioStatus, AudioStreamDirection, AudioStreamInfo, AudioTag,
     AudioToneRequest, Error, Handle, RawMessage, Result, audio_endpoint_backend_from_word,
-    audio_endpoint_direction_from_word, audio_endpoint_info, audio_endpoint_play_tone,
+    audio_endpoint_direction_from_word, audio_endpoint_info, audio_endpoint_pcm_write,
+    audio_endpoint_play_tone,
     audio_endpoint_state_from_word, audio_endpoint_stop, audio_status_error,
     audio_status_from_word, audio_stream_direction_from_word, audio_stream_state_from_word,
     channel_call,
@@ -206,4 +207,19 @@ pub fn kernel_audio_endpoint_play_tone(
 
 pub fn kernel_audio_endpoint_stop(handle: Handle) -> Result<()> {
     audio_endpoint_stop(handle)
+}
+
+/// Push interleaved s16le stereo frames (4 bytes per frame at the sink
+/// rate) to the kernel endpoint's PCM sink. Returns bytes accepted.
+pub fn kernel_audio_endpoint_pcm_write(handle: Handle, bytes: &[u8]) -> Result<usize> {
+    audio_endpoint_pcm_write(handle, bytes)
+}
+
+/// Reserved groundwork: open a capture stream from the audio service.
+///
+/// Capture streams are not implemented yet; this stub exists so callers
+/// can be written against the future contract and so the eventual wire
+/// path is pinned. It always returns `Error::Unsupported`.
+pub fn audio_capture_stream_open(_audio_handle: Handle, _session_id: u32) -> Result<Handle> {
+    Err(Error::Unsupported)
 }

@@ -1,11 +1,10 @@
 use super::*;
 
-pub(crate) fn mru_promote(
-    recent: &mut [DesktopAppId],
-    len: &mut usize,
-    app_id: DesktopAppId,
-) {
-    if let Some(index) = recent[..*len].iter().position(|candidate| *candidate == app_id) {
+pub(crate) fn mru_promote(recent: &mut [DesktopAppId], len: &mut usize, app_id: DesktopAppId) {
+    if let Some(index) = recent[..*len]
+        .iter()
+        .position(|candidate| *candidate == app_id)
+    {
         for scan in (1..=index).rev() {
             recent[scan] = recent[scan - 1];
         }

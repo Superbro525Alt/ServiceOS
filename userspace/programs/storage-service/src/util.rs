@@ -75,7 +75,11 @@ pub(crate) fn send_status_only(reply_handle: Handle, tag: StorageTag, status: St
     let mut reply = RawMessage::empty(tag as u32);
     reply.word_count = 1;
     reply.words[0] = status as u32 as u64;
-    let _ = rt::channel_send(reply_handle, &reply);
+    send_reply_and_close(reply_handle, &reply);
+}
+
+pub(crate) fn send_reply_and_close(reply_handle: Handle, reply: &RawMessage) {
+    let _ = rt::channel_send(reply_handle, reply);
     let _ = rt::handle_close(reply_handle);
 }
 
@@ -98,12 +102,21 @@ pub(crate) fn send_stat_reply(
     status: StorageStatus,
     kind: StorageEntryKind,
     size: usize,
+    index_tail: &[u64; 4],
 ) {
     let mut reply = RawMessage::empty(StorageTag::StatReply as u32);
     reply.word_count = 3;
     reply.words[0] = status as u32 as u64;
     reply.words[1] = kind as u32 as u64;
     reply.words[2] = size as u64;
+    if index_tail[0] != 0 && (reply.word_count as usize + 4) <= rt::IPC_MAX_WORDS {
+        let base = reply.word_count as usize;
+        reply.words[base] = index_tail[0];
+        reply.words[base + 1] = index_tail[1];
+        reply.words[base + 2] = index_tail[2];
+        reply.words[base + 3] = index_tail[3];
+        reply.word_count += 4;
+    }
     let _ = rt::channel_send(reply_handle, &reply);
     let _ = rt::handle_close(reply_handle);
 }

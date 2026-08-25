@@ -222,8 +222,7 @@ mod tests {
             assert!(
                 known,
                 "row {} targets unknown syscall {}",
-                mapping.linux_number,
-                mapping.serviceos_number
+                mapping.linux_number, mapping.serviceos_number
             );
         }
     }

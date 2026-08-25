@@ -53,8 +53,7 @@ impl BringUpTiming {
     }
 
     pub(crate) fn end(&mut self, service_id: ServiceId, now: u64) {
-        if let Some(record) = self
-            .records[..self.len]
+        if let Some(record) = self.records[..self.len]
             .iter_mut()
             .rev()
             .find(|record| record.service_id == service_id && record.end_tick == 0)
@@ -185,10 +184,7 @@ pub(crate) fn emit_timing_summary(timing: &BringUpTiming) {
             ticks,
         );
     }
-    let _ = fallback_logf(format_args!(
-        "startup order:{}",
-        per_service.as_str()
-    ));
+    let _ = fallback_logf(format_args!("startup order:{}", per_service.as_str()));
 }
 
 #[cfg(test)]

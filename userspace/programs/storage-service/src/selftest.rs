@@ -75,6 +75,36 @@ pub(crate) fn run_boot_selftest(
         return;
     }
 
+    let mut probe_index = crate::index::SearchIndex::new();
+    probe_index.ensure_built(entries, mutable_entries, 100);
+    let probe_plan = crate::index::plan_search(
+        probe_index.snapshot(),
+        b"data/",
+        &[b"note"],
+        0,
+        u64::MAX,
+        0,
+        100,
+    );
+    let probe_hit = if probe_plan.len > 0 {
+        probe_index.snapshot()[probe_plan.order[0]].path() == SELFTEST_FILE
+    } else {
+        false
+    };
+    let probe_needle = match crate::index::StreamNeedle::new(b"mount-selftest") {
+        Some(mut stream) => {
+            let mut hits = 0usize;
+            stream.feed(SELFTEST_PAYLOAD, |_| hits += 1);
+            hits
+        }
+        None => 0,
+    };
+    let (probe_count, probe_dirty, probe_rebuild) = probe_index.stats();
+    logf_args(format_args!(
+        "selftest index-probe entries={} dirty={} rebuild-tick={} search-hit={} grep-lines={}",
+        probe_count, probe_dirty as u32, probe_rebuild, probe_hit as u32, probe_needle
+    ));
+
     // 3. Open handle blocks unmount.
     let held = open_selftest_blob(blob_sessions, mounts, mutable_entries);
     let busy_status = try_unmount(

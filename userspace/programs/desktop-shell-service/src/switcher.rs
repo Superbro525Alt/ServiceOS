@@ -149,7 +149,10 @@ mod tests {
             count: 5,
         };
         assert_eq!(open_selection(&model, Some(DesktopAppId::Settings)), 1);
-        assert_eq!(open_selection(&model, Some(DesktopAppId::SoftwareCenter)), 0);
+        assert_eq!(
+            open_selection(&model, Some(DesktopAppId::SoftwareCenter)),
+            0
+        );
         assert_eq!(open_selection(&model, None), 0);
     }
 

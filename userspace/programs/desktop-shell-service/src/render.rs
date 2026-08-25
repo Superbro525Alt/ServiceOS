@@ -11,9 +11,7 @@ use crate::{
     STATUS_PANEL_WIDTH, SWITCHER_HEIGHT, SWITCHER_WIDTH, TOPBAR_HEIGHT, WORKSPACE_COUNT,
     media::{MEDIA_LINE_COUNT, MEDIA_OVERLAY_HEIGHT, MEDIA_OVERLAY_WIDTH},
     palette_action_label, palette_matches,
-    windows::{
-        app_title, launcher_line, running_app_count, sync_focus_shadow,
-    },
+    windows::{app_title, launcher_line, running_app_count, sync_focus_shadow},
 };
 
 pub(crate) fn render_desktop(state: &mut DesktopState) -> rt::Result<()> {
@@ -286,8 +284,8 @@ fn render_switcher_overlay(state: &DesktopState) -> rt::Result<()> {
 
     for index in 0..model.count {
         let selected = index == state.switcher_selection % model.count;
-        let tile_x =
-            crate::SWITCHER_TILE_PAD + index as i32 * (crate::SWITCHER_TILE_WIDTH as i32 + crate::SWITCHER_TILE_PAD);
+        let tile_x = crate::SWITCHER_TILE_PAD
+            + index as i32 * (crate::SWITCHER_TILE_WIDTH as i32 + crate::SWITCHER_TILE_PAD);
         let tile_y = ui::TITLEBAR_HEIGHT as i32 + 10;
         rt::surface_set_rect(
             surface,
@@ -312,14 +310,22 @@ fn render_switcher_overlay(state: &DesktopState) -> rt::Result<()> {
             (index * 2 + 2) as u32,
             tile_x + crate::SWITCHER_TILE_WIDTH as i32 / 2 - 6,
             tile_y + crate::SWITCHER_TILE_HEIGHT as i32 / 2 - 8,
-            if selected { ui::TEXT_PRIMARY } else { ui::TEXT_MUTED },
+            if selected {
+                ui::TEXT_PRIMARY
+            } else {
+                ui::TEXT_MUTED
+            },
             initial_buf.as_str(),
         )?;
     }
 
     let mut footer: FixedLogBuffer<48> = FixedLogBuffer::new();
     let selected_title = app_title(model.candidates[state.switcher_selection % model.count]);
-    let _ = write!(&mut footer, "{} · TAB CYCLES · ALT RELEASE COMMITS", selected_title);
+    let _ = write!(
+        &mut footer,
+        "{} · TAB CYCLES · ALT RELEASE COMMITS",
+        selected_title
+    );
     rt::surface_set_label(
         surface,
         11,

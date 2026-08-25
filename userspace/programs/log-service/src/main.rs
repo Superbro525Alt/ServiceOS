@@ -3,12 +3,12 @@
 
 mod crashlog;
 
+use crashlog::{CrashLog, CrashRecord};
 use rt::{
     ConfigKey, ControlTag, KernelEventKind, LOG_FILTER_ANY, LifecycleEvent, LogDomain, LogEvent,
     LogQueryStatus, LogSeverity, LogStatus, LogTag, RawMessage, ServiceId, StorageEntryKind,
 };
 use serviceos_userspace_runtime as rt;
-use crashlog::{CrashLog, CrashRecord};
 
 const MAX_LOG_RECORDS: usize = 64;
 const MAX_SUBSCRIBERS: usize = 8;

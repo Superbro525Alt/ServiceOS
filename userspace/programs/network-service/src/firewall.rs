@@ -108,7 +108,13 @@ impl FirewallRule {
         }
     }
 
-    fn matches(&self, direction: Direction, proto: Proto, local_port: u16, remote_port: u16) -> bool {
+    fn matches(
+        &self,
+        direction: Direction,
+        proto: Proto,
+        local_port: u16,
+        remote_port: u16,
+    ) -> bool {
         if !self.enabled || self.direction != direction || !self.proto.matches(proto) {
             return false;
         }
@@ -177,9 +183,9 @@ impl FirewallState {
         local_port: u16,
         remote_port: u16,
     ) -> bool {
-        let index = self.rules[..self.rule_count].iter().position(|rule| {
-            rule.matches(direction, proto, local_port, remote_port)
-        });
+        let index = self.rules[..self.rule_count]
+            .iter()
+            .position(|rule| rule.matches(direction, proto, local_port, remote_port));
         let allowed = match index {
             Some(index) => {
                 self.rules[index].hits = self.rules[index].hits.saturating_add(1);
@@ -327,7 +333,10 @@ mod tests {
         }
         // Outbound same port/proto passes (direction mismatch).
         assert!(state.decide(Direction::Outbound, Proto::Tcp, 0, 80));
-        assert_eq!(state.rules[0].hits, 1, "only the matching case hit the rule");
+        assert_eq!(
+            state.rules[0].hits, 1,
+            "only the matching case hit the rule"
+        );
     }
 
     #[test]
@@ -391,7 +400,11 @@ mod tests {
             &[rule(RuleAction::Allow, Proto::Any, Direction::Inbound, 1)],
         );
         let too_many = [0u64; (MAX_FIREWALL_RULES + 2) * 2];
-        assert!(state.replace_all(&too_many, MAX_FIREWALL_RULES + 1).is_none());
+        assert!(
+            state
+                .replace_all(&too_many, MAX_FIREWALL_RULES + 1)
+                .is_none()
+        );
         let bad_proto = [3 | (9u64 << 8), 1]; // proto word 9 invalid
         assert!(state.replace_all(&bad_proto, 1).is_none());
         assert_eq!(state.rule_count, 0, "malformed input clears the table");

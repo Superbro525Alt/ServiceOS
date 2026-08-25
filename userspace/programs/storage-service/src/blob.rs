@@ -1,9 +1,10 @@
-use rt::{Handle, IPC_MAX_WORDS, RawMessage, StorageStatus, StorageTag};
+use rt::{Handle, IPC_MAX_WORDS, RawMessage, StorageEntryKind, StorageStatus, StorageTag};
 use serviceos_userspace_runtime as rt;
 
 use crate::{
     BlobSession, BlobSource, INITIAL_FILE_CAPACITY, MAX_MUTABLE_ENTRIES, MountTable, MutableEntry,
     PersistentStore,
+    index::{ORIGIN_MUTABLE, SearchIndex},
     persistent::persist_state,
     util::{pack_bytes, unpack_bytes},
 };
@@ -13,6 +14,7 @@ pub(crate) fn handle_blob_request(
     mounts: &MountTable,
     mutable_entries: &mut [MutableEntry; MAX_MUTABLE_ENTRIES],
     persistent_store: Option<&mut PersistentStore>,
+    search_index: &mut SearchIndex,
     session: &mut BlobSession,
     message: &RawMessage,
 ) -> rt::Result<()> {
@@ -26,9 +28,14 @@ pub(crate) fn handle_blob_request(
         x if x == StorageTag::ReadRequest as u32 => {
             handle_read_request(bootstore_handle, mutable_entries, session, message)
         }
-        x if x == StorageTag::WriteRequest as u32 => {
-            handle_write_request(mounts, mutable_entries, persistent_store, session, message)
-        }
+        x if x == StorageTag::WriteRequest as u32 => handle_write_request(
+            mounts,
+            mutable_entries,
+            persistent_store,
+            search_index,
+            session,
+            message,
+        ),
         _ => Ok(()),
     }
 }
@@ -93,6 +100,7 @@ fn handle_write_request(
     mounts: &MountTable,
     mutable_entries: &mut [MutableEntry; MAX_MUTABLE_ENTRIES],
     persistent_store: Option<&mut PersistentStore>,
+    search_index: &mut SearchIndex,
     session: &mut BlobSession,
     message: &RawMessage,
 ) -> rt::Result<()> {
@@ -141,6 +149,13 @@ fn handle_write_request(
     let _ = rt::memory_write(entry.data_handle, offset, &bytes[..write_len])?;
     entry.data_len = total_len;
     session.data_len = total_len;
+    search_index.upsert(
+        &entry.path[..entry.path_len],
+        StorageEntryKind::File,
+        total_len as u64,
+        rt::monotonic_now().unwrap_or(0),
+        ORIGIN_MUTABLE,
+    );
     persist_state(persistent_store, mounts, mutable_entries)?;
     reply.words[0] = StorageStatus::Ok as u32 as u64;
     reply.words[1] = total_len as u64;

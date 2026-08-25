@@ -3,13 +3,12 @@ use core::fmt::Write;
 use core::str;
 
 use serviceos_abi::ServiceId;
-use serviceos_bundle::{ServiceManifest, BOOT_STORE_MAX_DEPENDENCIES};
+use serviceos_bundle::{BOOT_STORE_MAX_DEPENDENCIES, ServiceManifest};
 
 use crate::state::{MAX_SERVICE_SLOTS, ServiceSlot};
 use crate::util::{fallback_logf, service_name};
 
-pub(crate) const MAX_REFS: usize =
-    BOOT_STORE_MAX_DEPENDENCIES + 4 + 16;
+pub(crate) const MAX_REFS: usize = BOOT_STORE_MAX_DEPENDENCIES + 4 + 16;
 
 pub(crate) const SAFE_CORE: [ServiceId; 5] = [
     ServiceId::Storage,
@@ -87,19 +86,14 @@ impl RefTables {
         for index in 0..service_count.min(MAX_SERVICE_SLOTS) {
             tables.ids[index] = slots[index].manifest.service_id;
             tables.occupied[index] = slots[index].occupied;
-            tables.ref_counts[index] = manifest_refs(
-                &slots[index].manifest,
-                &mut tables.refs[index],
-            );
+            tables.ref_counts[index] =
+                manifest_refs(&slots[index].manifest, &mut tables.refs[index]);
         }
         tables
     }
 }
 
-pub(crate) fn manifest_refs(
-    manifest: &ServiceManifest,
-    out: &mut [ServiceId; MAX_REFS],
-) -> usize {
+pub(crate) fn manifest_refs(manifest: &ServiceManifest, out: &mut [ServiceId; MAX_REFS]) -> usize {
     let mut count = 0usize;
     for dependency in manifest.dependencies[..manifest.dependency_count]
         .iter()
@@ -226,7 +220,10 @@ fn find_table_index(tables: &RefTables, service_count: usize, id: ServiceId) -> 
 }
 
 fn occupied_count(slots: &[ServiceSlot; MAX_SERVICE_SLOTS], service_count: usize) -> usize {
-    slots[..service_count].iter().filter(|slot| slot.occupied).count()
+    slots[..service_count]
+        .iter()
+        .filter(|slot| slot.occupied)
+        .count()
 }
 
 pub(crate) struct CyclePath {
@@ -396,10 +393,7 @@ mod tests {
 
     #[test]
     fn closure_leaves_unreferenced_services_dropped() {
-        let (tables, count) = tables(
-            &[ServiceId::Storage, ServiceId::Audio],
-            &[],
-        );
+        let (tables, count) = tables(&[ServiceId::Storage, ServiceId::Audio], &[]);
         let mask = mask_of(&tables, count, &[ServiceId::Storage]);
         assert_eq!(mask, 0b01);
     }

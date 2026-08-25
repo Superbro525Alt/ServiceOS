@@ -231,3 +231,15 @@ pub fn audio_endpoint_stop(handle: Handle) -> Result<()> {
     let _ = syscall1(SyscallNumber::AudioEndpointStop, handle as u64)?;
     Ok(())
 }
+
+/// Push interleaved s16le stereo PCM frames to the kernel endpoint's
+/// playback sink. Returns the number of bytes accepted by the backend.
+pub fn audio_endpoint_pcm_write(handle: Handle, bytes: &[u8]) -> Result<usize> {
+    let written = syscall3(
+        SyscallNumber::AudioEndpointPcmWrite,
+        handle as u64,
+        bytes.as_ptr() as u64,
+        bytes.len() as u64,
+    )?;
+    Ok(written as usize)
+}

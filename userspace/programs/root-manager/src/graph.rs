@@ -108,7 +108,10 @@ pub(crate) fn activate_base_service_graph(
                 "activating {}",
                 service_name(slots[index].manifest.service_id)
             ));
-            timing.begin(slots[index].manifest.service_id, rt::monotonic_now().unwrap_or(0));
+            timing.begin(
+                slots[index].manifest.service_id,
+                rt::monotonic_now().unwrap_or(0),
+            );
             match start_service(
                 slots,
                 *service_count,
@@ -722,8 +725,8 @@ fn emit_blocked_graph_diagnostics(slots: &[ServiceSlot; MAX_SERVICE_SLOTS], serv
             0xc7c1,
         );
     } else {
-        let _ = fallback_logf(
-            format_args!("no dependency cycle; blocked graph has no ready path forward"),
-        );
+        let _ = fallback_logf(format_args!(
+            "no dependency cycle; blocked graph has no ready path forward"
+        ));
     }
 }

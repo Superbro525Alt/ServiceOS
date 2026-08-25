@@ -13,8 +13,8 @@ use serviceos_userspace_runtime as rt;
 use crate::{
     cache::{CacheLookup, ResolverCache},
     consts::{
-        DNS_RETRANSMIT_MS, DNS_SERVER_PORT, DNS_UDP_BUFFER_BYTES, MAX_CNAME_CHAIN,
-        MAX_TXT_BYTES, NEGATIVE_TTL_MS_CAP, NODATA_TTL_MS,
+        DNS_RETRANSMIT_MS, DNS_SERVER_PORT, DNS_UDP_BUFFER_BYTES, MAX_CNAME_CHAIN, MAX_TXT_BYTES,
+        NEGATIVE_TTL_MS_CAP, NODATA_TTL_MS,
     },
     device::KernelPacketDevice,
     dnsmsg::{self, DnsRecords, NameBuf, QueryType, RCODE_NXDOMAIN, RCODE_OK, RCODE_SERVFAIL},
@@ -202,12 +202,7 @@ pub(crate) fn chase(
                 return outcome;
             }
             QueryType::Aaaa if records.aaaa_count > 0 => {
-                cache.store_positive_aaaa(
-                    owner_name,
-                    &records.aaaa[0],
-                    records.min_ttl_ms,
-                    now_ms,
-                );
+                cache.store_positive_aaaa(owner_name, &records.aaaa[0], records.min_ttl_ms, now_ms);
                 outcome.aaaa = records.aaaa;
                 outcome.aaaa_count = records.aaaa_count;
                 return outcome;
@@ -329,14 +324,9 @@ pub(crate) fn resolve_typed(
         device,
         sockets,
     };
-    Ok(chase(
-        target,
-        qtype,
-        cache,
-        hosts,
-        now_ms,
-        |name| transport.exchange(name, qtype),
-    ))
+    Ok(chase(target, qtype, cache, hosts, now_ms, |name| {
+        transport.exchange(name, qtype)
+    }))
 }
 
 /// Convenience: full IPv4 resolution path used by Resolve/Ping/SocketOpen.
@@ -453,7 +443,14 @@ mod tests {
     fn servfail_distinct_from_nxdomain_and_not_cached() {
         let mut cache = ResolverCache::new();
         let first = chase("flaky.test", QueryType::A, &mut cache, &[], 0, |_name| {
-            Some(records(2 /* SERVFAIL */, None, &[], &[], 60, QueryType::A))
+            Some(records(
+                2, /* SERVFAIL */
+                None,
+                &[],
+                &[],
+                60,
+                QueryType::A,
+            ))
         });
         assert_eq!(first.detail, ChaseDetail::ServFail);
         // Not negatively cached: retry goes back to the network.
@@ -469,8 +466,22 @@ mod tests {
         const EDGE_CNAME: &str = "edge.test";
         let mut cache = ResolverCache::new();
         let fake = |name: &str| match name {
-            "start.test" => Some(records(RCODE_OK, Some(MID_CNAME), &[], &[], 30, QueryType::A)),
-            MID_CNAME => Some(records(RCODE_OK, Some(EDGE_CNAME), &[], &[], 30, QueryType::A)),
+            "start.test" => Some(records(
+                RCODE_OK,
+                Some(MID_CNAME),
+                &[],
+                &[],
+                30,
+                QueryType::A,
+            )),
+            MID_CNAME => Some(records(
+                RCODE_OK,
+                Some(EDGE_CNAME),
+                &[],
+                &[],
+                30,
+                QueryType::A,
+            )),
             EDGE_CNAME => ok_a(&[EDGE_A]),
             _ => None,
         };
@@ -524,9 +535,14 @@ mod tests {
         hosts[0].name_len = "pinned.test".len();
         hosts[0].name[..hosts[0].name_len].copy_from_slice(b"pinned.test");
         hosts[0].address = smoltcp::wire::Ipv4Address::new(192, 168, 7, 7);
-        let outcome = chase("pinned.test", QueryType::A, &mut cache, &hosts, 0, |_name| {
-            panic!("hosts table should answer")
-        });
+        let outcome = chase(
+            "pinned.test",
+            QueryType::A,
+            &mut cache,
+            &hosts,
+            0,
+            |_name| panic!("hosts table should answer"),
+        );
         assert_eq!(outcome.detail, ChaseDetail::Fresh);
         assert_eq!(outcome.address, Some(u32::from_be_bytes([192, 168, 7, 7])));
     }
@@ -547,7 +563,14 @@ mod tests {
     #[test]
     fn timeout_when_transport_unreachable() {
         let mut cache = ResolverCache::new();
-        let outcome = chase("blackhole.test", QueryType::A, &mut cache, &[], 0, |_name| None);
+        let outcome = chase(
+            "blackhole.test",
+            QueryType::A,
+            &mut cache,
+            &[],
+            0,
+            |_name| None,
+        );
         assert_eq!(outcome.detail, ChaseDetail::Timeout);
     }
 
@@ -589,7 +612,14 @@ mod tests {
         let mut cache = ResolverCache::new();
         let outcome = chase("alias.test", QueryType::A, &mut cache, &[], 0, |name| {
             if name == "alias.test" {
-                Some(records(RCODE_OK, Some("real.test"), &[], &[], 30, QueryType::A))
+                Some(records(
+                    RCODE_OK,
+                    Some("real.test"),
+                    &[],
+                    &[],
+                    30,
+                    QueryType::A,
+                ))
             } else {
                 ok_a(&[0x0102_0304])
             }
@@ -600,7 +630,10 @@ mod tests {
 
     #[test]
     fn detail_codes_are_stable() {
-        assert_eq!(ChaseDetail::Fresh.word(), crate::consts::RESOLVE_DETAIL_FRESH);
+        assert_eq!(
+            ChaseDetail::Fresh.word(),
+            crate::consts::RESOLVE_DETAIL_FRESH
+        );
         assert!(ChaseDetail::Fresh.is_success());
         assert!(ChaseDetail::PositiveCache.is_success());
         assert!(!ChaseDetail::NxDomain.is_success());

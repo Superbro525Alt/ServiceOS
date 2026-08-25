@@ -87,6 +87,7 @@ pub enum SyscallNumber {
     FaultHandlerRegister = 45,
     FaultHandlerUnregister = 46,
     TaskLoadedLibraries = 47,
+    AudioEndpointPcmWrite = 48,
 }
 
 #[repr(u32)]

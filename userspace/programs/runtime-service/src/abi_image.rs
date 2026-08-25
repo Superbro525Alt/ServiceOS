@@ -114,8 +114,12 @@ fn classify_elf64_image(image: &[u8]) -> Result<ImageFormat, ImageParseError> {
     }
     let mut load_segments = 0usize;
     for index in 0..phnum {
-        let base = phoff.checked_add(index * phentsize).ok_or(ImageParseError::Truncated)?;
-        let header = image.get(base..base + phentsize).ok_or(ImageParseError::Truncated)?;
+        let base = phoff
+            .checked_add(index * phentsize)
+            .ok_or(ImageParseError::Truncated)?;
+        let header = image
+            .get(base..base + phentsize)
+            .ok_or(ImageParseError::Truncated)?;
         let segment_type = read_u32_le(header, 0).ok_or(ImageParseError::Truncated)?;
         if segment_type == 1 {
             load_segments += 1;
@@ -152,7 +156,9 @@ pub(crate) fn elf_load_segment_summary(
     }; 8];
     let mut count = 0usize;
     for index in 0..phnum {
-        let base = phoff.checked_add(index * ELF_PROGRAM_HEADER_LEN).ok_or(ImageParseError::Truncated)?;
+        let base = phoff
+            .checked_add(index * ELF_PROGRAM_HEADER_LEN)
+            .ok_or(ImageParseError::Truncated)?;
         let header = image
             .get(base..base + ELF_PROGRAM_HEADER_LEN)
             .ok_or(ImageParseError::Truncated)?;
@@ -209,8 +215,14 @@ mod tests {
     fn rejects_flat_images_with_unknown_abi_version_or_header_length() {
         let mut image = flat_header(280);
         image[8..12].copy_from_slice(&2u32.to_le_bytes());
-        assert_eq!(classify_image(&image), Err(ImageParseError::UnsupportedVariant));
-        assert_eq!(classify_image(&flat_header(96)), Err(ImageParseError::UnsupportedVariant));
+        assert_eq!(
+            classify_image(&image),
+            Err(ImageParseError::UnsupportedVariant)
+        );
+        assert_eq!(
+            classify_image(&flat_header(96)),
+            Err(ImageParseError::UnsupportedVariant)
+        );
     }
 
     /// Golden minimal ELF64 header modeled on the kernel loader's own test
@@ -240,7 +252,10 @@ mod tests {
 
         let mut corrupt = golden_static_elf64();
         corrupt[56..58].copy_from_slice(&0u16.to_le_bytes());
-        assert_eq!(classify_image(&corrupt), Err(ImageParseError::UnsupportedVariant));
+        assert_eq!(
+            classify_image(&corrupt),
+            Err(ImageParseError::UnsupportedVariant)
+        );
     }
 
     #[test]

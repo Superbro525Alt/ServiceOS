@@ -27,8 +27,8 @@ use crate::{
     cache::ResolverCache,
     config::{load_hosts, read_network_config},
     consts::{
-        DNS_UDP_BUFFER_BYTES, MAX_HOSTS, MAX_TCP_LISTENERS, MAX_TCP_SOCKETS,
-        MAX_UDP_SOCKETS, TCP_SOCKET_BUFFER_BYTES, UDP_DATAGRAM_BUFFER_BYTES,
+        DNS_UDP_BUFFER_BYTES, MAX_HOSTS, MAX_TCP_LISTENERS, MAX_TCP_SOCKETS, MAX_UDP_SOCKETS,
+        TCP_SOCKET_BUFFER_BYTES, UDP_DATAGRAM_BUFFER_BYTES,
     },
     device::KernelPacketDevice,
     firewall::FirewallState,
@@ -228,7 +228,11 @@ pub(crate) fn run() -> u64 {
         "network",
         format_args!(
             "firewall state rules=0 default-inbound={} dns-client-port={}",
-            if firewall.default_inbound_allow { "allow" } else { "deny" },
+            if firewall.default_inbound_allow {
+                "allow"
+            } else {
+                "deny"
+            },
             next_local_port.wrapping_sub(1)
         ),
     );

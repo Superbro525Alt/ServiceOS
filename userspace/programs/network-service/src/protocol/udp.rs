@@ -288,16 +288,18 @@ fn receive_datagram(
         Ok((count, metadata)) => {
             let IpAddress::Ipv4(remote) = metadata.endpoint.addr;
             let source_be = u32::from_be_bytes(remote.octets());
-            if !firewall.decide(Direction::Inbound, Proto::Udp, slot.local_port, metadata.endpoint.port)
-            {
+            if !firewall.decide(
+                Direction::Inbound,
+                Proto::Udp,
+                slot.local_port,
+                metadata.endpoint.port,
+            ) {
                 // Consume-and-drop: the datagram is counted as filtered.
                 let _ = rt::write_logf(
                     "network",
                     format_args!(
                         "firewall deny inbound udp local={} remote={}:{}",
-                        slot.local_port,
-                        source_be,
-                        metadata.endpoint.port
+                        slot.local_port, source_be, metadata.endpoint.port
                     ),
                 );
                 reply.words[0] = NetworkStatus::Busy as u32 as u64;

@@ -2,9 +2,7 @@
 //! records. Pure logic over an injected millisecond clock so expiry is
 //! host-unit-testable.
 
-use crate::consts::{
-    MAX_CACHED_A_RECORDS, MAX_RESOLVER_CACHE_ENTRIES, NEGATIVE_TTL_MS_CAP,
-};
+use crate::consts::{MAX_CACHED_A_RECORDS, MAX_RESOLVER_CACHE_ENTRIES, NEGATIVE_TTL_MS_CAP};
 use crate::dnsmsg::{NameBuf, QueryType};
 
 /// Result of a cache probe.
@@ -229,7 +227,13 @@ impl ResolverCache {
     }
 
     /// Store a negative result; TTL is capped at NEGATIVE_TTL_MS_CAP.
-    pub(crate) fn store_negative(&mut self, name: &str, qtype: QueryType, ttl_ms: u64, now_ms: u64) {
+    pub(crate) fn store_negative(
+        &mut self,
+        name: &str,
+        qtype: QueryType,
+        ttl_ms: u64,
+        now_ms: u64,
+    ) {
         let Some(encoded) = NameBuf::parse(name) else {
             return;
         };
@@ -302,17 +306,26 @@ mod tests {
         let mut cache = ResolverCache::new();
         cache.store_negative("gone.test", QueryType::A, 60_000, 100);
         assert!(
-            matches!(cache.lookup("gone.test", QueryType::A, 200), CacheLookup::Negative),
+            matches!(
+                cache.lookup("gone.test", QueryType::A, 200),
+                CacheLookup::Negative
+            ),
             "negative hit before expiry"
         );
         assert_eq!(cache.negative_hits, 1);
         // TTL capped at NEGATIVE_TTL_MS_CAP: expires at 100 + 30_000 = 30_100.
         assert!(
-            matches!(cache.lookup("gone.test", QueryType::A, 30_000), CacheLookup::Negative),
+            matches!(
+                cache.lookup("gone.test", QueryType::A, 30_000),
+                CacheLookup::Negative
+            ),
             "capped TTL still live just before expiry"
         );
         assert!(
-            matches!(cache.lookup("gone.test", QueryType::A, 30_200), CacheLookup::Miss),
+            matches!(
+                cache.lookup("gone.test", QueryType::A, 30_200),
+                CacheLookup::Miss
+            ),
             "expired after capped 30s TTL"
         );
     }
@@ -367,9 +380,9 @@ mod tests {
     #[test]
     fn upsert_overwrites_and_capacity_evicts_oldest() {
         const NAMES: [&str; MAX_RESOLVER_CACHE_ENTRIES] = [
-            "n0.test", "n1.test", "n2.test", "n3.test", "n4.test", "n5.test", "n6.test",
-            "n7.test", "n8.test", "n9.test", "n10.test", "n11.test", "n12.test", "n13.test",
-            "n14.test", "n15.test",
+            "n0.test", "n1.test", "n2.test", "n3.test", "n4.test", "n5.test", "n6.test", "n7.test",
+            "n8.test", "n9.test", "n10.test", "n11.test", "n12.test", "n13.test", "n14.test",
+            "n15.test",
         ];
         let mut cache = ResolverCache::new();
         cache.store_positive_a("h.test", &[1, 2], 50_000, 0);

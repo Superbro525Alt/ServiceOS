@@ -1,5 +1,5 @@
 use rt::{
-    RawMessage, STORAGE_MOUNT_PATH_MAX, StorageEntryKind, StorageMountKind, StorageStatus,
+    Handle, RawMessage, STORAGE_MOUNT_PATH_MAX, StorageEntryKind, StorageMountKind, StorageStatus,
     StorageTag,
 };
 use serviceos_bundle::BootStoreEntryKind;
@@ -8,6 +8,10 @@ use serviceos_userspace_runtime as rt;
 use crate::{
     BlobSession, DirectorySession, EntrySlot, MAX_BLOB_SESSIONS, MAX_DIRECTORY_SESSIONS,
     MAX_MUTABLE_ENTRIES, MAX_STORAGE_PATH, MountTable, MutableEntry, PersistentStore,
+    index::{
+        GREP_REQUEST_TAG, SEARCH_REQUEST_TAG, SearchIndex, handle_grep_request,
+        handle_search_request, index_tail_words,
+    },
     path::{
         directory_child_from_path, directory_exists, directory_openable, find_mutable_entry,
         is_mutable_path, path_matches_prefix, resolve_mount, subtree_has_entries,
@@ -22,11 +26,13 @@ use crate::{
 
 pub(crate) fn handle_root_request(
     mounts: &mut MountTable,
+    bootstore: Handle,
     entries: &[EntrySlot],
     mutable_entries: &mut [MutableEntry; MAX_MUTABLE_ENTRIES],
     blob_sessions: &mut [BlobSession; MAX_BLOB_SESSIONS],
     directory_sessions: &mut [DirectorySession; MAX_DIRECTORY_SESSIONS],
     persistent_store: Option<&mut PersistentStore>,
+    search_index: &mut SearchIndex,
     message: &RawMessage,
 ) -> rt::Result<()> {
     match message.tag {
@@ -64,10 +70,16 @@ pub(crate) fn handle_root_request(
             message,
         ),
         x if x == StorageTag::StatRequest as u32 => {
-            handle_stat_request(entries, mutable_entries, message)
+            handle_stat_request(entries, mutable_entries, search_index, message)
         }
         x if x == StorageTag::FindRequest as u32 => {
             handle_find_request(entries, mutable_entries, message)
+        }
+        x if x == SEARCH_REQUEST_TAG => {
+            handle_search_request(entries, mutable_entries, search_index, message)
+        }
+        x if x == GREP_REQUEST_TAG => {
+            handle_grep_request(bootstore, entries, mutable_entries, search_index, message)
         }
         _ => Ok(()),
     }
@@ -281,6 +293,7 @@ fn handle_unmount_request(
 fn handle_stat_request(
     entries: &[EntrySlot],
     mutable_entries: &[MutableEntry; MAX_MUTABLE_ENTRIES],
+    search_index: &SearchIndex,
     message: &RawMessage,
 ) -> rt::Result<()> {
     if message.word_count < 1 || message.handle_count < 1 {
@@ -301,6 +314,7 @@ fn handle_stat_request(
             StorageStatus::InvalidPath,
             StorageEntryKind::File,
             0,
+            &[0; 4],
         );
         return Ok(());
     }
@@ -312,6 +326,7 @@ fn handle_stat_request(
             StorageStatus::Ok,
             mutable_entries[index].kind,
             mutable_entries[index].data_len,
+            &index_tail_words(search_index),
         );
         return Ok(());
     }
@@ -323,6 +338,7 @@ fn handle_stat_request(
             StorageStatus::Ok,
             StorageEntryKind::File,
             entry.data_len,
+            &index_tail_words(search_index),
         );
         return Ok(());
     }
@@ -332,6 +348,7 @@ fn handle_stat_request(
             StorageStatus::Ok,
             StorageEntryKind::Directory,
             0,
+            &index_tail_words(search_index),
         );
         return Ok(());
     }
@@ -340,6 +357,7 @@ fn handle_stat_request(
         StorageStatus::NotFound,
         StorageEntryKind::File,
         0,
+        &[0; 4],
     );
     Ok(())
 }

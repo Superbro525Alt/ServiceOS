@@ -518,10 +518,7 @@ mod tests {
             decide_update(Some("2.0.0"), Some("2.0.0")),
             UpdateDecision::UpToDate
         );
-        assert_eq!(
-            decide_update(None, Some("1.0.0")),
-            UpdateDecision::Unknown
-        );
+        assert_eq!(decide_update(None, Some("1.0.0")), UpdateDecision::Unknown);
         assert_eq!(UpdateDecision::Unknown.label(), "unknown");
     }
 }

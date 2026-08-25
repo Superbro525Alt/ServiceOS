@@ -119,8 +119,7 @@ impl NameBuf {
                     if cursor + 1 >= message.len() || jumps >= 8 {
                         return None;
                     }
-                    let offset =
-                        (((length & 0x3F) as usize) << 8) | message[cursor + 1] as usize;
+                    let offset = (((length & 0x3F) as usize) << 8) | message[cursor + 1] as usize;
                     if offset >= message.len() {
                         return None;
                     }
@@ -153,7 +152,8 @@ impl NameBuf {
             if out_len + label_len > dotted.len() {
                 return None;
             }
-            dotted[out_len..out_len + label_len].copy_from_slice(&self.bytes[cursor..cursor + label_len]);
+            dotted[out_len..out_len + label_len]
+                .copy_from_slice(&self.bytes[cursor..cursor + label_len]);
             out_len += label_len;
             cursor += label_len;
         }

@@ -12,11 +12,7 @@ pub(super) fn commit_switcher(state: &mut DesktopState) -> rt::Result<u32> {
     }
 }
 
-fn handle_switcher_key(
-    state: &mut DesktopState,
-    key_code: u32,
-    modifiers: u32,
-) -> rt::Result<u32> {
+fn handle_switcher_key(state: &mut DesktopState, key_code: u32, modifiers: u32) -> rt::Result<u32> {
     let model = crate::switcher::switcher_model(state);
     if key_code != KEY_TAB || model.count == 0 {
         return Ok(focused_surface_id(state));
@@ -115,7 +111,8 @@ pub(super) fn handle_key_input(
             if state.overlay_mode != OverlayMode::Switcher {
                 let model = crate::switcher::switcher_model(state);
                 state.overlay_mode = OverlayMode::Switcher;
-                state.switcher_selection = crate::switcher::open_selection(&model, state.focused_app);
+                state.switcher_selection =
+                    crate::switcher::open_selection(&model, state.focused_app);
                 return Ok(focused_surface_id(state));
             }
             return handle_switcher_key(state, key_code, modifiers);

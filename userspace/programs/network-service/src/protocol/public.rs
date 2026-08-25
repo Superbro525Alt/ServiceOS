@@ -28,11 +28,7 @@ use crate::{
     util::{decode_inline_text, emit_log, ipv4_to_u32, pack_inline_bytes, ticks_to_millis},
 };
 
-use super::{
-    listeners::open_listener,
-    transport::perform_ping,
-    udp::open_udp_socket,
-};
+use super::{listeners::open_listener, transport::perform_ping, udp::open_udp_socket};
 
 fn status_for_detail(detail: ChaseDetail) -> NetworkStatus {
     match detail {
@@ -235,7 +231,11 @@ pub(crate) fn handle_public_request(
                             4
                         }
                         QueryType::Aaaa => {
-                            let count = outcome.aaaa_count.max(if outcome.detail.is_success() { 1 } else { 0 });
+                            let count = outcome.aaaa_count.max(if outcome.detail.is_success() {
+                                1
+                            } else {
+                                0
+                            });
                             let count = count.min(outcome.aaaa.len());
                             for (index, address) in outcome.aaaa.iter().take(count).enumerate() {
                                 payload[index * 16..index * 16 + 16].copy_from_slice(address);
@@ -252,7 +252,8 @@ pub(crate) fn handle_public_request(
                     reply.words[0] = status_for_detail(outcome.detail) as u32 as u64;
                     reply.words[1] = outcome.detail.word();
                     if payload_len > 0 {
-                        let packed = pack_inline_bytes(&payload[..payload_len], &mut reply.words[3..])?;
+                        let packed =
+                            pack_inline_bytes(&payload[..payload_len], &mut reply.words[3..])?;
                         reply.words[2] = packed as u64;
                         reply.word_count = 3 + packed;
                     } else {
@@ -281,7 +282,8 @@ pub(crate) fn handle_public_request(
                     firewall.replace_all(fields, count).is_some()
                 }
                 1 => {
-                    firewall.set_default_inbound_allow(request.words.get(1).copied().unwrap_or(1) != 0);
+                    firewall
+                        .set_default_inbound_allow(request.words.get(1).copied().unwrap_or(1) != 0);
                     true
                 }
                 2 => {
@@ -297,7 +299,11 @@ pub(crate) fn handle_public_request(
                     format_args!(
                         "firewall state rules={} default-inbound={}",
                         firewall.rule_count,
-                        if firewall.default_inbound_allow { "allow" } else { "deny" }
+                        if firewall.default_inbound_allow {
+                            "allow"
+                        } else {
+                            "deny"
+                        }
                     ),
                 );
             } else {
@@ -354,7 +360,10 @@ pub(crate) fn handle_public_request(
                         if !firewall.decide(Direction::Outbound, Proto::Icmp, 0, 0) {
                             let _ = rt::write_logf(
                                 "network",
-                                format_args!("firewall deny outbound icmp target={}", outcome.address.unwrap_or(0)),
+                                format_args!(
+                                    "firewall deny outbound icmp target={}",
+                                    outcome.address.unwrap_or(0)
+                                ),
                             );
                             reply.words[0] = NetworkStatus::Denied as u32 as u64;
                             reply.words[1] = outcome.address.unwrap_or(0) as u64;
@@ -682,8 +691,14 @@ mod tests {
             status_for_detail(ChaseDetail::NxDomain),
             NetworkStatus::NotFound
         );
-        assert_eq!(status_for_detail(ChaseDetail::ServFail), NetworkStatus::Busy);
-        assert_eq!(status_for_detail(ChaseDetail::Timeout), NetworkStatus::Timeout);
+        assert_eq!(
+            status_for_detail(ChaseDetail::ServFail),
+            NetworkStatus::Busy
+        );
+        assert_eq!(
+            status_for_detail(ChaseDetail::Timeout),
+            NetworkStatus::Timeout
+        );
         assert_eq!(
             status_for_detail(ChaseDetail::Malformed),
             NetworkStatus::InvalidTarget

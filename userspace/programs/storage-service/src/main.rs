@@ -1,8 +1,9 @@
-#![no_std]
-#![no_main]
+#![cfg_attr(not(test), no_std)]
+#![cfg_attr(not(test), no_main)]
 
 mod blob;
 mod directory;
+mod index;
 mod lifecycle;
 mod path;
 mod persistent;
@@ -22,6 +23,7 @@ use rt::{ControlTag, RawMessage, ServiceId};
 use serviceos_bundle::{BootStoreHeader, parse_boot_store_entry, parse_boot_store_header};
 use serviceos_userspace_runtime as rt;
 
+#[cfg(not(test))]
 rt::entry!(main);
 
 fn main() -> u64 {
@@ -112,6 +114,7 @@ fn main() -> u64 {
     let mut blob_sessions = [BlobSession::empty(); MAX_BLOB_SESSIONS];
     let mut directory_sessions = [DirectorySession::empty(); MAX_DIRECTORY_SESSIONS];
     let mut mutable_entries = [MutableEntry::empty(); MAX_MUTABLE_ENTRIES];
+    let mut search_index = crate::index::SearchIndex::new();
     let mut mounts: MountTable = [rt::StorageMount::empty(); rt::STORAGE_MOUNT_TABLE_MAX];
     crate::persistent::seed_mount_table(&mut mounts);
     let mut persistent_store = if block_handle != rt::INVALID_HANDLE {
@@ -164,11 +167,13 @@ fn main() -> u64 {
                 did_work = true;
                 if root::handle_root_request(
                     &mut mounts,
+                    bootstore_handle,
                     &entries[..entry_count],
                     &mut mutable_entries,
                     &mut blob_sessions,
                     &mut directory_sessions,
                     persistent_store.as_mut(),
+                    &mut search_index,
                     &root_request,
                 )
                 .is_err()
@@ -193,6 +198,7 @@ fn main() -> u64 {
                         &mounts,
                         &mut mutable_entries,
                         persistent_store.as_mut(),
+                        &mut search_index,
                         session,
                         &request,
                     )
@@ -224,6 +230,7 @@ fn main() -> u64 {
                         &mut directory_sessions,
                         &mut blob_sessions,
                         persistent_store.as_mut(),
+                        &mut search_index,
                         session_index,
                         &request,
                     )

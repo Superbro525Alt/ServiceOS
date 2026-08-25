@@ -591,10 +591,7 @@ mod tests {
             label.occupied = false;
             label
         };
-        assert_eq!(
-            decorated_surface_damage(&subject).width,
-            subject.width
-        );
+        assert_eq!(decorated_surface_damage(&subject).width, subject.width);
     }
 
     #[test]

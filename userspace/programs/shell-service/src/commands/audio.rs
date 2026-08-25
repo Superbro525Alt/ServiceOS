@@ -128,6 +128,7 @@ fn write_endpoint_line(output: ShellOutput, endpoint: AudioEndpointStatusInfo) -
 fn endpoint_backend_name(backend: rt::AudioEndpointBackend) -> &'static str {
     match backend {
         rt::AudioEndpointBackend::PcSpeaker => "pc-speaker",
+        rt::AudioEndpointBackend::VirtioSound => "virtio-sound",
         rt::AudioEndpointBackend::Unknown => "unknown",
     }
 }

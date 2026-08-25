@@ -48,7 +48,10 @@ pub fn block_selftest(backend: &Arc<dyn BlockBackend>) {
         ),
     );
     if info.block_size as usize != BLOCK_BYTES || info.block_count < 2 {
-        log("storage-selftest", format_args!("FAIL unsupported-geometry"));
+        log(
+            "storage-selftest",
+            format_args!("FAIL unsupported-geometry"),
+        );
         return;
     }
 
@@ -67,7 +70,10 @@ pub fn block_selftest(backend: &Arc<dyn BlockBackend>) {
             ),
         ),
         Err(error) => {
-            log("storage-selftest", format_args!("FAIL read-block0 {error:?}"));
+            log(
+                "storage-selftest",
+                format_args!("FAIL read-block0 {error:?}"),
+            );
             return;
         }
     }
@@ -199,7 +205,11 @@ pub fn network_selftest(backend: &Arc<dyn PacketBackend>) {
     }
     log(
         "network-selftest",
-        format_args!("dhcp-discover sent bytes={} tx-ops={}", frame_len, backend.info().tx_packets),
+        format_args!(
+            "dhcp-discover sent bytes={} tx-ops={}",
+            frame_len,
+            backend.info().tx_packets
+        ),
     );
 
     let deadline = deadline_cycles(8);
@@ -299,7 +309,12 @@ pub fn input_selftest(backend: &Arc<dyn InputBackend>) {
         if backend.poll() {
             while let Ok(event) = backend.receive() {
                 if events == 0 {
-                    first = [event.kind, event.code, event.value0 as u32, event.value1 as u32];
+                    first = [
+                        event.kind,
+                        event.code,
+                        event.value0 as u32,
+                        event.value1 as u32,
+                    ];
                 } else if events < 4 {
                     kinds[(events - 1) as usize] = event.kind;
                 }

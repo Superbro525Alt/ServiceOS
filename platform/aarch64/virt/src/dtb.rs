@@ -221,12 +221,7 @@ pub fn parse(dtb_ptr: *const u8) -> Result<DeviceTreeBootInfo<'static>, DeviceTr
         };
         let irq = node
             .raw_property("interrupts")
-            .and_then(|property| {
-                property
-                    .value
-                    .get(4..8)
-                    .or_else(|| property.value.get(..4))
-            })
+            .and_then(|property| property.value.get(4..8).or_else(|| property.value.get(..4)))
             .map(parse_be_u32)
             .unwrap_or(0);
         if virtio_mmio_count == virtio_mmio_devices.len() {

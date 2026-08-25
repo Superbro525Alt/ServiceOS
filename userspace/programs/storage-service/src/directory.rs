@@ -6,6 +6,7 @@ use crate::{
     BlobSession, DirectorySession, EntrySlot, INITIAL_FILE_CAPACITY, MAX_BLOB_SESSIONS,
     MAX_DIRECTORY_SESSIONS, MAX_MUTABLE_ENTRIES, MAX_STORAGE_PATH, MountTable, MutableEntry,
     PersistentStore,
+    index::{ORIGIN_MUTABLE, SearchIndex},
     path::{
         boot_directory_exists, compose_child_path, compose_relative_path,
         directory_child_from_path, directory_exists, find_mutable_entry, is_mutable_path,
@@ -27,6 +28,7 @@ pub(crate) fn handle_directory_request(
     directory_sessions: &mut [DirectorySession; MAX_DIRECTORY_SESSIONS],
     blob_sessions: &mut [BlobSession; MAX_BLOB_SESSIONS],
     persistent_store: Option<&mut PersistentStore>,
+    search_index: &mut SearchIndex,
     session_index: usize,
     message: &RawMessage,
 ) -> rt::Result<()> {
@@ -63,6 +65,7 @@ pub(crate) fn handle_directory_request(
             mounts,
             mutable_entries,
             persistent_store,
+            search_index,
             &session,
             message,
         ),
@@ -71,6 +74,7 @@ pub(crate) fn handle_directory_request(
             entries,
             mutable_entries,
             persistent_store,
+            search_index,
             &session,
             message,
         ),
@@ -81,6 +85,7 @@ pub(crate) fn handle_directory_request(
                 mutable_entries,
                 blob_sessions,
                 persistent_store,
+                search_index,
                 &session,
                 message,
             )
@@ -189,6 +194,7 @@ fn handle_directory_create_request(
     mounts: &MountTable,
     mutable_entries: &mut [MutableEntry; MAX_MUTABLE_ENTRIES],
     persistent_store: Option<&mut PersistentStore>,
+    search_index: &mut SearchIndex,
     session: &DirectorySession,
     message: &RawMessage,
 ) -> rt::Result<()> {
@@ -280,6 +286,13 @@ fn handle_directory_create_request(
         slot.data_capacity = INITIAL_FILE_CAPACITY;
         slot.data_len = 0;
     }
+    search_index.upsert(
+        &path[..path_len],
+        kind,
+        0,
+        rt::monotonic_now().unwrap_or(0),
+        ORIGIN_MUTABLE,
+    );
     persist_state(persistent_store, mounts, mutable_entries)?;
     send_status_only(
         reply_handle,
@@ -294,6 +307,7 @@ fn handle_directory_remove_request(
     entries: &[EntrySlot],
     mutable_entries: &mut [MutableEntry; MAX_MUTABLE_ENTRIES],
     persistent_store: Option<&mut PersistentStore>,
+    search_index: &mut SearchIndex,
     session: &DirectorySession,
     message: &RawMessage,
 ) -> rt::Result<()> {
@@ -342,6 +356,7 @@ fn handle_directory_remove_request(
     if let Some((path, path_len)) = file_path {
         if let Some(index) = find_mutable_entry(mutable_entries, &path[..path_len]) {
             release_mutable_entry(&mut mutable_entries[index]);
+            search_index.remove_path(&path[..path_len]);
             persist_state(persistent_store, mounts, mutable_entries)?;
             send_status_only(
                 reply_handle,
@@ -370,6 +385,7 @@ fn handle_directory_remove_request(
                 return Ok(());
             }
             release_mutable_entry(&mut mutable_entries[index]);
+            search_index.remove_path(&path[..path_len]);
             persist_state(persistent_store, mounts, mutable_entries)?;
             send_status_only(
                 reply_handle,
@@ -402,6 +418,7 @@ fn handle_directory_open_file_request(
     mutable_entries: &mut [MutableEntry; MAX_MUTABLE_ENTRIES],
     blob_sessions: &mut [BlobSession; MAX_BLOB_SESSIONS],
     persistent_store: Option<&mut PersistentStore>,
+    search_index: &mut SearchIndex,
     session: &DirectorySession,
     message: &RawMessage,
 ) -> rt::Result<()> {
@@ -532,6 +549,13 @@ fn handle_directory_open_file_request(
         mutable_entries[slot_index].data_capacity = INITIAL_FILE_CAPACITY;
         mutable_entries[slot_index].data_len = 0;
         mutable_entries[slot_index].occupied = true;
+        search_index.upsert(
+            &path[..path_len],
+            StorageEntryKind::File,
+            0,
+            rt::monotonic_now().unwrap_or(0),
+            ORIGIN_MUTABLE,
+        );
         persist_state(persistent_store, mounts, mutable_entries)?;
 
         let pair = rt::channel_create()?;

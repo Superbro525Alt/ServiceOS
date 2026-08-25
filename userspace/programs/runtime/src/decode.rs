@@ -296,6 +296,7 @@ pub(crate) fn audio_status_error(status: AudioStatus) -> Error {
 pub(crate) fn audio_endpoint_backend_from_word(value: u64) -> AudioEndpointBackend {
     match value as u32 {
         x if x == AudioEndpointBackend::PcSpeaker as u32 => AudioEndpointBackend::PcSpeaker,
+        x if x == AudioEndpointBackend::VirtioSound as u32 => AudioEndpointBackend::VirtioSound,
         _ => AudioEndpointBackend::Unknown,
     }
 }

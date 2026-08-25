@@ -5,11 +5,7 @@ mod bootstrap;
 mod executor;
 mod logging;
 
-use core::{
-    fmt,
-    panic::PanicInfo,
-    sync::atomic::Ordering,
-};
+use core::{fmt, panic::PanicInfo, sync::atomic::Ordering};
 
 use serviceos_bundle::BootStore;
 use serviceos_kernel_arch_x86_64::{
@@ -17,15 +13,13 @@ use serviceos_kernel_arch_x86_64::{
     interrupts::{self, TIMER_TICK_HZ},
     kthread,
     paging::ActivePageTable,
-    smp,
-    user,
+    smp, user,
 };
 use serviceos_kernel_core::{
     Kernel,
     bootstrap::{BootInfo, BootMemoryRegion, BootMemoryRegionKind},
     memory::PhysicalAddress,
-    syscall,
-    user as kernel_user,
+    syscall, user as kernel_user,
 };
 use serviceos_platform_qemu_isa::serial;
 use serviceos_userspace_catalog::BOOT_STORE_IMAGE;
@@ -78,7 +72,10 @@ struct HvmMemmapEntry {
 extern "C" fn isa_entry(hvm_info: *const HvmStartInfo) -> ! {
     cpu::disable_interrupts();
     serial::init();
-    log_line("boot", "entered x86_64 legacy-BIOS (SeaBIOS/PVH) kernel image");
+    log_line(
+        "boot",
+        "entered x86_64 legacy-BIOS (SeaBIOS/PVH) kernel image",
+    );
     log(
         "boot",
         format_args!(
@@ -166,7 +163,10 @@ extern "C" fn isa_entry(hvm_info: *const HvmStartInfo) -> ! {
 
     log_memory_summary(&kernel);
 
-    log_line("display", "no boot framebuffer detected (BIOS path is serial-first)");
+    log_line(
+        "display",
+        "no boot framebuffer detected (BIOS path is serial-first)",
+    );
     log_line("network", "no packet interface detected");
     log_line("storage", "no writable block device detected");
     log_line("input", "no input source detected");
@@ -207,10 +207,7 @@ extern "C" fn isa_entry(hvm_info: *const HvmStartInfo) -> ! {
             "userspace",
             format_args!(
                 "root-thread mode={:?} state={:?} wait={:?} wake={:?}",
-                state.mode,
-                state.execution_state,
-                state.wait_target,
-                state.last_wake_reason,
+                state.mode, state.execution_state, state.wait_target, state.last_wake_reason,
             ),
         );
     }

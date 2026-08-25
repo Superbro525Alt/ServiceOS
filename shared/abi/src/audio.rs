@@ -3,6 +3,7 @@
 pub enum AudioEndpointBackend {
     Unknown = 0,
     PcSpeaker = 1,
+    VirtioSound = 2,
 }
 
 #[repr(u32)]
@@ -92,6 +93,10 @@ pub enum AudioTag {
     StreamSetVolumeReply = 0x895,
     EndpointVolumeSetRequest = 0x896,
     EndpointVolumeSetReply = 0x897,
+    /// Reserved groundwork: capture-stream open negotiation. Services must
+    /// answer these with `AudioStatus::Unsupported` until capture lands.
+    CaptureOpenRequest = 0x898,
+    CaptureOpenReply = 0x899,
 }
 
 #[repr(u32)]

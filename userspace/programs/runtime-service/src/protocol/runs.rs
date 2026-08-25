@@ -5,7 +5,7 @@ use rt::{
 use serviceos_userspace_runtime as rt;
 
 use crate::{
-    abi_image::{classify_image, ImageFormat, EXEC_GUEST_WORKLOAD},
+    abi_image::{EXEC_GUEST_WORKLOAD, ImageFormat, classify_image},
     consts::{MAX_ENVS, MAX_IMAGE_HEADER_BYTES, MAX_RUNS},
     types::{EnvSlot, FixedBytes, RunSlot},
     util::{emit_log, release_run_slot, resolve_guest_path},
@@ -410,9 +410,7 @@ fn handle_guest_exec_launch(
                 LogSeverity::Info,
                 LogEvent::RuntimeLaunchStarted,
                 slot_index as u64,
-                ((env_id as u64) << 48)
-                    | ((env.lib_count as u64) << 40)
-                    | (format.marker() as u64),
+                ((env_id as u64) << 48) | ((env.lib_count as u64) << 40) | (format.marker() as u64),
             );
         }
         Err(error) => {
@@ -481,4 +479,3 @@ fn stage_image_object(storage_handle: rt::Handle, path: &str) -> rt::Result<rt::
     let _ = rt::storage_blob_close(blob_handle);
     Ok(staging)
 }
-

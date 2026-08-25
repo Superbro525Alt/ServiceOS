@@ -28,10 +28,10 @@ pub(crate) fn clamp_clipboard_selection(selection: usize) -> usize {
     selection.min(CLIPBOARD_HISTORY_LINES - 1)
 }
 
-fn selected_notification_entry(
-    state: &DesktopState,
-) -> Option<crate::NotificationEntry> {
-    let limit = state.notification_history_len.min(crate::NOTIFICATION_HISTORY_MAX);
+fn selected_notification_entry(state: &DesktopState) -> Option<crate::NotificationEntry> {
+    let limit = state
+        .notification_history_len
+        .min(crate::NOTIFICATION_HISTORY_MAX);
     let index = state.overlay_selection.min(limit.saturating_sub(1));
     state
         .notification_history
@@ -223,7 +223,9 @@ pub(super) fn handle_media_overlay_key(state: &mut DesktopState, key_code: u32) 
 
 fn perform_palette_action(state: &mut DesktopState, action: PaletteAction) -> rt::Result<u32> {
     match action {
-        PaletteAction::Launch(app_id) => crate::windows::schedule_launch_or_focus_app(state, app_id),
+        PaletteAction::Launch(app_id) => {
+            crate::windows::schedule_launch_or_focus_app(state, app_id)
+        }
         PaletteAction::ShowNotifications => {
             state.overlay_mode = OverlayMode::Notifications;
             Ok(focused_surface_id(state))
@@ -271,8 +273,7 @@ fn perform_palette_action(state: &mut DesktopState, action: PaletteAction) -> rt
 }
 
 fn cycle_settings_page(state: &mut DesktopState) -> rt::Result<u32> {
-    let index = app_slot_index(&state.apps, DesktopAppId::Settings)
-        .ok_or(rt::Error::NotFound)?;
+    let index = app_slot_index(&state.apps, DesktopAppId::Settings).ok_or(rt::Error::NotFound)?;
     if state.apps[index].running && state.apps[index].window.control_handle != rt::INVALID_HANDLE {
         let control = state.apps[index].window.control_handle;
         rt::app_control_key(control, AppKeyAction::Down, KEY_TAB, 0)?;
@@ -298,8 +299,14 @@ mod tests {
     #[test]
     fn clipboard_selection_clamps_to_panel_rows() {
         assert_eq!(clamp_clipboard_selection(0), 0);
-        assert_eq!(clamp_clipboard_selection(CLIPBOARD_HISTORY_LINES - 1), CLIPBOARD_HISTORY_LINES - 1);
-        assert_eq!(clamp_clipboard_selection(usize::MAX), CLIPBOARD_HISTORY_LINES - 1);
+        assert_eq!(
+            clamp_clipboard_selection(CLIPBOARD_HISTORY_LINES - 1),
+            CLIPBOARD_HISTORY_LINES - 1
+        );
+        assert_eq!(
+            clamp_clipboard_selection(usize::MAX),
+            CLIPBOARD_HISTORY_LINES - 1
+        );
     }
 
     #[test]

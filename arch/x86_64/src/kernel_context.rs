@@ -11,19 +11,22 @@ mod imp {
     // entry function. The stub pops the argument into the target ABI's first
     // argument register and returns into the entry. Stack alignment at the
     // entry's first instruction is rsp % 16 == 8 either way.
-    // SysV targets (x86_64-unknown-none): first argument in RDI.
-    #[cfg(target_env = "")]
+    // Microsoft x64 targets (x86_64-unknown-uefi): first argument in RCX.
+    // NOTE: the uefi target reports an empty target_env, so gating on
+    // target_env cannot distinguish it from SysV none targets; gate on
+    // target_os instead.
+    #[cfg(target_os = "uefi")]
     global_asm!(
         r#"
 .global serviceos_x86_64_kthread_entry
 serviceos_x86_64_kthread_entry:
-    pop rdi
+    pop rcx
     ret
 "#
     );
 
-    // Microsoft x64 targets (x86_64-unknown-uefi): first argument in RCX.
-    #[cfg(not(target_env = ""))]
+    // SysV targets (e.g. x86_64-unknown-none): first argument in RDI.
+    #[cfg(not(target_os = "uefi"))]
     global_asm!(
         r#"
 .global serviceos_x86_64_kthread_entry

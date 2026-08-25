@@ -149,13 +149,6 @@ pub fn bring_up_application_processors(rsdp_address: Option<PhysicalAddress>) {
     // wiring point. Emits exactly one `hpet:` line either way.
     crate::hpet::initialize(rsdp_address);
 
-    // TEMP(SMP-evidence): one line tracing the discovery inputs.
-    crate::serial::write_args(format_args!(
-        "serviceos: smp: PROBE rsdp={:?} ids={:?} bsp={}\n",
-        rsdp_address.map(|a| a.as_u64()),
-        acpi::enabled_lapic_ids(rsdp_address),
-        lapic::current_apic_id(),
-    ));
     let Some(lapic_ids) = acpi::enabled_lapic_ids(rsdp_address) else {
         return;
     };
@@ -205,18 +198,6 @@ unsafe fn install_trampoline() {
             - (smp_trampoline_start as *const () as usize);
         assert!(bytes <= 512, "SMP trampoline outgrew its reserved window");
         core::ptr::copy_nonoverlapping(source, TRAMPOLINE_PHYSICAL as *mut u8, bytes);
-
-        // TEMP(SMP-evidence): verify the copied page reads back identically.
-        let dest = TRAMPOLINE_PHYSICAL as *const u8;
-        let bad = (0..bytes).find(|&i| core::ptr::read_volatile(dest.add(i)) != *source.add(i));
-        crate::serial::write_args(format_args!(
-            "serviceos: smp: PROBE tramp bytes={} mismatch={:?} gdt={:02x?} gdtr={:02x?} tail={:02x?}\n",
-            bytes,
-            bad,
-            core::slice::from_raw_parts(dest, 64),
-            core::slice::from_raw_parts(dest.add(64), 64),
-            core::slice::from_raw_parts(dest.add(128), bytes as usize - 128)
-        ));
     }
 }
 

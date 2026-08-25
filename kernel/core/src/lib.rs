@@ -28,30 +28,6 @@ use syscall::DispatchTable;
 use task::TaskSystem;
 use time::TimeManager;
 
-/// TEMPORARY qemu-isa bring-up breadcrumb (REMOVE): raw byte to COM1.
-#[doc(hidden)]
-pub fn debug_probe(tag: u8) {
-    #[cfg(target_arch = "x86_64")]
-    unsafe {
-        core::arch::asm!(
-            "outb %al, %dx",
-            in("al") tag,
-            in("dx") 0x3f8u16,
-            lateout("dx") _,
-            options(att_syntax, nostack, preserves_flags)
-        );
-        core::arch::asm!(
-            "outb %al, %dx",
-            in("al") b'\n',
-            in("dx") 0x3f8u16,
-            lateout("dx") _,
-            options(att_syntax, nostack, preserves_flags)
-        );
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    let _ = tag;
-}
-
 /// Architecture-neutral kernel state constructed after early boot handoff
 /// normalization. Real subsystem initialization starts in later phases.
 pub struct Kernel<'boot> {
@@ -90,25 +66,16 @@ impl<'boot> Kernel<'boot> {
         mapper: &mut impl PageMapper,
         timer_tick_hz: u64,
     ) -> Result<Self, KernelInitError> {
-        debug_probe(b'1');
         let memory = memory::initialize(boot_info, mapper)?;
-        debug_probe(b'2');
         let interrupts = interrupts::initialize();
-        debug_probe(b'3');
         let _ = input::initialize();
-        debug_probe(b'4');
         let syscalls = syscall::initialize();
-        debug_probe(b'5');
         let time = time::initialize(time::TimerSourceInfo {
             tick_hz: timer_tick_hz,
         })?;
-        debug_probe(b'6');
         let objects = object::initialize();
-        debug_probe(b'7');
         let ipc = ipc::initialize();
-        debug_probe(b'8');
         let tasks = task::initialize(objects);
-        debug_probe(b'9');
 
         Ok(Self {
             boot_info,

@@ -24,6 +24,7 @@ pub(crate) fn map_spawn_error(error: SpawnError) -> SyscallError {
             | LoadError::UnsupportedAbi
             | LoadError::UnsupportedHeader
             | LoadError::UnsupportedMachine
+            | LoadError::UnsupportedRelocation
             | LoadError::KernelAbiTooNew
             | LoadError::DependencyInvalid,
         )) => SyscallError::Unsupported,

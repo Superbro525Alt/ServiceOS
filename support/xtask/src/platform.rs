@@ -44,7 +44,12 @@ pub struct PlatformSpec {
 }
 
 impl PlatformSpec {
-    const ALL: [Self; 4] = [Self::qemu_virtio(), Self::raspi5(), Self::virt(), Self::qemu_isa()];
+    const ALL: [Self; 4] = [
+        Self::qemu_virtio(),
+        Self::raspi5(),
+        Self::virt(),
+        Self::qemu_isa(),
+    ];
 
     pub const fn all() -> &'static [Self] {
         &Self::ALL

@@ -2,6 +2,7 @@ use alloc::sync::Arc;
 use spin::Mutex;
 use x86_64::instructions::port::Port;
 
+use crate::sound;
 use serviceos_abi::{
     AudioEndpointBackend, AudioEndpointDirection, AudioEndpointInfo, AudioEndpointState,
     AudioToneRequest, audio_capability,
@@ -108,6 +109,15 @@ impl AudioBackend for PcSpeakerBackend {
 }
 
 pub fn initialize() -> Arc<dyn AudioBackend> {
+    // Prefer a real PCM sink (QEMU virtio-sound) when the device is
+    // present; fall back to the tone-only PC speaker otherwise.
+    if let Some(backend) = sound::initialize() {
+        *AUDIO_BRINGUP.lock() = Some(AudioBringupSummary {
+            backend: AudioEndpointBackend::VirtioSound,
+            default_frequency_hz: 0,
+        });
+        return backend;
+    }
     let backend = Arc::new(PcSpeakerBackend::new());
     *AUDIO_BRINGUP.lock() = Some(AudioBringupSummary {
         backend: AudioEndpointBackend::PcSpeaker,

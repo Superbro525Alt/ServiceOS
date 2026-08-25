@@ -38,8 +38,7 @@ pub mod flat_image_policy {
     /// the single `executable_limit`/`writable_offset` split.
     pub const SEGMENT_TABLE: u32 = 1 << 2;
 
-    pub const VALID_MASK: u32 =
-        REQUIRE_STACK_GUARD | NO_ASLR | SEGMENT_TABLE;
+    pub const VALID_MASK: u32 = REQUIRE_STACK_GUARD | NO_ASLR | SEGMENT_TABLE;
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -39,7 +39,11 @@ fn create_isa_kernel_bundle(
 ) -> Result<PathBuf, Box<dyn Error>> {
     let boot_dir = &layout.boot_dir;
     fs::create_dir_all(boot_dir)?;
-    let release_mode = if artifacts.release { "release" } else { "debug" };
+    let release_mode = if artifacts.release {
+        "release"
+    } else {
+        "debug"
+    };
     let kernel_elf = ensure_isa_kernel_elf(artifacts)?;
     // Flat binary: file offset 0 == LBA 0 == the stage1 boot sector at
     // 0x7C00; payload LMAs start at 0x100000 and follow contiguously, so the

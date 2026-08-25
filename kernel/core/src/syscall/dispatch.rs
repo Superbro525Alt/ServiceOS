@@ -5,7 +5,8 @@ use spin::Once;
 use super::{
     MAX_SYSCALL_SLOTS, SyscallContext, SyscallDispatcher, SyscallError, SyscallNumber,
     SyscallReturn, SyscallSnapshot, handle_abi_version, handle_audio_endpoint_info,
-    handle_audio_endpoint_play_tone, handle_audio_endpoint_stop, handle_block_device_info,
+    handle_audio_endpoint_pcm_write, handle_audio_endpoint_play_tone, handle_audio_endpoint_stop,
+    handle_block_device_info,
     handle_block_device_read, handle_block_device_write, handle_channel_create,
     handle_channel_receive, handle_channel_send, handle_debug_console_read,
     handle_debug_console_write, handle_debug_log_write, handle_display_output_info,
@@ -17,8 +18,8 @@ use super::{
     handle_memory_map_range, handle_memory_protect, handle_memory_query, handle_memory_read,
     handle_memory_unmap, handle_memory_write, handle_monotonic_now, handle_object_info,
     handle_object_wait, handle_packet_interface_info, handle_packet_interface_receive,
-    handle_packet_interface_transmit, handle_service_spawn, handle_task_spawn_image,
-    handle_task_loaded_libraries, handle_task_status, handle_thread_exit, handle_yield_current,
+    handle_packet_interface_transmit, handle_service_spawn, handle_task_loaded_libraries,
+    handle_task_spawn_image, handle_task_status, handle_thread_exit, handle_yield_current,
 };
 
 type Handler = fn(&SyscallContext) -> SyscallReturn;
@@ -118,6 +119,7 @@ pub fn initialize() -> &'static DispatchTable {
         entries[45] = Some(handle_fault_handler_register);
         entries[46] = Some(handle_fault_handler_unregister);
         entries[47] = Some(handle_task_loaded_libraries);
+        entries[48] = Some(handle_audio_endpoint_pcm_write);
         DispatchTable::new(entries)
     })
 }

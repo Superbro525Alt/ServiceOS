@@ -218,12 +218,27 @@ fn run_qemu(disk_image: &Path) -> Result<(), Box<dyn Error>> {
         Some(spec) => println!("  audio: {}", spec),
         None => println!("  audio: off"),
     }
+    // SERVICEOS_AUDIO=1 attaches the virtio-sound PCI device so the guest
+    // can drive audible PCM playback through QEMU's audio backend. It
+    // defaults to off so CI boots stay deterministic; without a user
+    // QEMU_AUDIODEV spec, QEMU's silent 'none' backend (no host audio
+    // required) is used and the guest path is still exercised end to end.
+    let virtio_sound = serviceos_audio_enabled();
+    if virtio_sound {
+        println!("  virtio-sound: on");
+    }
 
     let mut command = Command::new(&qemu_binary);
-    match &audio_device {
-        Some(_) => command.args(["-machine", "q35,pcspk-audiodev=speaker"]),
-        None => command.args(["-machine", "q35"]),
-    };
+    match (&audio_device, virtio_sound) {
+        (_, true) | (Some(_), false) => {
+            // pcspk-audiodev keeps the legacy speaker wired to the same
+            // host backend as virtio-sound.
+            command.args(["-machine", "q35,pcspk-audiodev=speaker"]);
+        }
+        (None, false) => {
+            command.args(["-machine", "q35"]);
+        }
+    }
     command.args(["-m", "1048"]);
     // SERVICEOS_SMP controls the guest CPU count (default single-core, which
     // keeps kernel boot output byte-identical to the pre-SMP kernel).
@@ -246,13 +261,23 @@ fn run_qemu(disk_image: &Path) -> Result<(), Box<dyn Error>> {
         command.args(["-display", "none"]);
     } else {
         let gl = matches!(env::var("SERVICEOS_GL").as_deref(), Ok("1"));
-        command.args([
-            "-display",
-            if gl { "gtk,gl=on" } else { "gtk,gl=off" },
-        ]);
+        command.args(["-display", if gl { "gtk,gl=on" } else { "gtk,gl=off" }]);
     }
     if let Some(audio_device) = &audio_device {
         command.args(["-audiodev", audio_device]);
+    }
+    if virtio_sound {
+        // The virtio-sound device needs a host audiodev; default to the
+        // silent 'none' backend when QEMU_AUDIODEV is unset so enabling
+        // the guest path never depends on host audio hardware.
+        let host_backend = audio_device.clone().unwrap_or_else(|| {
+            println!("  audiodev: driver=none,id=speaker (default)");
+            "driver=none,id=speaker".to_string()
+        });
+        if audio_device.is_none() {
+            command.args(["-audiodev", &host_backend]);
+        }
+        command.args(["-device", "virtio-sound-pci,audiodev=speaker"]);
     }
     command.args(["-netdev", "user,id=net0"]);
     command.args([
@@ -309,6 +334,12 @@ fn qemu_audio_device() -> Result<Option<String>, Box<dyn Error>> {
     }
 
     Ok(None)
+}
+
+/// SERVICEOS_AUDIO=1 attaches the virtio-sound PCI playback device.
+/// Defaults to off so CI boots stay byte-deterministic.
+fn serviceos_audio_enabled() -> bool {
+    matches!(env::var("SERVICEOS_AUDIO").ok().as_deref(), Some("1"))
 }
 
 fn qemu_headless() -> bool {

@@ -10,9 +10,9 @@ pub(crate) use common::{
     DEBUG_CONSOLE_READER, DEBUG_CONSOLE_WRITER, DEBUG_LOG_WRITER, map_capability_error,
 };
 pub(crate) use devices::{
-    handle_audio_endpoint_info, handle_audio_endpoint_play_tone, handle_audio_endpoint_stop,
-    handle_block_device_info, handle_block_device_read, handle_block_device_write,
-    handle_display_output_info, handle_display_output_present,
+    handle_audio_endpoint_info, handle_audio_endpoint_pcm_write, handle_audio_endpoint_play_tone,
+    handle_audio_endpoint_stop, handle_block_device_info, handle_block_device_read,
+    handle_block_device_write, handle_display_output_info, handle_display_output_present,
     handle_display_output_present_damage, handle_input_source_info, handle_input_source_receive,
     handle_packet_interface_info, handle_packet_interface_receive,
     handle_packet_interface_transmit,
@@ -36,6 +36,5 @@ pub(crate) use system::{
     handle_monotonic_now, handle_thread_exit, handle_yield_current,
 };
 pub(crate) use task::{
-    handle_service_spawn, handle_task_loaded_libraries, handle_task_spawn_image,
-    handle_task_status,
+    handle_service_spawn, handle_task_loaded_libraries, handle_task_spawn_image, handle_task_status,
 };

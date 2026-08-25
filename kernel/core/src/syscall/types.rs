@@ -3,7 +3,7 @@ use serviceos_abi::{SyscallErrorCode as AbiErrorCode, SyscallNumber as AbiSyscal
 use crate::object::ObjectId;
 
 pub const SYSCALL_ABI_VERSION: u64 = 0x0003_0001;
-pub const MAX_SYSCALL_SLOTS: usize = 48;
+pub const MAX_SYSCALL_SLOTS: usize = 64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SyscallNumber(pub u32);
@@ -76,11 +76,22 @@ impl SyscallReturn {
 pub enum SyscallAction {
     ReturnToCaller,
     YieldCurrentThread,
-    BlockCurrentThreadOnReceive { endpoint: ObjectId, deadline_ticks: u64 },
-    BlockCurrentThreadOnPacketReceive { interface: ObjectId },
-    BlockCurrentThreadOnInputReceive { source: ObjectId },
-    BlockCurrentThreadOnObject { object: ObjectId },
-    ExitCurrentThread { status: u64 },
+    BlockCurrentThreadOnReceive {
+        endpoint: ObjectId,
+        deadline_ticks: u64,
+    },
+    BlockCurrentThreadOnPacketReceive {
+        interface: ObjectId,
+    },
+    BlockCurrentThreadOnInputReceive {
+        source: ObjectId,
+    },
+    BlockCurrentThreadOnObject {
+        object: ObjectId,
+    },
+    ExitCurrentThread {
+        status: u64,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -163,6 +174,7 @@ pub enum SyscallKind {
     MemoryQuery = AbiSyscallNumber::MemoryQuery as isize,
     FaultHandlerRegister = AbiSyscallNumber::FaultHandlerRegister as isize,
     FaultHandlerUnregister = AbiSyscallNumber::FaultHandlerUnregister as isize,
+    AudioEndpointPcmWrite = AbiSyscallNumber::AudioEndpointPcmWrite as isize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

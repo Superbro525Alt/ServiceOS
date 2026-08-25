@@ -17,7 +17,7 @@ use serviceos_kernel_arch_x86_64::{
     smp, user,
 };
 use serviceos_kernel_core::{Kernel, syscall, user as kernel_user};
-use serviceos_platform_qemu_virtio::{audio, block, boot, display, input, network, serial};
+use serviceos_platform_qemu_virtio::{audio, block, boot, display, input, network, serial, sound};
 use spin::Once;
 use uefi::{Status, entry};
 
@@ -191,6 +191,20 @@ fn kernel_main() -> Status {
         );
     } else {
         log_line("audio", "no audio endpoint detected");
+    }
+    if let Some(summary) = sound::bringup_summary() {
+        log(
+            "audio",
+            format_args!(
+                "pcm-sink=virtio-sound pci={:02x}:{:02x}.{} stream={} rate={}Hz channels={}",
+                summary.pci_bus,
+                summary.pci_device,
+                summary.pci_function,
+                summary.stream_id,
+                summary.rate_hz,
+                summary.channels,
+            ),
+        );
     }
 
     let summary = match launch_root_manager(

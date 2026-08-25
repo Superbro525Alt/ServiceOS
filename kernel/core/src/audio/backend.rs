@@ -11,6 +11,14 @@ pub trait AudioBackend: Send + Sync {
     fn info(&self) -> AudioEndpointInfo;
     fn play_tone(&self, request: AudioToneRequest) -> Result<(), AudioEndpointError>;
     fn stop(&self) -> Result<(), AudioEndpointError>;
+
+    /// Push interleaved s16le stereo frames (4 bytes per frame at the
+    /// sink rate) to a PCM playback sink. Backends without a PCM path
+    /// return `Unsupported`; byte counts must be non-zero multiples of 4.
+    /// Returns the number of bytes accepted.
+    fn pcm_write_s16le_stereo(&self, _bytes: &[u8]) -> Result<usize, AudioEndpointError> {
+        Err(AudioEndpointError::Unsupported)
+    }
 }
 
 pub struct AudioEndpointObject {
@@ -32,5 +40,9 @@ impl AudioEndpointObject {
 
     pub fn stop(&self) -> Result<(), AudioEndpointError> {
         self.backend.stop()
+    }
+
+    pub fn pcm_write_s16le_stereo(&self, bytes: &[u8]) -> Result<usize, AudioEndpointError> {
+        self.backend.pcm_write_s16le_stereo(bytes)
     }
 }

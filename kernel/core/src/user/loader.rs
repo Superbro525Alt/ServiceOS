@@ -4,8 +4,8 @@ use crate::memory::{
 };
 
 use super::{
-    FlatDependencyRecord, FlatImageHeader, FlatSegmentRecord, LoadError, LoadedLibraryRecord,
-    LoadedUserImage, MAX_FLAT_DEPENDENCIES, MAX_FLAT_SEGMENTS, KERNEL_ABI_VERSION,
+    FlatDependencyRecord, FlatImageHeader, FlatSegmentRecord, KERNEL_ABI_VERSION, LoadError,
+    LoadedLibraryRecord, LoadedUserImage, MAX_FLAT_DEPENDENCIES, MAX_FLAT_SEGMENTS,
     flat_image_policy,
     types::{FLAT_IMAGE_HEADER_LEN, FLAT_IMAGE_HEADER_LEN_V2, USER_STACK_PAGES, flat_image_magic},
 };
@@ -283,12 +283,12 @@ pub fn load_flat_image(
             if base.as_u64() % PAGE_SIZE_BYTES != 0
                 || !image_window_contains(base.as_u64(), dep_header.memory_size as u64)
                 || base.as_u64() + dep_header.memory_size as u64
-                    > header.user_stack_top.as_u64()
-                        - (USER_STACK_PAGES as u64) * PAGE_SIZE_BYTES
+                    > header.user_stack_top.as_u64() - (USER_STACK_PAGES as u64) * PAGE_SIZE_BYTES
             {
                 return Err(LoadError::DependencyInvalid);
             }
-            let dep_payload = &bytes[dep_header.header_len..dep_header.header_len + dep_header.file_size];
+            let dep_payload =
+                &bytes[dep_header.header_len..dep_header.header_len + dep_header.file_size];
             let dep_pages = dep_header.memory_size.div_ceil(PAGE_SIZE_BYTES as usize);
             for page_index in 0..dep_pages {
                 let page_offset = page_index * PAGE_SIZE_BYTES as usize;
@@ -318,7 +318,10 @@ pub fn load_flat_image(
                 mapped_bytes: dep_header.memory_size,
             };
             library_count += 1;
-            cursor = align_up_u64(base.as_u64() + dep_header.memory_size as u64, PAGE_SIZE_BYTES as u64);
+            cursor = align_up_u64(
+                base.as_u64() + dep_header.memory_size as u64,
+                PAGE_SIZE_BYTES as u64,
+            );
         }
     }
 

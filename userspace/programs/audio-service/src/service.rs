@@ -1,6 +1,7 @@
-use rt::{AudioEndpointState, ControlTag, LogEvent, LogSeverity, RawMessage, ServiceId};
+use rt::{AudioEndpointBackend, AudioEndpointState, ControlTag, LogEvent, LogSeverity, RawMessage, ServiceId};
 use serviceos_abi::{
-    MIX_BATCH_FRAMES, PcmNullSink, PcmStreamState, run_pcm_mix_selftest,
+    MIX_BATCH_FRAMES, PcmNullSink, PcmStreamState, audio_capability, run_pcm_mix_selftest,
+    run_pcm_mix_selftest_emit,
 };
 use serviceos_userspace_runtime as rt;
 
@@ -10,6 +11,9 @@ use crate::{
     types::StreamSlot,
     util::{emit_log, poll_lifecycle, update_stream_expiry},
 };
+
+/// One mixed batch of stereo s16 frames, the unit handed to the PCM sink.
+const SINK_BATCH_BYTES: usize = MIX_BATCH_FRAMES * 4;
 
 pub(crate) fn run() -> u64 {
     let bootstrap = 1;
@@ -58,6 +62,51 @@ pub(crate) fn run() -> u64 {
             mix_selftest.checksum_a,
             mix_selftest.checksum_b,
             mix_selftest.checksum_mixed,
+        ),
+    );
+
+    // A PCM-capable endpoint (virtio-sound) becomes the real sink; the
+    // null sink remains the honest fallback when only the PC speaker or
+    // nothing is present.
+    let mut pcm_sink_active = endpoint.backend == AudioEndpointBackend::VirtioSound
+        && endpoint.capabilities & audio_capability::PCM != 0;
+    let mut pcm_bytes_total = 0u64;
+    if pcm_sink_active {
+        let write_result = run_pcm_mix_selftest_emit(&mut |batch| {
+            if let Ok(accepted) = rt::kernel_audio_endpoint_pcm_write(audio_handle, batch) {
+                pcm_bytes_total = pcm_bytes_total.saturating_add(accepted as u64);
+            }
+        });
+        let _ = rt::write_logf(
+            "audio",
+            format_args!(
+                "selftest virtio {} frames={} bytes={} clip={}",
+                if write_result.ok && pcm_bytes_total > 0 {
+                    "ok"
+                } else {
+                    "FAILED"
+                },
+                write_result.frames_mixed,
+                pcm_bytes_total,
+                write_result.clipped_frames,
+            ),
+        );
+        if !write_result.ok || pcm_bytes_total == 0 {
+            // The device answered probe but refuses frames; degrade to the
+            // null sink instead of pretending playback works.
+            pcm_sink_active = false;
+        }
+    }
+    let _ = rt::write_logf(
+        "audio",
+        format_args!(
+            "sink={} bytes={}",
+            if pcm_sink_active {
+                "virtio-sound"
+            } else {
+                "null"
+            },
+            pcm_bytes_total,
         ),
     );
 
@@ -144,12 +193,31 @@ pub(crate) fn run() -> u64 {
             }
         }
 
-        // Advance the mixer whenever any PCM stream has queued frames so the
-        // null-sink counters/checksum progress even without new requests.
+        // Advance the mixer whenever any PCM stream has queued frames so
+        // the sink counters/checksum progress even without new requests.
+        // With a PCM endpoint active, every mixed batch is handed to the
+        // virtio-sound device; a failed write permanently degrades to the
+        // null sink (logged once) instead of failing the service.
         let pending: usize = pcm.iter().map(|stream| stream.ring.len()).sum();
         if pending > 0 {
-            sink.mix_batch(&mut pcm, MIX_BATCH_FRAMES);
+            let mut batch = [0u8; SINK_BATCH_BYTES];
+            let mixed = sink.mix_batch_into(&mut pcm, MIX_BATCH_FRAMES, &mut batch);
             had_work = true;
+            if mixed > 0 && pcm_sink_active {
+                match rt::kernel_audio_endpoint_pcm_write(audio_handle, &batch[..mixed * 4]) {
+                    Ok(accepted) => pcm_bytes_total += accepted as u64,
+                    Err(_) => {
+                        pcm_sink_active = false;
+                        let _ = emit_log(
+                            log_handle,
+                            LogSeverity::Error,
+                            LogEvent::AudioEndpointReady,
+                            0xDEAD,
+                            0,
+                        );
+                    }
+                }
+            }
         }
 
         if !had_work && rt::yield_current().is_err() {

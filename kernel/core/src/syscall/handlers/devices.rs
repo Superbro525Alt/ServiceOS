@@ -464,3 +464,38 @@ pub(crate) fn handle_audio_endpoint_stop(context: &SyscallContext) -> SyscallRet
         }
     }
 }
+
+/// Upper bound on PCM bytes accepted per call; bounds in-kernel DMA time.
+const AUDIO_PCM_WRITE_MAX_BYTES: usize = 16 * 1024;
+
+pub(crate) fn handle_audio_endpoint_pcm_write(context: &SyscallContext) -> SyscallReturn {
+    let Ok(current_task) = current_task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let object = match resolve_object(
+        &current_task,
+        context.arguments[0] as Handle,
+        CapabilityRights::WRITE,
+    ) {
+        Ok(view) => view.object,
+        Err(error) => return SyscallReturn::error(error),
+    };
+    let Some(endpoint) = object.audio_endpoint() else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let length = context.arguments[2] as usize;
+    if length == 0 || length > AUDIO_PCM_WRITE_MAX_BYTES || length % 4 != 0 {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    }
+    let Ok(bytes) = (unsafe { user_slice(context.arguments[1], length) }) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+
+    match endpoint.pcm_write_s16le_stereo(bytes) {
+        Ok(written) => SyscallReturn::success(written as u64),
+        Err(crate::audio::AudioEndpointError::Busy) => SyscallReturn::error(SyscallError::Busy),
+        Err(crate::audio::AudioEndpointError::Unsupported) => {
+            SyscallReturn::error(SyscallError::Unsupported)
+        }
+    }
+}

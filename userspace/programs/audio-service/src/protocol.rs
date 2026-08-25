@@ -3,7 +3,7 @@ use rt::{
     LogEvent, LogSeverity, RawMessage,
 };
 use serviceos_abi::{
-    AudioSampleFormat, PcmNullSink, PcmStreamState, PCM_RING_FRAMES, SINK_RATE_HZ,
+    AudioSampleFormat, PCM_RING_FRAMES, PcmNullSink, PcmStreamState, SINK_RATE_HZ,
     audio_stream_write_flag, pcm_resampled_len,
 };
 use serviceos_userspace_runtime as rt;
@@ -96,6 +96,13 @@ pub(crate) fn handle_public_request(
             let reply_handle = request.handles[0];
             let mut reply = RawMessage::empty(AudioTag::StreamOpenReply as u32);
             reply.word_count = 1;
+            // Capture streams are reserved groundwork; only playback opens.
+            if request.words[0] == AudioStreamDirection::Capture as u32 as u64 {
+                reply.words[0] = AudioStatus::Unsupported as u32 as u64;
+                let _ = rt::channel_send(reply_handle, &reply);
+                let _ = rt::handle_close(reply_handle);
+                return Ok(());
+            }
             match allocate_stream(streams, pcm, request.words[1] as u32) {
                 Ok((slot, client_handle)) => {
                     reply.words[0] = AudioStatus::Ok as u32 as u64;
@@ -159,6 +166,18 @@ pub(crate) fn handle_public_request(
             reply.word_count = cursor as u32;
             reply.words[1] = count as u64;
             reply.words[2] = next as u64;
+            let _ = rt::channel_send(reply_handle, &reply);
+            let _ = rt::handle_close(reply_handle);
+        }
+        x if x == AudioTag::CaptureOpenRequest as u32 => {
+            // Reserved contract tag: answered honestly until capture lands.
+            if request.handle_count < 1 {
+                return Ok(());
+            }
+            let reply_handle = request.handles[0];
+            let mut reply = RawMessage::empty(AudioTag::CaptureOpenReply as u32);
+            reply.word_count = 1;
+            reply.words[0] = AudioStatus::Unsupported as u32 as u64;
             let _ = rt::channel_send(reply_handle, &reply);
             let _ = rt::handle_close(reply_handle);
         }

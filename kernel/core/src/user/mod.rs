@@ -14,8 +14,8 @@ pub use spawn::{
 };
 pub use types::{
     AddressSpacePreparationError, FlatDependencyRecord, FlatImageHeader, FlatSegmentRecord,
-    KERNEL_ABI_VERSION, MAX_FLAT_DEPENDENCIES, MAX_FLAT_SEGMENTS, LoadError, LoadedLibraryRecord,
-    LoadedUserImage, PreparedUserAddressSpace, SpawnError, SpawnedUserTask, TaskExitStatus,
+    KERNEL_ABI_VERSION, LoadError, LoadedLibraryRecord, LoadedUserImage, MAX_FLAT_DEPENDENCIES,
+    MAX_FLAT_SEGMENTS, PreparedUserAddressSpace, SpawnError, SpawnedUserTask, TaskExitStatus,
     UserArchHooks, UserThreadLaunch, flat_image_policy,
 };
 

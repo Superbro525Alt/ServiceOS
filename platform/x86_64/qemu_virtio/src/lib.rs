@@ -9,3 +9,4 @@ pub mod display;
 pub mod input;
 pub mod network;
 pub mod serial;
+pub mod sound;

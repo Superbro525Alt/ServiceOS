@@ -150,11 +150,12 @@ impl UserRuntime {
             .insert(address_space_id, image);
     }
 
-    pub fn loaded_image(
-        &self,
-        address_space_id: AddressSpaceId,
-    ) -> Option<super::LoadedUserImage> {
-        self.state.lock().loaded_images.get(&address_space_id).copied()
+    pub fn loaded_image(&self, address_space_id: AddressSpaceId) -> Option<super::LoadedUserImage> {
+        self.state
+            .lock()
+            .loaded_images
+            .get(&address_space_id)
+            .copied()
     }
 }
 

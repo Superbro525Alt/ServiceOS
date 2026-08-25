@@ -367,11 +367,15 @@ fn normalize_event(device: &mut InputDeviceState, event: InputEvent) -> Option<I
         EV_REL => {
             if device.role.is_pointer() {
                 match event.code {
-                    REL_X if matches!(device.role, DeviceRole::Pointer(PointerSource::Relative)) => {
+                    REL_X
+                        if matches!(device.role, DeviceRole::Pointer(PointerSource::Relative)) =>
+                    {
                         device.pending_x = device.pending_x.saturating_add(event.value as i32);
                         device.motion_dirty = true;
                     }
-                    REL_Y if matches!(device.role, DeviceRole::Pointer(PointerSource::Relative)) => {
+                    REL_Y
+                        if matches!(device.role, DeviceRole::Pointer(PointerSource::Relative)) =>
+                    {
                         device.pending_y = device.pending_y.saturating_add(event.value as i32);
                         device.motion_dirty = true;
                     }

@@ -1,5 +1,6 @@
 use alloc::sync::Arc;
-use serviceos_abi::{InputEventInfo, InputSourceInfo};
+use alloc::vec::Vec;
+use serviceos_abi::{InputDeviceInfo, InputEventInfo, InputSourceInfo};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InputSourceError {
@@ -25,6 +26,18 @@ pub trait InputBackend: Send + Sync {
     fn info(&self) -> InputSourceInfo;
     fn receive(&self) -> Result<InputEventInfo, InputSourceError>;
     fn poll(&self) -> bool;
+
+    /// Enumerates every physical input instance behind this source distinctly
+    /// (id, class, semantic role flags, presence) instead of an aggregate
+    /// device count. Empty for backends without per-instance tracking.
+    fn enumerate_devices(&self) -> Vec<InputDeviceInfo> {
+        Vec::new()
+    }
+
+    /// Marks a device instance absent after removal. A stale instance must
+    /// stop producing events and must never wedge the poll pipeline; marking
+    /// it present again restores routing.
+    fn set_device_present(&self, _source_id: u32, _present: bool) {}
 }
 
 pub struct InputSourceObject {
@@ -55,6 +68,22 @@ impl InputSourceObject {
 
     pub fn try_receive(&self) -> Result<InputEventInfo, InputSourceError> {
         self.backend.receive()
+    }
+
+    /// Per-instance enumeration pass-through (multi-host visibility).
+    pub fn enumerate_devices(&self) -> Vec<InputDeviceInfo> {
+        self.backend.enumerate_devices()
+    }
+
+    /// Marks a device instance absent (hot-unplug): its events are ignored
+    /// from then on and the pipeline keeps draining other hosts.
+    pub fn mark_device_absent(&self, source_id: u32) {
+        self.backend.set_device_present(source_id, false);
+    }
+
+    /// Restores a previously absent device instance.
+    pub fn mark_device_present(&self, source_id: u32) {
+        self.backend.set_device_present(source_id, true);
     }
 
     pub fn try_receive_with_fallback(&self) -> Result<InputEventInfo, InputSourceError> {

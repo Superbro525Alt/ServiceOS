@@ -2,8 +2,7 @@ use alloc::sync::Arc;
 use core::ptr::NonNull;
 
 use serviceos_abi::{
-    AudioEndpointBackend, AudioEndpointInfo, AudioEndpointState, AudioToneRequest,
-    audio_capability,
+    AudioEndpointBackend, AudioEndpointInfo, AudioEndpointState, AudioToneRequest, audio_capability,
 };
 use serviceos_kernel_arch_x86_64::paging::ActivePageTable;
 use serviceos_kernel_core::{

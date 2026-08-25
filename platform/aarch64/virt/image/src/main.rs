@@ -481,6 +481,16 @@ fn panic(info: &PanicInfo<'_>) -> ! {
 }
 
 use serviceos_kernel_core::memory::PhysicalAddress;
+/// Boot-mode word passed to the root-manager in the startup message
+/// (3 = recovery; see root-manager bootmode). Selected at build time via
+/// SERVICEOS_BOOT_MODE=recovery, e.g. `cargo xtask recover`.
+fn root_boot_mode_word() -> u64 {
+    if option_env!("SERVICEOS_BOOT_MODE") == Some("recovery") {
+        3
+    } else {
+        0
+    }
+}
 
 fn launch_root_manager(
     kernel: &Kernel<'_>,
@@ -589,7 +599,7 @@ fn launch_root_manager(
             boot_store_bytes.len() as u64,
             BootstrapPlatform::QemuVirtio as u32 as u64,
             bootstrap_resource_flags,
-            0,
+            root_boot_mode_word(),
         ],
     )?
     .add_transfer(boot_store_transfer)?

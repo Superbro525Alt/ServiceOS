@@ -178,6 +178,15 @@ fn kernel_main() -> Status {
                 summary.backend, summary.keyboard_devices, summary.pointer_devices,
             ),
         );
+        for instance in summary.instances[..summary.instance_count].iter() {
+            log(
+                "input",
+                format_args!(
+                    "instance id={} class={:#x} role_flags={:#x}",
+                    instance.source_id, instance.class, instance.role_flags,
+                ),
+            );
+        }
     } else {
         log_line("input", "no input source detected");
     }

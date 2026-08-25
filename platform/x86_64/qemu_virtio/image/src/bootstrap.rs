@@ -10,6 +10,16 @@ use serviceos_kernel_core::{
 };
 
 use crate::{BOOT_STORE_IMAGE_SOURCE, executor::run_userspace_executor, logging::log_line};
+/// Boot-mode word passed to the root-manager in the startup message
+/// (3 = recovery; see root-manager bootmode). Selected at build time via
+/// SERVICEOS_BOOT_MODE=recovery, e.g. `cargo xtask recover`.
+fn root_boot_mode_word() -> u64 {
+    if option_env!("SERVICEOS_BOOT_MODE") == Some("recovery") {
+        3
+    } else {
+        0
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum BootstrapError {
@@ -187,7 +197,7 @@ pub(crate) fn launch_root_manager(
             boot_store_bytes.len() as u64,
             serviceos_abi::BootstrapPlatform::QemuVirtio as u32 as u64,
             bootstrap_resource_flags,
-            0,
+            root_boot_mode_word(),
         ],
     )?
     .add_transfer(boot_store_transfer)?

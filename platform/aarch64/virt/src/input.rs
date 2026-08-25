@@ -2,8 +2,8 @@ use alloc::{sync::Arc, vec::Vec};
 use spin::{Mutex, Once};
 
 use serviceos_abi::{
-    InputButton, InputEventInfo, InputEventKind, InputSourceBackend, InputSourceInfo,
-    input_capability,
+    InputButton, InputDeviceInfo, InputEventInfo, InputEventKind, InputSourceBackend,
+    InputSourceInfo, input_capability, input_device_class, input_role_flag,
 };
 use serviceos_kernel_core::{
     input::{InputBackend, InputSourceError},
@@ -19,6 +19,9 @@ use crate::dtb::VirtioMmioDevice;
 use crate::virtio::{KernelHal, VirtioTransport, discover};
 
 const MAX_PENDING_EVENTS: usize = 128;
+/// Upper bound on distinctly enumerated physical input instances reported at
+/// bring-up.
+const MAX_INPUT_INSTANCES: usize = 8;
 
 const EV_SYN: u16 = 0x00;
 const EV_KEY: u16 = 0x01;
@@ -41,6 +44,18 @@ pub struct InputBringupSummary {
     pub backend: InputSourceBackend,
     pub keyboard_devices: u32,
     pub pointer_devices: u32,
+    /// Per-instance enumeration (id + semantic role), not just counts.
+    pub instances: [InputInstanceSummary; MAX_INPUT_INSTANCES],
+    pub instance_count: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InputInstanceSummary {
+    pub source_id: u32,
+    /// One of `serviceos_abi::input_device_class`.
+    pub class: u32,
+    /// Bitmask of `serviceos_abi::input_role_flag`.
+    pub role_flags: u32,
 }
 
 pub fn initialize(devices: &[VirtioMmioDevice]) -> Option<Arc<dyn InputBackend>> {
@@ -50,6 +65,12 @@ pub fn initialize(devices: &[VirtioMmioDevice]) -> Option<Arc<dyn InputBackend>>
     }
 
     let mut input_devices = Vec::new();
+    let mut instances = [InputInstanceSummary {
+        source_id: 0,
+        class: 0,
+        role_flags: 0,
+    }; MAX_INPUT_INSTANCES];
+    let mut instance_count = 0usize;
     let mut keyboard_devices = 0u32;
     let mut pointer_devices = 0u32;
 
@@ -70,8 +91,20 @@ pub fn initialize(devices: &[VirtioMmioDevice]) -> Option<Arc<dyn InputBackend>>
             keyboard_devices = keyboard_devices.saturating_add(1);
         }
 
+        let source_id = (input_devices.len() + 1) as u32;
+        let (class, role_flags) = instance_signature(pointer.as_ref(), has_keys);
+        if instance_count < MAX_INPUT_INSTANCES {
+            instances[instance_count] = InputInstanceSummary {
+                source_id,
+                class,
+                role_flags,
+            };
+            instance_count += 1;
+        }
         input_devices.push(InputDeviceState {
             device,
+            source_id,
+            present: true,
             pointer,
             keyboard: has_keys,
             pending_x: 0,
@@ -88,6 +121,8 @@ pub fn initialize(devices: &[VirtioMmioDevice]) -> Option<Arc<dyn InputBackend>>
         backend: InputSourceBackend::VirtioPci,
         keyboard_devices,
         pointer_devices,
+        instances,
+        instance_count,
     });
 
     Some(Arc::new(VirtioInputBackend::new(
@@ -125,6 +160,12 @@ struct VirtioInputState {
 
 struct InputDeviceState {
     device: VirtIOInput<KernelHal, VirtioTransport>,
+    /// Stable instance id (1-based bring-up order); matches `source_id` on
+    /// every event this device emits.
+    source_id: u32,
+    /// Hot-plug presence: absent instances are skipped entirely by polling
+    /// so a removed device cannot wedge the event pipeline.
+    present: bool,
     pointer: Option<PointerSource>,
     keyboard: bool,
     pending_x: i32,
@@ -164,6 +205,7 @@ impl VirtioInputBackend {
                     code: 0,
                     value0: 0,
                     value1: 0,
+                    source_id: 0,
                 }; MAX_PENDING_EVENTS],
                 queue_head: 0,
                 queue_len: 0,
@@ -179,8 +221,39 @@ impl InputBackend for VirtioInputBackend {
         InputSourceInfo {
             backend: InputSourceBackend::VirtioPci as u32,
             capabilities: state.capabilities,
-            device_count: state.devices.len() as u32,
+            device_count: state
+                .devices
+                .iter()
+                .filter(|device| device.present)
+                .count() as u32,
             pending_events: state.queue_len as u32,
+        }
+    }
+
+    fn enumerate_devices(&self) -> Vec<InputDeviceInfo> {
+        self.state
+            .lock()
+            .devices
+            .iter()
+            .map(|device| {
+                let (class, role_flags) =
+                    instance_signature(device.pointer.as_ref(), device.keyboard);
+                InputDeviceInfo {
+                    source_id: device.source_id,
+                    class,
+                    role_flags,
+                    present: u32::from(device.present),
+                }
+            })
+            .collect()
+    }
+
+    fn set_device_present(&self, source_id: u32, present: bool) {
+        let mut state = self.state.lock();
+        for device in state.devices.iter_mut() {
+            if device.source_id == source_id {
+                device.present = present;
+            }
         }
     }
 
@@ -200,6 +273,10 @@ impl InputBackend for VirtioInputBackend {
         let mut became_ready = false;
 
         for device_index in 0..state.devices.len() {
+            // Hot-plug guard: absent instances are never acked or drained.
+            if !state.devices[device_index].present {
+                continue;
+            }
             {
                 let device = &mut state.devices[device_index];
                 let _ = device.device.ack_interrupt();
@@ -211,6 +288,10 @@ impl InputBackend for VirtioInputBackend {
                         .device
                         .pop_pending_event()
                         .and_then(|event| normalize_event(device, event))
+                        .map(|mut info| {
+                            info.source_id = state.devices[device_index].source_id;
+                            info
+                        })
                 };
                 let Some(normalized) = normalized else {
                     break;
@@ -229,6 +310,24 @@ impl InputBackend for VirtioInputBackend {
         }
 
         became_ready
+    }
+}
+
+/// Semantic class/role-flag pair reported by per-instance enumeration.
+fn instance_signature(
+    pointer: Option<&PointerSource>,
+    has_keys: bool,
+) -> (u32, u32) {
+    match pointer {
+        Some(PointerSource::Absolute(_)) => (
+            input_device_class::TABLET,
+            input_role_flag::POSITIONAL_AUTHORITY,
+        ),
+        Some(PointerSource::Relative) => (
+            input_device_class::POINTER,
+            input_role_flag::POSITIONAL_AUTHORITY,
+        ),
+        None => (input_device_class::KEYBOARD, 0),
     }
 }
 
@@ -287,6 +386,7 @@ fn normalize_event(device: &mut InputDeviceState, event: InputEvent) -> Option<I
                     }
                     REL_WHEEL => {
                         return Some(InputEventInfo {
+                            source_id: 2,
                             kind: InputEventKind::PointerScroll as u32,
                             code: 0,
                             value0: 0,
@@ -306,6 +406,7 @@ fn normalize_event(device: &mut InputDeviceState, event: InputEvent) -> Option<I
             device.motion_dirty = false;
             match pointer {
                 PointerSource::Absolute(axes) => Some(InputEventInfo {
+                    source_id: 3,
                     kind: InputEventKind::PointerMotion as u32,
                     code: 0,
                     value0: normalize_axis(device.pending_x, axes.min_x, axes.max_x),
@@ -317,6 +418,7 @@ fn normalize_event(device: &mut InputDeviceState, event: InputEvent) -> Option<I
                     device.pending_x = 0;
                     device.pending_y = 0;
                     Some(InputEventInfo {
+                        source_id: 2,
                         kind: InputEventKind::PointerDelta as u32,
                         code: 0,
                         value0: delta_x,
@@ -327,6 +429,7 @@ fn normalize_event(device: &mut InputDeviceState, event: InputEvent) -> Option<I
         }
         EV_KEY if device.pointer.is_some() => map_pointer_button(event),
         EV_KEY if device.keyboard => Some(InputEventInfo {
+            source_id: 1,
             kind: InputEventKind::Key as u32,
             code: event.code as u32,
             value0: if event.value == 0 { 0 } else { 1 },
@@ -344,6 +447,7 @@ fn map_pointer_button(event: InputEvent) -> Option<InputEventInfo> {
         _ => return None,
     };
     Some(InputEventInfo {
+        source_id: 2,
         kind: InputEventKind::PointerButton as u32,
         code: button as u32,
         value0: if event.value == 0 { 0 } else { 1 },

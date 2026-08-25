@@ -4,10 +4,45 @@ use rt::ConfigKey;
 use serviceos_userspace_runtime as rt;
 
 use crate::{
-    consts::{MAX_HOSTNAME_BYTES, MAX_HOSTS, MAX_HOSTS_RESOURCE_BYTES},
+    consts::{DEFAULT_HOSTNAME, MAX_HOSTNAME_BYTES, MAX_HOSTS, MAX_HOSTS_RESOURCE_BYTES},
     types::{HostEntry, NetworkConfig},
     util::u32_to_ipv4,
 };
+
+/// Options carried as optional `key=value` lines inside the hosts resource
+/// file (the network service's boot configuration). Absent lines keep the
+/// defaults: built-in hostname, mDNS-LITE responder on, discovery beacon on.
+#[derive(Clone, Copy)]
+pub(crate) struct NetFileOptions {
+    pub(crate) hostname_len: usize,
+    pub(crate) hostname: [u8; MAX_HOSTNAME_BYTES],
+    pub(crate) mdns_enabled: bool,
+    pub(crate) discovery_enabled: bool,
+}
+
+impl NetFileOptions {
+    pub(crate) fn defaults() -> Self {
+        Self {
+            hostname_len: DEFAULT_HOSTNAME.len(),
+            hostname: {
+                let mut name = [0u8; MAX_HOSTNAME_BYTES];
+                name[..DEFAULT_HOSTNAME.len()].copy_from_slice(DEFAULT_HOSTNAME.as_bytes());
+                name
+            },
+            mdns_enabled: true,
+            discovery_enabled: true,
+        }
+    }
+}
+
+/// A valid hostname label: ASCII letters/digits/hyphen, no dots.
+fn is_hostname_label(name: &[u8]) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_HOSTNAME_BYTES
+        && name
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'-')
+}
 
 pub(crate) fn read_network_config(config_handle: rt::Handle) -> rt::Result<NetworkConfig> {
     Ok(NetworkConfig {
@@ -66,6 +101,7 @@ fn read_config_value(handle: rt::Handle, key: ConfigKey, default: u64) -> rt::Re
 pub(crate) fn load_hosts(
     handle: rt::Handle,
     hosts: &mut [HostEntry; MAX_HOSTS],
+    options: &mut NetFileOptions,
 ) -> rt::Result<usize> {
     if handle == rt::INVALID_HANDLE {
         return Ok(0);
@@ -82,18 +118,41 @@ pub(crate) fn load_hosts(
         let Some((name, value)) = line.split_once('=') else {
             continue;
         };
+        let name = name.trim();
+        let value = value.trim();
+
+        // Option lines (parsed but not host-table entries).
+        match name {
+            "hostname" => {
+                if is_hostname_label(value.as_bytes()) {
+                    options.hostname_len = value.len();
+                    options.hostname[..value.len()].copy_from_slice(value.as_bytes());
+                }
+                continue;
+            }
+            "mdns" => {
+                options.mdns_enabled = value != "off" && value != "0";
+                continue;
+            }
+            "discovery" => {
+                options.discovery_enabled = value != "off" && value != "0";
+                continue;
+            }
+            _ => {}
+        }
+
         if count == hosts.len() {
             break;
         }
-        let Some(address) = parse_ipv4(value.trim()) else {
+        let Some(address) = parse_ipv4(value) else {
             continue;
         };
-        let name = name.trim().as_bytes();
-        if name.len() > MAX_HOSTNAME_BYTES {
+        let name_bytes = name.as_bytes();
+        if name_bytes.len() > MAX_HOSTNAME_BYTES {
             continue;
         }
-        hosts[count].name_len = name.len();
-        hosts[count].name[..name.len()].copy_from_slice(name);
+        hosts[count].name_len = name_bytes.len();
+        hosts[count].name[..name_bytes.len()].copy_from_slice(name_bytes);
         hosts[count].address = address;
         count += 1;
     }

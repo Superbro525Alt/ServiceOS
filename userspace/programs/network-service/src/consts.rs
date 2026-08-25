@@ -72,3 +72,56 @@ pub(crate) const RESOLVE_DETAIL_NEGATIVE_CACHE: u64 = 5;
 pub(crate) const RESOLVE_DETAIL_POSITIVE_CACHE: u64 = 6;
 pub(crate) const RESOLVE_DETAIL_CHAIN_TOO_LONG: u64 = 7;
 pub(crate) const RESOLVE_DETAIL_MALFORMED: u64 = 8;
+
+// --- Host naming / discovery / diagnostics (S7 reserved tags + limits) ---
+//
+// More reserved network-contract tags on the public channel, continuing the
+// firewall/resolve-ex convention above (next free value after 0x813). Wire
+// format stays the standard RawMessage envelope, so a future shared-abi enum
+// promotion is wire-compatible.
+pub(crate) const HOSTNAME_GET_REQUEST: u32 = 0x814;
+pub(crate) const HOSTNAME_GET_REPLY: u32 = 0x815;
+pub(crate) const HOSTNAME_SET_REQUEST: u32 = 0x816;
+pub(crate) const HOSTNAME_SET_REPLY: u32 = 0x817;
+pub(crate) const DIAG_PING_STATS_REQUEST: u32 = 0x818;
+pub(crate) const DIAG_PING_STATS_REPLY: u32 = 0x819;
+pub(crate) const NEIGHBOR_DUMP_REQUEST: u32 = 0x81a;
+pub(crate) const NEIGHBOR_DUMP_REPLY: u32 = 0x81b;
+pub(crate) const LISTEN_PORTS_REQUEST: u32 = 0x81c;
+pub(crate) const LISTEN_PORTS_REPLY: u32 = 0x81d;
+pub(crate) const DISCOVERY_REGISTER_REQUEST: u32 = 0x81e;
+pub(crate) const DISCOVERY_REGISTER_REPLY: u32 = 0x81f;
+pub(crate) const DISCOVERY_PEERS_REQUEST: u32 = 0x820;
+pub(crate) const DISCOVERY_PEERS_REPLY: u32 = 0x821;
+
+/// UDP port for the mDNS-LITE responder. Honest subset only: unicast A-record
+/// answers to direct queries for `<hostname>.local`. No multicast group join,
+/// no probing/conflict resolution, no SRV/TXT/PTR, no LLMNR — full mDNS/LLMNR
+/// remains open work.
+pub(crate) const MDNS_UDP_PORT: u16 = 5353;
+/// Answer TTL (RFC 6762 suggests >=120s for A records).
+pub(crate) const MDNS_TTL_SECONDS: u32 = 120;
+/// Hostname used when neither the hosts resource nor HOSTNAME_SET provides one.
+pub(crate) const DEFAULT_HOSTNAME: &str = "serviceos";
+
+/// UDP port + wire constants for the discovery beacon (service-local protocol,
+/// not an internet standard).
+pub(crate) const BEACON_UDP_PORT: u16 = 41453;
+pub(crate) const BEACON_VERSION: u8 = 1;
+pub(crate) const BEACON_FLAG_ANNOUNCE: u8 = 1;
+pub(crate) const BEACON_FLAG_QUERY: u8 = 2;
+pub(crate) const MAX_LOCAL_SERVICES: usize = 6;
+pub(crate) const MAX_SERVICE_NAME_BYTES: usize = 24;
+pub(crate) const MAX_BEACON_PEERS: usize = 4;
+/// Peer names are capped so a peer entry fits three reply words.
+pub(crate) const MAX_BEACON_NAME_BYTES: usize = 15;
+/// Re-announce cadence in main-loop iterations (loop ticks do not advance the
+/// monotonic clock on this kernel build; see selftest note in main.rs).
+pub(crate) const BEACON_ANNOUNCE_PERIOD_LOOPS: u64 = 8192;
+
+/// Continuous-ping diagnostics: packets per DIAG_PING_STATS exchange.
+pub(crate) const MAX_DIAG_PINGS: usize = 8;
+/// Neighbor dump capacity (snooped ARP entries; 2 reply words each).
+pub(crate) const MAX_NEIGHBOR_ENTRIES: usize = 6;
+/// Default discovery window when a peers query passes window_ms = 0.
+pub(crate) const BEACON_PEER_DEFAULT_WINDOW_MS: u64 = 30_000;

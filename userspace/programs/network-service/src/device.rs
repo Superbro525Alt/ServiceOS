@@ -71,6 +71,93 @@ static LOOPBACK_RX_RING: SyncCell<Option<LoopbackRing>> = SyncCell(UnsafeCell::n
 static OWN_MAC: SyncCell<[u8; 6]> = SyncCell(UnsafeCell::new([0; 6]));
 static LOCAL_IPV4: SyncCell<[u8; 4]> = SyncCell(UnsafeCell::new([127, 0, 0, 1]));
 static LB_STATS: SyncCell<(u64, u64, u64)> = SyncCell(UnsafeCell::new((0, 0, 0)));
+static NEIGHBORS: SyncCell<NeighborTable> = SyncCell(UnsafeCell::new(NeighborTable::new()));
+
+/// Snooped ARP neighbor entries for the NEIGHBOR_DUMP diagnostic. This is a
+/// passive observation table (whoever announced itself in an ARP frame we
+/// saw), not the stack's own resolution cache.
+#[derive(Clone, Copy)]
+pub(crate) struct NeighborEntry {
+    pub(crate) valid: bool,
+    pub(crate) address: Ipv4Address,
+    pub(crate) mac: [u8; 6],
+}
+
+struct NeighborTable {
+    entries: [NeighborEntry; crate::consts::MAX_NEIGHBOR_ENTRIES],
+}
+
+impl NeighborTable {
+    const fn new() -> Self {
+        Self {
+            entries: [NeighborEntry {
+                valid: false,
+                address: Ipv4Address::UNSPECIFIED,
+                mac: [0; 6],
+            }; crate::consts::MAX_NEIGHBOR_ENTRIES],
+        }
+    }
+
+    fn note(&mut self, address: Ipv4Address, mac: [u8; 6]) {
+        if address == Ipv4Address::UNSPECIFIED || address.is_broadcast() {
+            return;
+        }
+        let mut free = None;
+        for entry in &mut self.entries {
+            if entry.valid && entry.address == address {
+                entry.mac = mac;
+                return;
+            }
+            if !entry.valid && free.is_none() {
+                free = Some(entry);
+            }
+        }
+        if let Some(entry) = free {
+            entry.valid = true;
+            entry.address = address;
+            entry.mac = mac;
+        }
+    }
+}
+
+/// Copy of the snooped table; returns the number of valid entries.
+pub(crate) fn neighbor_snapshot(out: &mut [NeighborEntry]) -> usize {
+    // SAFETY: single-threaded service, main-loop-only access.
+    let table = unsafe { &mut *NEIGHBORS.0.get() };
+    let mut written = 0usize;
+    for entry in &table.entries {
+        if !entry.valid || written == out.len() {
+            continue;
+        }
+        out[written] = *entry;
+        written += 1;
+    }
+    written
+}
+
+fn snoop_arp_frame(frame: &[u8]) {
+    let Ok(eth) = EthernetFrame::new_checked(frame) else {
+        return;
+    };
+    if eth.ethertype() != smoltcp::wire::EthernetProtocol::Arp {
+        return;
+    }
+    let Ok(arp) = ArpPacket::new_checked(eth.payload()) else {
+        return;
+    };
+    let Ok(ArpRepr::EthernetIpv4 {
+        source_protocol_addr,
+        source_hardware_addr,
+        ..
+    }) = ArpRepr::parse(&arp)
+    else {
+        return;
+    };
+    // SAFETY: see static declarations above.
+    unsafe {
+        (*NEIGHBORS.0.get()).note(source_protocol_addr, source_hardware_addr.0);
+    }
+}
 
 pub(crate) fn loopback_stats() -> (u64, u64, u64) {
     // SAFETY: see static declarations above.
@@ -145,6 +232,7 @@ impl Device for KernelPacketDevice {
                 rt::packet_interface_receive_nonblocking(self.handle, &mut self.rx_buffer).ok()?
             }
         };
+        snoop_arp_frame(&self.rx_buffer[..length]);
         Some((
             KernelRxToken {
                 buffer: &mut self.rx_buffer[..length],

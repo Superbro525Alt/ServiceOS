@@ -10,13 +10,17 @@ use smoltcp::{
 use rt::{ControlTag, LogEvent, LogSeverity, NetworkConfigState, RawMessage, ServiceId};
 use serviceos_userspace_runtime as rt;
 
+mod beacon;
 mod cache;
 mod config;
 mod consts;
 mod device;
+mod diag;
+mod discover;
 mod dnsmsg;
 mod dnsresolv;
 mod firewall;
+mod mdns;
 mod protocol;
 mod types;
 mod util;
@@ -38,7 +42,7 @@ use crate::{
         run_network_selftest, update_transport_states,
     },
     types::{HostEntry, InterfaceRuntimeState, TcpListenerSlot, TcpTransportSlot, UdpDatagramSlot},
-    util::{emit_log, now_instant, pack_mac, poll_lifecycle},
+    util::{emit_log, now_instant, pack_mac, poll_lifecycle, ticks_to_millis},
 };
 
 pub(crate) fn run() -> u64 {
@@ -76,10 +80,14 @@ pub(crate) fn run() -> u64 {
     let _ = rt::handle_close(config_handle);
 
     let mut hosts = [HostEntry::empty(); MAX_HOSTS];
-    let host_count = match load_hosts(hosts_handle, &mut hosts) {
+    let mut net_options = crate::config::NetFileOptions::defaults();
+    let host_count = match load_hosts(hosts_handle, &mut hosts, &mut net_options) {
         Ok(count) => count,
         Err(_) => return 0xfb05,
     };
+    let mut identity = types::HostIdentity::from_label(
+        &net_options.hostname[..net_options.hostname_len],
+    );
 
     let packet_info = match rt::packet_interface_info(packet_handle) {
         Ok(info) => info,
@@ -137,6 +145,24 @@ pub(crate) fn run() -> u64 {
         udp::PacketBuffer::new(&mut dns_rx_meta[..], &mut dns_rx[..]),
         udp::PacketBuffer::new(&mut dns_tx_meta[..], &mut dns_tx[..]),
     );
+    // mDNS-LITE responder socket (<hostname>.local A answers, UDP 5353).
+    let mut mdns_rx = [0u8; DNS_UDP_BUFFER_BYTES];
+    let mut mdns_tx = [0u8; DNS_UDP_BUFFER_BYTES];
+    let mut mdns_rx_meta = [udp::PacketMetadata::EMPTY];
+    let mut mdns_tx_meta = [udp::PacketMetadata::EMPTY];
+    let mdns_socket = udp::Socket::new(
+        udp::PacketBuffer::new(&mut mdns_rx_meta[..], &mut mdns_rx[..]),
+        udp::PacketBuffer::new(&mut mdns_tx_meta[..], &mut mdns_tx[..]),
+    );
+    // Discovery beacon socket (service-local announce/query protocol).
+    let mut beacon_rx = [0u8; DNS_UDP_BUFFER_BYTES];
+    let mut beacon_tx = [0u8; DNS_UDP_BUFFER_BYTES];
+    let mut beacon_rx_meta = [udp::PacketMetadata::EMPTY];
+    let mut beacon_tx_meta = [udp::PacketMetadata::EMPTY];
+    let beacon_socket = udp::Socket::new(
+        udp::PacketBuffer::new(&mut beacon_rx_meta[..], &mut beacon_rx[..]),
+        udp::PacketBuffer::new(&mut beacon_tx_meta[..], &mut beacon_tx[..]),
+    );
     let mut tcp0_rx = [0u8; TCP_SOCKET_BUFFER_BYTES];
     let mut tcp0_tx = [0u8; TCP_SOCKET_BUFFER_BYTES];
     let mut tcp1_rx = [0u8; TCP_SOCKET_BUFFER_BYTES];
@@ -153,6 +179,8 @@ pub(crate) fn run() -> u64 {
     let icmp_handle = sockets.add(icmp_socket);
     let dhcp_handle = sockets.add(dhcp_socket);
     let dns_client_handle = sockets.add(dns_client_socket);
+    let mdns_handle = sockets.add(mdns_socket);
+    let beacon_handle = sockets.add(beacon_socket);
     let tcp_handles = [sockets.add(tcp0), sockets.add(tcp1)];
     let mut udp_a_rx_meta = [udp::PacketMetadata::EMPTY; 4];
     let mut udp_a_rx_data = [0u8; UDP_DATAGRAM_BUFFER_BYTES];
@@ -255,6 +283,47 @@ pub(crate) fn run() -> u64 {
     }
 
     let mut loop_ticks: u64 = 0;
+    let mut registry = discover::Registry::new();
+    let mut peer_table = discover::PeerTable::new();
+    let mut next_announce_loop = 0u64;
+    let mut announce_logged = false;
+
+    // Bind the fixed internal service ports before any request-driven
+    // ephemeral allocation can collide with them.
+    if sockets
+        .get_mut::<udp::Socket>(mdns_handle)
+        .bind(crate::consts::MDNS_UDP_PORT)
+        .is_err()
+        || sockets
+            .get_mut::<udp::Socket>(beacon_handle)
+            .bind(crate::consts::BEACON_UDP_PORT)
+            .is_err()
+    {
+        return 0xfb13;
+    }
+
+    if net_options.mdns_enabled {
+        let _ = rt::write_logf(
+            "network",
+            format_args!(
+                "mdns-lite responder ready hostname={}.local port={} enabled=1",
+                core::str::from_utf8(&identity.name[..identity.name_len]).unwrap_or("host"),
+                crate::consts::MDNS_UDP_PORT
+            ),
+        );
+    }
+    if net_options.discovery_enabled {
+        let _ = rt::write_logf(
+            "network",
+            format_args!(
+                "discovery beacon ready port={} services={} peers-capacity={}",
+                crate::consts::BEACON_UDP_PORT,
+                registry.count,
+                peer_table.count
+            ),
+        );
+    }
+
     loop {
         loop_ticks += 1;
         match poll_lifecycle(bootstrap) {
@@ -305,6 +374,72 @@ pub(crate) fn run() -> u64 {
             run_network_selftest(log_handle, &mut iface, &mut device);
         }
 
+        // mDNS-LITE responder + discovery beacon: served directly from the
+        // main loop once the interface has an address.
+        if runtime_state.state != NetworkConfigState::Pending
+            && runtime_state.address != smoltcp::wire::Ipv4Address::UNSPECIFIED
+        {
+            if net_options.mdns_enabled {
+                let _ = mdns::pump(
+                    &mut iface,
+                    &mut device,
+                    &mut sockets,
+                    mdns_handle,
+                    &identity,
+                    runtime_state.address,
+                );
+            }
+            if net_options.discovery_enabled {
+                let now_ms = ticks_to_millis(rt::monotonic_now().unwrap_or(0));
+                let _ = beacon::pump(
+                    &mut iface,
+                    &mut device,
+                    &mut sockets,
+                    beacon_handle,
+                    &registry,
+                    &mut peer_table,
+                    &identity,
+                    now_ms,
+                    runtime_state.address,
+                );
+                if loop_ticks >= next_announce_loop {
+                    next_announce_loop =
+                        loop_ticks.saturating_add(crate::consts::BEACON_ANNOUNCE_PERIOD_LOOPS);
+                    match beacon::announce(
+                        &mut iface,
+                        &mut device,
+                        &mut sockets,
+                        beacon_handle,
+                        &registry,
+                        &identity,
+                        runtime_state.address,
+                    ) {
+                        Ok(true) => {
+                            // Pair every announce with a query solicitation so
+                            // quiet peers introduce themselves.
+                            let _ = beacon::solicit(
+                                &mut iface,
+                                &mut device,
+                                &mut sockets,
+                                beacon_handle,
+                            );
+                            if !announce_logged {
+                                announce_logged = true;
+                                let _ = rt::write_logf(
+                                    "network",
+                                    format_args!(
+                                        "beacon announce sent services={} peers={}",
+                                        registry.count, peer_table.count
+                                    ),
+                                );
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
         let mut request = RawMessage::empty(0);
         match rt::channel_receive_nonblocking(public.first, &mut request) {
             Ok(()) => {
@@ -330,6 +465,9 @@ pub(crate) fn run() -> u64 {
                     &mut udp_slots,
                     udp_handles,
                     &mut listeners,
+                    &mut identity,
+                    &mut registry,
+                    &mut peer_table,
                 )
                 .is_err()
                 {

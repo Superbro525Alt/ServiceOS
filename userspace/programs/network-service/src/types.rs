@@ -12,6 +12,49 @@ pub(crate) struct HostEntry {
     pub(crate) address: Ipv4Address,
 }
 
+/// The host's own name (single label, no `.local` suffix). Sourced from the
+/// hosts resource file at boot; changeable at runtime via HOSTNAME_SET.
+#[derive(Clone, Copy)]
+pub(crate) struct HostIdentity {
+    pub(crate) name_len: usize,
+    pub(crate) name: [u8; MAX_HOSTNAME_BYTES],
+}
+
+impl HostIdentity {
+    pub(crate) const fn from_label(name: &[u8]) -> Self {
+        let mut buffer = [0u8; MAX_HOSTNAME_BYTES];
+        // Const-friendly fixed copy (name must already be <= capacity).
+        let mut index = 0usize;
+        while index < name.len() && index < MAX_HOSTNAME_BYTES {
+            buffer[index] = name[index];
+            index += 1;
+        }
+        Self {
+            name_len: if name.len() <= MAX_HOSTNAME_BYTES {
+                name.len()
+            } else {
+                MAX_HOSTNAME_BYTES
+            },
+            name: buffer,
+        }
+    }
+
+    /// Accepts a single hostname label: ASCII letters/digits/hyphen.
+    pub(crate) fn set(&mut self, name: &[u8]) -> rt::Result<()> {
+        let valid = !name.is_empty()
+            && name.len() <= MAX_HOSTNAME_BYTES
+            && name
+                .iter()
+                .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'-');
+        if !valid {
+            return Err(rt::Error::InvalidArgument);
+        }
+        self.name[..name.len()].copy_from_slice(name);
+        self.name_len = name.len();
+        Ok(())
+    }
+}
+
 impl HostEntry {
     pub(crate) const fn empty() -> Self {
         Self {

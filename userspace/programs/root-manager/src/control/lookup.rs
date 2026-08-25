@@ -311,11 +311,20 @@ pub(super) fn handle_service_template_request(
         return rt::channel_send(slots[service_index].control_handle, &reply);
     };
     let manifest = slots[target_index].manifest;
-    let (restart_limit, restart_backoff) = match manifest.restart {
+    // words 4/5 stay restart-limit/backoff; word 8 carries the policy kind
+    // (0=on-failure, 1=fail-stop, 2=supervisor-restart) and, for supervisor
+    // policies, the supervisor service id in word 9 — purely additive.
+    let (restart_limit, restart_backoff, policy_kind, policy_supervisor) = match manifest.restart {
+        serviceos_bundle::RestartPolicy::FailStop => (0u32, 0u32, 1u64, ServiceId::RootManager),
         serviceos_bundle::RestartPolicy::OnFailure {
             max_restarts,
             backoff_ticks,
-        } => (max_restarts, backoff_ticks),
+        } => (max_restarts, backoff_ticks, 0u64, ServiceId::RootManager),
+        serviceos_bundle::RestartPolicy::SupervisorRestart {
+            supervisor,
+            max_restarts,
+            backoff_ticks,
+        } => (max_restarts, backoff_ticks, 2u64, supervisor),
     };
     reply.words[0] = ManagerStatus::Ok as u32 as u64;
     reply.words[1] = service_startup_mode(manifest) as u32 as u64;
@@ -325,6 +334,13 @@ pub(super) fn handle_service_template_request(
     reply.words[5] = restart_backoff as u64;
     reply.words[6] = manifest.grant_count as u64;
     reply.words[7] = manifest.lookup_count as u64;
+    if reply.word_count < 8 {
+        reply.word_count = 8;
+    }
+    if reply.word_count >= 10 {
+        reply.words[8] = policy_kind;
+        reply.words[9] = policy_supervisor as u32 as u64;
+    }
     rt::channel_send(slots[service_index].control_handle, &reply)
 }
 

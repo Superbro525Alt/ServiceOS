@@ -80,6 +80,36 @@ pub(crate) fn fallback_manager_event(
     )
 }
 
+/// Supervisor-restart upcall: the designated supervisor service gets a fault
+/// report (faulted service, packed user-fault exit word) before the manager
+/// schedules the restart. Delivered over the existing log/event boundary so
+/// no new ABI surface is needed; see the roadmap S1 row for the contract.
+pub(crate) fn emit_supervisor_upcall(
+    slots: &[ServiceSlot; MAX_SERVICE_SLOTS],
+    service_count: usize,
+    faulted: ServiceId,
+    supervisor: ServiceId,
+    exit_code: u64,
+) {
+    let Some(log_index) = find_slot_index_checked(slots, service_count, ServiceId::Log) else {
+        return;
+    };
+    let log_handle = slots[log_index].public_handle;
+    if log_handle == rt::INVALID_HANDLE {
+        return;
+    }
+    let _ = rt::send_log_record_ex(
+        log_handle,
+        ServiceId::RootManager,
+        LogSeverity::Error,
+        LogDomain::ServiceManager,
+        LogEvent::KernelTrap,
+        faulted as u32 as u64,
+        exit_code,
+        supervisor as u32 as u64,
+    );
+}
+
 pub(crate) fn bootstrap_resource_for(
     service_id: ServiceId,
     bootstrap_resources: BootstrapResources,

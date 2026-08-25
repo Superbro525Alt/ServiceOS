@@ -1,17 +1,19 @@
 use core::str;
 
 use rt::{IPC_MAX_HANDLES, LogEvent, LogSeverity, ServiceId, TaskStateCode, rights};
-use serviceos_bundle::{RestartPolicy, ServiceStartupMode};
+use serviceos_bundle::ServiceStartupMode;
 use serviceos_userspace_runtime as rt;
 
 use crate::control::{load_manifest_from_storage, pump_control_channels};
+use crate::recovery::{self, RecoveryDecision};
 use crate::state::{
     BootstrapResources, GraphStatus, MAX_INDEX_BYTES, MAX_SERVICE_SLOTS, ServicePhase, ServiceSlot,
 };
 use crate::util::{
     allocate_slot, bootstrap_resource_for, close_slot_handles, dependencies_ready,
-    emit_manager_event, fallback_logf, find_slot_index, first_unready_dependency,
-    occupied_service_count, publish_manager_status, ready_service_count, service_name,
+    emit_manager_event, emit_supervisor_upcall, fallback_logf, find_slot_index,
+    first_unready_dependency, occupied_service_count, publish_manager_status, ready_service_count,
+    service_name,
 };
 
 pub(crate) fn load_base_service_graph(
@@ -530,12 +532,6 @@ pub(crate) fn supervision_loop(
                 status.exit_code,
             );
 
-            let (restart_limit, base_backoff) = match slots[index].manifest.restart {
-                RestartPolicy::OnFailure {
-                    max_restarts,
-                    backoff_ticks,
-                } => (max_restarts, backoff_ticks),
-            };
             if status.exit_code == 0 {
                 slots[index].phase = ServicePhase::Exited;
                 slots[index].restart_requested = false;
@@ -552,14 +548,54 @@ pub(crate) fn supervision_loop(
             }
 
             slots[index].consecutive_failures = slots[index].consecutive_failures.saturating_add(1);
+            slots[index].crash_window.record(now);
             let failures = slots[index].attempts.saturating_sub(1);
-            if !requested_restart && failures >= restart_limit {
-                mark_service_degraded(slots, *service_count, index);
-                graph_status.degraded_boot = true;
-                continue;
+            let escalated = slots[index].crash_window.should_escalate(now);
+            let decision = recovery::decide_recovery(
+                slots[index].manifest.restart,
+                recovery::ExitKind::Failure {
+                    user_fault: recovery::decode_user_fault(status.exit_code).is_some(),
+                },
+                escalated,
+                failures,
+                requested_restart,
+            );
+            if escalated {
+                let _ = fallback_logf(format_args!(
+                    "service-manager: CRASH LOOP: {} crashed {} times within {} ticks (exit={:#x}); escalating to fail-stop",
+                    service_name(service_id),
+                    recovery::CRASH_LOOP_LIMIT,
+                    slots[index].crash_window.span(now),
+                    status.exit_code
+                ));
+                let _ = emit_manager_event(
+                    slots,
+                    *service_count,
+                    LogSeverity::Error,
+                    LogEvent::KernelTrap,
+                    service_id,
+                    recovery::CRASH_LOOP_LIMIT as u64,
+                );
+            }
+            match decision {
+                RecoveryDecision::FailStop => {
+                    mark_service_degraded(slots, *service_count, index);
+                    graph_status.degraded_boot = true;
+                    continue;
+                }
+                RecoveryDecision::SupervisorCall { supervisor, .. } => {
+                    emit_supervisor_upcall(
+                        slots,
+                        *service_count,
+                        service_id,
+                        supervisor,
+                        status.exit_code,
+                    );
+                }
+                RecoveryDecision::Restart { .. } => {}
             }
 
-            let mut delay = base_backoff as u64;
+            let mut delay = recovery::base_backoff(slots[index].manifest.restart) as u64;
             if delay != 0 && slots[index].consecutive_failures > 1 {
                 let shift = (slots[index].consecutive_failures - 1).min(6);
                 delay = delay.saturating_mul(1u64 << shift);

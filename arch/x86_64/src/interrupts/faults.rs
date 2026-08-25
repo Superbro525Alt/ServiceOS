@@ -32,6 +32,10 @@ fn handle_exception(report: ExceptionReport) -> ! {
             ));
 
             if let Some(tasks) = task::system() {
+                let info = user_fault_info(&report);
+                if let Some(thread_id) = tasks.scheduler().current_thread() {
+                    serviceos_kernel_core::fault::record_user_fault(thread_id, info.record);
+                }
                 tasks.notify_object_ready(endpoint);
             }
 
@@ -44,21 +48,69 @@ fn handle_exception(report: ExceptionReport) -> ! {
     cpu::halt_loop()
 }
 
+/// Classification plus raw trap coordinates for the faulting exception.
+struct UserFaultInfo {
+    record: serviceos_kernel_core::fault::UserFaultRecord,
+    class_name: &'static str,
+}
+
+fn user_fault_info(report: &ExceptionReport) -> UserFaultInfo {
+    use serviceos_kernel_core::fault::{classify_page_fault, FaultClass, UserFaultRecord};
+
+    let instruction_pointer = report.frame.instruction_pointer;
+    let (record, class_name) = match report.detail {
+        ExceptionDetail::PageFault {
+            fault_address,
+            error_code,
+        } => {
+            let class = classify_page_fault(fault_address, error_code, instruction_pointer);
+            (
+                UserFaultRecord {
+                    class,
+                    fault_address,
+                    instruction_pointer,
+                },
+                class.name(),
+            )
+        }
+        _ => (
+            UserFaultRecord {
+                class: FaultClass::Unknown,
+                fault_address: instruction_pointer,
+                instruction_pointer,
+            },
+            FaultClass::Unknown.name(),
+        ),
+    };
+    UserFaultInfo { record, class_name }
+}
+
 fn terminate_faulting_user_task(report: ExceptionReport) -> ! {
+    let info = user_fault_info(&report);
+    let exit_code = user_fault_exit_code(&report, &info.record);
     serial::write_args(format_args!(
-        "serviceos: interrupt: terminating faulting userspace task exit={:#x}\n",
-        user_fault_exit_code(report)
+        "serviceos: interrupt: terminating faulting userspace task exit={:#x} class={} addr={:#x} ip={:#x}\n",
+        exit_code,
+        info.class_name,
+        info.record.fault_address,
+        info.record.instruction_pointer,
     ));
-    serviceos_kernel_core::user::mark_current_thread_faulted(user_fault_exit_code(report));
+    if let Some(tasks) = task::system() {
+        if let Some(thread_id) = tasks.scheduler().current_thread() {
+            serviceos_kernel_core::fault::record_user_fault(thread_id, info.record);
+        }
+    }
+    serviceos_kernel_core::user::mark_current_thread_faulted(exit_code);
     if let Some(tasks) = task::system() {
         let _ = tasks.scheduler().terminate_current();
     }
     crate::user::return_to_kernel()
 }
 
-fn user_fault_exit_code(report: ExceptionReport) -> u64 {
-    const USER_FAULT_EXIT_TAG: u64 = 0xf100_0000_0000_0000;
-
+fn user_fault_exit_code(
+    report: &ExceptionReport,
+    record: &serviceos_kernel_core::fault::UserFaultRecord,
+) -> u64 {
     let detail = match report.detail {
         ExceptionDetail::InvalidOpcode => 6,
         ExceptionDetail::PageFault { error_code, .. } => 0x100 | (error_code & 0xff),
@@ -68,7 +120,11 @@ fn user_fault_exit_code(report: ExceptionReport) -> u64 {
         ExceptionDetail::Breakpoint => 3,
     };
 
-    USER_FAULT_EXIT_TAG | detail
+    serviceos_kernel_core::fault::pack_user_fault_exit_code(
+        detail,
+        record.class,
+        record.fault_address,
+    )
 }
 
 fn log_exception(report: ExceptionReport) {

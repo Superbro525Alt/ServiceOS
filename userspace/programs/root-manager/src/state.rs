@@ -26,6 +26,8 @@ pub(crate) struct BootstrapResources {
     pub(crate) audio: Option<BootstrapResource>,
 }
 
+use crate::recovery::CrashWindow;
+
 #[derive(Clone, Copy)]
 pub(crate) struct ServiceSlot {
     pub(crate) manifest: ServiceManifest,
@@ -34,6 +36,7 @@ pub(crate) struct ServiceSlot {
     pub(crate) public_handle: rt::Handle,
     pub(crate) attempts: u32,
     pub(crate) consecutive_failures: u32,
+    pub(crate) crash_window: CrashWindow,
     pub(crate) phase: ServicePhase,
     pub(crate) last_exit_code: u64,
     pub(crate) last_start_tick: u64,
@@ -55,6 +58,7 @@ impl ServiceSlot {
             public_handle: rt::INVALID_HANDLE,
             attempts: 0,
             consecutive_failures: 0,
+            crash_window: CrashWindow::new(),
             phase: ServicePhase::Dormant,
             last_exit_code: 0,
             last_start_tick: 0,

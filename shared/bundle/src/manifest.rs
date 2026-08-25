@@ -23,7 +23,17 @@ pub enum ServiceAvailability {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RestartPolicy {
+    /// No restart after any exit: the task stays marked failed for the operator.
+    FailStop,
+    /// Restart up to `max_restarts` times with exponential `backoff_ticks`.
     OnFailure {
+        max_restarts: u32,
+        backoff_ticks: u32,
+    },
+    /// A designated supervisor service receives a fault-report upcall (via the
+    /// manager event/log boundary) before the restart decision is applied.
+    SupervisorRestart {
+        supervisor: ServiceId,
         max_restarts: u32,
         backoff_ticks: u32,
     },
@@ -157,22 +167,44 @@ pub fn parse_manifest(bytes: &[u8]) -> Result<ServiceManifest, BootStoreError> {
                 };
             }
             "restart" => {
-                let Some(rest) = value.strip_prefix("on-failure:") else {
-                    return Err(BootStoreError::InvalidManifest);
+                if value == "fail-stop" {
+                    manifest.restart = RestartPolicy::FailStop;
+                    continue;
+                }
+                let (policy_word, rest) = match value.split_once(':') {
+                    Some((first, tail)) => (first, tail),
+                    None => (value, ""),
                 };
-                let mut parts = rest.split(':');
+                let (supervisor, restart_words) = match policy_word {
+                    "supervisor" => {
+                        let Some((target, tail)) = rest.split_once(':') else {
+                            return Err(BootStoreError::InvalidManifest);
+                        };
+                        (Some(parse_service_id(target)?), tail)
+                    }
+                    "on-failure" => (None, rest),
+                    _ => return Err(BootStoreError::InvalidManifest),
+                };
+                let mut parts = restart_words.split(':');
                 let max_restarts =
                     crate::parse_u32(parts.next().ok_or(BootStoreError::InvalidManifest)?)?;
                 let backoff_ticks = match parts.next() {
-                    Some(part) => crate::parse_u32(part)?,
-                    None => 0,
+                    Some(part) if !part.is_empty() => crate::parse_u32(part)?,
+                    _ => 0,
                 };
                 if parts.next().is_some() {
                     return Err(BootStoreError::InvalidManifest);
                 }
-                manifest.restart = RestartPolicy::OnFailure {
-                    max_restarts,
-                    backoff_ticks,
+                manifest.restart = match supervisor {
+                    Some(supervisor) => RestartPolicy::SupervisorRestart {
+                        supervisor,
+                        max_restarts,
+                        backoff_ticks,
+                    },
+                    None => RestartPolicy::OnFailure {
+                        max_restarts,
+                        backoff_ticks,
+                    },
                 };
             }
             "ready_timeout" => manifest.ready_timeout_ticks = crate::parse_u32(value)?,

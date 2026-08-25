@@ -5,6 +5,7 @@ mod boot_ui;
 mod bootmode;
 mod control;
 mod graph;
+mod recovery;
 mod state;
 mod timing;
 mod util;

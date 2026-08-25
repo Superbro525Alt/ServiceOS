@@ -147,6 +147,13 @@ resource=services/status-service/resources/banner.txt
         assert_eq!(manifest.startup, crate::ServiceStartupMode::Eager);
         assert_eq!(manifest.availability, crate::ServiceAvailability::Required);
         assert_eq!(manifest.ready_timeout_ticks, 250);
+        assert_eq!(
+            manifest.restart,
+            crate::RestartPolicy::OnFailure {
+                max_restarts: 2,
+                backoff_ticks: 8
+            }
+        );
         assert_eq!(manifest.dependency_count, 2);
         assert_eq!(manifest.grant_count, 1);
         assert_eq!(manifest.lookup_count, 1);
@@ -184,5 +191,63 @@ integrity=fnv64:0x1234
         );
         assert_eq!(manifest.content_count, 2);
         assert_eq!(manifest.integrity, 0x1234);
+    }
+
+    #[test]
+    fn restart_policy_matrix_parses_all_shapes() {
+        let fail_stop =
+            parse_manifest(b"service=log-service\nimage=log-service\nrestart=fail-stop\n")
+                .expect("fail-stop manifest should parse");
+        assert_eq!(fail_stop.restart, crate::RestartPolicy::FailStop);
+
+        let supervisor = parse_manifest(
+            b"service=log-service\nimage=log-service\nrestart=supervisor:status-service:3:20\n",
+        )
+        .expect("supervisor manifest should parse");
+        assert_eq!(
+            supervisor.restart,
+            crate::RestartPolicy::SupervisorRestart {
+                supervisor: ServiceId::Status,
+                max_restarts: 3,
+                backoff_ticks: 20
+            }
+        );
+
+        let supervisor_default_backoff = parse_manifest(
+            b"service=log-service\nimage=log-service\nrestart=supervisor:console-service:1\n",
+        )
+        .expect("supervisor single-word manifest should parse");
+        assert_eq!(
+            supervisor_default_backoff.restart,
+            crate::RestartPolicy::SupervisorRestart {
+                supervisor: ServiceId::Console,
+                max_restarts: 1,
+                backoff_ticks: 0
+            }
+        );
+
+        // Legacy shapes stay byte-compatible.
+        let legacy =
+            parse_manifest(b"service=log-service\nimage=log-service\nrestart=on-failure:0\n")
+                .expect("legacy on-failure manifest should parse");
+        assert_eq!(
+            legacy.restart,
+            crate::RestartPolicy::OnFailure {
+                max_restarts: 0,
+                backoff_ticks: 0
+            }
+        );
+
+        for bad in [
+            "restart=bogus:1",
+            "restart=supervisor:not-a-service:1",
+            "restart=on-failure:1:2:3",
+            "restart=supervisor:",
+        ] {
+            let mut text = b"service=log-service\nimage=log-service\n".to_vec();
+            text.extend_from_slice(bad.as_bytes());
+            text.extend_from_slice(b"\n");
+            assert!(parse_manifest(&text).is_err(), "{bad} should not parse");
+        }
     }
 }

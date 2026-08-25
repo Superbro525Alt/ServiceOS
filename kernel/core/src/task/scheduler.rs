@@ -1,4 +1,5 @@
 use alloc::collections::{BTreeMap, VecDeque};
+use core::sync::atomic::Ordering;
 use spin::Mutex;
 
 use crate::{
@@ -306,11 +307,35 @@ impl Scheduler {
         &self,
         source: ObjectId,
     ) -> Result<ScheduleDecision, SchedulerError> {
+        // Lost-wakeup guard: clone the source's latch before taking the state
+        // lock (never nest the InputCore sources lock inside scheduler state —
+        // the IRQ poll path holds it across notify). Consuming the latch after
+        // registering the waiter closes the window where an event lands
+        // between the receiver's last queue probe and this block decision: its
+        // notify hits the not-yet-registered (empty) waiter list, and without
+        // this re-check the thread would sleep until the NEXT physical event.
+        let raced_wakeup = crate::input::manager()
+            .and_then(|core| core.wakeup_latch(source.0))
+            .is_some_and(|latch| latch.swap(false, Ordering::AcqRel));
+
         let mut state = self.state.lock();
         let Some(current) = state.current else {
             return Ok(decision(&state, ScheduleTrigger::Blocked, None, None));
         };
         let thread = lookup_thread(&state, current)?;
+
+        if raced_wakeup {
+            // A wakeup already raced us: stay runnable instead of blocking so
+            // the receive loop immediately re-drains the queued event(s).
+            thread.transition_to(
+                ExecutionState::Runnable,
+                None,
+                Some(ThreadWakeReason::InputReady),
+            );
+            state.push_runnable_if_absent(current);
+            return schedule_next_locked(&mut state, ScheduleTrigger::InputWake, Some(current));
+        }
+
         thread.transition_to(
             ExecutionState::Blocked,
             Some(WaitTarget::InputReceive { source }),

@@ -94,6 +94,20 @@ impl InputCore {
             .is_some_and(|latch| latch.swap(false, Ordering::AcqRel))
     }
 
+    /// Hands the caller the latched-wakeup flag for the source registered
+    /// under `object_id` without consuming it. The scheduler clones this Arc
+    /// BEFORE taking its own state lock so the block path can consume the
+    /// latch atomically with waiter registration while never nesting the
+    /// sources lock inside scheduler state (the IRQ poll path holds the
+    /// sources lock across notify, so the reverse order would invert).
+    pub(crate) fn wakeup_latch(&self, object_id: u64) -> Option<Arc<AtomicBool>> {
+        self.sources
+            .lock()
+            .iter()
+            .find(|source| source.object_id == object_id)
+            .map(|source| Arc::clone(&source.wakeup_pending))
+    }
+
     fn lookup_latch(&self, backend: &Arc<dyn InputBackend>) -> Option<Arc<AtomicBool>> {
         self.sources
             .lock()

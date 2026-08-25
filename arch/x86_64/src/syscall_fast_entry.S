@@ -36,6 +36,10 @@
 
 .global serviceos_x86_64_syscall_fast_entry
 serviceos_x86_64_syscall_fast_entry:
+    # SYSCALL does not mask IF: kernel spin locks are not irq-safe
+    # (see resume_user in user.rs), so mask interrupts for the whole
+    # kernel-side path. sysretq restores the user RFLAGS (IF=1).
+    cli
     # GS base permanently holds this CPU's PerCpuData: initialize_per_cpu_data
     # programs it once at boot and nothing swaps it, so no swapgs is needed on
     # entry or exit. Both directions below stay balanced (zero swaps).

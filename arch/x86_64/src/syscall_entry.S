@@ -36,6 +36,10 @@
 
 .global serviceos_x86_64_syscall_entry
 serviceos_x86_64_syscall_entry:
+    # SYSCALL does not mask IF: kernel spin locks are not irq-safe
+    # (see resume_user in user.rs), so mask interrupts for the whole
+    # kernel-side path. iretq below restores the user RFLAGS (IF=1).
+    cli
     PUSH_GENERAL_REGS
     mov rax, rsp
     mov rcx, rax

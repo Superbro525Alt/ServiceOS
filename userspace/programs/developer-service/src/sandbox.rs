@@ -178,6 +178,25 @@ pub(crate) fn decision_for(
     }
 }
 
+/// Intersect the job's permission set with a runtime environment's granted
+/// capabilities. Minimum-privilege rules:
+/// - fs scopes survive only when the env grants FILE_READ (otherwise nothing
+///   inside the env could read the workspace/SDK paths at all);
+/// - network stays denied for build workers even when the env has the
+///   NETWORK bit — an env grant never widens the job's permissions;
+/// - request paths are re-validated by the caller against the result.
+pub(crate) fn intersect_with_env(set: &PermissionSet, env_capabilities: u32) -> PermissionSet {
+    let mut out = PermissionSet::empty();
+    if env_capabilities & rt::runtime_capability::FILE_READ == 0 {
+        return out;
+    }
+    for index in 0..set.scope_count {
+        let _ = out.push_scope(set.scopes[index].as_bytes());
+    }
+    out.network_denied = true;
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,5 +331,41 @@ mod tests {
         let denied = decision_for(&set, b"elsewhere/x", artifact_out.as_bytes());
         assert!(!denied.allowed);
         assert_eq!(denied.scope_count, 2);
+    }
+
+    #[test]
+    fn intersection_keeps_scopes_when_env_grants_file_read() {
+        let set = derived();
+        let caps = rt::runtime_capability::FILE_READ;
+        let merged = intersect_with_env(&set, caps);
+        assert_eq!(merged.scope_count, set.scope_count);
+        assert!(merged.network_denied);
+        assert!(merged.allows_path(SOURCE));
+    }
+
+    #[test]
+    fn intersection_without_file_read_drops_everything() {
+        let set = derived();
+        for env_caps in [0u32, rt::runtime_capability::NETWORK | rt::runtime_capability::AUDIO] {
+            let merged = intersect_with_env(&set, env_caps);
+            assert_eq!(merged.scope_count, 0);
+            assert!(merged.network_denied);
+            assert!(!merged.allows_path(SOURCE));
+            assert!(!validate_job_paths(&merged, SOURCE, SOURCE));
+        }
+    }
+
+    #[test]
+    fn intersection_never_grants_network_to_builds() {
+        let mut set = PermissionSet::empty();
+        let _ = set.push_scope(b"ws/src");
+        // Env grants network + terminal + file: the build still runs with
+        // fs-only, net-denied permissions.
+        let env_caps = rt::runtime_capability::FILE_READ
+            | rt::runtime_capability::NETWORK
+            | rt::runtime_capability::TERMINAL_IO;
+        let merged = intersect_with_env(&set, env_caps);
+        assert_eq!(merged.scope_count, 1);
+        assert!(merged.network_denied);
     }
 }

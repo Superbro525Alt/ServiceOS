@@ -8,7 +8,7 @@ use serviceos_userspace_runtime as rt;
 
 use crate::{
     consts::{MAX_CATALOG_BYTES, MAX_SOURCE},
-    types::{JobSlot, ToolchainSlot, WorkspaceSlot},
+    types::{FixedBytes, JobSlot, ToolchainSlot, WorkspaceSlot},
 };
 
 pub(crate) fn emit_log(
@@ -96,6 +96,8 @@ fn read_storage_text<'a>(
 
 fn parse_toolchain_descriptor(text: &str) -> rt::Result<ToolchainSlot> {
     let mut slot = ToolchainSlot::empty();
+    // `checksum=` applies to the most recent `payload=` line.
+    let mut last_payload: Option<usize> = None;
     for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
         let Some((key, value)) = line.split_once('=') else {
             continue;
@@ -107,6 +109,30 @@ fn parse_toolchain_descriptor(text: &str) -> rt::Result<ToolchainSlot> {
             "format" => slot.format = parse_format(value)?,
             "sdk_root" => slot.sdk_root.set(value.as_bytes())?,
             "remote_endpoint" => slot.remote_endpoint.set(value.as_bytes())?,
+            "payload" => {
+                if slot.payload_count >= slot.payloads.len() {
+                    return Err(rt::Error::CapacityExceeded);
+                }
+                slot.payloads[slot.payload_count] =
+                    crate::payload::parse_payload_entry(value)?;
+                last_payload = Some(slot.payload_count);
+                slot.payload_count += 1;
+            }
+            "checksum" => {
+                let Some(index) = last_payload else {
+                    return Err(rt::Error::InvalidArgument);
+                };
+                let raw = crate::payload::parse_checksum(value)?;
+                let mut hex = FixedBytes::<64>::empty();
+                const HEX: &[u8; 16] = b"0123456789abcdef";
+                let mut encoded = [0u8; 64];
+                for (index, byte) in raw.as_bytes().iter().enumerate() {
+                    encoded[index * 2] = HEX[(byte >> 4) as usize];
+                    encoded[index * 2 + 1] = HEX[(byte & 0xF) as usize];
+                }
+                hex.set(&encoded)?;
+                slot.payloads[index].checksum_hex = hex;
+            }
             _ => {}
         }
     }
@@ -261,5 +287,46 @@ mod tests {
     fn toolchain_descriptor_defaults_to_unconfigured() {
         let slot = parse_toolchain_descriptor("name=macos-x64\nstate=remote-only\n").unwrap();
         assert!(!slot.configured());
+    }
+
+    #[test]
+    fn toolchain_descriptor_parses_payloads_and_checksum() {
+        let text = "name=linux-x64\ntarget=linux-x64\nstate=installed\nformat=elf64\n\
+                    sdk_root=sdk/linux\n\
+                    payload=metadata@path:packages/d/sdk/linux/README.txt\n\
+                    checksum=BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD\n\
+                    payload=builder@image:24\n";
+        let slot = parse_toolchain_descriptor(text).unwrap();
+        assert_eq!(slot.payload_count, 2);
+        assert_eq!(
+            slot.payloads[0].reference,
+            crate::payload::PayloadRef::StoragePath({
+                let mut path = crate::types::FixedBytes::<96>::empty();
+                path.set(b"packages/d/sdk/linux/README.txt").unwrap();
+                path
+            })
+        );
+        assert!(slot.payloads[0].wants_checksum());
+        // Uppercase descriptor hex is normalized through the raw bytes.
+        assert_eq!(
+            slot.payloads[0].checksum_hex.as_bytes()[..8],
+            *b"ba7816bf"
+        );
+        assert!(!slot.payloads[1].wants_checksum());
+    }
+
+    #[test]
+    fn toolchain_descriptor_rejects_checksum_without_payload() {
+        let text = "name=x\nchecksum=ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\n";
+        assert!(parse_toolchain_descriptor(text).is_err());
+    }
+
+    #[test]
+    fn toolchain_descriptor_rejects_bad_payload_refs() {
+        assert!(parse_toolchain_descriptor("name=x\npayload=noat\n").is_err());
+        assert!(parse_toolchain_descriptor(
+            "name=x\npayload=a@image:notanumber\n"
+        )
+        .is_err());
     }
 }

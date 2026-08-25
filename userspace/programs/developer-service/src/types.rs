@@ -3,11 +3,12 @@ use serviceos_userspace_runtime as rt;
 
 use crate::{
     consts::{MAX_NAME, MAX_PATH},
-    routing::{self, BuildRoute},
+    payload::{PayloadSlot, MAX_PAYLOADS},
+    routing::{self, BuildRoute, ExecutionMode},
     sandbox::SandboxDecision,
 };
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct FixedBytes<const N: usize> {
     pub(crate) len: usize,
     pub(crate) bytes: [u8; N],
@@ -55,6 +56,10 @@ pub(crate) struct ToolchainSlot {
     /// Optional connection config from the descriptor (`remote_endpoint=`),
     /// e.g. "farm@10.0.0.9:7900"; empty until a descriptor provides it.
     pub(crate) remote_endpoint: FixedBytes<MAX_PATH>,
+    /// Payload blobs declared by the descriptor (`payload=name@ref` lines);
+    /// materialized into the writable SDK mirror at install time.
+    pub(crate) payloads: [PayloadSlot; MAX_PAYLOADS],
+    pub(crate) payload_count: usize,
 }
 
 impl ToolchainSlot {
@@ -67,6 +72,8 @@ impl ToolchainSlot {
             name: FixedBytes::empty(),
             sdk_root: FixedBytes::empty(),
             remote_endpoint: FixedBytes::empty(),
+            payloads: [PayloadSlot::empty(); MAX_PAYLOADS],
+            payload_count: 0,
         }
     }
 
@@ -110,6 +117,9 @@ pub(crate) struct JobSlot {
     pub(crate) report_handle: rt::Handle,
     pub(crate) sandbox: SandboxDecision,
     pub(crate) route: BuildRoute,
+    /// How the worker actually ran for this job (direct spawn vs routed
+    /// environment exec vs routed-then-fallback), recorded at launch.
+    pub(crate) mode: ExecutionMode,
     pub(crate) export: ExportState,
 }
 
@@ -131,6 +141,7 @@ impl JobSlot {
                 scope_count: 0,
             },
             route: routing::BuildRoute::DirectSpawn,
+            mode: routing::ExecutionMode::DirectSpawn,
             export: ExportState::Local,
         }
     }

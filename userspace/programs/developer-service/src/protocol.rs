@@ -1,6 +1,6 @@
 use rt::{
     DeveloperArtifactFormat, DeveloperJobState, DeveloperStatus, DeveloperTag, DeveloperTarget,
-    DeveloperToolchainState, LogEvent, LogSeverity, RawMessage,
+    DeveloperToolchainState, LogEvent, LogSeverity, RawMessage, RuntimeStatus, RuntimeTag,
 };
 use serviceos_userspace_runtime as rt;
 
@@ -370,20 +370,23 @@ fn handle_build_request(
     } else {
         routing::RUNTIME_PROFILE_NONE
     };
+    let probed = if profile == routing::RUNTIME_PROFILE_NONE {
+        None
+    } else {
+        routing::probe_runtime_envs(bootstrap)
+    };
+    let empty = [routing::RuntimeEnvSnapshot {
+        env_id: 0,
+        kind: 0,
+        state: 0,
+        capabilities: 0,
+    }; 0];
     let route = match profile {
         routing::RUNTIME_PROFILE_NONE => routing::BuildRoute::DirectSpawn,
-        _ => {
-            let empty = [routing::RuntimeEnvSnapshot {
-                env_id: 0,
-                kind: 0,
-                state: 0,
-            }; 0];
-            let route = match routing::probe_runtime_envs(bootstrap) {
-                Some(envs) => routing::route_for(profile, &envs),
-                None => routing::route_for(profile, &empty),
-            };
-            route
-        }
+        _ => match probed.as_ref() {
+            Some(envs) => routing::route_for(profile, envs),
+            None => routing::route_for(profile, &empty),
+        },
     };
 
     // Capability manifest: explicit fs scope prefixes derived from the
@@ -415,6 +418,92 @@ fn handle_build_request(
         workspace.source_path.as_bytes(),
         artifact_out.as_bytes(),
     );
+
+    // Execution-mode selection: a routed job runs inside the runtime env's
+    // exec contract with the permission set intersected against the env's
+    // capability grants; every refusal falls back to the direct spawn.
+    let mut mode = routing::ExecutionMode::DirectSpawn;
+    if let routing::BuildRoute::RuntimeEnv { env_id } = route {
+        let snapshot = probed.as_ref().and_then(|envs| {
+            envs.iter()
+                .find(|env| env.env_id == env_id)
+                .copied()
+        });
+        let merged = sandbox::intersect_with_env(
+            &permission,
+            snapshot.map(|env| env.capabilities).unwrap_or(0),
+        );
+        let candidate = routing::select_execution_mode(route, snapshot, merged.scope_count);
+        if candidate.routed() {
+            match try_routed_exec(bootstrap, toolchain, env_id, output_handle) {
+                RoutedOutcome::Started => {
+                    // The transferred duplicate carries the log stream into
+                    // the env; our own copy is closed here.
+                    let _ = rt::handle_close(output_handle);
+                    let job_id = match allocate_job(jobs) {
+                        Ok(index) => index,
+                        Err(_) => {
+                            reply.words[0] = DeveloperStatus::Busy as u32 as u64;
+                            let _ = rt::channel_send(reply_handle, &reply);
+                            let _ = rt::handle_close(reply_handle);
+                            return Ok(());
+                        }
+                    };
+                    jobs[job_id] = JobSlot {
+                        occupied: true,
+                        workspace_id: workspace_id as u32,
+                        target,
+                        state: DeveloperJobState::Running,
+                        format: toolchain.format,
+                        artifact_name: workspace.artifact,
+                        artifact_size: 0,
+                        artifact_handle: rt::INVALID_HANDLE,
+                        // The run is tracked by runtime-service; no local
+                        // task handle exists to poll (documented gap).
+                        task_handle: rt::INVALID_HANDLE,
+                        report_handle: rt::INVALID_HANDLE,
+                        sandbox: sandbox::decision_for(
+                            &merged,
+                            workspace.source_path.as_bytes(),
+                            artifact_out.as_bytes(),
+                        ),
+                        route,
+                        mode: candidate,
+                        export: ExportState::Local,
+                    };
+                    emit_log(                        log_handle,
+                        LogSeverity::Info,
+                        LogEvent::DeveloperBuildStarted,
+                        job_id as u64,
+                        ((workspace_id as u64) << 32)
+                            | ((candidate.status_word() & 0xFFFF_FFFF) << 8)
+                            | target as u32 as u64,
+                    )
+                    .ok();
+                    reply.words[0] = DeveloperStatus::Ok as u32 as u64;
+                    reply.words[1] = job_id as u64;
+                    let _ = rt::channel_send(reply_handle, &reply);
+                    let _ = rt::handle_close(reply_handle);
+                    return Ok(());
+                }
+                RoutedOutcome::Refused(status) => {
+                    mode = routing::ExecutionMode::RoutedFallback {
+                        env_id,
+                        reason: routing::FALLBACK_EXEC_REFUSED,
+                    };
+                    let _ = status;
+                }
+                RoutedOutcome::TransportClosed => {
+                    mode = routing::ExecutionMode::RoutedFallback {
+                        env_id,
+                        reason: routing::FALLBACK_EXEC_REFUSED,
+                    };
+                }
+            }
+        } else {
+            mode = candidate;
+        }
+    }
 
     let job_id = match allocate_job(jobs) {
         Ok(index) => index,
@@ -487,8 +576,15 @@ fn handle_build_request(
     let packed =
         rt::pack_bytes(workspace.artifact.as_bytes(), &mut startup_words[3..]).unwrap_or(0);
     // Route word appended after the packed artifact name so older worker
-    // images that read exactly name_len bytes are unaffected.
-    startup_words[3 + packed as usize] = routing::encode_route_word(route);
+    // images that read exactly name_len bytes are unaffected. A routed job
+    // that fell back encodes DirectSpawn so the worker echo states how it
+    // actually ran.
+    let worker_route = if mode.routed() {
+        route
+    } else {
+        routing::BuildRoute::DirectSpawn
+    };
+    startup_words[3 + packed as usize] = routing::encode_route_word(worker_route);
     let task_handle = rt::manager_launch_program_with_payload(
         bootstrap,
         rt::ServiceImageId::CrossBuilderTool,
@@ -515,6 +611,7 @@ fn handle_build_request(
                 report_handle: report.first,
                 sandbox: decision,
                 route,
+                mode,
                 export: ExportState::Local,
             };
             reply.words[0] = DeveloperStatus::Ok as u32 as u64;
@@ -525,7 +622,10 @@ fn handle_build_request(
                 LogSeverity::Info,
                 LogEvent::DeveloperBuildStarted,
                 job_id as u64,
-                ((workspace_id as u64) << 32) | route_bits | target as u32 as u64,
+                ((workspace_id as u64) << 32)
+                    | route_bits
+                    | ((mode.status_word() & 0xF) << 24)
+                    | target as u32 as u64,
             );
         }
         Err(error) => {
@@ -636,6 +736,7 @@ fn reply_remote_target_build(
                 route: routing::BuildRoute::RemoteFarm {
                     endpoint_id: endpoint_id as u32,
                 },
+                mode: routing::ExecutionMode::DirectSpawn,
                 export: ExportState::PendingRemote {
                     endpoint: export_endpoint,
                 },
@@ -734,13 +835,15 @@ fn reply_job_info(
         reply.words[7] = job.artifact_name.len as u64;
         reply.word_count += rt::pack_bytes(job.artifact_name.as_bytes(), &mut reply.words[8..])?;
         // IDE tail (additive, only when the name leaves room):
-        // [magic|4][phase][toolchain][flags][farm]; farm = export_state |
-        // endpoint_len<<8 | farm_status<<16 (registered endpoints report
-        // FARM_STATUS_REGISTERED while a remote fetch is pending).
-        if ide_tail_fits(reply.word_count, 4) {
+        // [magic|5][phase][toolchain][flags][farm][exec-mode]; farm =
+        // export_state | endpoint_len<<8 | farm_status<<16 (registered
+        // endpoints report FARM_STATUS_REGISTERED while a remote fetch is
+        // pending); exec-mode distinguishes direct spawn vs routed runtime
+        // environment vs routed-then-fallback (routing::ExecutionMode).
+        if ide_tail_fits(reply.word_count, 5) {
             let base = reply.word_count as usize;
-            reply.word_count += 5;
-            reply.words[base] = ide_tail_magic(4);
+            reply.word_count += 6;
+            reply.words[base] = ide_tail_magic(5);
             reply.words[base + 1] = pack_job_phase(&job);
             reply.words[base + 2] = job_toolchain_index(workspaces, workspace_count, &job) as u64;
             reply.words[base + 3] = (job.artifact_handle != rt::INVALID_HANDLE) as u64
@@ -753,6 +856,7 @@ fn reply_job_info(
             reply.words[base + 4] = export_state_code(&job)
                 | ((job.endpoint_bytes().len() as u64) << 8)
                 | (farm_status << 16);
+            reply.words[base + 5] = job.mode.status_word();
         }
     }
     let _ = rt::channel_send(reply_handle, &reply);
@@ -805,6 +909,13 @@ fn reply_ide_job_info(
         reply.words[5] = farm_status | ((endpoint_fit.len() as u64) << 8);
         reply.words[6] = name_fit.len() as u64;
         reply.word_count += rt::pack_bytes(&combined[..total], &mut reply.words[7..])?;
+        // Trailing exec-mode word (additive): 0 direct, 1 routed env,
+        // 2 routed-then-fallback with reason bits.
+        if ide_tail_fits(reply.word_count, 1) {
+            let base = reply.word_count as usize;
+            reply.word_count += 1;
+            reply.words[base] = job.mode.status_word();
+        }
     }
     let _ = rt::channel_send(reply_handle, &reply);
     let _ = rt::handle_close(reply_handle);
@@ -1006,6 +1117,114 @@ pub(crate) const IDE_TAIL_MAGIC: u64 = 0x4944_4531;
 
 pub(crate) fn ide_tail_magic(field_count: usize) -> u64 {
     IDE_TAIL_MAGIC | (((field_count as u64) & 0xFF) << 32)
+}
+
+/// Guest-exec workload marker used by runtime-service's raw-image spawn
+/// path (private constant there; mirrored here so the exec contract can be
+/// driven without a shared ABI edit).
+const EXEC_GUEST_WORKLOAD: u32 = 5;
+
+/// Result of a routed launch attempt through the runtime env's exec
+/// contract.
+enum RoutedOutcome {
+    /// Runtime-service accepted the run; it now owns the workload.
+    Started,
+    /// The contract answered with a non-Ok status (carried for logs).
+    Refused(u64),
+    /// Unavailable service, malformed reply, or transport failure.
+    TransportClosed,
+}
+
+/// Launch the toolchain's routed entry through runtime-service: a
+/// `RunLaunchRequest` with the guest-exec marker asks the env to stage and
+/// run the builder payload image inside the environment, where artifacts
+/// are written to the job-scoped output directory via the env mounts.
+fn try_routed_exec(
+    bootstrap: rt::Handle,
+    toolchain: ToolchainSlot,
+    env_id: u32,
+    output_handle: rt::Handle,
+) -> RoutedOutcome {
+    let arg = routed_exec_arg(toolchain);
+    if arg.len == 0 {
+        // Nothing resolvable to stage inside the env: refuse without
+        // touching the caller's output handle (the direct fallback needs
+        // it).
+        return RoutedOutcome::TransportClosed;
+    }
+    let Ok(runtime_handle) = rt::lookup_service(bootstrap, rt::ServiceId::Runtime) else {
+        return RoutedOutcome::TransportClosed;
+    };
+    let pair = match rt::channel_create() {
+        Ok(pair) => pair,
+        Err(_) => {
+            let _ = rt::handle_close(runtime_handle);
+            return RoutedOutcome::TransportClosed;
+        }
+    };
+    let transferred_output = match rt::handle_duplicate(
+        output_handle,
+        rt::rights::SEND | rt::rights::DUPLICATE | rt::rights::TRANSFER,
+    ) {
+        Ok(handle) => handle,
+        Err(_) => {
+            let _ = rt::handle_close(pair.first);
+            let _ = rt::handle_close(pair.second);
+            let _ = rt::handle_close(runtime_handle);
+            return RoutedOutcome::TransportClosed;
+        }
+    };
+
+    let mut request = RawMessage::empty(RuntimeTag::RunLaunchRequest as u32);
+    request.word_count =
+        3 + rt::pack_bytes(arg.as_bytes(), &mut request.words[3..]).unwrap_or(0);
+    request.words[0] = u64::from(env_id);
+    request.words[1] = EXEC_GUEST_WORKLOAD as u64;
+    request.words[2] = arg.len as u64;
+    request.handle_count = 2;
+    request.handles[0] = pair.second;
+    request.handle_rights[0] = rt::rights::SEND;
+    request.handles[1] = transferred_output;
+    request.handle_rights[1] = rt::rights::SEND | rt::rights::DUPLICATE | rt::rights::TRANSFER;
+
+    let outcome = match rt::channel_send(runtime_handle, &request) {
+        Ok(()) => {
+            let _ = rt::handle_close(transferred_output);
+            let mut response = RawMessage::empty(0);
+            match rt::channel_receive_blocking(pair.first, &mut response) {
+                Ok(())
+                    if response.tag == RuntimeTag::RunLaunchReply as u32
+                        && response.word_count >= 1 =>
+                {
+                    if response.words[0] == RuntimeStatus::Ok as u32 as u64 {
+                        RoutedOutcome::Started
+                    } else {
+                        RoutedOutcome::Refused(response.words[0])
+                    }
+                }
+                Ok(()) => RoutedOutcome::TransportClosed,
+                Err(_) => RoutedOutcome::TransportClosed,
+            }
+        }
+        Err(_) => {
+            let _ = rt::handle_close(transferred_output);
+            RoutedOutcome::TransportClosed
+        }
+    };
+    let _ = rt::handle_close(pair.first);
+    let _ = rt::handle_close(runtime_handle);
+    outcome
+}
+
+/// Storage path handed to the env's guest-exec staging: the first declared
+/// storage-path payload (the packaged SDK content), else the bare SDK root.
+fn routed_exec_arg(toolchain: ToolchainSlot) -> FixedBytes<{ crate::consts::MAX_PATH }> {
+    for payload in toolchain.payloads[..toolchain.payload_count].iter() {
+        if let crate::payload::PayloadRef::StoragePath(path) = payload.reference {
+            return path;
+        }
+    }
+    toolchain.sdk_root
 }
 
 pub(crate) fn ide_tail_fits(word_count: u32, fields: usize) -> bool {

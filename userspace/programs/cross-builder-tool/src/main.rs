@@ -89,6 +89,7 @@ fn main() -> u64 {
             0,
             &artifact_name[..name_len],
             None,
+            mode_code(&route),
         );
         let _ = rt::handle_close(output);
         let _ = rt::handle_close(report);
@@ -133,6 +134,7 @@ fn main() -> u64 {
                 0,
                 &artifact_name[..name_len],
                 None,
+                mode_code(&route),
             );
             let _ = rt::handle_close(output);
             let _ = rt::handle_close(report);
@@ -159,6 +161,7 @@ fn main() -> u64 {
         artifact_len,
         &artifact_name[..name_len],
         Some(artifact_handle),
+        mode_code(&route),
     );
     let _ = rt::handle_close(artifact_handle);
     let _ = rt::text_relay_write(output, "builder: build complete\r\n");
@@ -351,9 +354,15 @@ fn send_report(
     artifact_len: usize,
     name: &[u8],
     artifact_handle: Option<rt::Handle>,
+    mode: u64,
 ) -> rt::Result<()> {
     let mut message = RawMessage::empty(REPORT_TAG);
-    message.word_count = 4 + rt::pack_bytes(name, &mut message.words[4..])?;
+    let packed = rt::pack_bytes(name, &mut message.words[4..])?;
+    message.word_count = 4 + packed + 1;
+    // Trailing execution-mode word: 0 = direct spawn, 1 = routed runtime
+    // environment. Appended after the packed name so older developer-
+    // service images that unpack exactly name_len bytes stay compatible.
+    message.words[4 + packed as usize] = mode;
     message.words[0] = status_code;
     message.words[1] = format as u32 as u64;
     message.words[2] = artifact_len as u64;
@@ -364,6 +373,15 @@ fn send_report(
         message.handle_rights[0] = rt::rights::READ | rt::rights::DUPLICATE | rt::rights::TRANSFER;
     }
     rt::channel_send(report, &message)
+}
+
+/// Execution-mode status word derived from the effective route the
+/// launcher encoded at startup.
+fn mode_code(route: &WorkerRoute) -> u64 {
+    match route {
+        WorkerRoute::Direct => 0,
+        WorkerRoute::RuntimeEnv(_) => 1,
+    }
 }
 
 fn build_serviceos_flat(message: &[u8], output: &mut [u8]) -> usize {
@@ -762,5 +780,41 @@ mod route_tests {
                 WorkerRoute::RuntimeEnv(6)
             );
         }
+    }
+
+    #[test]
+    fn mode_code_distinguishes_execution_paths() {
+        assert_eq!(mode_code(&WorkerRoute::Direct), 0);
+        assert_eq!(mode_code(&WorkerRoute::RuntimeEnv(0)), 1);
+        assert_eq!(mode_code(&WorkerRoute::RuntimeEnv(u32::MAX)), 1);
+    }
+
+    #[test]
+    fn report_carries_trailing_mode_word_after_packed_name() {
+        let name = b"hello-cross"; // 11 bytes -> 2 packed words
+        let mut message = rt::RawMessage::empty(REPORT_TAG);
+        let packed = rt::pack_bytes(name, &mut message.words[4..]).unwrap();
+        message.word_count = (4 + packed + 1) as u32;
+        message.words[4 + packed as usize] = mode_code(&WorkerRoute::RuntimeEnv(2));
+        message.words[0] = 0;
+        message.words[1] = DeveloperArtifactFormat::Elf64 as u32 as u64;
+        message.words[2] = 7;
+        message.words[3] = name.len() as u64;
+
+        // Legacy reader: unpack exactly name_len bytes from words[4..].
+        let mut legacy_name = [0u8; MAX_NAME];
+        rt::unpack_bytes(
+            &message.words[4..message.word_count as usize],
+            name.len(),
+            &mut legacy_name,
+        )
+        .expect("legacy unpack ignores trailing mode word");
+        assert_eq!(&legacy_name[..name.len()], name);
+        // New reader: the word right after the packed region is the mode.
+        assert_eq!(
+            message.words[4 + packed as usize],
+            1,
+            "routed env builds must self-report"
+        );
     }
 }

@@ -247,9 +247,21 @@ pub(crate) fn format_version_text<'a>(version: &ToolchainVersion, out: &'a mut [
     &out[..len]
 }
 
-/// Live verify-present operation against storage: the SDK install root must
-/// open as a readable blob for the toolchain to count as present.
+/// Live verify-present operation against storage. Legacy behavior for
+/// descriptors without payloads: the SDK install root must open as a
+/// readable blob. Payload-aware extension: a descriptor declaring payloads
+/// is verified by its materialized payload files under the writable SDK
+/// mirror (the packaged `packages/` tree is immutable boot-store content,
+/// so bare-root probing alone cannot confirm an install there).
 pub(crate) fn verify_present(storage_handle: rt::Handle, toolchain: &ToolchainSlot) -> bool {
+    let root_ok = probe_root(storage_handle, toolchain);
+    if toolchain.payload_count == 0 {
+        return root_ok;
+    }
+    payloads_present(storage_handle, toolchain)
+}
+
+fn probe_root(storage_handle: rt::Handle, toolchain: &ToolchainSlot) -> bool {
     let Ok(path) = str::from_utf8(toolchain.sdk_root.as_bytes()) else {
         return false;
     };
@@ -263,6 +275,31 @@ pub(crate) fn verify_present(storage_handle: rt::Handle, toolchain: &ToolchainSl
         }
         Err(_) => false,
     }
+}
+
+fn payloads_present(storage_handle: rt::Handle, toolchain: &ToolchainSlot) -> bool {
+    for payload in toolchain.payloads[..toolchain.payload_count].iter() {
+        let mut dest = [0u8; crate::consts::MAX_PATH];
+        if crate::payload::payload_dest(toolchain.name.as_bytes(), payload, &mut dest) == 0 {
+            return false;
+        }
+        // dest is zero-padded beyond the written length; trim to the
+        // materialized path before probing.
+        let len = {
+            let mut end = dest.len();
+            while end > 0 && dest[end - 1] == 0 {
+                end -= 1;
+            }
+            end
+        };
+        let Ok(dest_path) = str::from_utf8(&dest[..len]) else {
+            return false;
+        };
+        if rt::storage_open(storage_handle, dest_path).is_err() {
+            return false;
+        }
+    }
+    true
 }
 
 /// Bitmask over registry families for the catalog-loaded telemetry word:

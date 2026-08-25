@@ -3,6 +3,7 @@
 
 mod consts;
 mod farm;
+mod payload;
 mod protocol;
 mod registry;
 mod routing;

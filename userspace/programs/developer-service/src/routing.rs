@@ -48,6 +48,9 @@ pub(crate) struct RuntimeEnvSnapshot {
     pub(crate) env_id: u32,
     pub(crate) kind: u32,
     pub(crate) state: u32,
+    /// Granted capability bitmask from the env-list contract
+    /// (`runtime_capability` bits: FILE_READ=bit0, TERMINAL_IO=bit1, ...).
+    pub(crate) capabilities: u32,
 }
 
 impl RuntimeEnvSnapshot {
@@ -56,7 +59,17 @@ impl RuntimeEnvSnapshot {
             env_id,
             kind: kind as u32,
             state: state as u32,
+            capabilities: 0,
         }
+    }
+
+    pub(crate) fn with_capabilities(mut self, capabilities: u32) -> Self {
+        self.capabilities = capabilities;
+        self
+    }
+
+    pub(crate) fn grants_file_read(&self) -> bool {
+        self.capabilities & rt::runtime_capability::FILE_READ != 0
     }
 }
 
@@ -100,6 +113,7 @@ fn list_envs(runtime_handle: rt::Handle) -> Option<[RuntimeEnvSnapshot; MAX_RUNT
         env_id: 0,
         kind: 0,
         state: 0,
+        capabilities: 0,
     }; MAX_RUNTIMES];
     let mut filled = 0usize;
     let mut start = 0usize;
@@ -145,7 +159,9 @@ fn list_envs(runtime_handle: rt::Handle) -> Option<[RuntimeEnvSnapshot; MAX_RUNT
                 x if x == RuntimeEnvState::Denied as u32 => RuntimeEnvState::Denied,
                 _ => continue,
             };
-            envs[filled] = RuntimeEnvSnapshot::new(response.words[base] as u32, kind, state);
+            envs[filled] =
+                RuntimeEnvSnapshot::new(response.words[base] as u32, kind, state)
+                    .with_capabilities(response.words[base + 3] as u32);
             filled += 1;
         }
         if count == 0 || next <= start {
@@ -155,6 +171,77 @@ fn list_envs(runtime_handle: rt::Handle) -> Option<[RuntimeEnvSnapshot; MAX_RUNT
     }
 }
 
+/// How a job actually executed, recorded on the job record and echoed in
+/// logs so the two spawn paths are always distinguishable.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ExecutionMode {
+    /// Legacy path: worker launched straight from the boot-store image.
+    DirectSpawn,
+    /// Worker launch went through the runtime env's exec contract
+    /// (RunLaunchRequest with the guest-exec workload marker).
+    RoutedEnv { env_id: u32 },
+    /// A routed launch was attempted but refused; the job fell back to the
+    /// direct spawn. Reason codes: 1 = env lacks FILE_READ grant, 2 = exec
+    /// request answered with an error status, 3 = intersected permission
+    /// set has no usable scopes.
+    RoutedFallback { env_id: u32, reason: u8 },
+}
+
+pub(crate) const FALLBACK_NO_FILE_GRANT: u8 = 1;
+pub(crate) const FALLBACK_EXEC_REFUSED: u8 = 2;
+pub(crate) const FALLBACK_NO_USABLE_SCOPES: u8 = 3;
+
+impl ExecutionMode {
+    /// Compact status word for logs and reply tails: bit layout is
+    /// `mode(2 bits at 0..2) | env_id(16 bits at 8..24) | reason(8 at 24)`.
+    pub(crate) fn status_word(self) -> u64 {
+        match self {
+            ExecutionMode::DirectSpawn => 0,
+            ExecutionMode::RoutedEnv { env_id } => 1 | (u64::from(env_id & 0xFFFF) << 8),
+            ExecutionMode::RoutedFallback { env_id, reason } => {
+                2 | (u64::from(env_id & 0xFFFF) << 8) | (u64::from(reason) << 24)
+            }
+        }
+    }
+
+    pub(crate) fn routed(self) -> bool {
+        matches!(self, ExecutionMode::RoutedEnv { .. })
+    }
+}
+
+/// Mode-selection matrix (host-tested): decide how a job whose route points
+/// at `env` runs. `scopes_after_intersect` is the fs-scope count that
+/// survives the permission-set / env-grant intersection.
+pub(crate) fn select_execution_mode(
+    route: BuildRoute,
+    env: Option<RuntimeEnvSnapshot>,
+    scopes_after_intersect: usize,
+) -> ExecutionMode {
+    let BuildRoute::RuntimeEnv { env_id } = route else {
+        return ExecutionMode::DirectSpawn;
+    };
+    let Some(env) = env.filter(|env| env.env_id == env_id) else {
+        // Snapshot missing for the chosen env (probe raced): fall back.
+        return ExecutionMode::RoutedFallback {
+            env_id,
+            reason: FALLBACK_EXEC_REFUSED,
+        };
+    };
+    if !env.grants_file_read() {
+        return ExecutionMode::RoutedFallback {
+            env_id,
+            reason: FALLBACK_NO_FILE_GRANT,
+        };
+    }
+    if scopes_after_intersect == 0 {
+        return ExecutionMode::RoutedFallback {
+            env_id,
+            reason: FALLBACK_NO_USABLE_SCOPES,
+        };
+    }
+    ExecutionMode::RoutedEnv { env_id }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,7 +249,6 @@ mod tests {
     fn ready(env_id: u32, kind: RuntimeKind) -> RuntimeEnvSnapshot {
         RuntimeEnvSnapshot::new(env_id, kind, RuntimeEnvState::Ready)
     }
-
     #[test]
     fn no_profile_routes_direct() {
         let envs = [ready(0, RuntimeKind::Posix)];
@@ -257,5 +343,104 @@ mod tests {
             route_kind(BuildRoute::RemoteFarm { endpoint_id: 2 }),
             ROUTE_KIND_REMOTE_FARM
         );
+    }
+
+    fn caps(env_id: u32, kind: RuntimeKind, capabilities: u32) -> RuntimeEnvSnapshot {
+        ready(env_id, kind).with_capabilities(capabilities)
+    }
+
+    #[test]
+    fn mode_matrix_direct_routes_stay_direct() {
+        assert_eq!(
+            select_execution_mode(BuildRoute::DirectSpawn, None, 0),
+            ExecutionMode::DirectSpawn
+        );
+        let farm = BuildRoute::RemoteFarm { endpoint_id: 1 };
+        assert_eq!(
+            select_execution_mode(farm, Some(caps(2, RuntimeKind::Posix, 0x1)), 3),
+            ExecutionMode::DirectSpawn
+        );
+    }
+
+    #[test]
+    fn mode_matrix_env_without_file_grant_falls_back() {
+        let route = BuildRoute::RuntimeEnv { env_id: 4 };
+        let env = caps(4, RuntimeKind::Posix, rt::runtime_capability::NETWORK);
+        assert_eq!(
+            select_execution_mode(route, Some(env), 2),
+            ExecutionMode::RoutedFallback {
+                env_id: 4,
+                reason: FALLBACK_NO_FILE_GRANT
+            }
+        );
+    }
+
+    #[test]
+    fn mode_matrix_missing_snapshot_falls_back() {
+        let route = BuildRoute::RuntimeEnv { env_id: 4 };
+        assert_eq!(
+            select_execution_mode(route, None, 2),
+            ExecutionMode::RoutedFallback {
+                env_id: 4,
+                reason: FALLBACK_EXEC_REFUSED
+            }
+        );
+        // Snapshot for a different env id does not count.
+        let other = caps(9, RuntimeKind::Posix, rt::runtime_capability::FILE_READ);
+        assert!(matches!(
+            select_execution_mode(route, Some(other), 2),
+            ExecutionMode::RoutedFallback { .. }
+        ));
+    }
+
+    #[test]
+    fn mode_matrix_empty_intersection_falls_back() {
+        let route = BuildRoute::RuntimeEnv { env_id: 4 };
+        let env = caps(4, RuntimeKind::Posix, rt::runtime_capability::FILE_READ);
+        assert_eq!(
+            select_execution_mode(route, Some(env), 0),
+            ExecutionMode::RoutedFallback {
+                env_id: 4,
+                reason: FALLBACK_NO_USABLE_SCOPES
+            }
+        );
+    }
+
+    #[test]
+    fn mode_matrix_ready_granted_scoped_env_runs_routed() {
+        let route = BuildRoute::RuntimeEnv { env_id: 6 };
+        let env = caps(
+            6,
+            RuntimeKind::Posix,
+            rt::runtime_capability::FILE_READ | rt::runtime_capability::TERMINAL_IO,
+        );
+        assert_eq!(
+            select_execution_mode(route, Some(env), 2),
+            ExecutionMode::RoutedEnv { env_id: 6 }
+        );
+    }
+
+    #[test]
+    fn execution_mode_status_words_distinguish_paths() {
+        assert_eq!(ExecutionMode::DirectSpawn.status_word(), 0);
+        assert_eq!(
+            ExecutionMode::RoutedEnv { env_id: 3 }.status_word(),
+            1 | (3 << 8)
+        );
+        assert_eq!(
+            ExecutionMode::RoutedFallback {
+                env_id: 3,
+                reason: FALLBACK_NO_FILE_GRANT
+            }
+            .status_word(),
+            2 | (3 << 8) | (u64::from(FALLBACK_NO_FILE_GRANT) << 24)
+        );
+        assert!(!ExecutionMode::DirectSpawn.routed());
+        assert!(ExecutionMode::RoutedEnv { env_id: 1 }.routed());
+        assert!(!ExecutionMode::RoutedFallback {
+            env_id: 1,
+            reason: 1
+        }
+        .routed());
     }
 }

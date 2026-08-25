@@ -3,6 +3,7 @@ use serviceos_userspace_runtime as rt;
 
 use crate::{
     consts::{MAX_JOBS, MAX_TOOLCHAINS, MAX_WORKSPACES},
+    payload,
     protocol::{Catalog, handle_public_request, poll_job_exits, poll_job_reports},
     registry,
     types::{JobSlot, ToolchainSlot, WorkspaceSlot},
@@ -37,6 +38,21 @@ pub(crate) fn run() -> u64 {
 
     let mut registry = registry::build_registry(&toolchains, toolchain_count);
 
+    // Install operation: materialize descriptor-declared SDK payloads into
+    // the writable mirror so verify-present can confirm them later. Best
+    // effort per payload; failures are logged and surface as absent
+    // payloads on the next verify-present probe.
+    let mut installed = 0usize;
+    let mut failed = 0usize;
+    for toolchain in toolchains[..toolchain_count].iter() {
+        if toolchain.payload_count == 0 {
+            continue;
+        }
+        let (ok, bad) = payload::install_toolchain_payloads(storage_handle, toolchain);
+        installed += ok;
+        failed += bad;
+    }
+
     let public = match rt::channel_create() {
         Ok(pair) => pair,
         Err(_) => return 0xfd04,
@@ -53,7 +69,8 @@ pub(crate) fn run() -> u64 {
         toolchain_count as u64,
         workspace_count as u64
             | (registry::family_mask(&registry) << 16)
-            | (registry::versioned_count(&registry).min(0xFF) << 44),
+            | (registry::versioned_count(&registry).min(0xFF) << 44)
+            | (((installed.min(0xF) as u64) << 52) | ((failed.min(0xF) as u64) << 56)),
     );
 
     let mut jobs = [JobSlot::empty(); MAX_JOBS];

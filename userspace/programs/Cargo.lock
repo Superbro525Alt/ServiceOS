@@ -196,6 +196,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "serviceos-peripheral-service"
+version = "0.1.0"
+dependencies = [
+ "serviceos-userspace-runtime",
+]
+
+[[package]]
 name = "serviceos-posix-host-tool"
 version = "0.1.0"
 dependencies = [
@@ -263,6 +270,7 @@ version = "0.1.0"
 dependencies = [
  "serviceos-abi",
  "serviceos-account-service",
+ "serviceos-peripheral-service",
  "serviceos-userspace-runtime",
 ]
 

@@ -35,6 +35,7 @@ members = [
     "account-service",
     "backup-service",
     "power-service",
+    "peripheral-service",
 ]
 
 [profile.dev]

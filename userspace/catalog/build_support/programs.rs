@@ -225,6 +225,13 @@ pub(crate) const PROGRAMS: &[Program] = &[
         service_id: 0,
     },
     Program {
+        package: "serviceos-peripheral-service",
+        bin_name: "serviceos-peripheral-service",
+        image_id: 34,
+        service_path: "services/peripheral-service/program.img",
+        service_id: 0,
+    },
+    Program {
         package: "serviceos-setup-wizard",
         bin_name: "serviceos-setup-wizard",
         image_id: 33,

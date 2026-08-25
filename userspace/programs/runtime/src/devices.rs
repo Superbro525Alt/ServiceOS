@@ -169,6 +169,7 @@ pub fn input_source_receive(handle: Handle) -> Result<InputEventInfo> {
         code: 0,
         value0: 0,
         value1: 0,
+        source_id: 0,
     };
     syscall3(
         SyscallNumber::InputSourceReceive,
@@ -185,6 +186,7 @@ pub fn input_source_receive_nonblocking(handle: Handle) -> Result<InputEventInfo
         code: 0,
         value0: 0,
         value1: 0,
+        source_id: 0,
     };
     syscall3(
         SyscallNumber::InputSourceReceive,

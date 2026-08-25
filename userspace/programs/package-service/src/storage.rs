@@ -163,14 +163,13 @@ pub(crate) fn load_repo_feed_cache(
     let source_name = repos[repo_index].name.as_str().unwrap_or("");
     let feed_text = core::str::from_utf8(&bytes[..loaded]).ok();
     let signed_verdict = feed_text.and_then(|text| {
-        crate::state::feed_keys_for(source_name).map(|entry| {
-            crate::signing::verify_signed_feed(text, Some(entry), now)
-        })
+        crate::state::feed_keys_for(source_name)
+            .map(|entry| crate::signing::verify_signed_feed(text, Some(entry), now))
     });
     let trust_state = match signed_verdict {
-        Some(crate::signing::FeedVerdict::Accepted | crate::signing::FeedVerdict::AcceptedRetired) => {
-            PackageTrustState::DigestPinned
-        }
+        Some(
+            crate::signing::FeedVerdict::Accepted | crate::signing::FeedVerdict::AcceptedRetired,
+        ) => PackageTrustState::DigestPinned,
         Some(crate::signing::FeedVerdict::UnknownKey) => PackageTrustState::Unverified,
         Some(
             verdict @ (crate::signing::FeedVerdict::RejectedUnsignedRequired
@@ -191,7 +190,9 @@ pub(crate) fn load_repo_feed_cache(
             PackageRepositoryTrustMode::Boot => PackageTrustState::BootTrusted,
             PackageRepositoryTrustMode::Unsigned => PackageTrustState::Unverified,
             PackageRepositoryTrustMode::PinnedDigest => {
-                if repos[repo_index].last_digest == crate::operations::compute_fnv64(&bytes[..loaded]) {
+                if repos[repo_index].last_digest
+                    == crate::operations::compute_fnv64(&bytes[..loaded])
+                {
                     PackageTrustState::DigestPinned
                 } else {
                     PackageTrustState::VerificationFailed
@@ -381,7 +382,8 @@ fn load_local_manifest_slot(
 pub(crate) fn persist_journal_state(
     storage_handle: rt::Handle,
     journal: JournalState,
-) -> rt::Result<()> {    let mut text = rt::FixedLogBuffer::<256>::new();
+) -> rt::Result<()> {
+    let mut text = rt::FixedLogBuffer::<256>::new();
     let _ = write!(&mut text, "version=1\n");
     if journal.pending_action != JOURNAL_NONE {
         let _ = write!(

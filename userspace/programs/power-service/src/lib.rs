@@ -394,7 +394,6 @@ pub mod acpi {
     }
 }
 
-
 /// ACPI-walk battery probe: feed the DSDT body when a kernel snapshot
 /// contract exists, otherwise `None` produces the graceful absence state.
 pub fn acpi_battery_report(dsdt: Option<&[u8]>) -> BatteryReport {
@@ -547,11 +546,7 @@ pub fn format_status_text(
     if !write_number(out, &mut position, battery.detail_code as u64) {
         return None;
     }
-    if !write_text(
-        out,
-        &mut position,
-        b"\npower: health uptime-ticks=",
-    ) {
+    if !write_text(out, &mut position, b"\npower: health uptime-ticks=") {
         return None;
     }
     if !write_number(out, &mut position, health.now_ticks) {
@@ -637,10 +632,14 @@ mod tests {
         if revision >= 2 {
             rsdp[24..32].copy_from_slice(&xsdt_address.to_le_bytes());
         }
-        let mut sum = rsdp[..20].iter().fold(0u8, |acc, byte| acc.wrapping_add(*byte));
+        let mut sum = rsdp[..20]
+            .iter()
+            .fold(0u8, |acc, byte| acc.wrapping_add(*byte));
         rsdp[8] = sum.wrapping_neg();
         if revision >= 2 {
-            sum = rsdp[..32].iter().fold(0u8, |acc, byte| acc.wrapping_add(*byte));
+            sum = rsdp[..32]
+                .iter()
+                .fold(0u8, |acc, byte| acc.wrapping_add(*byte));
             rsdp[32] = sum.wrapping_neg();
         }
         rsdp
@@ -664,7 +663,9 @@ mod tests {
         let mut region = [0u8; 64];
         let mut rsdp = build_rsdp(0, 0);
         rsdp[3] = b'X';
-        let sum = rsdp[..20].iter().fold(0u8, |acc, byte| acc.wrapping_add(*byte));
+        let sum = rsdp[..20]
+            .iter()
+            .fold(0u8, |acc, byte| acc.wrapping_add(*byte));
         rsdp[8] = sum.wrapping_neg();
         region[16..36].copy_from_slice(&rsdp[..20]);
         assert_eq!(acpi::find_rsdp(&region), None);
@@ -673,15 +674,9 @@ mod tests {
     #[test]
     fn rsdp_root_signature_selects_xsdt_or_rsdt() {
         let legacy = build_rsdp(0, 0);
-        assert_eq!(
-            acpi::rsdp_root_signature(&legacy),
-            Some(*acpi::ROOT_RSDT)
-        );
+        assert_eq!(acpi::rsdp_root_signature(&legacy), Some(*acpi::ROOT_RSDT));
         let modern = build_rsdp(2, 0x1000);
-        assert_eq!(
-            acpi::rsdp_root_signature(&modern),
-            Some(*acpi::ROOT_XSDT)
-        );
+        assert_eq!(acpi::rsdp_root_signature(&modern), Some(*acpi::ROOT_XSDT));
         let modern_without_xsdt = build_rsdp(2, 0);
         assert_eq!(
             acpi::rsdp_root_signature(&modern_without_xsdt),

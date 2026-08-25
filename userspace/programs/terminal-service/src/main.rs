@@ -12,12 +12,12 @@ use serviceos_userspace_runtime as rt;
 
 use crate::{
     logging::poll_lifecycle,
-    remote::{bind_listener, pump_remote, selftest_loopback, RemoteBridge},
+    remote::{RemoteBridge, bind_listener, pump_remote, selftest_loopback},
     requests::{handle_public_request, handle_session_message},
     session::release_session,
     state::{
-        MAX_PUBLIC_REQUESTS_PER_TURN, MAX_SESSION_MESSAGES_PER_TURN, MAX_REMOTE_LINKS,
-        MAX_SESSIONS, Session, REMOTE_LISTENER_PORT,
+        MAX_PUBLIC_REQUESTS_PER_TURN, MAX_REMOTE_LINKS, MAX_SESSION_MESSAGES_PER_TURN,
+        MAX_SESSIONS, REMOTE_LISTENER_PORT, Session,
     },
 };
 

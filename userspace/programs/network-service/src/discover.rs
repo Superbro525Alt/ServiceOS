@@ -6,7 +6,7 @@
 //! within the last N ms". Pure fixed-capacity logic, host-unit-testable.
 
 use crate::consts::{
-    MAX_BEACON_PEERS, MAX_BEACON_NAME_BYTES, MAX_LOCAL_SERVICES, MAX_SERVICE_NAME_BYTES,
+    MAX_BEACON_NAME_BYTES, MAX_BEACON_PEERS, MAX_LOCAL_SERVICES, MAX_SERVICE_NAME_BYTES,
 };
 use serviceos_userspace_runtime as rt;
 
@@ -235,8 +235,11 @@ mod tests {
         }; MAX_BEACON_PEERS];
         let written = peers.recent(9001, 60_000, &mut recent);
         assert_eq!(written, MAX_BEACON_PEERS);
-        assert!(written == MAX_BEACON_PEERS && recent[..written].iter().all(|peer| {
-            peer.name[..peer.name_len] != *b"p1"
-        }));
+        assert!(
+            written == MAX_BEACON_PEERS
+                && recent[..written]
+                    .iter()
+                    .all(|peer| { peer.name[..peer.name_len] != *b"p1" })
+        );
     }
 }

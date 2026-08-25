@@ -6,4 +6,5 @@ fn main() {
 
     println!("cargo:rerun-if-changed={}", link_script.display());
     println!("cargo:rustc-link-arg=-T{}", link_script.display());
+    println!("cargo:rerun-if-env-changed=SERVICEOS_BOOT_MODE");
 }

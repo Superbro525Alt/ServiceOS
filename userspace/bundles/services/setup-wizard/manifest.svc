@@ -1,0 +1,9 @@
+service=setup-wizard
+image=setup-wizard
+startup=eager
+availability=optional
+ready_timeout=200
+restart=fail-stop
+depends=storage-service, config-service
+lookup=storage-service:send
+lookup=config-service:send

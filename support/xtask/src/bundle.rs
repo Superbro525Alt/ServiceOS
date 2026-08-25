@@ -29,6 +29,11 @@ pub fn stage_platform_bundle(
         &artifacts.bootstore_binary,
         serviceos_dir.join("bootstore.bin"),
     )?;
+    if std::env::var("SERVICEOS_BOOT_MODE").as_deref() == Ok("recovery") {
+        // Operator-visible note in the staged bundle; the actual boot-mode
+        // word is compiled into the platform loader via SERVICEOS_BOOT_MODE.
+        fs::write(serviceos_dir.join("bootmode.txt"), b"recovery\n")?;
+    }
 
     if let Some(kernel_binary) = &artifacts.kernel_binary {
         let destination = match artifacts.spec.boot_kind {

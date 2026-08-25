@@ -85,9 +85,8 @@ pub(crate) fn run() -> u64 {
         Ok(count) => count,
         Err(_) => return 0xfb05,
     };
-    let mut identity = types::HostIdentity::from_label(
-        &net_options.hostname[..net_options.hostname_len],
-    );
+    let mut identity =
+        types::HostIdentity::from_label(&net_options.hostname[..net_options.hostname_len]);
 
     let packet_info = match rt::packet_interface_info(packet_handle) {
         Ok(info) => info,

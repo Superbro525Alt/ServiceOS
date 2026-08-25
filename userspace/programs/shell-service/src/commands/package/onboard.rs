@@ -41,7 +41,10 @@ fn declared_arch_tag(version: &str) -> Option<&str> {
     if tag.is_empty() || tag.len() > 12 {
         return None;
     }
-    if tag.bytes().any(|byte| !(byte.is_ascii_alphanumeric() || byte == b'_')) {
+    if tag
+        .bytes()
+        .any(|byte| !(byte.is_ascii_alphanumeric() || byte == b'_'))
+    {
         return None;
     }
     Some(tag)
@@ -232,10 +235,16 @@ impl OnboardingLedger {
         let Some((encoded, len)) = Self::encode_name(name) else {
             return Err(rt::Error::InvalidArgument);
         };
-        if self.sources[..self.count].iter().any(|source| source.matches(&encoded[..len])) {
+        if self.sources[..self.count]
+            .iter()
+            .any(|source| source.matches(&encoded[..len]))
+        {
             return Err(rt::Error::Busy);
         }
-        let slot = self.sources.get_mut(self.count).ok_or(rt::Error::CapacityExceeded)?;
+        let slot = self
+            .sources
+            .get_mut(self.count)
+            .ok_or(rt::Error::CapacityExceeded)?;
         slot.set(&encoded[..len], true);
         self.count += 1;
         Ok(())
@@ -382,10 +391,7 @@ pub(super) fn cmd_pkg_sideload<'a>(
                     set_side_load_policy(policy);
                     write_output_linef(
                         output,
-                        format_args!(
-                            "side-load policy set to {}",
-                            side_load_policy_name(policy),
-                        ),
+                        format_args!("side-load policy set to {}", side_load_policy_name(policy),),
                     )
                 }
                 None => write_output_linef(
@@ -394,7 +400,10 @@ pub(super) fn cmd_pkg_sideload<'a>(
                 ),
             },
         },
-        _ => write_output_linef(output, format_args!("usage: pkg sideload policy [allow|warn|deny]")),
+        _ => write_output_linef(
+            output,
+            format_args!("usage: pkg sideload policy [allow|warn|deny]"),
+        ),
     }
 }
 
@@ -430,7 +439,10 @@ pub(super) fn cmd_pkg_repo_remove(output: ShellOutput, name: &str) -> rt::Result
             format_args!("{name} is not in the onboarding ledger"),
         );
     }
-    write_output_linef(output, format_args!("removed onboarding approval for {name}"))?;
+    write_output_linef(
+        output,
+        format_args!("removed onboarding approval for {name}"),
+    )?;
     write_output_linef(
         output,
         format_args!(
@@ -465,7 +477,11 @@ pub(super) fn cmd_pkg_repo_status(bootstrap: rt::Handle, output: ShellOutput) ->
                         name,
                         if enabled { "enabled" } else { "disabled" },
                         trust_mode_name(repo.trust_mode),
-                        if repo.enabled { "registered" } else { "service-disabled" },
+                        if repo.enabled {
+                            "registered"
+                        } else {
+                            "service-disabled"
+                        },
                     ),
                 );
             }
@@ -524,7 +540,10 @@ mod tests {
 
     #[test]
     fn side_load_policy_matrix_matches_switch_semantics() {
-        assert_eq!(side_load_decision(SideLoadPolicy::Allow), SideLoadDecision::Allow);
+        assert_eq!(
+            side_load_decision(SideLoadPolicy::Allow),
+            SideLoadDecision::Allow
+        );
         assert!(matches!(
             side_load_decision(SideLoadPolicy::Warn),
             SideLoadDecision::AllowWithWarning
@@ -546,14 +565,25 @@ mod tests {
             compat_verdict("1.2.3+x86_64"),
             CompatVerdict::Match
         ));
-        assert!(matches!(compat_verdict("1.2.3+any"), CompatVerdict::Universal));
-        assert!(matches!(compat_verdict("2.0+all"), CompatVerdict::Universal));
-        assert!(matches!(compat_verdict("1.0+build4"), CompatVerdict::Undeclared));
+        assert!(matches!(
+            compat_verdict("1.2.3+any"),
+            CompatVerdict::Universal
+        ));
+        assert!(matches!(
+            compat_verdict("2.0+all"),
+            CompatVerdict::Universal
+        ));
+        assert!(matches!(
+            compat_verdict("1.0+build4"),
+            CompatVerdict::Undeclared
+        ));
         match compat_verdict("9.9+aarch64") {
             CompatVerdict::Mismatch { declared } => assert_eq!(declared, "aarch64"),
             other => panic!("expected mismatch, got {other:?}"),
         }
-        assert!(compat_requires_override(&CompatVerdict::Mismatch { declared: "arm" }));
+        assert!(compat_requires_override(&CompatVerdict::Mismatch {
+            declared: "arm"
+        }));
         assert!(!compat_requires_override(&CompatVerdict::Match));
         assert!(!compat_requires_override(&CompatVerdict::Undeclared));
         assert!(!compat_requires_override(&CompatVerdict::Universal));

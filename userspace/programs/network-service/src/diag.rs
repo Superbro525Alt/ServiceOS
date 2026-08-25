@@ -106,7 +106,10 @@ mod tests {
         for index in 0..MAX_DIAG_PINGS + 4 {
             samples.push(index as u64);
         }
-        assert_eq!(samples.summarize().map(|summary| summary.received), Some(MAX_DIAG_PINGS));
+        assert_eq!(
+            samples.summarize().map(|summary| summary.received),
+            Some(MAX_DIAG_PINGS)
+        );
 
         assert_eq!(loss_permil(10, 10), 0);
         assert_eq!(loss_permil(10, 7), 300);

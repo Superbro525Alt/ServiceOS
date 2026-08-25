@@ -17,7 +17,7 @@
 use smoltcp::{
     iface::{Interface, SocketHandle, SocketSet},
     socket::udp,
-    wire::{IpEndpoint, IpAddress, Ipv4Address},
+    wire::{IpAddress, IpEndpoint, Ipv4Address},
 };
 
 use serviceos_userspace_runtime as rt;
@@ -299,10 +299,7 @@ pub(crate) fn announce(
     ) else {
         return Ok(false);
     };
-    let target = IpEndpoint::new(
-        IpAddress::Ipv4(Ipv4Address::BROADCAST),
-        BEACON_UDP_PORT,
-    );
+    let target = IpEndpoint::new(IpAddress::Ipv4(Ipv4Address::BROADCAST), BEACON_UDP_PORT);
     let socket = sockets.get_mut::<udp::Socket>(beacon_handle);
     let queued = socket.send_slice(&frame[..len], target).is_ok();
     // Flush the queued datagram immediately.
@@ -348,8 +345,9 @@ pub(crate) fn pump(
             if !socket.can_recv() {
                 break;
             }
-            let (count, metadata) =
-                socket.recv_slice(&mut buffer).map_err(|_| rt::Error::Busy)?;
+            let (count, metadata) = socket
+                .recv_slice(&mut buffer)
+                .map_err(|_| rt::Error::Busy)?;
             (count, metadata.endpoint)
         };
         let Some(frame) = decode(&buffer[..count]) else {

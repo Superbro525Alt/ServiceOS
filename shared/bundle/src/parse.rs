@@ -53,6 +53,8 @@ pub fn parse_service_id(value: &str) -> Result<ServiceId, BootStoreError> {
         "developer-service" => Ok(ServiceId::Developer),
         "clipboard-service" => Ok(ServiceId::Clipboard),
         "security-service" => Ok(ServiceId::Security),
+        "setup-wizard" => Ok(ServiceId::SetupWizard),
+        "backup-service" => Ok(ServiceId::Backup),
         _ => Err(BootStoreError::InvalidManifest),
     }
 }
@@ -83,6 +85,8 @@ pub fn parse_image_id(value: &str) -> Result<ServiceImageId, BootStoreError> {
         "clipboard-service" => Ok(ServiceImageId::ClipboardService),
         "software-center-app" => Ok(ServiceImageId::SoftwareCenterApp),
         "security-service" => Ok(ServiceImageId::SecurityService),
+        "setup-wizard" => Ok(ServiceImageId::SetupWizard),
+        "backup-service" => Ok(ServiceImageId::BackupService),
         _ => Err(BootStoreError::InvalidManifest),
     }
 }

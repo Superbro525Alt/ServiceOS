@@ -33,14 +33,18 @@ where
             Some(service_id) => mutate::cmd_pkg_install(bootstrap, output, service_id, parts),
             None => write_output_linef(
                 output,
-                format_args!("usage: pkg install <name> [version] [@source] [--yes] [--force-compat]"),
+                format_args!(
+                    "usage: pkg install <name> [version] [@source] [--yes] [--force-compat]"
+                ),
             ),
         },
         Some("update") => match parts.next().and_then(parse_service_name) {
             Some(service_id) => mutate::cmd_pkg_update(bootstrap, output, service_id, parts),
             None => write_output_linef(
                 output,
-                format_args!("usage: pkg update <name> [version] [@source] [--yes] [--force-compat]"),
+                format_args!(
+                    "usage: pkg update <name> [version] [@source] [--yes] [--force-compat]"
+                ),
             ),
         },
         Some("remove") => match parts.next().and_then(parse_service_name) {

@@ -55,7 +55,7 @@ struct UserFaultInfo {
 }
 
 fn user_fault_info(report: &ExceptionReport) -> UserFaultInfo {
-    use serviceos_kernel_core::fault::{classify_page_fault, FaultClass, UserFaultRecord};
+    use serviceos_kernel_core::fault::{FaultClass, UserFaultRecord, classify_page_fault};
 
     let instruction_pointer = report.frame.instruction_pointer;
     let (record, class_name) = match report.detail {
@@ -90,10 +90,7 @@ fn terminate_faulting_user_task(report: ExceptionReport) -> ! {
     let exit_code = user_fault_exit_code(&report, &info.record);
     serial::write_args(format_args!(
         "serviceos: interrupt: terminating faulting userspace task exit={:#x} class={} addr={:#x} ip={:#x}\n",
-        exit_code,
-        info.class_name,
-        info.record.fault_address,
-        info.record.instruction_pointer,
+        exit_code, info.class_name, info.record.fault_address, info.record.instruction_pointer,
     ));
     if let Some(tasks) = task::system() {
         if let Some(thread_id) = tasks.scheduler().current_thread() {

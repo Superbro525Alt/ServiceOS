@@ -346,7 +346,10 @@ mod tests {
     #[test]
     fn intersection_without_file_read_drops_everything() {
         let set = derived();
-        for env_caps in [0u32, rt::runtime_capability::NETWORK | rt::runtime_capability::AUDIO] {
+        for env_caps in [
+            0u32,
+            rt::runtime_capability::NETWORK | rt::runtime_capability::AUDIO,
+        ] {
             let merged = intersect_with_env(&set, env_caps);
             assert_eq!(merged.scope_count, 0);
             assert!(merged.network_denied);

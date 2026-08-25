@@ -338,9 +338,12 @@ fn compat_gate(
     force_compat: bool,
 ) -> rt::Result<bool> {
     let mut latest_buffer = [0u8; MAX_VERSION_BYTES];
-    let Some(candidate) =
-        candidate_version_text(package_handle, service_id, explicit_version, &mut latest_buffer)
-    else {
+    let Some(candidate) = candidate_version_text(
+        package_handle,
+        service_id,
+        explicit_version,
+        &mut latest_buffer,
+    ) else {
         return Ok(true);
     };
     let verdict = onboard::compat_verdict(candidate);
@@ -395,7 +398,9 @@ where
             let _ = rt::handle_close(package_handle);
             return Ok(());
         }
-        if let SourceGateDecision::BlockedDisabled = onboard::source_gate_decision(onboard::onboard_lookup(source)) {
+        if let SourceGateDecision::BlockedDisabled =
+            onboard::source_gate_decision(onboard::onboard_lookup(source))
+        {
             write_output_linef(
                 output,
                 format_args!(

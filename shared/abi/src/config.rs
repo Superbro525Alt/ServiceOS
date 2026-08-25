@@ -33,6 +33,7 @@ pub enum ConfigKey {
     NetworkDhcpAcquireTimeoutTicks = 12,
     NetworkTcpConnectTimeoutTicks = 13,
     NetworkTcpIdleTimeoutTicks = 14,
+    SystemHostname = 15,
 }
 
 #[repr(u32)]

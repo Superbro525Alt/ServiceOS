@@ -73,17 +73,17 @@ mod tests {
 
     #[test]
     fn auth_gate_accepts_matching_token() {
-        assert_eq!(
-            AuthGate::check(b"sekret", b"sekret"),
-            AuthOutcome::Accepted
-        );
+        assert_eq!(AuthGate::check(b"sekret", b"sekret"), AuthOutcome::Accepted);
     }
 
     #[test]
     fn auth_gate_rejects_wrong_token() {
         assert_eq!(AuthGate::check(b"sekret", b"wrong!"), AuthOutcome::Rejected);
         assert_eq!(AuthGate::check(b"sekret", b""), AuthOutcome::Rejected);
-        assert_eq!(AuthGate::check(b"sekret", b"sekrets"), AuthOutcome::Rejected);
+        assert_eq!(
+            AuthGate::check(b"sekret", b"sekrets"),
+            AuthOutcome::Rejected
+        );
     }
 
     #[test]
@@ -202,10 +202,7 @@ impl FrameDecoder {
 
     /// Copy the next fully buffered frame's payload into `out` and slide the
     /// remainder forward. None when more wire bytes are needed.
-    pub(crate) fn next_frame_into(
-        &mut self,
-        out: &mut [u8],
-    ) -> Result<Option<usize>, RemoteError> {
+    pub(crate) fn next_frame_into(&mut self, out: &mut [u8]) -> Result<Option<usize>, RemoteError> {
         let Some(length) = self.pending_length() else {
             return Ok(None);
         };
@@ -294,8 +291,7 @@ impl RemoteLink {
     pub(crate) fn on_frame<'a>(&mut self, payload: &'a [u8]) -> LinkEvent<'a> {
         match self.state {
             LinkState::AwaitingAuth => {
-                if AuthGate::check(self.expected_token, payload) == AuthOutcome::Accepted
-                {
+                if AuthGate::check(self.expected_token, payload) == AuthOutcome::Accepted {
                     self.state = LinkState::Active;
                     LinkEvent::Banner
                 } else {
@@ -314,13 +310,13 @@ impl RemoteLink {
     }
 }
 
-use serviceos_userspace_runtime as rt;
 use rt::RawMessage;
+use serviceos_userspace_runtime as rt;
 
 use crate::session::{detach_session, handle_input_byte, initialize_session, release_session};
 use crate::state::{
-    Session, MAX_REMOTE_LINKS, MAX_SESSIONS, REMOTE_AUTH_TOKEN, REMOTE_BACKLOG,
-    REMOTE_LISTENER_PORT, REMOTE_PUMP_BUDGET,
+    MAX_REMOTE_LINKS, MAX_SESSIONS, REMOTE_AUTH_TOKEN, REMOTE_BACKLOG, REMOTE_LISTENER_PORT,
+    REMOTE_PUMP_BUDGET, Session,
 };
 
 /// Banner sent once a link activates (before any command output).
@@ -377,8 +373,7 @@ pub(crate) fn bind_listener(bootstrap: rt::Handle) -> Option<rt::Handle> {
     request.words[1] = rt::pack_listen_params(REMOTE_LISTENER_PORT, REMOTE_BACKLOG);
     let response = rt::channel_call(network, &mut request).ok()?;
     let _ = rt::handle_close(network);
-    if response.tag != rt::NetworkTag::SocketListenReply as u32 || response.handle_count < 1
-    {
+    if response.tag != rt::NetworkTag::SocketListenReply as u32 || response.handle_count < 1 {
         return None;
     }
     if response.words[0] as u32 != rt::NetworkStatus::Ok as u32 {
@@ -394,8 +389,7 @@ fn accept_inbound(listener: rt::Handle) -> Option<(rt::Handle, u64)> {
     if response.tag != rt::NetworkSocketTag::AcceptReply as u32 {
         return None;
     }
-    if response.words[0] as u32 != rt::NetworkStatus::Ok as u32 || response.handle_count < 1
-    {
+    if response.words[0] as u32 != rt::NetworkStatus::Ok as u32 || response.handle_count < 1 {
         return None;
     }
     Some((response.handles[0], response.words[1]))
@@ -694,7 +688,10 @@ pub(crate) fn selftest_loopback(bootstrap: rt::Handle, port: u16) {
     if stream == rt::INVALID_HANDLE {
         let _ = rt::write_logf(
             "terminal",
-            format_args!("remote selftest skip: no loopback client spins={}", open_spins),
+            format_args!(
+                "remote selftest skip: no loopback client spins={}",
+                open_spins
+            ),
         );
         let _ = rt::handle_close(network);
         return;
@@ -759,7 +756,10 @@ pub(crate) fn selftest_loopback(bootstrap: rt::Handle, port: u16) {
     close_stream(stream);
     let _ = rt::handle_close(network);
     if seen {
-        let _ = rt::write_logf("terminal", format_args!("remote selftest ok: loopback session round-trip"));
+        let _ = rt::write_logf(
+            "terminal",
+            format_args!("remote selftest ok: loopback session round-trip"),
+        );
     } else {
         let _ = rt::write_logf("terminal", format_args!("remote selftest fail: no echo"));
     }

@@ -34,6 +34,7 @@ pub(crate) fn parse_desktop_app_name(name: &str) -> Option<DesktopAppId> {
         "monitor" => Some(DesktopAppId::Monitor),
         "terminal" => Some(DesktopAppId::Terminal),
         "software" | "software-center" | "store" => Some(DesktopAppId::SoftwareCenter),
+        "media" | "media-app" => Some(DesktopAppId::Media),
         _ => None,
     }
 }
@@ -59,6 +60,8 @@ pub(crate) fn service_name(service_id: ServiceId) -> &'static str {
         ServiceId::Developer => "developer-service",
         ServiceId::Clipboard => "clipboard-service",
         ServiceId::Security => "security-service",
+        ServiceId::SetupWizard => "setup-wizard",
+        ServiceId::Backup => "backup-service",
     }
 }
 
@@ -69,6 +72,7 @@ pub(crate) fn desktop_app_name(app_id: DesktopAppId) -> &'static str {
         DesktopAppId::Monitor => "monitor",
         DesktopAppId::Terminal => "terminal",
         DesktopAppId::SoftwareCenter => "software",
+        DesktopAppId::Media => "media",
     }
 }
 
@@ -132,6 +136,7 @@ pub(crate) fn config_key_name(key: ConfigKey) -> &'static str {
         ConfigKey::NetworkDhcpAcquireTimeoutTicks => "network.dhcp_acquire_timeout_ticks",
         ConfigKey::NetworkTcpConnectTimeoutTicks => "network.tcp_connect_timeout_ticks",
         ConfigKey::NetworkTcpIdleTimeoutTicks => "network.tcp_idle_timeout_ticks",
+        ConfigKey::SystemHostname => "system.hostname",
     }
 }
 

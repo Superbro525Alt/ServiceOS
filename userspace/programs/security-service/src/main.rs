@@ -10,7 +10,7 @@ use rt::{
 };
 use serviceos_userspace_runtime as rt;
 
-const MAX_POLICIES: usize = 8;
+const MAX_POLICIES: usize = 9;
 const MAX_AUDIT: usize = 24;
 const MAX_STATE_BYTES: usize = 256;
 const STATE_DIR: &str = "state";
@@ -73,6 +73,12 @@ const POLICIES: [PolicyEntry; MAX_POLICIES] = [
         name: "cross-builder",
         permissions: app_permission::STORAGE | app_permission::TERMINAL,
         sensitive: app_permission::STORAGE,
+    },
+    PolicyEntry {
+        image_id: ServiceImageId::MediaApp,
+        name: "media",
+        permissions: app_permission::STORAGE | app_permission::AUDIO,
+        sensitive: app_permission::AUDIO,
     },
 ];
 
@@ -381,6 +387,7 @@ fn image_id_from_word(value: u64) -> ServiceImageId {
         x if x == ServiceImageId::SysinfoTool as u32 => ServiceImageId::SysinfoTool,
         x if x == ServiceImageId::PosixHostTool as u32 => ServiceImageId::PosixHostTool,
         x if x == ServiceImageId::CrossBuilderTool as u32 => ServiceImageId::CrossBuilderTool,
+        x if x == ServiceImageId::MediaApp as u32 => ServiceImageId::MediaApp,
         x if x == ServiceImageId::SecurityService as u32 => ServiceImageId::SecurityService,
         _ => ServiceImageId::RootManager,
     }

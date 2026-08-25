@@ -44,6 +44,9 @@ pub enum ServiceImageId {
     ClipboardService = 25,
     SoftwareCenterApp = 26,
     SecurityService = 27,
+    MediaApp = 31,
+    SetupWizard = 33,
+    BackupService = 34,
 }
 
 #[repr(u32)]
@@ -68,4 +71,6 @@ pub enum ServiceId {
     Developer = 17,
     Clipboard = 18,
     Security = 19,
+    SetupWizard = 20,
+    Backup = 21,
 }

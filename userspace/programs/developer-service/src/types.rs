@@ -3,7 +3,7 @@ use serviceos_userspace_runtime as rt;
 
 use crate::{
     consts::{MAX_NAME, MAX_PATH},
-    payload::{PayloadSlot, MAX_PAYLOADS},
+    payload::{MAX_PAYLOADS, PayloadSlot},
     routing::{self, BuildRoute, ExecutionMode},
     sandbox::SandboxDecision,
 };

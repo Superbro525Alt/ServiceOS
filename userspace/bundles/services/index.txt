@@ -12,3 +12,5 @@ services/desktop-shell-service/manifest.svc
 services/status-service/manifest.svc
 services/package-service/manifest.svc
 services/shell-service/manifest.svc
+services/setup-wizard/manifest.svc
+services/backup-service/manifest.svc

@@ -545,6 +545,7 @@ pub(crate) fn desktop_app_id_from_word(value: u64) -> core::result::Result<Deskt
         x if x == DesktopAppId::Monitor as u32 => Ok(DesktopAppId::Monitor),
         x if x == DesktopAppId::Terminal as u32 => Ok(DesktopAppId::Terminal),
         x if x == DesktopAppId::SoftwareCenter as u32 => Ok(DesktopAppId::SoftwareCenter),
+        x if x == DesktopAppId::Media as u32 => Ok(DesktopAppId::Media),
         _ => Err(()),
     }
 }

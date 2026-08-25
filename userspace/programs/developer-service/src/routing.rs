@@ -159,9 +159,8 @@ fn list_envs(runtime_handle: rt::Handle) -> Option<[RuntimeEnvSnapshot; MAX_RUNT
                 x if x == RuntimeEnvState::Denied as u32 => RuntimeEnvState::Denied,
                 _ => continue,
             };
-            envs[filled] =
-                RuntimeEnvSnapshot::new(response.words[base] as u32, kind, state)
-                    .with_capabilities(response.words[base + 3] as u32);
+            envs[filled] = RuntimeEnvSnapshot::new(response.words[base] as u32, kind, state)
+                .with_capabilities(response.words[base + 3] as u32);
             filled += 1;
         }
         if count == 0 || next <= start {
@@ -437,10 +436,12 @@ mod tests {
         );
         assert!(!ExecutionMode::DirectSpawn.routed());
         assert!(ExecutionMode::RoutedEnv { env_id: 1 }.routed());
-        assert!(!ExecutionMode::RoutedFallback {
-            env_id: 1,
-            reason: 1
-        }
-        .routed());
+        assert!(
+            !ExecutionMode::RoutedFallback {
+                env_id: 1,
+                reason: 1
+            }
+            .routed()
+        );
     }
 }

@@ -24,11 +24,8 @@
 
 mod protocol;
 
-
 use rt::{ControlTag, LifecycleEvent, RawMessage};
-use serviceos_power_service::{
-    BatteryReport, format_status_text, power_tag,
-};
+use serviceos_power_service::{BatteryReport, format_status_text, power_tag};
 
 use crate::protocol::{PowerServiceState, RequestScratch, handle_request};
 
@@ -152,8 +149,8 @@ fn broadcast_prepare(state: &mut PowerServiceState, sequence: u64) {
 fn log_probe_state(state: &PowerServiceState) {
     let mut text = [0u8; STATUS_TEXT_BYTES];
     let health = serviceos_power_service::health_snapshot(None, 0);
-    let written = format_status_text(&state.policy, &state.battery, &health, &mut text)
-        .unwrap_or(0);
+    let written =
+        format_status_text(&state.policy, &state.battery, &health, &mut text).unwrap_or(0);
     let _ = rt::debug_log(&text[..written]);
 }
 
@@ -175,8 +172,7 @@ mod tests {
     use super::*;
     use serviceos_power_service::{
         HealthSnapshot, ListenerTable, MAX_LISTENERS, OWNER_WORDS, PowerPolicy, Presence,
-        ProbeEvidence,
-        SleepState, acpi_battery_report,
+        ProbeEvidence, SleepState, acpi_battery_report,
     };
 
     fn request(tag: u32, words: &[u64]) -> RawMessage {
@@ -226,18 +222,27 @@ mod tests {
         assert_eq!(state.policy.sleep_state(), SleepState::Inhibited);
 
         // Refcount semantics: releasing one inhibitor keeps the gate shut.
-        let (reply, _) =
-            handle_request_simple(&mut state, power_tag::INHIBIT_RELEASE_REQUEST, &[first.words[1]]);
+        let (reply, _) = handle_request_simple(
+            &mut state,
+            power_tag::INHIBIT_RELEASE_REQUEST,
+            &[first.words[1]],
+        );
         assert_eq!(reply.words[0], 0);
         assert_eq!(state.policy.sleep_state(), SleepState::Inhibited);
 
-        let (reply, _) =
-            handle_request_simple(&mut state, power_tag::INHIBIT_RELEASE_REQUEST, &[second.words[1]]);
+        let (reply, _) = handle_request_simple(
+            &mut state,
+            power_tag::INHIBIT_RELEASE_REQUEST,
+            &[second.words[1]],
+        );
         assert_eq!(reply.words[0], 0);
         assert_eq!(state.policy.sleep_state(), SleepState::Allow);
 
-        let (reply, _) =
-            handle_request_simple(&mut state, power_tag::INHIBIT_RELEASE_REQUEST, &[second.words[1]]);
+        let (reply, _) = handle_request_simple(
+            &mut state,
+            power_tag::INHIBIT_RELEASE_REQUEST,
+            &[second.words[1]],
+        );
         assert_eq!(
             reply.words[0],
             serviceos_power_service::PowerError::UnknownCookie.to_code() as u64
@@ -268,7 +273,10 @@ mod tests {
         for (index, slot) in cookies.iter_mut().enumerate() {
             *slot = table.add(index as u64 + 10).expect("slot");
         }
-        assert_eq!(table.add(99), Err(serviceos_power_service::PowerError::CapacityExceeded));
+        assert_eq!(
+            table.add(99),
+            Err(serviceos_power_service::PowerError::CapacityExceeded)
+        );
         assert_eq!(table.remove(cookies[2]), Ok(12));
         // Cookies stay monotonic even after a slot frees up.
         assert_eq!(table.add(99), Ok(5));
@@ -285,7 +293,8 @@ mod tests {
         let _second = state.listeners.add(22).expect("listener");
         state.listeners.remove(first_cookie).expect("remove");
 
-        let (response, plan) = handle_request_simple(&mut state, power_tag::SUSPEND_PREPARE_REQUEST, &[]);
+        let (response, plan) =
+            handle_request_simple(&mut state, power_tag::SUSPEND_PREPARE_REQUEST, &[]);
         assert_eq!(response.tag, power_tag::SUSPEND_PREPARE_REPLY);
         assert_eq!(response.words[0], 0);
         let plan = plan.expect("broadcast plan");
@@ -298,7 +307,10 @@ mod tests {
         assert_eq!(second_plan.expect("plan").sequence, 2);
 
         // Dry-run contract: no sleep happens, listeners stay registered.
-        assert_eq!(state.listeners.slots()[1].map(|slot| slot.cookie), Some(_second));
+        assert_eq!(
+            state.listeners.slots()[1].map(|slot| slot.cookie),
+            Some(_second)
+        );
     }
 
     #[test]
@@ -350,7 +362,10 @@ mod tests {
         assert!(rendered.contains("drift=unavailable mem-pressure=unavailable"));
 
         let mut tiny = [0u8; 8];
-        assert_eq!(format_status_text(&state.policy, &state.battery, &state.last_health, &mut tiny), None);
+        assert_eq!(
+            format_status_text(&state.policy, &state.battery, &state.last_health, &mut tiny),
+            None
+        );
     }
 
     #[test]

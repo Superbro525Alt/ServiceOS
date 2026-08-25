@@ -7,12 +7,29 @@ pub(crate) const ASSOC_MAX: usize = 12;
 pub(crate) const EXT_MAX: usize = 8;
 
 /// Apps offered by "open-with" cycling, in fallback order.
-pub(crate) const OPEN_CANDIDATE_APPS: [DesktopAppId; 4] = [
+pub(crate) const OPEN_CANDIDATE_APPS: [DesktopAppId; 5] = [
     DesktopAppId::Files,
+    DesktopAppId::Media,
     DesktopAppId::Terminal,
     DesktopAppId::Monitor,
     DesktopAppId::Settings,
 ];
+
+/// Extensions that default to the media preview app when nothing else was
+/// chosen yet; mirrors the set media-app itself can honestly play.
+pub(crate) fn is_audio_extension(ext: &[u8]) -> bool {
+    let mut lower = [0u8; 8];
+    if ext.is_empty() || ext.len() > lower.len() {
+        return false;
+    }
+    lower[..ext.len()].copy_from_slice(ext);
+    let key = &mut lower[..ext.len()];
+    key.make_ascii_lowercase();
+    match *key {
+        [b'w', b'a', b'v'] | [b'w', b'a', b'v', b'e'] | [b'p', b'c', b'm'] => true,
+        _ => false,
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Association {
@@ -232,6 +249,9 @@ pub(crate) fn route_app(
     if let Some(app) = table.default_for(ext) {
         return app;
     }
+    if is_audio_extension(ext) {
+        return DesktopAppId::Media;
+    }
     DesktopAppId::Files
 }
 
@@ -242,6 +262,7 @@ pub(crate) fn app_label(app: DesktopAppId) -> &'static str {
         DesktopAppId::Monitor => "MONITOR",
         DesktopAppId::Terminal => "TERMINAL",
         DesktopAppId::SoftwareCenter => "SOFTWARE",
+        DesktopAppId::Media => "MEDIA",
     }
 }
 
@@ -366,6 +387,22 @@ mod tests {
         );
         assert_eq!(route_app(b"log", &table, None), DesktopAppId::Monitor);
         assert_eq!(route_app(b"unknown", &table, None), DesktopAppId::Files);
+    }
+
+    #[test]
+    fn audio_extensions_default_to_media_app() {
+        let table = AssocTable::empty();
+        assert_eq!(route_app(b"wav", &table, None), DesktopAppId::Media);
+        assert_eq!(route_app(b"WAV", &table, None), DesktopAppId::Media);
+        assert_eq!(route_app(b"pcm", &table, None), DesktopAppId::Media);
+        // Stored defaults still outrank the audio heuristic.
+        let mut custom = AssocTable::empty();
+        assert!(custom.set_default(b"wav", DesktopAppId::Monitor));
+        assert_eq!(route_app(b"wav", &custom, None), DesktopAppId::Monitor);
+        // Non-audio extensions keep the Files fallback.
+        assert_eq!(route_app(b"txt", &table, None), DesktopAppId::Files);
+        assert!(!is_audio_extension(b""));
+        assert!(!is_audio_extension(&[b'a'; 9]));
     }
 
     #[test]

@@ -22,6 +22,8 @@ members = [
     "shell-service",
     "settings-app",
     "files-app",
+    "media-app",
+    "setup-wizard",
     "monitor-app",
     "terminal-service",
     "terminal-app",

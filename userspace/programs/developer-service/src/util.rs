@@ -113,8 +113,7 @@ fn parse_toolchain_descriptor(text: &str) -> rt::Result<ToolchainSlot> {
                 if slot.payload_count >= slot.payloads.len() {
                     return Err(rt::Error::CapacityExceeded);
                 }
-                slot.payloads[slot.payload_count] =
-                    crate::payload::parse_payload_entry(value)?;
+                slot.payloads[slot.payload_count] = crate::payload::parse_payload_entry(value)?;
                 last_payload = Some(slot.payload_count);
                 slot.payload_count += 1;
             }
@@ -308,25 +307,20 @@ mod tests {
         );
         assert!(slot.payloads[0].wants_checksum());
         // Uppercase descriptor hex is normalized through the raw bytes.
-        assert_eq!(
-            slot.payloads[0].checksum_hex.as_bytes()[..8],
-            *b"ba7816bf"
-        );
+        assert_eq!(slot.payloads[0].checksum_hex.as_bytes()[..8], *b"ba7816bf");
         assert!(!slot.payloads[1].wants_checksum());
     }
 
     #[test]
     fn toolchain_descriptor_rejects_checksum_without_payload() {
-        let text = "name=x\nchecksum=ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\n";
+        let text =
+            "name=x\nchecksum=ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\n";
         assert!(parse_toolchain_descriptor(text).is_err());
     }
 
     #[test]
     fn toolchain_descriptor_rejects_bad_payload_refs() {
         assert!(parse_toolchain_descriptor("name=x\npayload=noat\n").is_err());
-        assert!(parse_toolchain_descriptor(
-            "name=x\npayload=a@image:notanumber\n"
-        )
-        .is_err());
+        assert!(parse_toolchain_descriptor("name=x\npayload=a@image:notanumber\n").is_err());
     }
 }

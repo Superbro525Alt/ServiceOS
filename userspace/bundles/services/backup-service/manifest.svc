@@ -1,0 +1,8 @@
+service=backup-service
+image=backup-service
+startup=on-demand
+availability=optional
+ready_timeout=200
+restart=fail-stop
+depends=storage-service
+lookup=storage-service:send

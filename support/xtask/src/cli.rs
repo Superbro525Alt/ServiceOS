@@ -5,6 +5,9 @@ pub enum CommandKind {
     Build,
     Image,
     Run,
+    /// Boot the recovery environment: builds with SERVICEOS_BOOT_MODE=recovery
+    /// so the platform loader hands root-manager the recovery boot-mode word.
+    Recover,
     CiMatrix,
 }
 
@@ -27,6 +30,7 @@ impl<'a> Options<'a> {
             "build" => CommandKind::Build,
             "image" => CommandKind::Image,
             "run" => CommandKind::Run,
+            "recover" => CommandKind::Recover,
             "ci-matrix" => CommandKind::CiMatrix,
             "qemu" => {
                 platform = Some("qemu-virtio");
@@ -89,7 +93,7 @@ impl fmt::Display for UsageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "usage: cargo xtask <build|image|run|qemu|release|ci-matrix> [--platform <qemu-virtio|raspi5|virt|qemu-isa>] [--release]"
+            "usage: cargo xtask <build|image|run|recover|qemu|release|ci-matrix> [--platform <qemu-virtio|raspi5|virt|qemu-isa>] [--release]"
         )
     }
 }

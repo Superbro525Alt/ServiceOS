@@ -477,6 +477,8 @@ pub(crate) fn service_name(service_id: ServiceId) -> &'static str {
         ServiceId::Developer => "developer-service",
         ServiceId::Clipboard => "clipboard-service",
         ServiceId::Security => "security-service",
+        ServiceId::SetupWizard => "setup-wizard",
+        ServiceId::Backup => "backup-service",
         ServiceId::RootManager => "root-manager",
     }
 }

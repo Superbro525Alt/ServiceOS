@@ -42,6 +42,7 @@ pub enum DesktopAppId {
     Monitor = 3,
     Terminal = 4,
     SoftwareCenter = 5,
+    Media = 6,
 }
 
 #[repr(u32)]

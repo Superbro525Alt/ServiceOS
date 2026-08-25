@@ -176,6 +176,13 @@ pub(crate) const PROGRAMS: &[Program] = &[
         service_id: 0,
     },
     Program {
+        package: "serviceos-media-app",
+        bin_name: "serviceos-media-app",
+        image_id: 31,
+        service_path: "apps/media-app/program.img",
+        service_id: 0,
+    },
+    Program {
         package: "serviceos-software-center-app",
         bin_name: "serviceos-software-center-app",
         image_id: 26,
@@ -216,5 +223,12 @@ pub(crate) const PROGRAMS: &[Program] = &[
         image_id: 30,
         service_path: "services/power-service/program.img",
         service_id: 0,
+    },
+    Program {
+        package: "serviceos-setup-wizard",
+        bin_name: "serviceos-setup-wizard",
+        image_id: 33,
+        service_path: "services/setup-wizard/program.img",
+        service_id: 20,
     },
 ];

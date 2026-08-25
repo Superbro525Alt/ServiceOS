@@ -463,10 +463,7 @@ const SELFTEST_B_CHUNKS: usize = 4;
 const SELFTEST_B_FRAMES_PER_CHUNK: usize = 12; // stereo f32 @ half rate.
 
 fn selftest_ingest_streams(streams: &mut [PcmStreamState; 2]) -> bool {
-    *streams = [
-        PcmStreamState::new(),
-        PcmStreamState::new(),
-    ];
+    *streams = [PcmStreamState::new(), PcmStreamState::new()];
     streams[0].active = true;
     streams[0].apply_config(AudioSampleFormat::S16Le, SINK_RATE_HZ, 1);
     streams[1].active = true;
@@ -484,9 +481,7 @@ fn selftest_ingest_streams(streams: &mut [PcmStreamState; 2]) -> bool {
         &packed[..SELFTEST_FRAMES_A],
         &mut words,
     );
-    if streams[0].ingest_chunk(&words[..word_count], SELFTEST_FRAMES_A)
-        != Some(SELFTEST_FRAMES_A)
-    {
+    if streams[0].ingest_chunk(&words[..word_count], SELFTEST_FRAMES_A) != Some(SELFTEST_FRAMES_A) {
         return false;
     }
 
@@ -502,10 +497,8 @@ fn selftest_ingest_streams(streams: &mut [PcmStreamState; 2]) -> bool {
             &packed[..SELFTEST_B_FRAMES_PER_CHUNK * 2],
             &mut words,
         );
-        if streams[1].ingest_chunk(
-            &words[..word_count],
-            SELFTEST_B_FRAMES_PER_CHUNK * 2,
-        ) != Some(SELFTEST_B_FRAMES_PER_CHUNK * 2)
+        if streams[1].ingest_chunk(&words[..word_count], SELFTEST_B_FRAMES_PER_CHUNK * 2)
+            != Some(SELFTEST_B_FRAMES_PER_CHUNK * 2)
         {
             return false;
         }
@@ -946,8 +939,7 @@ mod tests {
     fn mix_batch_into_matches_plain_sink_counters() {
         const FRAMES: usize = 24; // both chunks must fit one 14-word message.
         let feed = |streams: &mut [PcmStreamState; 2]| {
-            let a: [f32; FRAMES] =
-                core::array::from_fn(|index| ((index % 10) as f32) * 0.04 - 0.2);
+            let a: [f32; FRAMES] = core::array::from_fn(|index| ((index % 10) as f32) * 0.04 - 0.2);
             let mut b = [0f32; FRAMES * 2];
             for index in 0..FRAMES {
                 b[index * 2] = 0.3;
@@ -955,7 +947,10 @@ mod tests {
             }
             let mut words = [0u64; 14];
             let count = pcm_pack_words(AudioSampleFormat::S16Le, &a, &mut words);
-            assert_eq!(streams[0].ingest_chunk(&words[..count], FRAMES), Some(FRAMES));
+            assert_eq!(
+                streams[0].ingest_chunk(&words[..count], FRAMES),
+                Some(FRAMES)
+            );
             let count = pcm_pack_words(AudioSampleFormat::S16Le, &b, &mut words);
             assert_eq!(
                 streams[1].ingest_chunk(&words[..count], FRAMES * 2),
@@ -975,7 +970,10 @@ mod tests {
         let mut out = [0xA5u8; MIX_BATCH_FRAMES * 4];
         let mixed = byte_sink.mix_batch_into(&mut captured, MIX_BATCH_FRAMES, &mut out);
         assert_eq!(mixed, FRAMES);
-        assert_eq!(&out[mixed * 4..], &[0xA5; MIX_BATCH_FRAMES * 4 - FRAMES * 4][..]);
+        assert_eq!(
+            &out[mixed * 4..],
+            &[0xA5; MIX_BATCH_FRAMES * 4 - FRAMES * 4][..]
+        );
 
         // Identically fed streams through the plain path must produce the
         // same counters/checksums.
@@ -1005,10 +1003,7 @@ mod tests {
             let a_roundtrip = pcm_encode_sample_s16(a_value(index)) as f32 / 32768.0;
             let left = a_roundtrip * gain_a + b_roundtrip * gain_b;
             let right = a_roundtrip * gain_a - b_roundtrip * gain_b;
-            let expected = pcm_quantize_stereo_bytes(
-                left.clamp(-1.0, 1.0),
-                right.clamp(-1.0, 1.0),
-            );
+            let expected = pcm_quantize_stereo_bytes(left.clamp(-1.0, 1.0), right.clamp(-1.0, 1.0));
             assert_eq!(&out[index * 4..index * 4 + 4], &expected);
         }
     }

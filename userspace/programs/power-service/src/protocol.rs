@@ -3,7 +3,7 @@
 //! (`PowerError::to_code`, 0 = Ok) followed by op-specific words.
 
 use serviceos_power_service::{
-    BroadcastPlan, BatteryReport, HealthSnapshot, ListenerTable, OWNER_WORDS, PowerError,
+    BatteryReport, BroadcastPlan, HealthSnapshot, ListenerTable, OWNER_WORDS, PowerError,
     PowerPolicy, SleepState, health_snapshot, next_event_sequence, pack_words, power_tag,
     unpack_words,
 };
@@ -192,7 +192,10 @@ pub fn handle_request(
         }
         x if x == power_tag::HEALTH_SNAPSHOT_REQUEST => {
             response.tag = power_tag::HEALTH_SNAPSHOT_REPLY;
-            let now = *request.words.first().unwrap_or(&state.last_health.now_ticks);
+            let now = *request
+                .words
+                .first()
+                .unwrap_or(&state.last_health.now_ticks);
             let snapshot = state.sample_health(now);
             response.word_count = 4;
             response.words[0] = 0;

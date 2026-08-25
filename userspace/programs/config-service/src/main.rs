@@ -10,7 +10,7 @@ use rt::{
 use serviceos_userspace_runtime as rt;
 
 const MAX_CONFIG_BYTES: usize = 512;
-const MAX_CONFIG_ENTRIES: usize = 14;
+const MAX_CONFIG_ENTRIES: usize = 16;
 const MAX_CONFIG_PATH: usize = 64;
 
 #[derive(Clone, Copy)]
@@ -46,7 +46,7 @@ fn main() -> u64 {
         key: ConfigKey::LogMinimumSeverity,
         kind: ConfigValueKind::Unsigned,
         value: 0,
-    }; 14];
+    }; MAX_CONFIG_ENTRIES];
     let mut entry_count = match parse_config_entries(&config_bytes[..loaded], &mut entries) {
         Ok(count) => count,
         Err(_) => return 0xf204,
@@ -192,6 +192,7 @@ fn parse_config_entries(bytes: &[u8], entries: &mut [ConfigEntry]) -> rt::Result
                 "network.dhcp_acquire_timeout_ticks" => ConfigKey::NetworkDhcpAcquireTimeoutTicks,
                 "network.tcp_connect_timeout_ticks" => ConfigKey::NetworkTcpConnectTimeoutTicks,
                 "network.tcp_idle_timeout_ticks" => ConfigKey::NetworkTcpIdleTimeoutTicks,
+                "system.hostname" => ConfigKey::SystemHostname,
                 _ => return Err(rt::Error::InvalidArgument),
             },
             kind: ConfigValueKind::Unsigned,
@@ -236,6 +237,7 @@ fn config_key_from_word(value: u64) -> ConfigKey {
         }
         x if x == ConfigKey::StatusConsoleMirror as u32 => ConfigKey::StatusConsoleMirror,
         x if x == ConfigKey::StatusHeartbeatLogPeriod as u32 => ConfigKey::StatusHeartbeatLogPeriod,
+        x if x == ConfigKey::SystemHostname as u32 => ConfigKey::SystemHostname,
         _ => ConfigKey::StatusHeartbeatTicks,
     }
 }
@@ -256,6 +258,7 @@ fn config_key_name(key: ConfigKey) -> &'static str {
         ConfigKey::NetworkDhcpAcquireTimeoutTicks => "network.dhcp_acquire_timeout_ticks",
         ConfigKey::NetworkTcpConnectTimeoutTicks => "network.tcp_connect_timeout_ticks",
         ConfigKey::NetworkTcpIdleTimeoutTicks => "network.tcp_idle_timeout_ticks",
+        ConfigKey::SystemHostname => "system.hostname",
     }
 }
 
@@ -265,6 +268,7 @@ fn namespace_for_key(key: ConfigKey) -> &'static str {
         ConfigKey::StatusHeartbeatTicks
         | ConfigKey::StatusConsoleMirror
         | ConfigKey::StatusHeartbeatLogPeriod => "status",
+        ConfigKey::SystemHostname => "system",
         _ => "network",
     }
 }
@@ -274,8 +278,28 @@ fn validate_config_value(key: ConfigKey, value: u64) -> bool {
         ConfigKey::LogMinimumSeverity => value <= 3,
         ConfigKey::StatusConsoleMirror | ConfigKey::NetworkDynamicIpv4 => value <= 1,
         ConfigKey::NetworkIpv4PrefixLength => value <= 32,
+        ConfigKey::SystemHostname => is_packed_hostname_label(value),
         _ => true,
     }
+}
+
+/// `system.hostname` packs a hostname label big-endian into a u64: up to 8
+/// ASCII bytes ([a-zA-Z0-9-]), zero-padded on the low end. The label must be
+/// non-empty, start with an alphanumeric byte, and contain no zero gap before
+/// its final byte.
+fn is_packed_hostname_label(value: u64) -> bool {
+    let bytes = value.to_be_bytes();
+    let mut len = 0usize;
+    while len < 8 && bytes[len] != 0 {
+        if !bytes[len].is_ascii_alphanumeric() && bytes[len] != b'-' {
+            return false;
+        }
+        len += 1;
+    }
+    if len == 0 || !bytes[0].is_ascii_alphanumeric() {
+        return false;
+    }
+    bytes[len..].iter().all(|byte| *byte == 0)
 }
 
 fn load_override_entries(
@@ -283,7 +307,7 @@ fn load_override_entries(
     entries: &mut [ConfigEntry; MAX_CONFIG_ENTRIES],
     entry_count: &mut usize,
 ) -> rt::Result<()> {
-    for namespace in ["log", "status", "network"] {
+    for namespace in ["log", "status", "network", "system"] {
         let mut path = rt::FixedLogBuffer::<MAX_CONFIG_PATH>::new();
         let _ = core::fmt::write(
             &mut path,

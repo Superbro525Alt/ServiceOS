@@ -1,4 +1,7 @@
-use rt::{AudioEndpointBackend, AudioEndpointState, ControlTag, LogEvent, LogSeverity, RawMessage, ServiceId};
+use rt::{
+    AudioEndpointBackend, AudioEndpointState, ControlTag, LogEvent, LogSeverity, RawMessage,
+    ServiceId,
+};
 use serviceos_abi::{
     MIX_BATCH_FRAMES, PcmNullSink, PcmStreamState, audio_capability, run_pcm_mix_selftest,
     run_pcm_mix_selftest_emit,

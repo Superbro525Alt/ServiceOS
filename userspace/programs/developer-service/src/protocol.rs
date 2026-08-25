@@ -424,11 +424,9 @@ fn handle_build_request(
     // capability grants; every refusal falls back to the direct spawn.
     let mut mode = routing::ExecutionMode::DirectSpawn;
     if let routing::BuildRoute::RuntimeEnv { env_id } = route {
-        let snapshot = probed.as_ref().and_then(|envs| {
-            envs.iter()
-                .find(|env| env.env_id == env_id)
-                .copied()
-        });
+        let snapshot = probed
+            .as_ref()
+            .and_then(|envs| envs.iter().find(|env| env.env_id == env_id).copied());
         let merged = sandbox::intersect_with_env(
             &permission,
             snapshot.map(|env| env.capabilities).unwrap_or(0),
@@ -471,7 +469,8 @@ fn handle_build_request(
                         mode: candidate,
                         export: ExportState::Local,
                     };
-                    emit_log(                        log_handle,
+                    emit_log(
+                        log_handle,
                         LogSeverity::Info,
                         LogEvent::DeveloperBuildStarted,
                         job_id as u64,
@@ -1176,8 +1175,7 @@ fn try_routed_exec(
     };
 
     let mut request = RawMessage::empty(RuntimeTag::RunLaunchRequest as u32);
-    request.word_count =
-        3 + rt::pack_bytes(arg.as_bytes(), &mut request.words[3..]).unwrap_or(0);
+    request.word_count = 3 + rt::pack_bytes(arg.as_bytes(), &mut request.words[3..]).unwrap_or(0);
     request.words[0] = u64::from(env_id);
     request.words[1] = EXEC_GUEST_WORKLOAD as u64;
     request.words[2] = arg.len as u64;

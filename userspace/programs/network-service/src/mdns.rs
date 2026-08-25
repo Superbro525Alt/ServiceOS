@@ -147,16 +147,14 @@ pub(crate) fn pump(
             if !socket.can_recv() {
                 break;
             }
-            let (count, metadata) =
-                socket.recv_slice(&mut query).map_err(|_| rt::Error::Busy)?;
+            let (count, metadata) = socket.recv_slice(&mut query).map_err(|_| rt::Error::Busy)?;
             (count, metadata.endpoint)
         };
         let Some(id) = parse_local_a_query(&query[..count], hostname) else {
             continue;
         };
         let mut response = [0u8; 128];
-        let Some(response_len) = build_response(&mut response, id, hostname, local_address)
-        else {
+        let Some(response_len) = build_response(&mut response, id, hostname, local_address) else {
             continue;
         };
         let _ = iface.poll(crate::util::now_instant(), device, sockets);
@@ -189,16 +187,15 @@ mod tests {
     #[test]
     fn answers_a_query_with_compressed_owner_name() {
         let hostname = b"serviceos";
-        let (query, len) = build_query(
-            0x1234,
-            &[hostname, b"local"],
-            RTYPE_A,
-            QCLASS_IN,
-        );
+        let (query, len) = build_query(0x1234, &[hostname, b"local"], RTYPE_A, QCLASS_IN);
         let mut response = [0u8; 128];
-        let response_len =
-            build_response(&mut response, 0x1234, hostname, Ipv4Address::new(10, 0, 2, 15))
-                .expect("response fits");
+        let response_len = build_response(
+            &mut response,
+            0x1234,
+            hostname,
+            Ipv4Address::new(10, 0, 2, 15),
+        )
+        .expect("response fits");
         assert_eq!(parse_local_a_query(&query[..len], hostname), Some(0x1234));
 
         // Response flag + authoritative, one question, one answer.
@@ -213,12 +210,13 @@ mod tests {
 
         // Decoding the owner name through the shared parser yields the FQDN.
         let mut cursor = answer_offset;
-        let decoded = NameBuf::decode(&response[..response_len], &mut cursor)
-            .expect("owner name decodes");
+        let decoded =
+            NameBuf::decode(&response[..response_len], &mut cursor).expect("owner name decodes");
         assert_eq!(decoded.as_str(), Some("serviceos.local"));
 
         // RDATA carries the address.
-        let rdlength = u16::from_be_bytes([response[answer_offset + 10], response[answer_offset + 11]]);
+        let rdlength =
+            u16::from_be_bytes([response[answer_offset + 10], response[answer_offset + 11]]);
         assert_eq!(rdlength, 4);
         assert_eq!(
             &response[answer_offset + 12..answer_offset + 16],
@@ -259,7 +257,12 @@ mod tests {
     #[test]
     fn any_query_type_is_answered_and_cache_flush_class_accepted() {
         let hostname = b"os";
-        let (query, len) = build_query(7, &[hostname, b"local"], RTYPE_ANY, QCLASS_IN | CLASS_TOP_BIT);
+        let (query, len) = build_query(
+            7,
+            &[hostname, b"local"],
+            RTYPE_ANY,
+            QCLASS_IN | CLASS_TOP_BIT,
+        );
         assert_eq!(parse_local_a_query(&query[..len], hostname), Some(7));
     }
 }

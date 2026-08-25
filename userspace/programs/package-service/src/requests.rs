@@ -498,7 +498,8 @@ fn rotate_feed_key(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn handle_maintenance_request(    bootstrap: rt::Handle,
+fn handle_maintenance_request(
+    bootstrap: rt::Handle,
     storage_handle: rt::Handle,
     network_handle: Option<rt::Handle>,
     log_handle: rt::Handle,

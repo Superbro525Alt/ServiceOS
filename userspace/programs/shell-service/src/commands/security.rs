@@ -377,6 +377,7 @@ fn parse_image_name(name: &str) -> Option<ServiceImageId> {
         "sysinfo" => Some(ServiceImageId::SysinfoTool),
         "runtime-host" => Some(ServiceImageId::PosixHostTool),
         "cross-builder" => Some(ServiceImageId::CrossBuilderTool),
+        "media" | "media-app" => Some(ServiceImageId::MediaApp),
         _ => None,
     }
 }
@@ -391,6 +392,7 @@ fn image_name(image_id: ServiceImageId) -> &'static str {
         ServiceImageId::SysinfoTool => "sysinfo",
         ServiceImageId::PosixHostTool => "runtime-host",
         ServiceImageId::CrossBuilderTool => "cross-builder",
+        ServiceImageId::MediaApp => "media",
         ServiceImageId::SecurityService => "security-service",
         _ => "unknown",
     }

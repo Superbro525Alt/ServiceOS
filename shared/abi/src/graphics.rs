@@ -77,6 +77,38 @@ pub struct InputSourceInfo {
     pub pending_events: u32,
 }
 
+pub mod input_device_class {
+    pub const KEYBOARD: u32 = 1;
+    /// Relative pointer (mouse-style).
+    pub const POINTER: u32 = 2;
+    /// Absolute pointer (tablet-style).
+    pub const TABLET: u32 = 3;
+}
+
+pub mod input_role_flag {
+    /// This instance is the positional authority feeding pointer motion.
+    pub const POSITIONAL_AUTHORITY: u32 = 1 << 0;
+    /// This instance was demoted by the single-positional-stream policy:
+    /// motion is suppressed but buttons and wheel still route.
+    pub const SCROLL_ONLY: u32 = 1 << 1;
+}
+
+/// One enumerated physical input instance behind a source object.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InputDeviceInfo {
+    /// Stable per-instance id assigned at bring-up (1-based); matches the
+    /// `source_id` tag carried on every `InputEventInfo` it emits.
+    pub source_id: u32,
+    /// One of `input_device_class`.
+    pub class: u32,
+    /// Bitmask of `input_role_flag` from the role-unification pass.
+    pub role_flags: u32,
+    /// 1 while the instance participates in event routing, 0 once marked
+    /// absent after removal.
+    pub present: u32,
+}
+
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InputEventKind {
@@ -102,6 +134,9 @@ pub struct InputEventInfo {
     pub code: u32,
     pub value0: i32,
     pub value1: i32,
+    /// Originating device instance (`InputDeviceInfo.source_id`); 0 when the
+    /// backend cannot attribute the event.
+    pub source_id: u32,
 }
 
 #[repr(u32)]

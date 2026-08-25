@@ -13,17 +13,17 @@ use serviceos_userspace_runtime as rt;
 use crate::{
     cache::ResolverCache,
     consts::{
-        DIAG_PING_STATS_REPLY, DIAG_PING_STATS_REQUEST, DISCOVERY_PEERS_REPLY,
-        DISCOVERY_PEERS_REQUEST, DISCOVERY_REGISTER_REPLY, DISCOVERY_REGISTER_REQUEST,
-        FIREWALL_RULES_GET_REQUEST, FIREWALL_RULES_REPLY, FIREWALL_RULES_SET_REQUEST,
-        HOSTNAME_GET_REPLY, HOSTNAME_GET_REQUEST, HOSTNAME_SET_REPLY, HOSTNAME_SET_REQUEST,
-        LISTEN_PORTS_REPLY, LISTEN_PORTS_REQUEST, BEACON_PEER_DEFAULT_WINDOW_MS,
-        MAX_DIAG_PINGS, MAX_HOSTNAME_BYTES, MAX_NEIGHBOR_ENTRIES, MDNS_UDP_PORT,
-        BEACON_UDP_PORT, MAX_TCP_SOCKETS, NEIGHBOR_DUMP_REPLY, NEIGHBOR_DUMP_REQUEST,
-        RESOLVE_EX_REQUEST, RESOLVE_EX_TYPE_A, RESOLVE_EX_TYPE_AAAA, RESOLVE_EX_TYPE_TXT,
+        BEACON_PEER_DEFAULT_WINDOW_MS, BEACON_UDP_PORT, DIAG_PING_STATS_REPLY,
+        DIAG_PING_STATS_REQUEST, DISCOVERY_PEERS_REPLY, DISCOVERY_PEERS_REQUEST,
+        DISCOVERY_REGISTER_REPLY, DISCOVERY_REGISTER_REQUEST, FIREWALL_RULES_GET_REQUEST,
+        FIREWALL_RULES_REPLY, FIREWALL_RULES_SET_REQUEST, HOSTNAME_GET_REPLY, HOSTNAME_GET_REQUEST,
+        HOSTNAME_SET_REPLY, HOSTNAME_SET_REQUEST, LISTEN_PORTS_REPLY, LISTEN_PORTS_REQUEST,
+        MAX_DIAG_PINGS, MAX_HOSTNAME_BYTES, MAX_NEIGHBOR_ENTRIES, MAX_TCP_SOCKETS, MDNS_UDP_PORT,
+        NEIGHBOR_DUMP_REPLY, NEIGHBOR_DUMP_REQUEST, RESOLVE_EX_REQUEST, RESOLVE_EX_TYPE_A,
+        RESOLVE_EX_TYPE_AAAA, RESOLVE_EX_TYPE_TXT,
     },
     device::{self, KernelPacketDevice},
-    diag::{loss_permil, RttSamples},
+    diag::{RttSamples, loss_permil},
     discover::{PeerTable, Registry},
     dnsmsg::QueryType,
     dnsresolv::{self, ChaseDetail},
@@ -32,9 +32,7 @@ use crate::{
         HostEntry, HostIdentity, InterfaceRuntimeState, NetworkConfig, TcpListenerSlot,
         TcpTransportSlot, UdpDatagramSlot,
     },
-    util::{
-        decode_inline_text, emit_log, ipv4_to_u32, pack_inline_bytes, ticks_to_millis,
-    },
+    util::{decode_inline_text, emit_log, ipv4_to_u32, pack_inline_bytes, ticks_to_millis},
 };
 
 use super::{listeners::open_listener, transport::perform_ping, udp::open_udp_socket};
@@ -563,10 +561,7 @@ pub(crate) fn handle_public_request(
             ) {
                 Ok(name) => match identity.set(name.as_bytes()) {
                     Ok(()) => {
-                        let _ = rt::write_logf(
-                            "network",
-                            format_args!("hostname set to {}", name),
-                        );
+                        let _ = rt::write_logf("network", format_args!("hostname set to {}", name));
                         NetworkStatus::Ok
                     }
                     Err(_) => NetworkStatus::InvalidTarget,

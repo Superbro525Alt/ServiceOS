@@ -158,7 +158,10 @@ pub(crate) fn payload_dest(
     full_name[payload.name.len..payload.name.len + suffix.len()].copy_from_slice(suffix);
     join_path(
         SDK_STATE_PREFIX,
-        &[toolchain_name, &full_name[..payload.name.len + suffix.len()]],
+        &[
+            toolchain_name,
+            &full_name[..payload.name.len + suffix.len()],
+        ],
         dest_buffer,
     )
 }
@@ -428,8 +431,7 @@ fn write_step(storage_handle: rt::Handle, toolchain: &ToolchainSlot, step: &Plan
 }
 
 fn matching_payload(toolchain: &ToolchainSlot, dest: &[u8]) -> Option<PayloadSlot> {
-    toolchain
-        .payloads[..toolchain.payload_count]
+    toolchain.payloads[..toolchain.payload_count]
         .iter()
         .find(|payload| {
             let mut buffer = [0u8; MAX_PATH];

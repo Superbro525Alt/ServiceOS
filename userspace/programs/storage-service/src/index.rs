@@ -132,9 +132,12 @@ impl SearchIndex {
             self.dirty = true;
             return;
         }
-        if let Some(slot) = self.entries.iter_mut().take(self.count).find(|entry| {
-            entry.path_len == path.len() && entry.path[..entry.path_len] == *path
-        }) {
+        if let Some(slot) = self
+            .entries
+            .iter_mut()
+            .take(self.count)
+            .find(|entry| entry.path_len == path.len() && entry.path[..entry.path_len] == *path)
+        {
             slot.kind = kind;
             slot.size = size;
             if tick != 0 {
@@ -146,8 +149,7 @@ impl SearchIndex {
             self.dirty = true;
             return;
         }
-        self.entries[self.count] =
-            IndexEntry::from_mutable(path, kind, size as usize, tick);
+        self.entries[self.count] = IndexEntry::from_mutable(path, kind, size as usize, tick);
         if origin == ORIGIN_BOOT {
             self.entries[self.count].origin = ORIGIN_BOOT;
         }
@@ -156,9 +158,11 @@ impl SearchIndex {
 
     #[allow(dead_code)]
     pub(crate) fn rename(&mut self, old: &[u8], new: &[u8], tick: u64) {
-        let moved = self.entries.iter().take(self.count).find(|entry| {
-            entry.path_len == old.len() && entry.path[..entry.path_len] == *old
-        });
+        let moved = self
+            .entries
+            .iter()
+            .take(self.count)
+            .find(|entry| entry.path_len == old.len() && entry.path[..entry.path_len] == *old);
         let Some(source) = moved else {
             return;
         };
@@ -222,8 +226,12 @@ impl SearchIndex {
             if self.count >= INDEX_CAPACITY {
                 break;
             }
-            self.entries[self.count] =
-                IndexEntry::from_mutable(&entry.path[..entry.path_len], entry.kind, entry.data_len, now);
+            self.entries[self.count] = IndexEntry::from_mutable(
+                &entry.path[..entry.path_len],
+                entry.kind,
+                entry.data_len,
+                now,
+            );
             self.count += 1;
         }
         self.built = true;
@@ -281,7 +289,9 @@ pub(crate) fn tokenize_name(name: &[u8]) -> NameTokens {
 }
 
 fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
-    haystack.windows(needle.len()).any(|window| window == needle)
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
 }
 
 pub(crate) fn match_class(name: &[u8], tokens: &NameTokens, query: &[u8]) -> u8 {
@@ -339,8 +349,7 @@ fn sort_scored(scored: &mut [Scored], snapshot: &[IndexEntry]) {
             let cur = scored[cursor];
             let prev_path = snapshot[prev.position].path();
             let cur_path = snapshot[cur.position].path();
-            let swap = prev.score < cur.score
-                || (prev.score == cur.score && prev_path > cur_path);
+            let swap = prev.score < cur.score || (prev.score == cur.score && prev_path > cur_path);
             if swap {
                 scored.swap(cursor - 1, cursor);
                 cursor -= 1;
@@ -391,8 +400,10 @@ pub(crate) fn plan_search(
         order: [0; INDEX_CAPACITY],
         len: 0,
     };
-    let mut scored: [Scored; INDEX_CAPACITY] =
-        [Scored { score: 0, position: 0 }; INDEX_CAPACITY];
+    let mut scored: [Scored; INDEX_CAPACITY] = [Scored {
+        score: 0,
+        position: 0,
+    }; INDEX_CAPACITY];
     let mut matched = 0usize;
     for (position, entry) in snapshot.iter().enumerate() {
         let path = entry.path();
@@ -554,9 +565,13 @@ fn scan_entry_for_matches(
     while file_pos < total_len && !stop {
         let want = content.len().min(total_len - file_pos);
         let got = if entry.origin == ORIGIN_BOOT {
-            rt::memory_read(bootstore, entry.boot_offset as usize + file_pos, &mut content[..want])
-                .ok()
-                .unwrap_or(0)
+            rt::memory_read(
+                bootstore,
+                entry.boot_offset as usize + file_pos,
+                &mut content[..want],
+            )
+            .ok()
+            .unwrap_or(0)
         } else {
             let slot = mutable_slot.unwrap_or(0);
             let readable = mutable_entries[slot].data_len.saturating_sub(file_pos);
@@ -564,9 +579,13 @@ fn scan_entry_for_matches(
             if take == 0 {
                 break;
             }
-            rt::memory_read(mutable_entries[slot].data_handle, file_pos, &mut content[..take])
-                .ok()
-                .unwrap_or(0)
+            rt::memory_read(
+                mutable_entries[slot].data_handle,
+                file_pos,
+                &mut content[..take],
+            )
+            .ok()
+            .unwrap_or(0)
         };
         if got == 0 {
             break;
@@ -646,7 +665,15 @@ pub(crate) fn handle_search_request(
 
     let now = rt::monotonic_now().unwrap_or(0);
     index.ensure_built(boot_entries, mutable_entries, now);
-    let plan = plan_search(index.snapshot(), scope, queries, min_size, max_size, since_tick, now);
+    let plan = plan_search(
+        index.snapshot(),
+        scope,
+        queries,
+        min_size,
+        max_size,
+        since_tick,
+        now,
+    );
 
     let mut reply = RawMessage::empty(SEARCH_REPLY_TAG);
     reply.word_count = 4;
@@ -825,12 +852,12 @@ mod tests {
 
     #[test]
     fn and_semantics_requires_every_token() {
-        let snapshot = [
-            entry(b"data/note.txt", 1, 5),
-            entry(b"data/notes.md", 2, 5),
-        ];
+        let snapshot = [entry(b"data/note.txt", 1, 5), entry(b"data/notes.md", 2, 5)];
         let both = plan_search(&snapshot, b"", &[b"note", b"txt"], 0, u64::MAX, 0, 10);
-        assert_eq!(plan_paths(&both, &snapshot), vec![b"data/note.txt".to_vec()]);
+        assert_eq!(
+            plan_paths(&both, &snapshot),
+            vec![b"data/note.txt".to_vec()]
+        );
         let none = plan_search(&snapshot, b"", &[b"note", b"zzz"], 0, u64::MAX, 0, 10);
         assert_eq!(none.len, 0);
     }
@@ -844,7 +871,10 @@ mod tests {
             entry(b"data/stale.txt", 10, 2),
         ];
         let plan = plan_search(&snapshot, b"data/", &[b"txt"], 8, u64::MAX, 5, 10);
-        assert_eq!(plan_paths(&plan, &snapshot), vec![b"data/keep.txt".to_vec()]);
+        assert_eq!(
+            plan_paths(&plan, &snapshot),
+            vec![b"data/keep.txt".to_vec()]
+        );
     }
 
     #[test]
@@ -853,13 +883,25 @@ mod tests {
         let boot: [EntrySlot; 0] = [];
         let mut mutable = [MutableEntry::empty(); MAX_MUTABLE_ENTRIES];
         assert!(index.dirty && !index.built);
-        index.upsert(b"data/pre.txt", StorageEntryKind::File, 4, 1, ORIGIN_MUTABLE);
+        index.upsert(
+            b"data/pre.txt",
+            StorageEntryKind::File,
+            4,
+            1,
+            ORIGIN_MUTABLE,
+        );
         assert!(index.dirty);
         assert!(index.ensure_built(&boot, &mutable, 100));
         assert_eq!((index.count, index.built), (0, true));
         assert_eq!(index.last_rebuild, 100);
 
-        index.upsert(b"data/live.txt", StorageEntryKind::File, 7, 101, ORIGIN_MUTABLE);
+        index.upsert(
+            b"data/live.txt",
+            StorageEntryKind::File,
+            7,
+            101,
+            ORIGIN_MUTABLE,
+        );
         let plan = plan_search(index.snapshot(), b"", &[b"live"], 0, u64::MAX, 0, 101);
         assert_eq!(plan.len, 1);
 
@@ -867,7 +909,13 @@ mod tests {
         let plan = plan_search(index.snapshot(), b"", &[b"live"], 0, u64::MAX, 0, 101);
         assert_eq!(plan.len, 0);
 
-        index.upsert(b"data/old.txt", StorageEntryKind::File, 7, 101, ORIGIN_MUTABLE);
+        index.upsert(
+            b"data/old.txt",
+            StorageEntryKind::File,
+            7,
+            101,
+            ORIGIN_MUTABLE,
+        );
         index.rename(b"data/old.txt", b"data/new.txt", 102);
         let plan = plan_search(index.snapshot(), b"", &[b"new"], 0, u64::MAX, 0, 102);
         assert_eq!(plan.len, 1);
@@ -884,10 +932,7 @@ mod tests {
         let plan = plan_grep(&snapshot, b"", GREP_FILE_BYTES_MAX);
         assert_eq!(plan.oversize_skipped, 1);
         assert_eq!(plan.len, 2);
-        assert_eq!(
-            snapshot[plan.order[0]].path(),
-            b"a/first.txt"
-        );
+        assert_eq!(snapshot[plan.order[0]].path(), b"a/first.txt");
         assert_eq!(snapshot[plan.order[1]].path(), b"z/last.txt");
     }
 
@@ -952,6 +997,9 @@ mod tests {
             match_class(b"mynote.txt", &tokenize_name(b"mynote.txt"), b"not"),
             CLASS_SUBSTRING
         );
-        assert_eq!(match_class(b"other.md", &tokenize_name(b"other.md"), b"note"), 0);
+        assert_eq!(
+            match_class(b"other.md", &tokenize_name(b"other.md"), b"note"),
+            0
+        );
     }
 }

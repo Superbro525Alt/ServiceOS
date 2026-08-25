@@ -28,6 +28,14 @@ fn try_main() -> Result<(), Box<dyn Error>> {
         print_github_matrix();
         return Ok(());
     }
+    if matches!(options.command, CommandKind::Recover) {
+        // Recovery boots build with the boot-mode flag baked into the platform
+        // loader's root-manager startup word (and stage a bootmode.txt note).
+        // SAFETY: single-threaded process; no other threads read env yet.
+        unsafe {
+            std::env::set_var("SERVICEOS_BOOT_MODE", "recovery");
+        }
+    }
     let spec = PlatformSpec::resolve(options.platform)?;
     let artifacts = build_for_platform(spec, options.release)?;
 
@@ -36,7 +44,10 @@ fn try_main() -> Result<(), Box<dyn Error>> {
         CommandKind::Image => {
             let _ = create_platform_image(&artifacts)?;
         }
-        CommandKind::Run => {
+        CommandKind::Run | CommandKind::Recover => {
+            if matches!(options.command, CommandKind::Recover) {
+                println!("Recovery boot: SERVICEOS_BOOT_MODE=recovery");
+            }
             let image = create_platform_image(&artifacts)?;
             run_platform(&artifacts, &image)?;
         }

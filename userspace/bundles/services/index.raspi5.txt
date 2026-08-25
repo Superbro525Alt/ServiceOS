@@ -5,3 +5,5 @@ services/status-service/manifest.svc
 services/security-service/manifest.svc
 services/package-service/manifest.svc
 services/shell-service/manifest.raspi5.svc
+services/setup-wizard/manifest.svc
+services/backup-service/manifest.svc

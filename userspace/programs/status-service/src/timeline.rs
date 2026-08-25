@@ -25,6 +25,20 @@ pub(crate) mod event_kind {
     pub const HEALTH_FLIP: u32 = 4;
     pub const JOB_PHASE: u32 = 5;
     pub const FRAME_PACING: u32 = 6;
+    pub const NET_SELFTEST: u32 = 7;
+}
+
+/// Network selftest phase codes carried in domain-event `to` fields; mirrors
+/// the `selftest_phase` module in `network-service/src/protocol/selftest.rs`.
+/// The `arg0` tag below discriminates selftest records from operator ping
+/// records sharing the `NetworkProbeCompleted` event (pings carry an IPv4
+/// address word in `arg0`, always below `0x1_0000_0000`).
+pub(crate) mod net_selftest {
+    pub const ARG0_TAG: u64 = 0x5345_4C46; // "SELF"
+    #[allow(dead_code)]
+    pub const BEGIN: u64 = 0;
+    pub const PASSED: u64 = 1;
+    pub const FAILED: u64 = 2;
 }
 
 /// Developer job final-state encodings carried in domain-event `to` fields;
@@ -102,6 +116,8 @@ pub(crate) struct DomainCounters {
     pub(crate) jobs_succeeded: u64,
     pub(crate) jobs_failed: u64,
     pub(crate) long_frames: u64,
+    pub(crate) net_selftests_passed: u64,
+    pub(crate) net_selftests_failed: u64,
 }
 
 impl DomainCounters {
@@ -111,17 +127,22 @@ impl DomainCounters {
             jobs_succeeded: 0,
             jobs_failed: 0,
             long_frames: 0,
+            net_selftests_passed: 0,
+            net_selftests_failed: 0,
         }
     }
 
-    /// Packs into the extended SUMMARY_REPLY layout words `[12..16]`
-    /// (legacy summary occupies `[0..12]`).
-    pub(crate) fn pack_reply_words(&self) -> [u64; 4] {
+    /// Packs into the extended SUMMARY_REPLY layout words `[12..18]`
+    /// (legacy summary occupies `[0..12]`; net counters append additively at
+    /// `[16]`/`[17]`).
+    pub(crate) fn pack_reply_words(&self) -> [u64; 6] {
         [
             self.jobs_started,
             self.jobs_succeeded,
             self.jobs_failed,
             self.long_frames,
+            self.net_selftests_passed,
+            self.net_selftests_failed,
         ]
     }
 }
@@ -159,6 +180,15 @@ pub(crate) fn ingest_domain_event(
         event_kind::FRAME_PACING => {
             counters.long_frames = counters.long_frames.saturating_add(1);
         }
+        event_kind::NET_SELFTEST => match to as u64 {
+            net_selftest::PASSED => {
+                counters.net_selftests_passed = counters.net_selftests_passed.saturating_add(1);
+            }
+            net_selftest::FAILED => {
+                counters.net_selftests_failed = counters.net_selftests_failed.saturating_add(1);
+            }
+            _ => {}
+        },
         _ => {}
     }
 }
@@ -178,6 +208,23 @@ pub(crate) struct DomainSampler {
     last_present_count: Option<u64>,
 }
 
+/// Classifies one raw record payload pair into the net-selftest timeline
+/// kind, or `None` when the record is not a tagged selftest record. Shared by
+/// the stream classifier and the retained-ring sweep so both paths stay in
+/// lockstep.
+pub(crate) fn classify_net_selftest_record(arg0: u64, arg1: u64) -> Option<(u32, u32, u32)> {
+    if arg0 != net_selftest::ARG0_TAG {
+        return None;
+    }
+    let to = match arg1 {
+        net_selftest::PASSED => net_selftest::PASSED as u32,
+        net_selftest::FAILED => net_selftest::FAILED as u32,
+        // Begin records enter the ring but stay uncounted.
+        other => other.min(u32::MAX as u64) as u32,
+    };
+    Some((event_kind::NET_SELFTEST, 0, to))
+}
+
 impl DomainSampler {
     pub(crate) const fn new() -> Self {
         Self {
@@ -191,11 +238,14 @@ impl DomainSampler {
     /// sampler even when they do not raise an anomaly. Unsupported build
     /// targets arrive as `DeveloperBuildFailed` Warn records with `arg1 == 1`
     /// and are kept distinct from genuine failures for the final-state tally.
+    /// Network selftest records are identified by the reserved `arg0` tag;
+    /// ping records on the same event never match it.
     pub(crate) fn classify(
         &mut self,
         domain: LogDomain,
         event: LogEvent,
         severity: LogSeverity,
+        arg0: u64,
         arg1: u64,
         tick: u64,
     ) -> Option<(u32, u32, u32)> {
@@ -215,6 +265,9 @@ impl DomainSampler {
                     job_state::FAILED
                 };
                 Some((event_kind::JOB_PHASE, job_state::RUNNING, to))
+            }
+            (LogDomain::Network, LogEvent::NetworkProbeCompleted) => {
+                classify_net_selftest_record(arg0, arg1)
             }
             (LogDomain::Graphics, LogEvent::CompositorPresented) => {
                 let previous_tick = self.last_present_tick.replace(tick);
@@ -543,7 +596,9 @@ mod tests {
                 jobs_started: 0,
                 jobs_succeeded: 0,
                 jobs_failed: 0,
-                long_frames: 2
+                long_frames: 2,
+                net_selftests_passed: 0,
+                net_selftests_failed: 0
             }
         );
     }
@@ -581,9 +636,136 @@ mod tests {
             jobs_succeeded: 2,
             jobs_failed: 1,
             long_frames: 7,
+            net_selftests_passed: 11,
+            net_selftests_failed: 13,
         };
-        assert_eq!(counters.pack_reply_words(), [3, 2, 1, 7]);
-        assert_eq!(DomainCounters::empty().pack_reply_words(), [0, 0, 0, 0]);
+        assert_eq!(counters.pack_reply_words(), [3, 2, 1, 7, 11, 13]);
+        assert_eq!(DomainCounters::empty().pack_reply_words(), [0, 0, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn net_selftest_records_classify_by_tag_and_phase() {
+        let mut sampler = DomainSampler::new();
+        // Tagged begin record enters the ring (kind NET_SELFTEST, to = BEGIN).
+        assert_eq!(
+            classify(
+                &mut sampler,
+                LogDomain::Network,
+                LogEvent::NetworkProbeCompleted,
+                LogSeverity::Debug,
+                net_selftest::ARG0_TAG,
+                net_selftest::BEGIN,
+                10
+            ),
+            Some((event_kind::NET_SELFTEST, 0, net_selftest::BEGIN as u32))
+        );
+        // Pass/fail records map to their final states regardless of severity.
+        for (severity, phase) in [
+            (LogSeverity::Info, net_selftest::PASSED),
+            (LogSeverity::Error, net_selftest::FAILED),
+        ] {
+            assert_eq!(
+                classify(
+                    &mut sampler,
+                    LogDomain::Network,
+                    LogEvent::NetworkProbeCompleted,
+                    severity,
+                    net_selftest::ARG0_TAG,
+                    phase,
+                    20
+                ),
+                Some((event_kind::NET_SELFTEST, 0, phase as u32))
+            );
+        }
+        // Ping records on the same event never carry the tag -> unclassified.
+        assert_eq!(
+            classify(
+                &mut sampler,
+                LogDomain::Network,
+                LogEvent::NetworkProbeCompleted,
+                LogSeverity::Info,
+                0x7F00_0001,
+                1,
+                30
+            ),
+            None
+        );
+        // Wrong event with the tag present stays unclassified.
+        assert_eq!(
+            classify(
+                &mut sampler,
+                LogDomain::Network,
+                LogEvent::NetworkLeaseChanged,
+                LogSeverity::Info,
+                net_selftest::ARG0_TAG,
+                net_selftest::PASSED,
+                40
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn net_selftest_ring_sweep_path_matches_stream_classification() {
+        let mut sampler = DomainSampler::new();
+        let mut timeline = Timeline::new();
+        let mut counters = DomainCounters::empty();
+        // Tagged records decode identically on both delivery paths.
+        for (tick, arg1) in [(5u64, net_selftest::BEGIN), (9, net_selftest::PASSED)] {
+            let classified = classify_net_selftest_record(net_selftest::ARG0_TAG, arg1)
+                .and_then(|(kind, from, to)| {
+                    sampler
+                        .classify(
+                            LogDomain::Network,
+                            LogEvent::NetworkProbeCompleted,
+                            LogSeverity::Debug,
+                            net_selftest::ARG0_TAG,
+                            arg1,
+                            tick,
+                        )
+                        .map(|stream| assert_eq!(stream, (kind, from, to)))
+                });
+            assert!(classified.is_some());
+            let (kind, from, to) =
+                classify_net_selftest_record(net_selftest::ARG0_TAG, arg1).unwrap();
+            ingest_domain_event(&mut timeline, &mut counters, 12, kind, tick, from, to);
+        }
+        // Untagged ping payloads stay unclassified on both paths.
+        assert!(classify_net_selftest_record(0x7F00_0001, 1).is_none());
+        assert_eq!(
+            sampler.classify(
+                LogDomain::Network,
+                LogEvent::NetworkProbeCompleted,
+                LogSeverity::Info,
+                0x7F00_0001,
+                1,
+                30
+            ),
+            None
+        );
+        assert_eq!(timeline.len(), 2);
+        assert_eq!(counters.net_selftests_passed, 1);
+        assert_eq!(counters.net_selftests_failed, 0);
+    }
+
+    #[test]
+    fn net_selftest_counters_tally_passed_and_failed() {
+        let mut timeline = Timeline::new();
+        let mut counters = DomainCounters::empty();
+        ingest_domain_event(&mut timeline, &mut counters, 12, event_kind::NET_SELFTEST, 5, 0, net_selftest::BEGIN as u32);
+        ingest_domain_event(&mut timeline, &mut counters, 12, event_kind::NET_SELFTEST, 9, 0, net_selftest::PASSED as u32);
+        ingest_domain_event(&mut timeline, &mut counters, 12, event_kind::NET_SELFTEST, 15, 0, net_selftest::FAILED as u32);
+        ingest_domain_event(&mut timeline, &mut counters, 12, event_kind::NET_SELFTEST, 21, 0, net_selftest::PASSED as u32);
+
+        assert_eq!(counters.net_selftests_passed, 2);
+        assert_eq!(counters.net_selftests_failed, 1);
+        assert_eq!(timeline.len(), 4);
+        let mut out = [TimelineEvent::zeroed(); TIMELINE_CAP];
+        assert_eq!(timeline.query_since(0, &mut out), 4);
+        assert_eq!(out[0].kind, event_kind::NET_SELFTEST);
+        assert_eq!(out[0].to, net_selftest::BEGIN as u32);
+        assert_eq!(counters.pack_reply_words()[4], 2, "passed rides reply word 16");
+        assert_eq!(counters.pack_reply_words()[5], 1, "failed rides reply word 17");
     }
 
     fn classify(
@@ -591,10 +773,11 @@ mod tests {
         domain: LogDomain,
         event: LogEvent,
         severity: LogSeverity,
+        arg0: u64,
         arg1: u64,
         tick: u64,
     ) -> Option<(u32, u32, u32)> {
-        sampler.classify(domain, event, severity, arg1, tick)
+        sampler.classify(domain, event, severity, arg0, arg1, tick)
     }
 
     #[test]
@@ -606,6 +789,7 @@ mod tests {
                 LogDomain::Developer,
                 LogEvent::DeveloperBuildStarted,
                 LogSeverity::Info,
+                0,
                 7,
                 10
             ),
@@ -617,6 +801,7 @@ mod tests {
                 LogDomain::Developer,
                 LogEvent::DeveloperBuildFinished,
                 LogSeverity::Info,
+                0,
                 4096,
                 20
             ),
@@ -638,6 +823,7 @@ mod tests {
                     LogDomain::Developer,
                     LogEvent::DeveloperBuildFailed,
                     severity,
+                    0,
                     arg1,
                     30
                 ),
@@ -651,6 +837,7 @@ mod tests {
                 LogDomain::Developer,
                 LogEvent::DeveloperBuildFailed,
                 LogSeverity::Warn,
+                0,
                 1,
                 40
             ),
@@ -672,6 +859,7 @@ mod tests {
                 LogEvent::DeveloperCatalogLoaded,
                 LogSeverity::Info,
                 0,
+                0,
                 5
             ),
             None
@@ -682,6 +870,7 @@ mod tests {
                 LogDomain::Network,
                 LogEvent::NetworkInterfaceReady,
                 LogSeverity::Info,
+                0,
                 0,
                 6
             ),
@@ -698,6 +887,7 @@ mod tests {
                 LogDomain::Graphics,
                 LogEvent::CompositorPresented,
                 LogSeverity::Info,
+                0,
                 2,
                 100
             ),
@@ -709,6 +899,7 @@ mod tests {
                 LogDomain::Graphics,
                 LogEvent::CompositorPresented,
                 LogSeverity::Info,
+                0,
                 8,
                 130
             ),
@@ -725,6 +916,7 @@ mod tests {
                 LogDomain::Graphics,
                 LogEvent::CompositorPresented,
                 LogSeverity::Info,
+                0,
                 4,
                 10
             ),
@@ -736,6 +928,7 @@ mod tests {
                 LogDomain::Graphics,
                 LogEvent::CompositorPresented,
                 LogSeverity::Info,
+                0,
                 5,
                 20
             ),
@@ -747,6 +940,7 @@ mod tests {
                 LogDomain::Graphics,
                 LogEvent::CompositorPresented,
                 LogSeverity::Info,
+                0,
                 1,
                 30
             ),

@@ -22,18 +22,58 @@ const TCP_REPLY: &[u8] = b"net-selftest-tcp-world";
 const UDP_PAYLOAD: &[u8] = b"net-selftest-udp-ping";
 const UDP_REPLY: &[u8] = b"net-selftest-udp-pong";
 
+/// Structured-record discriminator shared with the status-service timeline
+/// classifier: selftest records carry this tag in `arg0` so they stay distinct
+/// from operator ping records on the same `NetworkProbeCompleted` event
+/// (whose `arg0` is always an IPv4 address word below `0x1_0000_0000`).
+pub(crate) const SELFTEST_RECORD_ARG0_TAG: u64 = 0x5345_4C46; // "SELF"
+
+/// Phase codes carried in `arg1`; mirrors the status-service decoder.
+pub(crate) mod selftest_phase {
+    pub const BEGIN: u64 = 0;
+    pub const PASSED: u64 = 1;
+    pub const FAILED: u64 = 2;
+}
+
+/// Emits one selftest outcome into the shared log stream (same path the
+/// developer/graphics domain feeds consume) with the UDP/TCP sub-outcomes
+/// packed into `arg2`.
+fn emit_phase_record(
+    log_handle: rt::Handle,
+    severity: rt::LogSeverity,
+    phase: u64,
+    detail: u64,
+) {
+    let _ = rt::send_log_record_ex(
+        log_handle,
+        rt::ServiceId::Network,
+        severity,
+        rt::LogDomain::Network,
+        rt::LogEvent::NetworkProbeCompleted,
+        SELFTEST_RECORD_ARG0_TAG,
+        phase,
+        detail,
+    );
+}
+
 /// Guest-internal networking proof: drives one UDP datagram round-trip and
 /// one full TCP listen/connect/accept/data/close sequence against 127.0.0.1
 /// through the real stack and device (loopback frames never reach slirp).
 /// Runs once per boot right after the interface address is configured; all
 /// outcomes are logged as greppable `net-selftest` lines.
-pub(crate) fn run(_log_handle: rt::Handle, iface: &mut Interface, device: &mut KernelPacketDevice) {
+pub(crate) fn run(log_handle: rt::Handle, iface: &mut Interface, device: &mut KernelPacketDevice) {
     let _ = rt::write_logf(
         "network",
         format_args!(
             "net-selftest begin udp={} tcp={}",
             SELFTEST_UDP_PORT_A, SELFTEST_TCP_PORT
         ),
+    );
+    emit_phase_record(
+        log_handle,
+        rt::LogSeverity::Debug,
+        selftest_phase::BEGIN,
+        ((SELFTEST_UDP_PORT_A as u64) << 16) | SELFTEST_TCP_PORT as u64,
     );
 
     let (mut sent, mut got, mut replied, mut echoed, mut estab) =
@@ -95,6 +135,21 @@ pub(crate) fn run(_log_handle: rt::Handle, iface: &mut Interface, device: &mut K
             "net-selftest end {}",
             if udp_ok && tcp_ok { "pass" } else { "fail" }
         ),
+    );
+    let passed = udp_ok && tcp_ok;
+    emit_phase_record(
+        log_handle,
+        if passed {
+            rt::LogSeverity::Info
+        } else {
+            rt::LogSeverity::Error
+        },
+        if passed {
+            selftest_phase::PASSED
+        } else {
+            selftest_phase::FAILED
+        },
+        udp_ok as u64 | ((tcp_ok as u64) << 1),
     );
 }
 

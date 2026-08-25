@@ -183,6 +183,15 @@ fn main() -> u64 {
             format_args!("timeline domains: feed subscribe failed"),
         );
     }
+    // Net selftest records are consumed from the log-service retained ring
+    // instead of a live stream subscription: boot-time record bursts can
+    // overflow a subscriber queue, after which the log service closes that
+    // subscription and later records (the selftest fires well after bring-up)
+    // would be silently lost. The ring keeps every record for the sweep.
+    let mut net_scan_next: u64 = match rt::log_query_info(log_handle) {
+        Ok((oldest_sequence, _)) => oldest_sequence,
+        Err(_) => 0,
+    };
     let mut next_heartbeat = match rt::monotonic_now() {
         Ok(now) => now.saturating_add(heartbeat_ticks),
         Err(_) => return 0xf40d,
@@ -248,13 +257,15 @@ fn main() -> u64 {
                     let domain = stream.words[4];
                     let event = stream.words[5];
                     let severity = stream.words[3];
+                    let arg0 = stream.words[6];
                     let arg1 = stream.words[7];
                     let tick = stream.words[1];
                     if let Some((kind, from, to)) =
                         log_domain_from_word(domain).and_then(|domain| {
                             log_event_from_word(event).and_then(|event| {
                                 log_severity_from_word(severity).and_then(|severity| {
-                                    domain_sampler.classify(domain, event, severity, arg1, tick)
+                                    domain_sampler
+                                        .classify(domain, event, severity, arg0, arg1, tick)
                                 })
                             })
                         })
@@ -273,17 +284,21 @@ fn main() -> u64 {
                             let _ = rt::write_logf(
                                 "status",
                                 format_args!(
-                                    "timeline domains: jobs_started={} jobs_succeeded={} jobs_failed={} long_frames={}",
+                                    "timeline domains: jobs_started={} jobs_succeeded={} jobs_failed={} long_frames={} net_selftests_passed={} net_selftests_failed={}",
                                     domain_counters.jobs_started,
                                     domain_counters.jobs_succeeded,
                                     domain_counters.jobs_failed,
                                     domain_counters.long_frames,
+                                    domain_counters.net_selftests_passed,
+                                    domain_counters.net_selftests_failed,
                                 ),
                             );
                         }
                     }
                 }
-                Ok(()) => {}
+                Ok(()) => {
+                    did_work = true;
+                }
                 Err(rt::Error::QueueEmpty) => {}
                 Err(_) => {}
             }
@@ -312,6 +327,60 @@ fn main() -> u64 {
                 last_tick,
                 now,
             );
+
+            // Sweep newly retained log records for tagged net-selftest
+            // records (see subscription note above). Bounded per beat.
+            for _ in 0..64u32 {
+                match rt::log_query_record(log_handle, net_scan_next) {
+                    Ok(Some(record)) => {
+                        net_scan_next = net_scan_next.saturating_add(1);
+                        if record.domain == LogDomain::Network
+                            && record.event == LogEvent::NetworkProbeCompleted
+                            && record.source == ServiceId::Network
+                        {
+                            if let Some((kind, from, to)) =
+                                timeline::classify_net_selftest_record(record.arg0, record.arg1)
+                            {
+                                ingest_domain_event(
+                                    &mut timeline,
+                                    &mut domain_counters,
+                                    record.source as u32,
+                                    kind,
+                                    record.tick,
+                                    from,
+                                    to,
+                                );
+                                if !domain_stats_emitted {
+                                    domain_stats_emitted = true;
+                                    let _ = rt::write_logf(
+                                        "status",
+                                        format_args!(
+                                            "timeline domains: jobs_started={} jobs_succeeded={} jobs_failed={} long_frames={} net_selftests_passed={} net_selftests_failed={}",
+                                            domain_counters.jobs_started,
+                                            domain_counters.jobs_succeeded,
+                                            domain_counters.jobs_failed,
+                                            domain_counters.long_frames,
+                                            domain_counters.net_selftests_passed,
+                                            domain_counters.net_selftests_failed,
+                                        ),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        // Evicted or not-yet-written: resync forward past any
+                        // eviction window so the sweep never stalls.
+                        if let Ok((oldest_sequence, _)) = rt::log_query_info(log_handle) {
+                            if net_scan_next < oldest_sequence {
+                                net_scan_next = oldest_sequence;
+                            }
+                        }
+                        break;
+                    }
+                    Err(_) => break,
+                }
+            }
 
             if heartbeat_count == 1 {
                 let summary = compute_timeline_summary(&timeline);
@@ -567,7 +636,7 @@ fn handle_request(
             let reply_handle = request.handles[0];
             let summary = compute_timeline_summary(timeline);
             let mut reply = RawMessage::empty(timeline_tag::SUMMARY_REPLY);
-            reply.word_count = 16;
+            reply.word_count = 18;
             reply.words[0] = summary.retained as u64;
             reply.words[1] = summary.pushed;
             reply.words[2] = summary.per_service_len as u64;

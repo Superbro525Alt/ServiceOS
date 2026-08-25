@@ -24,16 +24,19 @@ const ATTACH_RIGHTS: u64 =
 static mut COMMAND_OUTPUT_SESSION: *mut Session = core::ptr::null_mut();
 
 fn recording_output_write(endpoint: rt::Handle, text: &str) -> rt::Result<()> {
-    let result = terminal_output_write(endpoint, text);
     // SAFETY: single-threaded service; the target is only set while a
     // command runs on that same session and cleared immediately after.
     let target = unsafe { COMMAND_OUTPUT_SESSION };
     if !target.is_null() {
-        unsafe {
-            (*target).scrollback.record(text.as_bytes());
+        let session = unsafe { &mut *target };
+        session.scrollback.record(text.as_bytes());
+        if session.remote_stream != rt::INVALID_HANDLE {
+            // Remote-bridged sessions stream framed bytes over TCP instead
+            // of pane IPC (an unread endpoint queue would fill and fail).
+            return crate::remote::send_framed_lenient(session.remote_stream, text.as_bytes());
         }
     }
-    result
+    terminal_output_write(endpoint, text)
 }
 
 /// Send text to a session's client without touching retained state.
@@ -55,15 +58,25 @@ pub(crate) fn output_bytes(endpoint: rt::Handle, bytes: &[u8]) -> rt::Result<()>
     Ok(())
 }
 
-/// Record output into the session scrollback, then stream it to the client.
+/// Route session output: framed TCP when a remote client bridges the
+/// session, otherwise the pane endpoint IPC path.
+fn deliver_session_output(session: &Session, bytes: &[u8]) -> rt::Result<()> {
+    if session.remote_stream != rt::INVALID_HANDLE {
+        return crate::remote::send_framed_lenient(session.remote_stream, bytes);
+    }
+    output_bytes(session.endpoint, bytes)
+}
+
+/// Record output into the session scrollback, then stream it to whichever
+/// client (pane or remote link) is attached.
 pub(crate) fn emit_output(session: &mut Session, text: &str) -> rt::Result<()> {
     session.scrollback.record(text.as_bytes());
-    terminal_output_write(session.endpoint, text)
+    deliver_session_output(session, text.as_bytes())
 }
 
 fn emit_output_line(session: &mut Session, bytes: &[u8]) -> rt::Result<()> {
     session.scrollback.record(bytes);
-    output_bytes(session.endpoint, bytes)
+    deliver_session_output(session, bytes)
 }
 
 pub(crate) fn handle_input_byte(
@@ -172,6 +185,7 @@ pub(crate) fn initialize_session(
     session.scrollback.clear();
     session.bookmarks.clear();
     session.attached = true;
+    session.remote_stream = rt::INVALID_HANDLE;
     // Retained duplicate used to mint client handles on future reattaches.
     match rt::handle_duplicate(pair.second, ATTACH_RIGHTS) {
         Ok(spare) => session.spare_endpoint = spare,

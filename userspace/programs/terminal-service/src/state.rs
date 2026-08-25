@@ -14,6 +14,31 @@ pub(crate) const SCROLLBACK_BYTES: usize = 4096;
 /// Bookmarked command lines retained per session for quick re-edit.
 pub(crate) const MAX_BOOKMARKS: usize = 8;
 
+/// TCP port the remote-session listener binds (rsh-like plaintext protocol,
+/// pre-SSH; must be allow-listed by the network firewall for non-loopback
+/// peers). Knob lives here because the shared config-key ABI is frozen.
+pub(crate) const REMOTE_LISTENER_PORT: u16 = 4023;
+/// Accept backlog handed to the network listener.
+pub(crate) const REMOTE_BACKLOG: u32 = 2;
+/// Concurrent remote connections the service will bridge at once.
+pub(crate) const MAX_REMOTE_LINKS: usize = 2;
+/// Single-token auth gate for remote connections. EMPTY disables the gate:
+/// any peer that reaches the port gets a shell. Plaintext by design — this
+/// is honest pre-SSH groundwork, not a secure transport (S10 keeps SSH open).
+pub(crate) const REMOTE_AUTH_TOKEN: &[u8] = b"";
+/// Maximum payload bytes per framed chunk in either direction.
+pub(crate) const REMOTE_FRAME_MAX: usize = 512;
+/// Bounded retries when pumping sockets so one stuck link cannot starve the
+/// main loop.
+pub(crate) const REMOTE_PUMP_BUDGET: usize = 4;
+/// Boot-time loopback self-connect probe. Default OFF, honestly: the
+/// network service's TCP stack completes loopback handshakes for its own
+/// internal raw-socket selftest, but a cross-service IPC-driven
+/// connect-to-own-listener currently stalls before adoption (client SYN is
+/// never picked up; verified by boot diagnostics). Unit-level bridge tests
+/// cover the protocol instead until this lands alongside the SSH/TLS work.
+pub(crate) const REMOTE_LOOPBACK_SELFTEST: bool = false;
+
 /// Wire tags for the session persistence/bookmark extensions. Kept local so
 /// the shared ABI enum stays untouched; values sit past TerminalTag::SessionClosed.
 pub(crate) mod wire {
@@ -250,6 +275,10 @@ pub(crate) struct Session {
     pub(crate) height_pixels: u32,
     /// True while a pane holds a client handle; false after a detach.
     pub(crate) attached: bool,
+    /// Live remote-link stream handle while a TCP client bridges this
+    /// session; INVALID_HANDLE otherwise. Output routes here (framed)
+    /// instead of the pane endpoint whenever set.
+    pub(crate) remote_stream: rt::Handle,
     pub(crate) line: [u8; MAX_LINE_BYTES],
     pub(crate) line_len: usize,
     pub(crate) line_cursor: usize,
@@ -278,6 +307,7 @@ impl Session {
             width_pixels: 0,
             height_pixels: 0,
             attached: false,
+            remote_stream: rt::INVALID_HANDLE,
             line: [0; MAX_LINE_BYTES],
             line_len: 0,
             line_cursor: 0,

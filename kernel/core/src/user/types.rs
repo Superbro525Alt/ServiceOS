@@ -249,6 +249,10 @@ pub enum LoadError {
     UnsupportedAbi,
     UnsupportedHeader,
     UnsupportedMachine,
+    /// Image carries dynamic relocations this loader cannot apply (a
+    /// non-`R_X86_64_RELATIVE` type or a relocation target outside the mapped
+    /// image).
+    UnsupportedRelocation,
     AddressAlignment,
     FrameExhausted,
     /// Image requires a newer kernel ABI than this loader provides.

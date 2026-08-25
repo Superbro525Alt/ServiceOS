@@ -21,6 +21,12 @@ pub const JOURNAL_ROLLBACK: u32 = 4;
 /// interrupted-update recovery flow (service + shell agree on this value).
 pub const MAINTENANCE_ACTION_RECOVER: u64 = 4;
 
+/// Maintenance action word extending `PackageMaintenanceAction` for feed
+/// signing-key rotation: promotes an enrolled keystore key to active and
+/// retires the previous one, then re-signs (rewrites) the verification
+/// config. Words: [1]=repository index, [2]=enrolled key slot, [3]=now ticks.
+pub const MAINTENANCE_ACTION_ROTATE_FEED_KEY: u64 = 5;
+
 /// Operation reply trigger/outcome codes.
 pub const TRIGGER_OPERATOR: u64 = 1;
 pub const TRIGGER_AUTO_RESTORE: u64 = 2;

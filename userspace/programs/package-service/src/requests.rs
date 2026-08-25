@@ -444,9 +444,61 @@ fn handle_policy_set_request(
     send_status_reply(reply_handle, PackageTag::PolicySetReply, status)
 }
 
+/// Feed signing-key rotation: promote an already-enrolled keystore key to
+/// active for a source, retire the previous active key at `now`, and
+/// re-sign (rewrite) the persisted verification config.
+fn rotate_feed_key(
+    storage_handle: rt::Handle,
+    log_handle: rt::Handle,
+    repos: &[RepositorySlot; MAX_REPOSITORIES],
+    message: &RawMessage,
+) -> PackageStatus {
+    if message.word_count < 4 {
+        return PackageStatus::Unsupported;
+    }
+    let repo_index = message.words[1] as usize;
+    let key_slot = message.words[2] as usize;
+    let now = message.words[3];
+    if repo_index >= repos.len() || !repos[repo_index].occupied || repos[repo_index].builtin {
+        return PackageStatus::NotFound;
+    }
+    let source = repos[repo_index].name.as_str().unwrap_or("");
+    let rotated = unsafe {
+        let keystore = &mut *core::ptr::addr_of_mut!(FEED_KEYSTORE);
+        match keystore.source_keys_mut(source) {
+            Some(entry) if key_slot < entry.key_count => {
+                let key_id_bytes = entry.keys[key_slot].key_id.as_str().as_bytes();
+                let mut id_buffer = [0u8; crate::signing::KEY_ID_MAX];
+                let len = key_id_bytes.len().min(id_buffer.len());
+                id_buffer[..len].copy_from_slice(&key_id_bytes[..len]);
+                match core::str::from_utf8(&id_buffer[..len]) {
+                    Ok(key_id) => entry.rotate_active(key_id, now).is_ok(),
+                    Err(_) => false,
+                }
+            }
+            _ => false,
+        }
+    };
+    match rotated {
+        true => {
+            if crate::storage::persist_feed_keystore(storage_handle).is_err() {
+                return PackageStatus::VerificationFailed;
+            }
+            let _ = emit_package_event(
+                log_handle,
+                LogSeverity::Info,
+                LogEvent::PackageRepositorySynced,
+                repo_index as u64,
+                0,
+            );
+            PackageStatus::Ok
+        }
+        false => PackageStatus::Unsupported,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
-fn handle_maintenance_request(
-    bootstrap: rt::Handle,
+fn handle_maintenance_request(    bootstrap: rt::Handle,
     storage_handle: rt::Handle,
     network_handle: Option<rt::Handle>,
     log_handle: rt::Handle,
@@ -489,6 +541,11 @@ fn handle_maintenance_request(
         status = recover_status;
         outcome = recover_outcome;
         repaired = u32::from(outcome != ops_model::RECOVERY_OUTCOME_NONE);
+    }
+    if raw_action == ops_model::MAINTENANCE_ACTION_ROTATE_FEED_KEY {
+        handled = true;
+        status = rotate_feed_key(storage_handle, log_handle, repos, message);
+        repaired = u32::from(status == PackageStatus::Ok);
     }
 
     if !handled {

@@ -149,6 +149,15 @@ pub(crate) static mut PACKAGE_SLOTS: [PackageSlot; MAX_PACKAGE_SLOTS] =
     [PackageSlot::empty(); MAX_PACKAGE_SLOTS];
 pub(crate) static mut JOURNAL_SLOT: JournalState = JournalState::empty();
 static mut RECOVERY_STATE: Option<JournalState> = None;
+pub(crate) static mut FEED_KEYSTORE: crate::signing::Keystore = crate::signing::Keystore::empty();
+pub(crate) static mut REJECT_JOURNAL: crate::signing::RejectJournal =
+    crate::signing::RejectJournal::empty();
+
+/// Keys pinned for a feed source, if any.
+pub(crate) fn feed_keys_for(source: &str) -> Option<&'static crate::signing::SourceKeys> {
+    let keystore = unsafe { &*core::ptr::addr_of!(FEED_KEYSTORE) };
+    keystore.source_keys(source)
+}
 
 /// Journal entry observed as stale during startup (interrupted operation),
 /// kept for maintenance/recovery reporting until resumed or discarded.

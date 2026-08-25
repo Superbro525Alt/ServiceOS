@@ -159,16 +159,45 @@ pub(crate) fn load_repo_feed_cache(
     let requested = len.min(bytes.len());
     let loaded = rt::storage_read_all(blob, &mut bytes, requested)?;
     let _ = rt::storage_blob_close(blob);
-    let trust_state = match repos[repo_index].trust_mode {
-        PackageRepositoryTrustMode::Boot => PackageTrustState::BootTrusted,
-        PackageRepositoryTrustMode::Unsigned => PackageTrustState::Unverified,
-        PackageRepositoryTrustMode::PinnedDigest => {
-            if repos[repo_index].last_digest == crate::operations::compute_fnv64(&bytes[..loaded]) {
-                PackageTrustState::DigestPinned
-            } else {
-                PackageTrustState::VerificationFailed
-            }
+    let now = rt::monotonic_now().unwrap_or(0);
+    let source_name = repos[repo_index].name.as_str().unwrap_or("");
+    let feed_text = core::str::from_utf8(&bytes[..loaded]).ok();
+    let signed_verdict = feed_text.and_then(|text| {
+        crate::state::feed_keys_for(source_name).map(|entry| {
+            crate::signing::verify_signed_feed(text, Some(entry), now)
+        })
+    });
+    let trust_state = match signed_verdict {
+        Some(crate::signing::FeedVerdict::Accepted | crate::signing::FeedVerdict::AcceptedRetired) => {
+            PackageTrustState::DigestPinned
         }
+        Some(crate::signing::FeedVerdict::UnknownKey) => PackageTrustState::Unverified,
+        Some(
+            verdict @ (crate::signing::FeedVerdict::RejectedUnsignedRequired
+            | crate::signing::FeedVerdict::RejectedTampered
+            | crate::signing::FeedVerdict::RejectedStaleSignature),
+        ) => {
+            repos[repo_index].sync_state = PackageRepositorySyncState::Failed;
+            let _ = crate::repositories::record_feed_rejection(
+                storage_handle,
+                source_name,
+                crate::signing::reject_reason(verdict),
+                crate::operations::compute_fnv64(&bytes[..loaded]),
+                now,
+            );
+            return Ok(());
+        }
+        _ => match repos[repo_index].trust_mode {
+            PackageRepositoryTrustMode::Boot => PackageTrustState::BootTrusted,
+            PackageRepositoryTrustMode::Unsigned => PackageTrustState::Unverified,
+            PackageRepositoryTrustMode::PinnedDigest => {
+                if repos[repo_index].last_digest == crate::operations::compute_fnv64(&bytes[..loaded]) {
+                    PackageTrustState::DigestPinned
+                } else {
+                    PackageTrustState::VerificationFailed
+                }
+            }
+        },
     };
     let base_path =
         crate::repositories::repository_base_path(repos[repo_index].url.as_str().unwrap_or(""));
@@ -352,8 +381,7 @@ fn load_local_manifest_slot(
 pub(crate) fn persist_journal_state(
     storage_handle: rt::Handle,
     journal: JournalState,
-) -> rt::Result<()> {
-    let mut text = rt::FixedLogBuffer::<256>::new();
+) -> rt::Result<()> {    let mut text = rt::FixedLogBuffer::<256>::new();
     let _ = write!(&mut text, "version=1\n");
     if journal.pending_action != JOURNAL_NONE {
         let _ = write!(
@@ -404,6 +432,56 @@ pub(crate) fn load_journal_state(
         let _ = journal.version.set(parts.next().unwrap_or(""));
         journal.manifest_path = InlinePath::empty();
         let _ = journal.manifest_path.set(parts.next().unwrap_or(""));
+    }
+    Ok(())
+}
+
+pub(crate) const FEED_KEYS_PATH: &str = "state/packages/feed-keys.cfg";
+pub(crate) const REJECT_JOURNAL_PATH: &str = "state/packages/feed-journal.cfg";
+
+pub(crate) fn persist_feed_keystore(storage_handle: rt::Handle) -> rt::Result<()> {
+    let mut text = rt::FixedLogBuffer::<MAX_STATE_BYTES>::new();
+    crate::signing::serialize_keystore(unsafe { &*core::ptr::addr_of!(FEED_KEYSTORE) }, &mut text);
+    write_storage_file(storage_handle, FEED_KEYS_PATH, text.as_bytes())
+}
+
+pub(crate) fn load_feed_keystore(storage_handle: rt::Handle) -> rt::Result<()> {
+    let (blob, len) = match rt::storage_open(storage_handle, FEED_KEYS_PATH) {
+        Ok(value) => value,
+        Err(rt::Error::NotFound) => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    let mut bytes = [0u8; MAX_STATE_BYTES];
+    let requested = len.min(bytes.len());
+    let loaded = rt::storage_read_all(blob, &mut bytes, requested)?;
+    let _ = rt::storage_blob_close(blob);
+    let text = core::str::from_utf8(&bytes[..loaded]).map_err(|_| rt::Error::InvalidArgument)?;
+    let parsed = crate::signing::parse_keystore(text);
+    unsafe {
+        FEED_KEYSTORE = parsed;
+    }
+    Ok(())
+}
+
+pub(crate) fn persist_reject_journal(storage_handle: rt::Handle) -> rt::Result<()> {
+    let mut text = rt::FixedLogBuffer::<MAX_STATE_BYTES>::new();
+    unsafe { (*core::ptr::addr_of!(REJECT_JOURNAL)).serialize(&mut text) };
+    write_storage_file(storage_handle, REJECT_JOURNAL_PATH, text.as_bytes())
+}
+
+pub(crate) fn load_reject_journal(storage_handle: rt::Handle) -> rt::Result<()> {
+    let (blob, len) = match rt::storage_open(storage_handle, REJECT_JOURNAL_PATH) {
+        Ok(value) => value,
+        Err(rt::Error::NotFound) => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    let mut bytes = [0u8; MAX_STATE_BYTES];
+    let requested = len.min(bytes.len());
+    let loaded = rt::storage_read_all(blob, &mut bytes, requested)?;
+    let _ = rt::storage_blob_close(blob);
+    let text = core::str::from_utf8(&bytes[..loaded]).map_err(|_| rt::Error::InvalidArgument)?;
+    unsafe {
+        REJECT_JOURNAL = crate::signing::RejectJournal::parse(text);
     }
     Ok(())
 }

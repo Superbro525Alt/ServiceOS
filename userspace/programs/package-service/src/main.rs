@@ -6,6 +6,7 @@ mod operations;
 mod ops_model;
 mod repositories;
 mod requests;
+mod signing;
 mod state;
 mod storage;
 mod util;
@@ -53,10 +54,11 @@ fn main() -> u64 {
     *journal = JournalState::empty();
     repositories::initialize_builtin_repository(&mut repos[BUILTIN_REPOSITORY_INDEX]);
 
-    let mut package_count = match repositories::load_boot_catalog(storage_handle, repos, packages) {
-        Ok(count) => count,
-        Err(_) => return 0xfa04,
-    };
+    let mut package_count =
+        match repositories::load_boot_catalog(storage_handle, log_handle, repos, packages) {
+            Ok(count) => count,
+            Err(_) => return 0xfa04,
+        };
     if storage::initialize_state_directories(storage_handle).is_err() {
         let _ = emit_package_event(
             log_handle,
@@ -68,6 +70,8 @@ fn main() -> u64 {
     }
     let mut repo_count = 1usize;
     let _ = storage::load_persisted_repositories(storage_handle, repos, &mut repo_count);
+    let _ = storage::load_feed_keystore(storage_handle);
+    let _ = storage::load_reject_journal(storage_handle);
     for repo_index in 1..repo_count {
         let _ = storage::load_repo_feed_cache(
             storage_handle,

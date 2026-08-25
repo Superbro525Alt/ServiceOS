@@ -4,5 +4,6 @@
 //! unit tests. See [`ops_model`] for details.
 
 pub mod ops_model;
+pub mod signing;
 
 pub use ops_model::*;

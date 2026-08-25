@@ -32,6 +32,7 @@ members = [
     "sysinfo-tool",
     "account-service",
     "backup-service",
+    "power-service",
 ]
 
 [profile.dev]

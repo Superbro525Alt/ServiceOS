@@ -210,4 +210,11 @@ pub(crate) const PROGRAMS: &[Program] = &[
         service_path: "services/backup-service/program.img",
         service_id: 0,
     },
+    Program {
+        package: "serviceos-power-service",
+        bin_name: "serviceos-power-service",
+        image_id: 30,
+        service_path: "services/power-service/program.img",
+        service_id: 0,
+    },
 ];

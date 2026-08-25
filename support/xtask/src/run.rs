@@ -245,7 +245,11 @@ fn run_qemu(disk_image: &Path) -> Result<(), Box<dyn Error>> {
     if headless {
         command.args(["-display", "none"]);
     } else {
-        command.args(["-display", "gtk,gl=on"]);
+        let gl = matches!(env::var("SERVICEOS_GL").as_deref(), Ok("1"));
+        command.args([
+            "-display",
+            if gl { "gtk,gl=on" } else { "gtk,gl=off" },
+        ]);
     }
     if let Some(audio_device) = &audio_device {
         command.args(["-audiodev", audio_device]);

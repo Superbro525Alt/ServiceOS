@@ -36,6 +36,7 @@ const KEY_RIGHT_CTRL: u32 = 97;
 
 rt::entry!(main);
 
+#[cfg(not(test))]
 fn main() -> u64 {
     let bootstrap = 1;
     let mut startup = RawMessage::empty(0);

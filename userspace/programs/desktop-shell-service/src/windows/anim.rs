@@ -177,6 +177,9 @@ fn begin_animation(
     to: AnimRect,
 ) -> rt::Result<()> {
     let now = rt::monotonic_now()?;
+    if !crate::access::animations_enabled(state.access.reduce_motion) {
+        return Ok(());
+    }
     queue_push(
         &mut state.animations,
         WindowAnim {

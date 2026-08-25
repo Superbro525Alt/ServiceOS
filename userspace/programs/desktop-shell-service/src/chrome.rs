@@ -12,7 +12,9 @@ pub(crate) fn create_chrome(
     graphics_handle: rt::Handle,
     output_width: u32,
     output_height: u32,
+    high_contrast: bool,
 ) -> rt::Result<Chrome> {
+    let theme = crate::access::resolve_theme(high_contrast);
     let (_, desktop_handle) = rt::graphics_surface_create(
         graphics_handle,
         SESSION_ID,
@@ -21,7 +23,7 @@ pub(crate) fn create_chrome(
         output_width,
         output_height,
         0,
-        ui::BG_DESKTOP,
+        theme.desktop_bg,
         false,
     )?;
     let (_, topbar_handle) = rt::graphics_surface_create(
@@ -32,29 +34,33 @@ pub(crate) fn create_chrome(
         output_width,
         TOPBAR_HEIGHT,
         1,
-        ui::BG_PANEL,
+        theme.panel,
         false,
     )?;
+    let launcher_x = PANEL_MARGIN as i32;
+    let launcher_y = (TOPBAR_HEIGHT + PANEL_MARGIN) as i32;
     let (_, launcher_handle) = rt::graphics_surface_create(
         graphics_handle,
         SESSION_ID,
-        PANEL_MARGIN as i32,
-        (TOPBAR_HEIGHT + PANEL_MARGIN) as i32,
+        launcher_x,
+        launcher_y,
         LAUNCHER_WIDTH,
         264,
         2,
-        ui::BG_PANEL,
+        theme.panel,
         false,
     )?;
+    let status_x = (output_width.saturating_sub(STATUS_PANEL_WIDTH + PANEL_MARGIN)) as i32;
+    let status_y = (TOPBAR_HEIGHT + PANEL_MARGIN) as i32;
     let (_, status_handle) = rt::graphics_surface_create(
         graphics_handle,
         SESSION_ID,
-        (output_width.saturating_sub(STATUS_PANEL_WIDTH + PANEL_MARGIN)) as i32,
-        (TOPBAR_HEIGHT + PANEL_MARGIN) as i32,
+        status_x,
+        status_y,
         STATUS_PANEL_WIDTH,
         STATUS_PANEL_HEIGHT,
         2,
-        ui::BG_PANEL,
+        theme.panel,
         false,
     )?;
     let (_, switcher_handle) = rt::graphics_surface_create(
@@ -65,7 +71,7 @@ pub(crate) fn create_chrome(
         SWITCHER_WIDTH,
         SWITCHER_HEIGHT,
         CURSOR_Z_ORDER - 3,
-        ui::BG_PANEL,
+        theme.panel,
         false,
     )?;
     let (_, palette_handle) = rt::graphics_surface_create(
@@ -76,7 +82,7 @@ pub(crate) fn create_chrome(
         PALETTE_WIDTH,
         PALETTE_HEIGHT,
         CURSOR_Z_ORDER - 3,
-        ui::BG_PANEL,
+        theme.panel,
         false,
     )?;
     let (_, notifications_handle) = rt::graphics_surface_create(
@@ -87,7 +93,7 @@ pub(crate) fn create_chrome(
         HISTORY_WIDTH,
         HISTORY_HEIGHT,
         CURSOR_Z_ORDER - 3,
-        ui::BG_PANEL,
+        theme.panel,
         false,
     )?;
     let (_, clipboard_handle) = rt::graphics_surface_create(
@@ -98,7 +104,7 @@ pub(crate) fn create_chrome(
         HISTORY_WIDTH,
         HISTORY_HEIGHT,
         CURSOR_Z_ORDER - 3,
-        ui::BG_PANEL,
+        theme.panel,
         false,
     )?;
     let (_, media_handle) = rt::graphics_surface_create(
@@ -109,7 +115,7 @@ pub(crate) fn create_chrome(
         MEDIA_OVERLAY_WIDTH,
         MEDIA_OVERLAY_HEIGHT,
         CURSOR_Z_ORDER - 3,
-        ui::BG_PANEL,
+        theme.panel,
         false,
     )?;
     let (_, cursor_handle) = rt::graphics_surface_create(
@@ -138,6 +144,24 @@ pub(crate) fn create_chrome(
         cursor_handle,
         output_width,
         output_height,
+        zoom_panels: [
+            (
+                launcher_handle,
+                launcher_x,
+                launcher_y,
+                LAUNCHER_WIDTH,
+                264,
+                2,
+            ),
+            (
+                status_handle,
+                status_x,
+                status_y,
+                STATUS_PANEL_WIDTH,
+                STATUS_PANEL_HEIGHT,
+                2,
+            ),
+        ],
     })
 }
 
@@ -214,6 +238,24 @@ mod tests {
             cursor_handle: 0,
             output_width: 1280,
             output_height: 800,
+            zoom_panels: [
+                (
+                    0,
+                    PANEL_MARGIN as i32,
+                    (TOPBAR_HEIGHT + PANEL_MARGIN) as i32,
+                    LAUNCHER_WIDTH,
+                    264,
+                    2,
+                ),
+                (
+                    0,
+                    (1280u32.saturating_sub(STATUS_PANEL_WIDTH + PANEL_MARGIN)) as i32,
+                    (TOPBAR_HEIGHT + PANEL_MARGIN) as i32,
+                    STATUS_PANEL_WIDTH,
+                    STATUS_PANEL_HEIGHT,
+                    2,
+                ),
+            ],
         }
     }
 

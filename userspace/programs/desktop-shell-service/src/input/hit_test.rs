@@ -93,12 +93,11 @@ fn sort_app_ids_by_z(state: &DesktopState, values: &mut [DesktopAppId]) {
 }
 
 fn launcher_hit_app(state: &DesktopState, x: i32, y: i32) -> Option<DesktopAppId> {
-    let launcher_x = PANEL_MARGIN as i32;
-    let launcher_y = (TOPBAR_HEIGHT + PANEL_MARGIN) as i32;
+    let (launcher_x, launcher_y, launcher_w, launcher_h) = crate::access::launcher_base_rect(state);
     if x < launcher_x
         || y < launcher_y
-        || x >= launcher_x + crate::LAUNCHER_WIDTH as i32
-        || y >= launcher_y + crate::LAUNCHER_HEIGHT as i32
+        || x >= launcher_x + launcher_w as i32
+        || y >= launcher_y + launcher_h as i32
     {
         return None;
     }

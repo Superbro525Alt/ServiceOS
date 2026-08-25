@@ -1,6 +1,7 @@
 #![cfg_attr(not(test), no_std)]
 #![cfg_attr(not(test), no_main)]
 
+mod access;
 mod chrome;
 mod input;
 mod logging;
@@ -53,12 +54,21 @@ fn main() -> u64 {
         rt::lookup_service(bootstrap, ServiceId::Clipboard).unwrap_or(rt::INVALID_HANDLE);
     let audio_service_handle =
         rt::lookup_service(bootstrap, ServiceId::Audio).unwrap_or(rt::INVALID_HANDLE);
+    let storage_handle =
+        rt::lookup_service(bootstrap, ServiceId::Storage).unwrap_or(rt::INVALID_HANDLE);
+    let access_store_dir = access::ensure_access_store_dir(storage_handle);
+    let access_settings = access::load_access_settings(access_store_dir);
 
     let output = match rt::graphics_output_status(graphics_handle, 0) {
         Ok(Some(output)) => output,
         _ => return 0xfe07,
     };
-    let chrome = match chrome::create_chrome(graphics_handle, output.width, output.height) {
+    let chrome = match chrome::create_chrome(
+        graphics_handle,
+        output.width,
+        output.height,
+        access_settings.high_contrast,
+    ) {
         Ok(chrome) => chrome,
         Err(_) => return 0xfe08,
     };
@@ -141,6 +151,15 @@ fn main() -> u64 {
         shadow_surface_handle: rt::INVALID_HANDLE,
         shadow_width: 0,
         shadow_height: 0,
+        access: access_settings,
+        access_store_dir,
+        corner_dwell: access::CornerDwell::new(),
+        show_desktop_active: false,
+        show_desktop_restore_mask: 0,
+        zoom_applied: false,
+        zoom_last_fx: -1,
+        zoom_last_fy: -1,
+        zoom_last_index: 0,
     };
 
     if render::render_desktop(&mut state).is_err() {
@@ -148,6 +167,9 @@ fn main() -> u64 {
     }
     if render::sync_cursor(&state).is_err() {
         return 0xfe14;
+    }
+    if access::sync_zoom(&mut state).is_err() {
+        return 0xfe1d;
     }
     if chrome::show_chrome(&state.chrome).is_err() {
         return 0xfe0c;
@@ -230,7 +252,21 @@ fn main() -> u64 {
             Err(_) => return 0xfe11,
         };
         windows::step_animations(&mut state, now);
+        if access::sync_zoom(&mut state).is_err() {
+            return 0xfe1d;
+        }
         if !did_work {
+            let corner_now = access::corner_at(
+                state.pointer_x,
+                state.pointer_y,
+                output.width as i32,
+                output.height as i32,
+            );
+            if let Some(corner) = state.corner_dwell.update(corner_now, now) {
+                if input::fire_corner_action(&mut state, corner).is_err() {
+                    return 0xfe1c;
+                }
+            }
             if let Some(app_id) = state.pending_app_launch.take() {
                 if windows::launch_or_focus_app(&mut state, app_id).is_err() {
                     return 0xfe19;

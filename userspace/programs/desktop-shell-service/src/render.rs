@@ -9,10 +9,93 @@ use crate::{
     HISTORY_HEIGHT, HISTORY_WIDTH, LAUNCHER_HEIGHT, LAUNCHER_WIDTH, OVERLAY_RESULT_MAX,
     OverlayMode, PALETTE_BUFFER_BYTES, PALETTE_HEIGHT, PALETTE_WIDTH, STATUS_PANEL_HEIGHT,
     STATUS_PANEL_WIDTH, SWITCHER_HEIGHT, SWITCHER_WIDTH, TOPBAR_HEIGHT, WORKSPACE_COUNT,
+    access::{Theme, resolve_theme},
     media::{MEDIA_LINE_COUNT, MEDIA_OVERLAY_HEIGHT, MEDIA_OVERLAY_WIDTH},
     palette_action_label, palette_matches,
     windows::{app_title, launcher_line, running_app_count, sync_focus_shadow},
 };
+
+fn theme_of(state: &DesktopState) -> Theme {
+    resolve_theme(state.access.high_contrast)
+}
+
+/// Panel renderer matching `ui::render_window_state` slot layout but driven by
+/// the shell theme so high-contrast recolors every chrome surface.
+fn themed_panel(
+    state: &DesktopState,
+    surface: rt::Handle,
+    width: u32,
+    height: u32,
+    title: &str,
+    lines: &[&str],
+) -> rt::Result<()> {
+    let t = theme_of(state);
+    rt::surface_set_rect(
+        surface,
+        0,
+        0,
+        0,
+        width,
+        ui::TITLEBAR_HEIGHT,
+        t.titlebar,
+        true,
+    )?;
+    rt::surface_set_rect(
+        surface,
+        1,
+        0,
+        ui::TITLEBAR_HEIGHT as i32,
+        width,
+        height.saturating_sub(ui::TITLEBAR_HEIGHT),
+        t.panel,
+        true,
+    )?;
+    rt::surface_set_label(surface, 0, 10, 9, t.text, title)?;
+    let close_x = width as i32 - ui::WINDOW_BUTTON_RIGHT_MARGIN - ui::WINDOW_BUTTON_SIZE as i32;
+    let minimize_x = close_x - ui::WINDOW_BUTTON_GAP - ui::WINDOW_BUTTON_SIZE as i32;
+    let maximize_x = minimize_x - ui::WINDOW_BUTTON_GAP - ui::WINDOW_BUTTON_SIZE as i32;
+    rt::surface_set_rect(
+        surface,
+        5,
+        maximize_x,
+        ui::WINDOW_BUTTON_TOP,
+        ui::WINDOW_BUTTON_SIZE,
+        ui::WINDOW_BUTTON_SIZE,
+        t.accent,
+        true,
+    )?;
+    rt::surface_set_rect(
+        surface,
+        2,
+        minimize_x,
+        ui::WINDOW_BUTTON_TOP,
+        ui::WINDOW_BUTTON_SIZE,
+        ui::WINDOW_BUTTON_SIZE,
+        t.text_muted,
+        true,
+    )?;
+    rt::surface_set_rect(
+        surface,
+        3,
+        close_x,
+        ui::WINDOW_BUTTON_TOP,
+        ui::WINDOW_BUTTON_SIZE,
+        ui::WINDOW_BUTTON_SIZE,
+        t.status_warn,
+        true,
+    )?;
+    for (index, line) in lines.iter().copied().enumerate() {
+        rt::surface_set_label(
+            surface,
+            (index + 5) as u32,
+            12,
+            ui::PANEL_LINE_START_Y + (index as i32 * ui::PANEL_LINE_STEP),
+            if index == 0 { t.text } else { t.text_secondary },
+            line,
+        )?;
+    }
+    Ok(())
+}
 
 pub(crate) fn render_desktop(state: &mut DesktopState) -> rt::Result<()> {
     let status_snapshot = snapshot_for_render(state);
@@ -72,7 +155,8 @@ fn render_topbar(state: &DesktopState, status_snapshot: DesktopStatusSnapshot) -
         "NO NOTIFICATIONS"
     };
 
-    ui::render_panel(
+    themed_panel(
+        state,
         state.chrome.topbar_handle,
         state.chrome.output_width,
         TOPBAR_HEIGHT,
@@ -141,18 +225,44 @@ fn render_launcher(state: &DesktopState) -> rt::Result<()> {
         );
         title_buf.as_str()
     };
-    ui::render_panel_uniform(
+    let lines_color = if dragging {
+        theme_of(state).accent
+    } else {
+        theme_of(state).text
+    };
+    let t = theme_of(state);
+    rt::surface_set_rect(
         state.chrome.launcher_handle,
+        1,
+        0,
+        ui::TITLEBAR_HEIGHT as i32,
         LAUNCHER_WIDTH,
-        LAUNCHER_HEIGHT,
-        title,
-        &lines,
-        if dragging {
-            ui::ACCENT
-        } else {
-            ui::TEXT_PRIMARY
-        },
-    )
+        LAUNCHER_HEIGHT.saturating_sub(ui::TITLEBAR_HEIGHT),
+        t.panel,
+        true,
+    )?;
+    rt::surface_set_rect(
+        state.chrome.launcher_handle,
+        0,
+        0,
+        0,
+        LAUNCHER_WIDTH,
+        ui::TITLEBAR_HEIGHT,
+        t.accent_dim,
+        true,
+    )?;
+    rt::surface_set_label(state.chrome.launcher_handle, 0, 10, 9, t.text, title)?;
+    for (index, line) in lines.iter().copied().enumerate() {
+        rt::surface_set_label(
+            state.chrome.launcher_handle,
+            (index + 5) as u32,
+            12,
+            ui::PANEL_LINE_START_Y + (index as i32 * ui::PANEL_LINE_STEP),
+            lines_color,
+            line,
+        )?;
+    }
+    Ok(())
 }
 
 fn render_status_surface(
@@ -195,20 +305,56 @@ fn render_status_surface(
     );
     let notif_text = str::from_utf8(notif_buf.as_bytes()).unwrap_or("NOTICES ?");
 
-    ui::render_status_panel(
+    let t = theme_of(state);
+    themed_status_panel(
         state.chrome.status_handle,
         STATUS_PANEL_WIDTH,
         STATUS_PANEL_HEIGHT,
         "SYSTEM STATUS",
         &[
-            (network_text, ui::TEXT_PRIMARY),
-            ("STATUS STEADY", ui::STATUS_OK),
-            (service_text, ui::TEXT_SECONDARY),
-            (space_text, ui::TEXT_SECONDARY),
-            (notif_text, ui::TEXT_MUTED),
-            (focus_text, ui::TEXT_SECONDARY),
+            (network_text, t.text),
+            ("STATUS STEADY", t.status_ok),
+            (service_text, t.text_secondary),
+            (space_text, t.text_secondary),
+            (notif_text, t.text_muted),
+            (focus_text, t.text_secondary),
         ],
+        t,
     )
+}
+
+/// Status-panel layout mirroring `ui::render_status_panel` with theme colors.
+fn themed_status_panel(
+    surface: rt::Handle,
+    width: u32,
+    height: u32,
+    title: &str,
+    lines: &[(&str, u32)],
+    t: Theme,
+) -> rt::Result<()> {
+    rt::surface_set_rect(
+        surface,
+        7,
+        0,
+        24,
+        width,
+        height.saturating_sub(24),
+        t.panel,
+        true,
+    )?;
+    rt::surface_set_rect(surface, 0, 0, 0, width, 24, t.accent_dim, true)?;
+    rt::surface_set_label(surface, 0, 8, 8, t.text, title)?;
+    for (index, (line, color)) in lines.iter().copied().enumerate() {
+        rt::surface_set_label(
+            surface,
+            (index + 1) as u32,
+            10,
+            34 + (index as i32 * ui::PANEL_LINE_STEP),
+            color,
+            line,
+        )?;
+    }
+    Ok(())
 }
 
 fn sample_desktop_status(state: &DesktopState) -> DesktopStatusSnapshot {
@@ -300,7 +446,8 @@ fn render_overlays(state: &mut DesktopState) -> rt::Result<()> {
 fn render_switcher_overlay(state: &DesktopState) -> rt::Result<()> {
     let model = crate::switcher::switcher_model(state);
     let surface = state.chrome.switcher_handle;
-    rt::surface_set_fill(surface, ui::BG_PANEL)?;
+    let t = theme_of(state);
+    rt::surface_set_fill(surface, t.panel)?;
     rt::surface_clear_scene(surface)?;
     rt::surface_set_rect(
         surface,
@@ -309,10 +456,10 @@ fn render_switcher_overlay(state: &DesktopState) -> rt::Result<()> {
         0,
         SWITCHER_WIDTH,
         ui::TITLEBAR_HEIGHT,
-        ui::ACCENT_DIM,
+        t.accent_dim,
         true,
     )?;
-    rt::surface_set_label(surface, 0, 10, 9, ui::TEXT_PRIMARY, "TASK SWITCHER")?;
+    rt::surface_set_label(surface, 0, 10, 9, t.text, "TASK SWITCHER")?;
 
     if model.count == 0 {
         rt::surface_set_label(
@@ -320,7 +467,7 @@ fn render_switcher_overlay(state: &DesktopState) -> rt::Result<()> {
             1,
             12,
             ui::PANEL_LINE_START_Y,
-            ui::TEXT_SECONDARY,
+            t.text_secondary,
             "NO VISIBLE WINDOWS",
         )?;
         return Ok(());
@@ -338,11 +485,7 @@ fn render_switcher_overlay(state: &DesktopState) -> rt::Result<()> {
             tile_y,
             crate::SWITCHER_TILE_WIDTH,
             crate::SWITCHER_TILE_HEIGHT,
-            if selected {
-                ui::ACCENT_DIM
-            } else {
-                ui::BG_WINDOW_ALT
-            },
+            if selected { t.accent } else { t.window_alt },
             true,
         )?;
         let title = app_title(model.candidates[index]);
@@ -354,11 +497,7 @@ fn render_switcher_overlay(state: &DesktopState) -> rt::Result<()> {
             (index * 2 + 2) as u32,
             tile_x + crate::SWITCHER_TILE_WIDTH as i32 / 2 - 6,
             tile_y + crate::SWITCHER_TILE_HEIGHT as i32 / 2 - 8,
-            if selected {
-                ui::TEXT_PRIMARY
-            } else {
-                ui::TEXT_MUTED
-            },
+            if selected { t.text } else { t.text_muted },
             initial_buf.as_str(),
         )?;
     }
@@ -375,7 +514,7 @@ fn render_switcher_overlay(state: &DesktopState) -> rt::Result<()> {
         11,
         12,
         SWITCHER_HEIGHT as i32 - 18,
-        ui::TEXT_SECONDARY,
+        t.text_secondary,
         footer.as_str(),
     )
 }
@@ -384,6 +523,7 @@ fn render_palette_overlay(state: &mut DesktopState) -> rt::Result<()> {
     let mut results = [crate::PaletteAction::ShowNotifications; OVERLAY_RESULT_MAX];
     let count = palette_matches(state, &mut results);
     let query = str::from_utf8(&state.palette_query[..state.palette_query_len]).unwrap_or("");
+    let t = theme_of(state);
     let (buffer_slot, buffer) = state.palette_buffers.advance();
     let bytes = &mut buffer.as_slice_mut()[..PALETTE_BUFFER_BYTES];
     ui::draw_window_frame_rgba8888(
@@ -392,7 +532,7 @@ fn render_palette_overlay(state: &mut DesktopState) -> rt::Result<()> {
         PALETTE_WIDTH as usize,
         PALETTE_HEIGHT as usize,
         true,
-        ui::BG_PANEL,
+        t.panel,
         "COMMAND PALETTE",
     );
 
@@ -411,7 +551,7 @@ fn render_palette_overlay(state: &mut DesktopState) -> rt::Result<()> {
         PALETTE_WIDTH as usize,
         12,
         42,
-        ui::TEXT_PRIMARY,
+        t.text,
         line0.as_str(),
     );
 
@@ -421,7 +561,7 @@ fn render_palette_overlay(state: &mut DesktopState) -> rt::Result<()> {
             PALETTE_WIDTH as usize,
             12,
             56,
-            ui::TEXT_SECONDARY,
+            t.text_secondary,
             "NO MATCHES",
         );
     } else {
@@ -444,9 +584,9 @@ fn render_palette_overlay(state: &mut DesktopState) -> rt::Result<()> {
                 12,
                 56 + (index as i32 * ui::PANEL_LINE_STEP),
                 if index == state.overlay_selection {
-                    ui::TEXT_PRIMARY
+                    t.text
                 } else {
-                    ui::TEXT_SECONDARY
+                    t.text_secondary
                 },
                 line.as_str(),
             );
@@ -486,6 +626,7 @@ fn render_notification_overlay(state: &DesktopState) -> rt::Result<()> {
     }
     let _ = write!(&mut lines[count], "[A] DISMISS ALL   [F] FOCUS SOURCE");
     render_overlay_panel(
+        state,
         state.chrome.notifications_handle,
         HISTORY_WIDTH,
         HISTORY_HEIGHT,
@@ -500,6 +641,7 @@ fn render_clipboard_overlay(state: &DesktopState) -> rt::Result<()> {
     if state.clipboard_service_handle == rt::INVALID_HANDLE {
         let _ = write!(&mut lines[0], "CLIPBOARD UNAVAILABLE");
         return render_overlay_panel(
+            state,
             state.chrome.clipboard_handle,
             HISTORY_WIDTH,
             HISTORY_HEIGHT,
@@ -533,6 +675,7 @@ fn render_clipboard_overlay(state: &DesktopState) -> rt::Result<()> {
         count = 1;
     }
     render_overlay_panel(
+        state,
         state.chrome.clipboard_handle,
         HISTORY_WIDTH,
         HISTORY_HEIGHT,
@@ -552,6 +695,7 @@ fn render_media_overlay(state: &mut DesktopState) -> rt::Result<()> {
         &mut lines,
     );
     render_overlay_panel(
+        state,
         state.chrome.media_handle,
         MEDIA_OVERLAY_WIDTH,
         MEDIA_OVERLAY_HEIGHT,
@@ -561,13 +705,15 @@ fn render_media_overlay(state: &mut DesktopState) -> rt::Result<()> {
 }
 
 fn render_overlay_panel<const N: usize>(
+    state: &DesktopState,
     surface: rt::Handle,
     width: u32,
     height: u32,
     title: &str,
     lines: &[FixedLogBuffer<N>],
 ) -> rt::Result<()> {
-    rt::surface_set_fill(surface, ui::BG_PANEL)?;
+    let t = theme_of(state);
+    rt::surface_set_fill(surface, t.panel)?;
     rt::surface_clear_scene(surface)?;
     rt::surface_set_rect(
         surface,
@@ -576,21 +722,17 @@ fn render_overlay_panel<const N: usize>(
         0,
         width,
         ui::TITLEBAR_HEIGHT,
-        ui::ACCENT_DIM,
+        t.accent_dim,
         true,
     )?;
-    rt::surface_set_label(surface, 0, 10, 9, ui::TEXT_PRIMARY, title)?;
+    rt::surface_set_label(surface, 0, 10, 9, t.text, title)?;
     for (index, line) in lines.iter().enumerate() {
         rt::surface_set_label(
             surface,
             (index + 1) as u32,
             12,
             ui::PANEL_LINE_START_Y + (index as i32 * ui::PANEL_LINE_STEP),
-            if index == 0 {
-                ui::TEXT_PRIMARY
-            } else {
-                ui::TEXT_SECONDARY
-            },
+            if index == 0 { t.text } else { t.text_secondary },
             line.as_str(),
         )?;
     }

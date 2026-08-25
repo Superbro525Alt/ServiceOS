@@ -66,6 +66,13 @@ pub(super) fn handle_key_input(
                 state.overlay_selection = 0;
                 return Ok(focused_surface_id(state));
             }
+            match key_code {
+                KEY_EQUAL => return apply_zoom_step(state, true),
+                KEY_MINUS => return apply_zoom_step(state, false),
+                KEY_H => return toggle_high_contrast(state),
+                KEY_J => return toggle_reduce_motion(state),
+                _ => {}
+            }
         }
 
         if modifiers & MOD_CTRL != 0 && key_code == KEY_SPACE {
@@ -176,4 +183,28 @@ pub(super) fn handle_text_input(state: &mut DesktopState, scalar: u32) -> rt::Re
     }
     rt::app_control_text(control, ch)?;
     Ok(state.apps[index].window.surface_id)
+}
+
+fn persist_access(state: &DesktopState) {
+    crate::access::save_access_settings(state.access_store_dir, state.access);
+}
+
+fn apply_zoom_step(state: &mut DesktopState, zoom_in: bool) -> rt::Result<u32> {
+    state.access.zoom_index = crate::access::step_zoom(state.access.zoom_index, zoom_in);
+    persist_access(state);
+    crate::access::sync_zoom(state)?;
+    Ok(focused_surface_id(state))
+}
+
+fn toggle_high_contrast(state: &mut DesktopState) -> rt::Result<u32> {
+    state.access.high_contrast = !state.access.high_contrast;
+    persist_access(state);
+    render_desktop(state)?;
+    Ok(focused_surface_id(state))
+}
+
+fn toggle_reduce_motion(state: &mut DesktopState) -> rt::Result<u32> {
+    state.access.reduce_motion = !state.access.reduce_motion;
+    persist_access(state);
+    Ok(focused_surface_id(state))
 }

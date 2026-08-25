@@ -2,6 +2,7 @@ use rt::{DesktopAppId, ServiceImageId};
 use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
 
+use crate::access::{AccessSettings, CornerDwell};
 use crate::windows::{ANIM_QUEUE_MAX, ContentDrag, WindowAnim};
 
 pub(crate) const SESSION_ID: u32 = 1;
@@ -63,6 +64,10 @@ pub(crate) const KEY_DOWN: u32 = 108;
 pub(crate) const KEY_LEFT_ALT: u32 = 56;
 pub(crate) const KEY_RIGHT_ALT: u32 = 100;
 pub(crate) const KEY_F4: u32 = 62;
+pub(crate) const KEY_MINUS: u32 = 12;
+pub(crate) const KEY_EQUAL: u32 = 13;
+pub(crate) const KEY_H: u32 = 35;
+pub(crate) const KEY_J: u32 = 36;
 pub(crate) const KEY_1: u32 = 2;
 pub(crate) const KEY_2: u32 = 3;
 pub(crate) const KEY_3: u32 = 4;
@@ -83,6 +88,9 @@ pub(crate) struct Chrome {
     pub(crate) cursor_handle: rt::Handle,
     pub(crate) output_width: u32,
     pub(crate) output_height: u32,
+    /// Base rects (handle, x, y, w, h, z) of zoomable shell panels:
+    /// [0] launcher, [1] status panel.
+    pub(crate) zoom_panels: [(rt::Handle, i32, i32, u32, u32, u32); 2],
 }
 
 #[derive(Clone, Copy)]
@@ -329,6 +337,15 @@ pub(crate) struct DesktopState {
     pub(crate) shadow_surface_handle: rt::Handle,
     pub(crate) shadow_width: u32,
     pub(crate) shadow_height: u32,
+    pub(crate) access: AccessSettings,
+    pub(crate) access_store_dir: rt::Handle,
+    pub(crate) corner_dwell: CornerDwell,
+    pub(crate) show_desktop_active: bool,
+    pub(crate) show_desktop_restore_mask: u8,
+    pub(crate) zoom_applied: bool,
+    pub(crate) zoom_last_fx: i32,
+    pub(crate) zoom_last_fy: i32,
+    pub(crate) zoom_last_index: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -5,6 +5,7 @@ use serviceos_kernel_core::{
     task::{ExecutionState, ThreadMode},
     user::{self as kernel_user, TaskExitStatus},
 };
+use serviceos_platform_qemu_virtio::input;
 
 use crate::bootstrap::BootstrapError;
 
@@ -16,6 +17,17 @@ pub(crate) fn run_userspace_executor(
         while let Some(event) = interrupts::poll_wakeup() {
             let _ = kernel.tasks().handle_time_wakeup(event);
         }
+
+        // Drain input devices on every executor pass, independent of device
+        // interrupts. VirtIO-input uses VIRTIO_RING_F_EVENT_IDX suppression:
+        // after the first completion the device re-raises its INTx line only
+        // once the driver republishes `used_event`, which only happens when
+        // the driver pops - so an IRQ-only drain starves after one event
+        // (mouse and tablet even share one level-triggered line here).
+        // Polling here keeps host mouse/keyboard flowing under -display gtk;
+        // the executor revisits this loop at least once per timer tick while
+        // waiters are parked, bounding input latency to one tick.
+        input::poll_ready_sources();
 
         let scheduler = kernel.tasks().scheduler();
         let snapshot = scheduler.snapshot();

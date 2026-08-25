@@ -53,10 +53,8 @@ pub struct InputBringupSummary {
 
 pub fn initialize() -> Option<Arc<dyn InputBackend>> {
     let mut root = PciRoot::new(IoPortPciConfigAccess);
-    let mut devices = Vec::new();
+    let mut probes: Vec<DeviceProbe> = Vec::new();
     let mut interrupt_lines = Vec::new();
-    let mut keyboard_devices = 0u32;
-    let mut pointer_devices = 0u32;
 
     for bus in 0u16..=255 {
         for (device_function, info) in root.enumerate_bus(bus as u8) {
@@ -80,25 +78,57 @@ pub fn initialize() -> Option<Arc<dyn InputBackend>> {
                 .ok()
                 .is_some_and(|bits| !bits.is_empty());
 
-            if pointer.is_some() {
-                pointer_devices = pointer_devices.saturating_add(1);
-            }
-            if has_keys {
-                keyboard_devices = keyboard_devices.saturating_add(1);
-            }
-
-            devices.push(InputDeviceState {
-                device,
-                pointer,
-                keyboard: has_keys,
-                pending_x: 0,
-                pending_y: 0,
-                motion_dirty: false,
-            });
             if !interrupt_lines.contains(&interrupt_line) {
                 interrupt_lines.push(interrupt_line);
             }
+            probes.push(DeviceProbe {
+                device,
+                pointer,
+                has_keys,
+            });
         }
+    }
+
+    // Pass two: assign roles. An absolute pointer (tablet) outranks any
+    // relative pointer (mouse) so exactly one positional stream exists.
+    let absolute_present = probes
+        .iter()
+        .any(|probe| matches!(probe.pointer, Some(PointerSource::Absolute(_))));
+
+    let mut devices = Vec::new();
+    let mut keyboard_devices = 0u32;
+    let mut pointer_devices = 0u32;
+    for probe in probes {
+        let role = match probe.pointer {
+            Some(source @ PointerSource::Absolute(_)) => DeviceRole::Pointer(source),
+            Some(source @ PointerSource::Relative) => {
+                if absolute_present {
+                    DeviceRole::ScrollOnly
+                } else {
+                    DeviceRole::Pointer(source)
+                }
+            }
+            None => {
+                if probe.has_keys {
+                    DeviceRole::Keyboard
+                } else {
+                    continue;
+                }
+            }
+        };
+        if matches!(role, DeviceRole::Keyboard) {
+            keyboard_devices = keyboard_devices.saturating_add(1);
+        }
+        if role.is_pointer() {
+            pointer_devices = pointer_devices.saturating_add(1);
+        }
+        devices.push(InputDeviceState {
+            device: probe.device,
+            role,
+            pending_x: 0,
+            pending_y: 0,
+            motion_dirty: false,
+        });
     }
 
     if devices.is_empty() {
@@ -153,22 +183,49 @@ struct VirtioInputState {
     capabilities: u32,
 }
 
-struct InputDeviceState {
+struct DeviceProbe {
     device: VirtIOInput<KernelHal, PciTransport>,
     pointer: Option<PointerSource>,
-    keyboard: bool,
+    has_keys: bool,
+}
+
+struct InputDeviceState {
+    device: VirtIOInput<KernelHal, PciTransport>,
+    role: DeviceRole,
     pending_x: i32,
     pending_y: i32,
     motion_dirty: bool,
 }
 
-#[derive(Clone, Copy)]
+/// Semantic role assigned during bring-up. QEMU's core input layer routes
+/// every host motion to *every* attached pointing device (translating
+/// rel<->abs per device), so attaching both `virtio-mouse-pci` (relative)
+/// and `virtio-tablet-pci` (absolute) produces two independent event
+/// streams for one physical cursor. The backend keeps a single pointer
+/// authority: an absolute tablet wins, and any relative pointer is
+/// demoted to scroll-only so positional streams never interleave.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DeviceRole {
+    Keyboard,
+    Pointer(PointerSource),
+    /// Relative pointer demoted because an absolute pointer exists.
+    /// Emits only wheel events; all motion/buttons are dropped.
+    ScrollOnly,
+}
+
+impl DeviceRole {
+    fn is_pointer(self) -> bool {
+        matches!(self, DeviceRole::Pointer(_))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PointerSource {
     Absolute(PointerAxes),
     Relative,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct PointerAxes {
     min_x: i32,
     max_x: i32,
@@ -292,7 +349,7 @@ fn pointer_axes(
 fn normalize_event(device: &mut InputDeviceState, event: InputEvent) -> Option<InputEventInfo> {
     match event.event_type {
         EV_ABS => {
-            if let Some(PointerSource::Absolute(_)) = device.pointer {
+            if let DeviceRole::Pointer(PointerSource::Absolute(_)) = device.role {
                 match event.code {
                     ABS_X => {
                         device.pending_x = event.value as i32;
@@ -308,13 +365,13 @@ fn normalize_event(device: &mut InputDeviceState, event: InputEvent) -> Option<I
             None
         }
         EV_REL => {
-            if device.pointer.is_some() {
+            if device.role.is_pointer() {
                 match event.code {
-                    REL_X if matches!(device.pointer, Some(PointerSource::Relative)) => {
+                    REL_X if matches!(device.role, DeviceRole::Pointer(PointerSource::Relative)) => {
                         device.pending_x = device.pending_x.saturating_add(event.value as i32);
                         device.motion_dirty = true;
                     }
-                    REL_Y if matches!(device.pointer, Some(PointerSource::Relative)) => {
+                    REL_Y if matches!(device.role, DeviceRole::Pointer(PointerSource::Relative)) => {
                         device.pending_y = device.pending_y.saturating_add(event.value as i32);
                         device.motion_dirty = true;
                     }
@@ -332,7 +389,10 @@ fn normalize_event(device: &mut InputDeviceState, event: InputEvent) -> Option<I
             None
         }
         EV_SYN if event.code == SYN_REPORT => {
-            let pointer = device.pointer?;
+            let pointer = match device.role {
+                DeviceRole::Pointer(source) => source,
+                _ => return None,
+            };
             if !device.motion_dirty {
                 return None;
             }
@@ -358,8 +418,8 @@ fn normalize_event(device: &mut InputDeviceState, event: InputEvent) -> Option<I
                 }
             }
         }
-        EV_KEY if device.pointer.is_some() => map_pointer_button(event),
-        EV_KEY if device.keyboard => Some(InputEventInfo {
+        EV_KEY if device.role.is_pointer() => map_pointer_button(event),
+        EV_KEY if matches!(device.role, DeviceRole::Keyboard) => Some(InputEventInfo {
             kind: InputEventKind::Key as u32,
             code: event.code as u32,
             value0: if event.value == 0 { 0 } else { 1 },

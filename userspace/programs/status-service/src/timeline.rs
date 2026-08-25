@@ -2,6 +2,8 @@ pub(crate) const TIMELINE_CAP: usize = 64;
 pub(crate) const TIMELINE_SERVICES_CAP: usize = 24;
 pub(crate) const TIMELINE_REPLY_EVENTS: usize = 5;
 
+use serviceos_userspace_runtime::{LogDomain, LogEvent, LogSeverity};
+
 /// Local protocol tags (ABI `StatusTag` ends at `0x409`).
 /// Query request words: `[mode, arg]`, handle 0 = reply channel; mode
 /// `QUERY_MODE_SINCE` filters `tick >= arg`, any other value means "last N"
@@ -21,6 +23,19 @@ pub(crate) mod event_kind {
     pub const RESTART: u32 = 2;
     pub const CRASH: u32 = 3;
     pub const HEALTH_FLIP: u32 = 4;
+    pub const JOB_PHASE: u32 = 5;
+    pub const FRAME_PACING: u32 = 6;
+}
+
+/// Developer job final-state encodings carried in domain-event `to` fields;
+/// mirrors `DeveloperJobState` discriminants in `shared/abi/src/developer.rs`.
+pub(crate) mod job_state {
+    #[allow(dead_code)]
+    pub const QUEUED: u32 = 1;
+    pub const RUNNING: u32 = 2;
+    pub const SUCCEEDED: u32 = 3;
+    pub const FAILED: u32 = 4;
+    pub const UNSUPPORTED: u32 = 5;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,6 +90,147 @@ impl TimelineSummary {
             last_tick: None,
             busiest_service: 0,
             busiest_count: 0,
+        }
+    }
+}
+
+/// Per-domain counters aggregated from ingested domain events. Deliberately
+/// independent of the ring window so totals survive event eviction.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct DomainCounters {
+    pub(crate) jobs_started: u64,
+    pub(crate) jobs_succeeded: u64,
+    pub(crate) jobs_failed: u64,
+    pub(crate) long_frames: u64,
+}
+
+impl DomainCounters {
+    pub(crate) const fn empty() -> Self {
+        Self {
+            jobs_started: 0,
+            jobs_succeeded: 0,
+            jobs_failed: 0,
+            long_frames: 0,
+        }
+    }
+
+    /// Packs into the extended SUMMARY_REPLY layout words `[12..16]`
+    /// (legacy summary occupies `[0..12]`).
+    pub(crate) fn pack_reply_words(&self) -> [u64; 4] {
+        [
+            self.jobs_started,
+            self.jobs_succeeded,
+            self.jobs_failed,
+            self.long_frames,
+        ]
+    }
+}
+
+/// Ingests one domain event classified from the log stream: records it in
+/// the ring like any other timeline event and tallies per-domain counters by
+/// final state. Unknown kinds still enter the ring but stay uncounted.
+pub(crate) fn ingest_domain_event(
+    timeline: &mut Timeline,
+    counters: &mut DomainCounters,
+    service_id: u32,
+    kind: u32,
+    tick: u64,
+    from: u32,
+    to: u32,
+) {
+    timeline.push(TimelineEvent {
+        service_id,
+        kind,
+        tick,
+        from,
+        to,
+    });
+    match kind {
+        event_kind::JOB_PHASE => match to {
+            job_state::RUNNING => counters.jobs_started = counters.jobs_started.saturating_add(1),
+            job_state::SUCCEEDED => {
+                counters.jobs_succeeded = counters.jobs_succeeded.saturating_add(1);
+            }
+            job_state::FAILED | job_state::UNSUPPORTED => {
+                counters.jobs_failed = counters.jobs_failed.saturating_add(1);
+            }
+            _ => {}
+        },
+        event_kind::FRAME_PACING => {
+            counters.long_frames = counters.long_frames.saturating_add(1);
+        }
+        _ => {}
+    }
+}
+
+/// Present-count sampler threshold: when a compositor feed sample shows the
+/// present counter jumped by at least this many coalesced presentations
+/// since the previous sample, the compositor fell behind its damage rate
+/// between samples (healthy pacing coalesces around two ticks per present).
+pub(crate) const PACING_JUMP_PRESENTS: u64 = 4;
+
+/// Sampler state for classifying domain feed records into timeline events.
+/// Developer build-job records map directly; graphics presents advance a
+/// present-count sampler that flags pacing anomalies.
+#[derive(Clone, Copy)]
+pub(crate) struct DomainSampler {
+    last_present_tick: Option<u64>,
+    last_present_count: Option<u64>,
+}
+
+impl DomainSampler {
+    pub(crate) const fn new() -> Self {
+        Self {
+            last_present_tick: None,
+            last_present_count: None,
+        }
+    }
+
+    /// Classifies one log-stream record into at most one domain event kind
+    /// with its `from`/`to` payload. Graphics presents always advance the
+    /// sampler even when they do not raise an anomaly. Unsupported build
+    /// targets arrive as `DeveloperBuildFailed` Warn records with `arg1 == 1`
+    /// and are kept distinct from genuine failures for the final-state tally.
+    pub(crate) fn classify(
+        &mut self,
+        domain: LogDomain,
+        event: LogEvent,
+        severity: LogSeverity,
+        arg1: u64,
+        tick: u64,
+    ) -> Option<(u32, u32, u32)> {
+        match (domain, event) {
+            (LogDomain::Developer, LogEvent::DeveloperBuildStarted) => {
+                Some((event_kind::JOB_PHASE, job_state::QUEUED, job_state::RUNNING))
+            }
+            (LogDomain::Developer, LogEvent::DeveloperBuildFinished) => Some((
+                event_kind::JOB_PHASE,
+                job_state::RUNNING,
+                job_state::SUCCEEDED,
+            )),
+            (LogDomain::Developer, LogEvent::DeveloperBuildFailed) => {
+                let to = if severity <= LogSeverity::Warn && arg1 == 1 {
+                    job_state::UNSUPPORTED
+                } else {
+                    job_state::FAILED
+                };
+                Some((event_kind::JOB_PHASE, job_state::RUNNING, to))
+            }
+            (LogDomain::Graphics, LogEvent::CompositorPresented) => {
+                let previous_tick = self.last_present_tick.replace(tick);
+                let previous_count = self.last_present_count.replace(arg1);
+                let delta_count = arg1.saturating_sub(previous_count.unwrap_or(0));
+                let previous_tick = previous_tick?;
+                if delta_count < PACING_JUMP_PRESENTS {
+                    return None;
+                }
+                Some((
+                    event_kind::FRAME_PACING,
+                    delta_count.min(u32::MAX as u64) as u32,
+                    tick.saturating_sub(previous_tick).min(u32::MAX as u64) as u32,
+                ))
+            }
+            _ => None,
         }
     }
 }
@@ -291,5 +447,310 @@ mod tests {
     fn summary_empty_timeline_is_zeroed() {
         let summary = compute_timeline_summary(&Timeline::new());
         assert_eq!(summary, TimelineSummary::empty());
+    }
+
+    const DEV_SID: u32 = 16;
+
+    fn ingest(
+        timeline: &mut Timeline,
+        counters: &mut DomainCounters,
+        kind: u32,
+        to: u32,
+        tick: u64,
+    ) {
+        ingest_domain_event(timeline, counters, DEV_SID, kind, tick, 0, to);
+    }
+
+    #[test]
+    fn domain_job_transitions_tally_by_final_state() {
+        let mut timeline = Timeline::new();
+        let mut counters = DomainCounters::empty();
+        ingest(
+            &mut timeline,
+            &mut counters,
+            event_kind::JOB_PHASE,
+            job_state::RUNNING,
+            10,
+        );
+        ingest(
+            &mut timeline,
+            &mut counters,
+            event_kind::JOB_PHASE,
+            job_state::SUCCEEDED,
+            20,
+        );
+        ingest(
+            &mut timeline,
+            &mut counters,
+            event_kind::JOB_PHASE,
+            job_state::RUNNING,
+            30,
+        );
+        ingest(
+            &mut timeline,
+            &mut counters,
+            event_kind::JOB_PHASE,
+            job_state::FAILED,
+            40,
+        );
+        ingest(
+            &mut timeline,
+            &mut counters,
+            event_kind::JOB_PHASE,
+            job_state::UNSUPPORTED,
+            50,
+        );
+
+        assert_eq!(counters.jobs_started, 2);
+        assert_eq!(counters.jobs_succeeded, 1);
+        assert_eq!(counters.jobs_failed, 2);
+        assert_eq!(counters.long_frames, 0);
+        assert_eq!(timeline.len(), 5);
+
+        let mut out = [TimelineEvent::zeroed(); TIMELINE_CAP];
+        assert_eq!(timeline.query_since(0, &mut out), 5);
+        assert_eq!(out[0].kind, event_kind::JOB_PHASE);
+        assert_eq!(out[0].to, job_state::RUNNING);
+        assert_eq!(out[4].tick, 50);
+    }
+
+    #[test]
+    fn domain_frame_pacing_counts_and_unknown_kinds_stay_uncounted() {
+        let mut timeline = Timeline::new();
+        let mut counters = DomainCounters::empty();
+        ingest(
+            &mut timeline,
+            &mut counters,
+            event_kind::FRAME_PACING,
+            12,
+            100,
+        );
+        ingest(
+            &mut timeline,
+            &mut counters,
+            event_kind::FRAME_PACING,
+            6,
+            200,
+        );
+        ingest(&mut timeline, &mut counters, 99, 1, 300);
+
+        assert_eq!(counters.long_frames, 2);
+        assert_eq!(counters.jobs_started, 0);
+        assert_eq!(timeline.len(), 3);
+        assert_eq!(
+            counters,
+            DomainCounters {
+                jobs_started: 0,
+                jobs_succeeded: 0,
+                jobs_failed: 0,
+                long_frames: 2
+            }
+        );
+    }
+
+    #[test]
+    fn domain_counters_survive_ring_window_eviction() {
+        let mut timeline = Timeline::new();
+        let mut counters = DomainCounters::empty();
+        ingest(&mut timeline, &mut counters, event_kind::FRAME_PACING, 8, 1);
+        for tick in 2..(TIMELINE_CAP as u64 + 4) {
+            ingest(
+                &mut timeline,
+                &mut counters,
+                event_kind::JOB_PHASE,
+                job_state::SUCCEEDED,
+                tick,
+            );
+        }
+
+        assert!(timeline.len() < counters.jobs_succeeded as usize + 1);
+        assert_eq!(timeline.len(), TIMELINE_CAP);
+        assert!(counters.jobs_succeeded >= TIMELINE_CAP as u64);
+        assert_eq!(counters.long_frames, 1);
+        assert_eq!(
+            counters.pack_reply_words()[3],
+            1,
+            "long_frames rides reply word 15"
+        );
+    }
+
+    #[test]
+    fn domain_counter_reply_pack_matches_layout() {
+        let counters = DomainCounters {
+            jobs_started: 3,
+            jobs_succeeded: 2,
+            jobs_failed: 1,
+            long_frames: 7,
+        };
+        assert_eq!(counters.pack_reply_words(), [3, 2, 1, 7]);
+        assert_eq!(DomainCounters::empty().pack_reply_words(), [0, 0, 0, 0]);
+    }
+
+    fn classify(
+        sampler: &mut DomainSampler,
+        domain: LogDomain,
+        event: LogEvent,
+        severity: LogSeverity,
+        arg1: u64,
+        tick: u64,
+    ) -> Option<(u32, u32, u32)> {
+        sampler.classify(domain, event, severity, arg1, tick)
+    }
+
+    #[test]
+    fn build_records_classify_to_job_phase_transitions() {
+        let mut sampler = DomainSampler::new();
+        assert_eq!(
+            classify(
+                &mut sampler,
+                LogDomain::Developer,
+                LogEvent::DeveloperBuildStarted,
+                LogSeverity::Info,
+                7,
+                10
+            ),
+            Some((event_kind::JOB_PHASE, job_state::QUEUED, job_state::RUNNING))
+        );
+        assert_eq!(
+            classify(
+                &mut sampler,
+                LogDomain::Developer,
+                LogEvent::DeveloperBuildFinished,
+                LogSeverity::Info,
+                4096,
+                20
+            ),
+            Some((
+                event_kind::JOB_PHASE,
+                job_state::RUNNING,
+                job_state::SUCCEEDED
+            ))
+        );
+        // Genuine failure encodings (route/sandbox/exit-code payloads) stay Failed.
+        for (severity, arg1) in [
+            (LogSeverity::Error, 2),
+            (LogSeverity::Warn, 0x100),
+            (LogSeverity::Error, 139),
+        ] {
+            assert_eq!(
+                classify(
+                    &mut sampler,
+                    LogDomain::Developer,
+                    LogEvent::DeveloperBuildFailed,
+                    severity,
+                    arg1,
+                    30
+                ),
+                Some((event_kind::JOB_PHASE, job_state::RUNNING, job_state::FAILED))
+            );
+        }
+        // Warn + arg1 == 1 is the unsupported-target final state.
+        assert_eq!(
+            classify(
+                &mut sampler,
+                LogDomain::Developer,
+                LogEvent::DeveloperBuildFailed,
+                LogSeverity::Warn,
+                1,
+                40
+            ),
+            Some((
+                event_kind::JOB_PHASE,
+                job_state::RUNNING,
+                job_state::UNSUPPORTED
+            ))
+        );
+    }
+
+    #[test]
+    fn unrelated_stream_records_classify_to_none() {
+        let mut sampler = DomainSampler::new();
+        assert_eq!(
+            classify(
+                &mut sampler,
+                LogDomain::Developer,
+                LogEvent::DeveloperCatalogLoaded,
+                LogSeverity::Info,
+                0,
+                5
+            ),
+            None
+        );
+        assert_eq!(
+            classify(
+                &mut sampler,
+                LogDomain::Network,
+                LogEvent::NetworkInterfaceReady,
+                LogSeverity::Info,
+                0,
+                6
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn present_sampler_first_sample_is_baseline_only_then_flags_jumps() {
+        let mut sampler = DomainSampler::new();
+        assert_eq!(
+            classify(
+                &mut sampler,
+                LogDomain::Graphics,
+                LogEvent::CompositorPresented,
+                LogSeverity::Info,
+                2,
+                100
+            ),
+            None
+        );
+        assert_eq!(
+            classify(
+                &mut sampler,
+                LogDomain::Graphics,
+                LogEvent::CompositorPresented,
+                LogSeverity::Info,
+                8,
+                130
+            ),
+            Some((event_kind::FRAME_PACING, 6, 30))
+        );
+    }
+
+    #[test]
+    fn present_sampler_small_delta_and_counter_regress_stay_quiet() {
+        let mut sampler = DomainSampler::new();
+        assert_eq!(
+            classify(
+                &mut sampler,
+                LogDomain::Graphics,
+                LogEvent::CompositorPresented,
+                LogSeverity::Info,
+                4,
+                10
+            ),
+            None
+        );
+        assert_eq!(
+            classify(
+                &mut sampler,
+                LogDomain::Graphics,
+                LogEvent::CompositorPresented,
+                LogSeverity::Info,
+                5,
+                20
+            ),
+            None
+        );
+        assert_eq!(
+            classify(
+                &mut sampler,
+                LogDomain::Graphics,
+                LogEvent::CompositorPresented,
+                LogSeverity::Info,
+                1,
+                30
+            ),
+            None
+        );
     }
 }

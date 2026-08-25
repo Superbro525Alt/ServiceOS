@@ -6,13 +6,13 @@ mod timeline;
 
 use rollup::{RollupEntry, compute_rollup, fill_snapshot_reply, is_restarting_phase};
 use rt::{
-    ConfigKey, ControlTag, LifecycleEvent, LogDomain, LogEvent, LogSeverity, ManagerServicePhase,
-    RawMessage, ServiceId, StatusHealth, StatusResult, StatusTag,
+    ConfigKey, ControlTag, LifecycleEvent, LogDomain, LogEvent, LogSeverity, LogTag,
+    ManagerServicePhase, RawMessage, ServiceId, StatusHealth, StatusResult, StatusTag,
 };
 use serviceos_userspace_runtime as rt;
 use timeline::{
-    TIMELINE_REPLY_EVENTS, Timeline, TimelineEvent, compute_timeline_summary, event_kind,
-    timeline_tag,
+    DomainCounters, DomainSampler, TIMELINE_REPLY_EVENTS, Timeline, TimelineEvent,
+    compute_timeline_summary, event_kind, ingest_domain_event, timeline_tag,
 };
 
 const MAX_BANNER_BYTES: usize = 128;
@@ -156,6 +156,33 @@ fn main() -> u64 {
     let mut heartbeat_count = 0u64;
     let mut last_tick = 0u64;
     let mut timeline_stats_emitted = false;
+    let mut domain_counters = DomainCounters::empty();
+    let mut domain_stats_emitted = false;
+    let mut domain_sampler = DomainSampler::new();
+    let developer_feed = match rt::log_subscribe(
+        log_handle,
+        LogSeverity::Trace,
+        None,
+        Some(LogDomain::Developer),
+    ) {
+        Ok(handle) => Some(handle),
+        Err(_) => None,
+    };
+    let graphics_feed = match rt::log_subscribe(
+        log_handle,
+        LogSeverity::Trace,
+        None,
+        Some(LogDomain::Graphics),
+    ) {
+        Ok(handle) => Some(handle),
+        Err(_) => None,
+    };
+    if developer_feed.is_none() || graphics_feed.is_none() {
+        let _ = rt::write_logf(
+            "status",
+            format_args!("timeline domains: feed subscribe failed"),
+        );
+    }
     let mut next_heartbeat = match rt::monotonic_now() {
         Ok(now) => now.saturating_add(heartbeat_ticks),
         Err(_) => return 0xf40d,
@@ -199,6 +226,7 @@ fn main() -> u64 {
                     &mut subscribers,
                     &mut timeline,
                     &mut timeline_stats_emitted,
+                    &domain_counters,
                     heartbeat_count,
                     last_tick,
                 )
@@ -209,6 +237,56 @@ fn main() -> u64 {
             }
             Err(rt::Error::QueueEmpty) => {}
             Err(_) => return 0xf410,
+        }
+
+        for feed in [developer_feed, graphics_feed].into_iter().flatten() {
+            let mut stream = RawMessage::empty(0);
+            match rt::channel_receive_nonblocking(feed, &mut stream) {
+                Ok(()) if stream.tag == LogTag::StreamRecord as u32 && stream.word_count >= 9 => {
+                    did_work = true;
+                    let service_id = stream.words[2] as u32;
+                    let domain = stream.words[4];
+                    let event = stream.words[5];
+                    let severity = stream.words[3];
+                    let arg1 = stream.words[7];
+                    let tick = stream.words[1];
+                    if let Some((kind, from, to)) =
+                        log_domain_from_word(domain).and_then(|domain| {
+                            log_event_from_word(event).and_then(|event| {
+                                log_severity_from_word(severity).and_then(|severity| {
+                                    domain_sampler.classify(domain, event, severity, arg1, tick)
+                                })
+                            })
+                        })
+                    {
+                        ingest_domain_event(
+                            &mut timeline,
+                            &mut domain_counters,
+                            service_id,
+                            kind,
+                            tick,
+                            from,
+                            to,
+                        );
+                        if !domain_stats_emitted {
+                            domain_stats_emitted = true;
+                            let _ = rt::write_logf(
+                                "status",
+                                format_args!(
+                                    "timeline domains: jobs_started={} jobs_succeeded={} jobs_failed={} long_frames={}",
+                                    domain_counters.jobs_started,
+                                    domain_counters.jobs_succeeded,
+                                    domain_counters.jobs_failed,
+                                    domain_counters.long_frames,
+                                ),
+                            );
+                        }
+                    }
+                }
+                Ok(()) => {}
+                Err(rt::Error::QueueEmpty) => {}
+                Err(_) => {}
+            }
         }
 
         let now = match rt::monotonic_now() {
@@ -290,6 +368,7 @@ fn handle_request(
     subscribers: &mut [Subscriber; MAX_SUBSCRIBERS],
     timeline: &mut Timeline,
     timeline_stats_emitted: &mut bool,
+    domain_counters: &DomainCounters,
     heartbeat_count: u64,
     last_tick: u64,
 ) -> rt::Result<()> {
@@ -488,7 +567,7 @@ fn handle_request(
             let reply_handle = request.handles[0];
             let summary = compute_timeline_summary(timeline);
             let mut reply = RawMessage::empty(timeline_tag::SUMMARY_REPLY);
-            reply.word_count = 12;
+            reply.word_count = 16;
             reply.words[0] = summary.retained as u64;
             reply.words[1] = summary.pushed;
             reply.words[2] = summary.per_service_len as u64;
@@ -505,6 +584,9 @@ fn handle_request(
             reply.words[9] = summary.first_tick.unwrap_or(0);
             reply.words[10] = summary.last_tick.unwrap_or(0);
             reply.words[11] = timeline.total_pushed();
+            for (slot, value) in domain_counters.pack_reply_words().into_iter().enumerate() {
+                reply.words[12 + slot] = value;
+            }
             let _ = rt::channel_send(reply_handle, &reply);
             let _ = rt::handle_close(reply_handle);
         }
@@ -804,5 +886,36 @@ fn health_from_word(value: u64) -> StatusHealth {
         x if x == StatusHealth::Recovering as u32 => StatusHealth::Recovering,
         x if x == StatusHealth::Dormant as u32 => StatusHealth::Dormant,
         _ => StatusHealth::Unknown,
+    }
+}
+
+/// Strict stream-record decoders: exact matches only, so unknown words can
+/// never be reinterpreted into a classifiable domain event.
+fn log_domain_from_word(value: u64) -> Option<LogDomain> {
+    match value as u32 {
+        x if x == LogDomain::Developer as u32 => Some(LogDomain::Developer),
+        x if x == LogDomain::Graphics as u32 => Some(LogDomain::Graphics),
+        _ => None,
+    }
+}
+
+fn log_severity_from_word(value: u64) -> Option<LogSeverity> {
+    match value as u32 {
+        x if x == LogSeverity::Trace as u32 => Some(LogSeverity::Trace),
+        x if x == LogSeverity::Debug as u32 => Some(LogSeverity::Debug),
+        x if x == LogSeverity::Info as u32 => Some(LogSeverity::Info),
+        x if x == LogSeverity::Warn as u32 => Some(LogSeverity::Warn),
+        x if x == LogSeverity::Error as u32 => Some(LogSeverity::Error),
+        _ => None,
+    }
+}
+
+fn log_event_from_word(value: u64) -> Option<LogEvent> {
+    match value as u32 {
+        x if x == LogEvent::DeveloperBuildStarted as u32 => Some(LogEvent::DeveloperBuildStarted),
+        x if x == LogEvent::DeveloperBuildFinished as u32 => Some(LogEvent::DeveloperBuildFinished),
+        x if x == LogEvent::DeveloperBuildFailed as u32 => Some(LogEvent::DeveloperBuildFailed),
+        x if x == LogEvent::CompositorPresented as u32 => Some(LogEvent::CompositorPresented),
+        _ => None,
     }
 }

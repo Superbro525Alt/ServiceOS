@@ -73,6 +73,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "serviceos-backup-service"
+version = "0.1.0"
+dependencies = [
+ "serviceos-userspace-runtime",
+]
+
+[[package]]
 name = "serviceos-bundle"
 version = "0.1.0"
 dependencies = [

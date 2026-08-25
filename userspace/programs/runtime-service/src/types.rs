@@ -85,6 +85,11 @@ impl LibSlot {
 pub(crate) struct Profile {
     pub(crate) kind: RuntimeKind,
     pub(crate) capabilities: u32,
+    /// Sensitive capability requests declared through the env profile's
+    /// `requests` line (`requests = network,graphics,audio`). These are
+    /// sensitive-only words that join `capabilities` when the environment
+    /// is instantiated so the approval matrix sees them as requested.
+    pub(crate) requested_caps: u32,
     pub(crate) mounts: [MountSlot; MAX_MOUNTS],
     pub(crate) mount_count: usize,
     pub(crate) vars: [VarSlot; MAX_VARS],
@@ -98,6 +103,7 @@ impl Profile {
         Self {
             kind: RuntimeKind::Posix,
             capabilities: 0,
+            requested_caps: 0,
             mounts: [MountSlot::empty(); MAX_MOUNTS],
             mount_count: 0,
             vars: [VarSlot::empty(); MAX_VARS],

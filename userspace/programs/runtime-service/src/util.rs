@@ -69,6 +69,25 @@ fn parse_profile(text: &str) -> rt::Result<Profile> {
                 }
                 profile.capabilities = caps;
             }
+            "requests" => {
+                // Sensitive capability requests: `requests = network,graphics,audio`.
+                // Restricted to the sensitive device classes so the line always
+                // means "this profile wants an operator approval prompt".
+                let mut requested = 0u32;
+                for entry in value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|entry| !entry.is_empty())
+                {
+                    requested |= match entry {
+                        "network" => rt::runtime_capability::NETWORK,
+                        "graphics" => rt::runtime_capability::GRAPHICS,
+                        "audio" => rt::runtime_capability::AUDIO,
+                        _ => return Err(rt::Error::InvalidArgument),
+                    };
+                }
+                profile.requested_caps |= requested;
+            }
             "mount" => {
                 if profile.mount_count == profile.mounts.len() {
                     return Err(rt::Error::CapacityExceeded);
@@ -123,9 +142,11 @@ pub(crate) fn instantiate_env(profile: Profile) -> EnvSlot {
     env.occupied = true;
     env.kind = profile.kind;
     env.state = RuntimeEnvState::Ready;
-    env.capabilities = profile.capabilities;
+    // Declared capabilities join the sensitive requests from the profile's
+    // `requests` line so the approval flow sees one merged mask.
+    env.capabilities = profile.capabilities | profile.requested_caps;
     env.granted_caps = 0;
-    env.sandbox = crate::sandbox::SandboxProfile::from_masks(profile.capabilities, 0);
+    env.sandbox = crate::sandbox::SandboxProfile::from_masks(env.capabilities, 0);
     if env.sandbox.has_pending_classes() {
         env.state = RuntimeEnvState::PendingApproval;
     }
@@ -269,5 +290,94 @@ mod tests {
         assert_eq!(env.libs[0].name.as_bytes(), b"libc");
         assert_eq!(env.libs[0].guest.as_bytes(), b"/lib/libc.so.sosimg");
         assert_eq!(EnvSlot::empty().lib_count, 0);
+    }
+
+    #[test]
+    fn descriptor_parses_requests_lines_into_profile() {
+        let text = "kind=posix\ncaps=file-read\nrequests = network,graphics\n";
+        let profile = parse_profile(text).expect("profile");
+        assert_eq!(profile.capabilities, rt::runtime_capability::FILE_READ);
+        assert_eq!(
+            profile.requested_caps,
+            rt::runtime_capability::NETWORK | rt::runtime_capability::GRAPHICS
+        );
+
+        // Repeated request lines accumulate instead of overwriting.
+        let stacked = parse_profile("kind=posix\nrequests=network\nrequests=audio\n").expect("s");
+        assert_eq!(
+            stacked.requested_caps,
+            rt::runtime_capability::NETWORK | rt::runtime_capability::AUDIO
+        );
+        // An empty list is tolerated and requests nothing.
+        let none = parse_profile("kind=posix\nrequests=\n").expect("none");
+        assert_eq!(none.requested_caps, 0);
+    }
+
+    #[test]
+    fn descriptor_rejects_non_sensitive_request_words() {
+        // The requests line is sensitive-only by grammar.
+        assert!(parse_profile("kind=posix\nrequests=input\n").is_err());
+        assert!(parse_profile("kind=posix\nrequests=file-read\n").is_err());
+        assert!(parse_profile("kind=posix\nrequests=bogus\n").is_err());
+    }
+
+    #[test]
+    fn instantiate_env_seeds_matrix_from_requests_line() {
+        let profile = parse_profile("kind=posix\ncaps=file-read,terminal-io\nrequests=network\n")
+            .expect("profile");
+        let env = instantiate_env(profile);
+        assert_eq!(
+            env.capabilities,
+            rt::runtime_capability::FILE_READ
+                | rt::runtime_capability::TERMINAL_IO
+                | rt::runtime_capability::NETWORK
+        );
+        assert_eq!(env.granted_caps, 0);
+        assert!(
+            env.sandbox
+                .class_requested(crate::sandbox::DeviceClass::Network)
+        );
+        assert!(
+            !env.sandbox
+                .class_requested(crate::sandbox::DeviceClass::Graphics)
+        );
+        assert!(
+            !env.sandbox
+                .class_granted(crate::sandbox::DeviceClass::Network)
+        );
+        assert!(matches!(env.state, RuntimeEnvState::PendingApproval));
+
+        // Approving exactly the requested subset readies the environment and
+        // grants nothing beyond it (approval integration unchanged).
+        let (_, granted) = crate::protocol::apply_decision(
+            env.capabilities,
+            0,
+            rt::PermissionPolicyState::Allowed,
+            Some(rt::runtime_capability::NETWORK),
+        );
+        let synced = crate::sandbox::SandboxProfile::from_masks(env.capabilities, granted);
+        assert!(synced.class_allowed(crate::sandbox::DeviceClass::Network));
+        assert!(!synced.has_pending_classes());
+    }
+
+    #[test]
+    fn shipped_posix_profile_defaults_request_network() {
+        let text =
+            include_str!("../../../bundles/packages/runtime-service/1.0.0/runtime/profile.cfg");
+        let env = instantiate_env(parse_profile(text).expect("packaged profile"));
+        assert!(matches!(env.state, RuntimeEnvState::PendingApproval));
+        assert!(
+            env.sandbox
+                .class_requested(crate::sandbox::DeviceClass::Network)
+        );
+        assert!(
+            !env.sandbox
+                .class_requested(crate::sandbox::DeviceClass::Graphics)
+        );
+        assert!(
+            !env.sandbox
+                .class_requested(crate::sandbox::DeviceClass::Audio)
+        );
+        assert!(env.sandbox.has_pending_classes());
     }
 }

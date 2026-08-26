@@ -40,7 +40,7 @@ fn selected_notification_entry(state: &DesktopState) -> Option<crate::Notificati
         .filter(|entry| entry.occupied)
 }
 
-pub(super) fn focus_notification_source(state: &mut DesktopState) -> rt::Result<u32> {
+pub(crate) fn focus_notification_source(state: &mut DesktopState) -> rt::Result<u32> {
     if let Some(entry) = selected_notification_entry(state) {
         if let Some(app_id) = entry.source_app {
             state.overlay_mode = OverlayMode::None;
@@ -51,7 +51,7 @@ pub(super) fn focus_notification_source(state: &mut DesktopState) -> rt::Result<
     Ok(focused_surface_id(state))
 }
 
-pub(super) fn dismiss_all_notifications_now(state: &mut DesktopState) -> rt::Result<()> {
+pub(crate) fn dismiss_all_notifications_now(state: &mut DesktopState) -> rt::Result<()> {
     crate::windows::dismiss_all_notifications(state);
     render_overlays_only(state)
 }
@@ -119,7 +119,7 @@ pub(super) fn handle_palette_key(state: &mut DesktopState, key_code: u32) -> rt:
                     let path = hit.path_str();
                     open_path_in_files(state, path)
                 }
-                PaletteEntry::Action(action) => perform_palette_action(state, action),
+                PaletteEntry::Action(action) => crate::actions::execute_shell_action(state, action),
             }
         }
         _ => Ok(focused_surface_id(state)),
@@ -130,12 +130,11 @@ pub(super) fn handle_notification_overlay_key(
     state: &mut DesktopState,
     key_code: u32,
 ) -> rt::Result<u32> {
+    // Quick-action keys route through the global action registry.
+    if let Some(action) = crate::actions::action_for_quick_key(key_code) {
+        return crate::actions::execute_shell_action(state, action);
+    }
     match key_code {
-        KEY_A => {
-            dismiss_all_notifications_now(state)?;
-            Ok(focused_surface_id(state))
-        }
-        KEY_F => focus_notification_source(state),
         KEY_UP => {
             state.overlay_selection = state.overlay_selection.saturating_sub(1);
             Ok(focused_surface_id(state))
@@ -229,74 +228,28 @@ pub(super) fn handle_media_overlay_key(state: &mut DesktopState, key_code: u32) 
     }
 }
 
-fn perform_palette_action(state: &mut DesktopState, action: PaletteAction) -> rt::Result<u32> {
-    match action {
-        PaletteAction::Launch(app_id) => {
-            crate::windows::schedule_launch_or_focus_app(state, app_id)
+pub(super) fn handle_workspace_overview_key(
+    state: &mut DesktopState,
+    key_code: u32,
+) -> rt::Result<u32> {
+    let current = state.overlay_selection as u32 + 1;
+    match key_code {
+        KEY_LEFT | KEY_UP => {
+            state.overlay_selection =
+                (crate::windows::step_workspace_selection(current, -1) - 1) as usize;
         }
-        PaletteAction::ShowNotifications => {
-            state.overlay_mode = OverlayMode::Notifications;
-            Ok(focused_surface_id(state))
+        KEY_RIGHT | KEY_DOWN => {
+            state.overlay_selection =
+                (crate::windows::step_workspace_selection(current, 1) - 1) as usize;
         }
-        PaletteAction::ShowClipboardHistory => {
-            state.overlay_mode = OverlayMode::ClipboardHistory;
-            Ok(focused_surface_id(state))
-        }
-        PaletteAction::ShowMedia | PaletteAction::ToggleMedia => {
-            state.overlay_mode = if state.overlay_mode == OverlayMode::Media {
-                OverlayMode::None
-            } else {
-                OverlayMode::Media
-            };
+        KEY_ENTER => {
+            let target = current.clamp(1, WORKSPACE_COUNT);
+            state.overlay_mode = OverlayMode::None;
             state.overlay_selection = 0;
-            Ok(focused_surface_id(state))
+            return switch_workspace(state, target);
         }
-        PaletteAction::ToggleNotifications => {
-            state.overlay_mode = if state.overlay_mode == OverlayMode::Notifications {
-                OverlayMode::None
-            } else {
-                OverlayMode::Notifications
-            };
-            state.overlay_selection = 0;
-            Ok(focused_surface_id(state))
-        }
-        PaletteAction::ToggleClipboardHistory => {
-            state.overlay_mode = if state.overlay_mode == OverlayMode::ClipboardHistory {
-                OverlayMode::None
-            } else {
-                OverlayMode::ClipboardHistory
-            };
-            state.overlay_selection = 0;
-            Ok(focused_surface_id(state))
-        }
-        PaletteAction::DismissAllNotifications => {
-            dismiss_all_notifications_now(state)?;
-            Ok(focused_surface_id(state))
-        }
-        PaletteAction::CycleSettingsPage => cycle_settings_page(state),
-        PaletteAction::LockSession => lock_session_stub(state),
-        PaletteAction::SwitchWorkspace(workspace_id) => switch_workspace(state, workspace_id),
-        PaletteAction::FocusNext => focus_next_app(state),
+        _ => {}
     }
-}
-
-fn cycle_settings_page(state: &mut DesktopState) -> rt::Result<u32> {
-    let index = app_slot_index(&state.apps, DesktopAppId::Settings).ok_or(rt::Error::NotFound)?;
-    if state.apps[index].running && state.apps[index].window.control_handle != rt::INVALID_HANDLE {
-        let control = state.apps[index].window.control_handle;
-        rt::app_control_key(control, AppKeyAction::Down, KEY_TAB, 0)?;
-        rt::app_control_key(control, AppKeyAction::Up, KEY_TAB, 0)?;
-        return focus_app(state, DesktopAppId::Settings);
-    }
-    crate::windows::schedule_launch_or_focus_app(state, DesktopAppId::Settings)
-}
-
-fn lock_session_stub(state: &mut DesktopState) -> rt::Result<u32> {
-    state.overlay_mode = OverlayMode::None;
-    state.overlay_selection = 0;
-    state.switcher_selection = 0;
-    state.palette_query_len = 0;
-    post_notification(state, None, false, b"SESSION LOCKED (SHELL STUB)")?;
     Ok(focused_surface_id(state))
 }
 

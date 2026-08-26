@@ -46,6 +46,8 @@ pub(crate) const PALETTE_BUFFER_SLOTS: usize = 2;
 pub(crate) const PALETTE_BUFFER_BYTES: usize = PALETTE_WIDTH as usize * PALETTE_HEIGHT as usize * 4;
 pub(crate) const HISTORY_WIDTH: u32 = 360;
 pub(crate) const HISTORY_HEIGHT: u32 = 188;
+pub(crate) const WORKSPACE_OVERVIEW_WIDTH: u32 = 480;
+pub(crate) const WORKSPACE_OVERVIEW_HEIGHT: u32 = 170;
 pub(crate) const MOD_SHIFT: u32 = 1 << 0;
 pub(crate) const MOD_ALT: u32 = 1 << 1;
 pub(crate) const MOD_CTRL: u32 = 1 << 2;
@@ -61,6 +63,8 @@ pub(crate) const KEY_N: u32 = 49;
 pub(crate) const KEY_M: u32 = 50;
 pub(crate) const KEY_UP: u32 = 103;
 pub(crate) const KEY_DOWN: u32 = 108;
+pub(crate) const KEY_LEFT: u32 = 105;
+pub(crate) const KEY_RIGHT: u32 = 106;
 pub(crate) const KEY_LEFT_ALT: u32 = 56;
 pub(crate) const KEY_RIGHT_ALT: u32 = 100;
 pub(crate) const KEY_F4: u32 = 62;
@@ -85,6 +89,8 @@ pub(crate) struct Chrome {
     pub(crate) notifications_handle: rt::Handle,
     pub(crate) clipboard_handle: rt::Handle,
     pub(crate) media_handle: rt::Handle,
+    pub(crate) gesture_handle: rt::Handle,
+    pub(crate) workspace_handle: rt::Handle,
     pub(crate) cursor_handle: rt::Handle,
     pub(crate) output_width: u32,
     pub(crate) output_height: u32,
@@ -179,6 +185,7 @@ pub(crate) enum OverlayMode {
     Notifications,
     ClipboardHistory,
     Media,
+    WorkspaceOverview,
 }
 
 #[derive(Clone, Copy)]
@@ -315,6 +322,7 @@ pub(crate) struct DesktopState {
     pub(crate) pointer_x: i32,
     pub(crate) pointer_y: i32,
     pub(crate) drag_state: Option<DragState>,
+    pub(crate) drag_snap_zone: crate::windows::SnapZone,
     pub(crate) content_capture: Option<ContentCapture>,
     pub(crate) content_drag: Option<ContentDrag>,
     pub(crate) pending_resize: Option<PendingResize>,
@@ -361,13 +369,26 @@ pub(crate) enum PaletteAction {
     ToggleNotifications,
     ToggleClipboardHistory,
     DismissAllNotifications,
+    FocusNotificationSource,
     CycleSettingsPage,
     LockSession,
     SwitchWorkspace(u32),
+    MoveFocusedToWorkspace(u32),
     FocusNext,
+    OpenTaskSwitcher,
+    OpenCommandPalette,
+    ToggleShowDesktop,
+    ToggleWorkspaceOverview,
+    SnapFocusedLeft,
+    SnapFocusedRight,
+    MinimizeFocused,
+    ZoomIn,
+    ZoomOut,
+    ToggleHighContrast,
+    ToggleReduceMotion,
 }
 
-pub(crate) const PALETTE_ACTION_MAX: usize = 19;
+pub(crate) const PALETTE_ACTION_MAX: usize = 48;
 
 pub(crate) fn list_apps_page(start: usize, total: usize) -> (usize, usize) {
     let page = APP_PAGE_SIZE.min(LIST_APPS_MAX_PAGE);

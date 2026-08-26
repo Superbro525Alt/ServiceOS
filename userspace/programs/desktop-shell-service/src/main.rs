@@ -2,6 +2,7 @@
 #![cfg_attr(not(test), no_main)]
 
 mod access;
+mod actions;
 mod chrome;
 mod input;
 mod logging;
@@ -132,6 +133,7 @@ fn main() -> u64 {
         pointer_x: (output.width / 2) as i32,
         pointer_y: (output.height / 2) as i32,
         drag_state: None,
+        drag_snap_zone: windows::SnapZone::None,
         content_capture: None,
         content_drag: None,
         pending_resize: None,

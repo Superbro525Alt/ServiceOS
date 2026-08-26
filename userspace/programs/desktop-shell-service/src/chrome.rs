@@ -118,6 +118,28 @@ pub(crate) fn create_chrome(
         theme.panel,
         false,
     )?;
+    let (_, gesture_handle) = rt::graphics_surface_create(
+        graphics_handle,
+        SESSION_ID,
+        0,
+        0,
+        output_width,
+        output_height,
+        CURSOR_Z_ORDER - 2,
+        0,
+        false,
+    )?;
+    let (_, workspace_handle) = rt::graphics_surface_create(
+        graphics_handle,
+        SESSION_ID,
+        ((output_width.saturating_sub(crate::WORKSPACE_OVERVIEW_WIDTH)) / 2) as i32,
+        ((output_height.saturating_sub(crate::WORKSPACE_OVERVIEW_HEIGHT)) / 2) as i32,
+        crate::WORKSPACE_OVERVIEW_WIDTH,
+        crate::WORKSPACE_OVERVIEW_HEIGHT,
+        CURSOR_Z_ORDER - 3,
+        theme.panel,
+        false,
+    )?;
     let (_, cursor_handle) = rt::graphics_surface_create(
         graphics_handle,
         SESSION_ID,
@@ -141,6 +163,8 @@ pub(crate) fn create_chrome(
         notifications_handle,
         clipboard_handle,
         media_handle,
+        gesture_handle,
+        workspace_handle,
         cursor_handle,
         output_width,
         output_height,
@@ -205,6 +229,12 @@ pub(crate) fn overlay_rect(
             MEDIA_OVERLAY_WIDTH as i32,
             MEDIA_OVERLAY_HEIGHT as i32,
         )),
+        crate::OverlayMode::WorkspaceOverview => Some((
+            ((output_width.saturating_sub(crate::WORKSPACE_OVERVIEW_WIDTH)) / 2) as i32,
+            ((output_height.saturating_sub(crate::WORKSPACE_OVERVIEW_HEIGHT)) / 2) as i32,
+            crate::WORKSPACE_OVERVIEW_WIDTH as i32,
+            crate::WORKSPACE_OVERVIEW_HEIGHT as i32,
+        )),
     }
 }
 
@@ -235,6 +265,8 @@ mod tests {
             notifications_handle: 0,
             clipboard_handle: 0,
             media_handle: 0,
+            gesture_handle: 0,
+            workspace_handle: 0,
             cursor_handle: 0,
             output_width: 1280,
             output_height: 800,

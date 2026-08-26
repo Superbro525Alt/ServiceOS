@@ -49,6 +49,7 @@ pub(super) fn handle_pointer_down(state: &mut DesktopState, x: i32, y: i32) -> r
             } else {
                 focus_app(state, app_id)?
             };
+            state.drag_snap_zone = crate::windows::SnapZone::None;
             state.drag_state = Some(DragState::Move {
                 app_id,
                 grab_offset_x,
@@ -95,7 +96,19 @@ pub(super) fn handle_pointer_move(state: &mut DesktopState, x: i32, y: i32) -> r
             app_id,
             grab_offset_x,
             grab_offset_y,
-        }) => move_app(state, app_id, x - grab_offset_x, y - grab_offset_y),
+        }) => {
+            let zone = crate::windows::snap_zone_at(
+                x,
+                y,
+                state.chrome.output_width,
+                state.chrome.output_height,
+            );
+            if zone != state.drag_snap_zone {
+                state.drag_snap_zone = zone;
+                let _ = crate::windows::update_snap_preview(state, zone);
+            }
+            move_app(state, app_id, x - grab_offset_x, y - grab_offset_y)
+        }
         Some(DragState::Resize {
             app_id,
             edges,
@@ -150,6 +163,26 @@ pub(super) fn handle_pointer_up(state: &mut DesktopState, x: i32, y: i32) -> rt:
         )?;
     }
     complete_content_drop(state, x, y)?;
+    if let Some(DragState::Move { app_id, .. }) = state.drag_state {
+        let zone = state.drag_snap_zone;
+        if zone != crate::windows::SnapZone::None {
+            state.drag_snap_zone = crate::windows::SnapZone::None;
+            let _ = crate::windows::hide_snap_preview(state);
+            match zone {
+                crate::windows::SnapZone::LeftHalf => {
+                    crate::windows::snap_window_half(state, app_id, true)?;
+                }
+                crate::windows::SnapZone::RightHalf => {
+                    crate::windows::snap_window_half(state, app_id, false)?;
+                }
+                crate::windows::SnapZone::MinimizeBottom => {
+                    minimize_app(state, app_id)?;
+                }
+                crate::windows::SnapZone::None => {}
+            }
+            return Ok(focused_surface_id(state));
+        }
+    }
     if let Some(DragState::Resize { .. }) = state.drag_state {
         crate::windows::flush_pending_resize(state)?;
     }
@@ -340,8 +373,22 @@ fn overlay_click(state: &mut DesktopState, x: i32, y: i32) -> rt::Result<Option<
         OverlayMode::ClipboardHistory => clipboard_click(state, local_y),
         OverlayMode::Notifications => notification_click(state, local_x, local_y),
         OverlayMode::CommandPalette => palette_click(state, local_y),
+        OverlayMode::WorkspaceOverview => overview_tile_click(state, local_x, local_y),
         _ => Ok(None),
     }
+}
+
+fn overview_tile_click(
+    state: &mut DesktopState,
+    local_x: i32,
+    local_y: i32,
+) -> rt::Result<Option<u32>> {
+    let Some(index) = crate::windows::overview_tile_at(local_x, local_y) else {
+        return Ok(None);
+    };
+    state.overlay_mode = OverlayMode::None;
+    state.overlay_selection = 0;
+    switch_workspace(state, index as u32 + 1).map(Some)
 }
 
 fn clipboard_click(state: &mut DesktopState, local_y: i32) -> rt::Result<Option<u32>> {

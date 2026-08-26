@@ -450,6 +450,34 @@ pub(crate) fn load_access_settings(dir: rt::Handle) -> AccessSettings {
     }
 }
 
+fn persist_access(state: &crate::DesktopState) {
+    save_access_settings(state.access_store_dir, state.access);
+}
+
+/// Magnifier zoom step, shared by the action registry (Ctrl+Alt+= / Ctrl+Alt+-).
+pub(crate) fn apply_zoom_step(
+    state: &mut crate::DesktopState,
+    zoom_in: bool,
+) -> rt::Result<u32> {
+    state.access.zoom_index = step_zoom(state.access.zoom_index, zoom_in);
+    persist_access(state);
+    sync_zoom(state)?;
+    Ok(crate::windows::focused_surface_id(state))
+}
+
+pub(crate) fn toggle_high_contrast(state: &mut crate::DesktopState) -> rt::Result<u32> {
+    state.access.high_contrast = !state.access.high_contrast;
+    persist_access(state);
+    crate::render::render_desktop(state)?;
+    Ok(crate::windows::focused_surface_id(state))
+}
+
+pub(crate) fn toggle_reduce_motion(state: &mut crate::DesktopState) -> rt::Result<u32> {
+    state.access.reduce_motion = !state.access.reduce_motion;
+    persist_access(state);
+    Ok(crate::windows::focused_surface_id(state))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

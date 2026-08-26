@@ -35,30 +35,10 @@ pub(crate) fn rank_palette(
     query: &str,
     results: &mut [PaletteAction; OVERLAY_RESULT_MAX],
 ) -> usize {
-    let actions = [
-        PaletteAction::Launch(DesktopAppId::Settings),
-        PaletteAction::Launch(DesktopAppId::Files),
-        PaletteAction::Launch(DesktopAppId::Monitor),
-        PaletteAction::Launch(DesktopAppId::Terminal),
-        PaletteAction::Launch(DesktopAppId::SoftwareCenter),
-        PaletteAction::ShowNotifications,
-        PaletteAction::ToggleNotifications,
-        PaletteAction::DismissAllNotifications,
-        PaletteAction::ShowClipboardHistory,
-        PaletteAction::ToggleClipboardHistory,
-        PaletteAction::ShowMedia,
-        PaletteAction::ToggleMedia,
-        PaletteAction::CycleSettingsPage,
-        PaletteAction::LockSession,
-        PaletteAction::SwitchWorkspace(1),
-        PaletteAction::SwitchWorkspace(2),
-        PaletteAction::SwitchWorkspace(3),
-        PaletteAction::SwitchWorkspace(4),
-        PaletteAction::FocusNext,
-    ];
+    let (catalog, catalog_len) = crate::actions::palette_catalog();
     let mut ranked = [(PaletteAction::ShowNotifications, 0u32); PALETTE_ACTION_MAX];
     let mut ranked_len = 0usize;
-    for action in actions {
+    for action in catalog.into_iter().take(catalog_len) {
         let label = palette_action_label(action);
         let matches = query.is_empty() || contains_case_fold(label, query);
         if !matches {
@@ -112,29 +92,7 @@ pub(crate) fn rank_palette(
 }
 
 pub(crate) fn palette_action_label(action: PaletteAction) -> &'static str {
-    match action {
-        PaletteAction::Launch(DesktopAppId::Settings) => "Open Settings",
-        PaletteAction::Launch(DesktopAppId::Files) => "Open Files",
-        PaletteAction::Launch(DesktopAppId::Monitor) => "Open Monitor",
-        PaletteAction::Launch(DesktopAppId::Terminal) => "Open Terminal",
-        PaletteAction::Launch(DesktopAppId::SoftwareCenter) => "Open Software Center",
-        PaletteAction::Launch(DesktopAppId::Media) => "Open Media",
-        PaletteAction::ShowNotifications => "Show Notification History",
-        PaletteAction::ShowClipboardHistory => "Show Clipboard History",
-        PaletteAction::ShowMedia => "Show Media and Volume",
-        PaletteAction::ToggleNotifications => "Toggle Notification History",
-        PaletteAction::ToggleClipboardHistory => "Toggle Clipboard History",
-        PaletteAction::ToggleMedia => "Toggle Media and Volume",
-        PaletteAction::DismissAllNotifications => "Dismiss All Notifications",
-        PaletteAction::CycleSettingsPage => "Cycle Settings Page",
-        PaletteAction::LockSession => "Lock Session",
-        PaletteAction::SwitchWorkspace(1) => "Switch to Workspace 1",
-        PaletteAction::SwitchWorkspace(2) => "Switch to Workspace 2",
-        PaletteAction::SwitchWorkspace(3) => "Switch to Workspace 3",
-        PaletteAction::SwitchWorkspace(4) => "Switch to Workspace 4",
-        PaletteAction::FocusNext => "Focus Next Window",
-        PaletteAction::SwitchWorkspace(_) => "Switch Workspace",
-    }
+    crate::actions::action_label(action)
 }
 
 fn contains_case_fold(haystack: &str, needle: &str) -> bool {

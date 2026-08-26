@@ -48,57 +48,11 @@ pub(super) fn handle_key_input(
             return Ok(focused_surface_id(state));
         }
 
-        if modifiers & MOD_CTRL != 0 && modifiers & MOD_ALT != 0 {
-            let workspace = match key_code {
-                KEY_1 => Some(1),
-                KEY_2 => Some(2),
-                KEY_3 => Some(3),
-                KEY_4 => Some(4),
-                _ => None,
-            };
-            if let Some(workspace_id) = workspace {
-                if modifiers & MOD_SHIFT != 0 {
-                    return move_focused_to_workspace(state, workspace_id);
-                }
-                return switch_workspace(state, workspace_id);
-            }
-            if key_code == KEY_V {
-                state.overlay_mode = OverlayMode::ClipboardHistory;
-                state.overlay_selection = 0;
-                return Ok(focused_surface_id(state));
-            }
-            match key_code {
-                KEY_EQUAL => return apply_zoom_step(state, true),
-                KEY_MINUS => return apply_zoom_step(state, false),
-                KEY_H => return toggle_high_contrast(state),
-                KEY_J => return toggle_reduce_motion(state),
-                _ => {}
-            }
-        }
-
-        if modifiers & MOD_CTRL != 0 && key_code == KEY_SPACE {
-            state.overlay_mode = OverlayMode::CommandPalette;
-            state.overlay_selection = 0;
-            state.palette_query_len = 0;
-            crate::palette_docs::refresh_doc_hits(state);
-            return Ok(focused_surface_id(state));
-        }
-
-        if modifiers & MOD_ALT != 0 && key_code == KEY_N {
-            state.overlay_mode = OverlayMode::Notifications;
-            state.overlay_selection = 0;
-            return Ok(focused_surface_id(state));
-        }
-
-        if modifiers & MOD_ALT != 0 && key_code == KEY_M {
-            if state.overlay_mode == OverlayMode::Media {
-                state.overlay_mode = OverlayMode::None;
-                state.overlay_selection = 0;
-            } else {
-                state.overlay_mode = OverlayMode::Media;
-                state.overlay_selection = 0;
-            }
-            return Ok(focused_surface_id(state));
+        // Global shell shortcuts resolve through the shared action registry —
+        // the same single source that backs palette entries, hot corners,
+        // and notification quick actions.
+        if let Some(shell_action) = crate::actions::action_for_binding(modifiers, key_code) {
+            return crate::actions::execute_shell_action(state, shell_action);
         }
 
         if state.overlay_mode == OverlayMode::CommandPalette {
@@ -112,6 +66,9 @@ pub(super) fn handle_key_input(
         }
         if state.overlay_mode == OverlayMode::Media {
             return overlays::handle_media_overlay_key(state, key_code);
+        }
+        if state.overlay_mode == OverlayMode::WorkspaceOverview {
+            return overlays::handle_workspace_overview_key(state, key_code);
         }
     }
 
@@ -133,20 +90,6 @@ pub(super) fn handle_key_input(
             }
         }
     }
-    if action == AppKeyAction::Down && modifiers & MOD_ALT != 0 {
-        let direct = match key_code {
-            KEY_1 => Some(DesktopAppId::Settings),
-            KEY_2 => Some(DesktopAppId::Files),
-            KEY_3 => Some(DesktopAppId::Monitor),
-            KEY_4 => Some(DesktopAppId::Terminal),
-            KEY_5 => Some(DesktopAppId::SoftwareCenter),
-            _ => None,
-        };
-        if let Some(app_id) = direct {
-            return crate::windows::schedule_launch_or_focus_app(state, app_id);
-        }
-    }
-
     let Some(app_id) = state.focused_app else {
         return Ok(0);
     };
@@ -188,26 +131,3 @@ pub(super) fn handle_text_input(state: &mut DesktopState, scalar: u32) -> rt::Re
     Ok(state.apps[index].window.surface_id)
 }
 
-fn persist_access(state: &DesktopState) {
-    crate::access::save_access_settings(state.access_store_dir, state.access);
-}
-
-fn apply_zoom_step(state: &mut DesktopState, zoom_in: bool) -> rt::Result<u32> {
-    state.access.zoom_index = crate::access::step_zoom(state.access.zoom_index, zoom_in);
-    persist_access(state);
-    crate::access::sync_zoom(state)?;
-    Ok(focused_surface_id(state))
-}
-
-fn toggle_high_contrast(state: &mut DesktopState) -> rt::Result<u32> {
-    state.access.high_contrast = !state.access.high_contrast;
-    persist_access(state);
-    render_desktop(state)?;
-    Ok(focused_surface_id(state))
-}
-
-fn toggle_reduce_motion(state: &mut DesktopState) -> rt::Result<u32> {
-    state.access.reduce_motion = !state.access.reduce_motion;
-    persist_access(state);
-    Ok(focused_surface_id(state))
-}

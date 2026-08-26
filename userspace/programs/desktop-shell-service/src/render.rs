@@ -9,10 +9,11 @@ use crate::{
     HISTORY_HEIGHT, HISTORY_WIDTH, LAUNCHER_HEIGHT, LAUNCHER_WIDTH, OVERLAY_RESULT_MAX,
     OverlayMode, PALETTE_BUFFER_BYTES, PALETTE_HEIGHT, PALETTE_WIDTH, STATUS_PANEL_HEIGHT,
     STATUS_PANEL_WIDTH, SWITCHER_HEIGHT, SWITCHER_WIDTH, TOPBAR_HEIGHT, WORKSPACE_COUNT,
+    WORKSPACE_OVERVIEW_WIDTH,
     access::{Theme, resolve_theme},
     media::{MEDIA_LINE_COUNT, MEDIA_OVERLAY_HEIGHT, MEDIA_OVERLAY_WIDTH},
     palette_action_label, palette_matches,
-    windows::{app_title, launcher_line, running_app_count, sync_focus_shadow},
+    windows::{app_title, launcher_line, running_app_count, overview_tile_rect, sync_focus_shadow},
 };
 
 fn theme_of(state: &DesktopState) -> Theme {
@@ -413,12 +414,14 @@ fn render_overlays(state: &mut DesktopState) -> rt::Result<()> {
     let show_notifications = state.overlay_mode == OverlayMode::Notifications;
     let show_clipboard = state.overlay_mode == OverlayMode::ClipboardHistory;
     let show_media = state.overlay_mode == OverlayMode::Media;
+    let show_workspace = state.overlay_mode == OverlayMode::WorkspaceOverview;
 
     rt::surface_set_visibility(state.chrome.switcher_handle, show_switcher)?;
     rt::surface_set_visibility(state.chrome.palette_handle, show_palette)?;
     rt::surface_set_visibility(state.chrome.notifications_handle, show_notifications)?;
     rt::surface_set_visibility(state.chrome.clipboard_handle, show_clipboard)?;
     rt::surface_set_visibility(state.chrome.media_handle, show_media)?;
+    rt::surface_set_visibility(state.chrome.workspace_handle, show_workspace)?;
 
     if show_switcher {
         render_switcher_overlay(state)?;
@@ -434,6 +437,77 @@ fn render_overlays(state: &mut DesktopState) -> rt::Result<()> {
     }
     if show_media {
         render_media_overlay(state)?;
+    }
+    if show_workspace {
+        render_workspace_overlay(state)?;
+    }
+    Ok(())
+}
+
+/// Mission-control style workspace grid: one tile per workspace with its
+/// window count and active marker; selection follows overlay_selection.
+fn render_workspace_overlay(state: &DesktopState) -> rt::Result<()> {
+    let surface = state.chrome.workspace_handle;
+    let t = theme_of(state);
+    rt::surface_set_fill(surface, t.panel)?;
+    rt::surface_clear_scene(surface)?;
+    rt::surface_set_rect(
+        surface,
+        0,
+        0,
+        0,
+        WORKSPACE_OVERVIEW_WIDTH,
+        ui::TITLEBAR_HEIGHT,
+        t.accent_dim,
+        true,
+    )?;
+    rt::surface_set_label(surface, 0, 10, 9, t.text, "WORKSPACES")?;
+
+    for index in 0..WORKSPACE_COUNT as usize {
+        let workspace_id = index as u32 + 1;
+        let mut windows = 0usize;
+        for slot in state.apps.iter().copied() {
+            if slot.running && slot.workspace_id == workspace_id {
+                windows += 1;
+            }
+        }
+        let selected = index == state.overlay_selection.min(WORKSPACE_COUNT as usize - 1);
+        let (tx, ty, tw, th) = overview_tile_rect(index);
+        rt::surface_set_rect(
+            surface,
+            index as u32 + 1,
+            tx,
+            ty,
+            tw,
+            th,
+            if selected { t.accent } else { t.window_alt },
+            true,
+        )?;
+        let mut title_buf: FixedLogBuffer<16> = FixedLogBuffer::new();
+        let _ = write!(&mut title_buf, "WS {}", workspace_id);
+        let mut sub_buf: FixedLogBuffer<24> = FixedLogBuffer::new();
+        let _ = write!(
+            &mut sub_buf,
+            "{} WIN{}",
+            windows,
+            if state.active_workspace == workspace_id { " *ACTIVE" } else { "" }
+        );
+        rt::surface_set_label(
+            surface,
+            index as u32 * 2 + 1,
+            tx + 10,
+            ty + th as i32 / 2 - 14,
+            if selected { t.text } else { t.text_muted },
+            title_buf.as_str(),
+        )?;
+        rt::surface_set_label(
+            surface,
+            index as u32 * 2 + 2,
+            tx + 10,
+            ty + th as i32 / 2 + 8,
+            if selected { t.text } else { t.text_secondary },
+            sub_buf.as_str(),
+        )?;
     }
     Ok(())
 }

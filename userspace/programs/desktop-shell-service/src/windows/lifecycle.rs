@@ -276,6 +276,44 @@ pub(crate) fn maximize_app(state: &mut DesktopState, app_id: DesktopAppId) -> rt
     focus_app_internal(state, app_id, true, true)
 }
 
+/// Tiles the window onto the left or right half of the screen area below the
+/// topbar — the drop target of edge-snap drag gestures and Ctrl+Alt+Left/Right.
+pub(crate) fn snap_window_half(
+    state: &mut DesktopState,
+    app_id: DesktopAppId,
+    left: bool,
+) -> rt::Result<u32> {
+    let Some(index) = app_slot_index(&state.apps, app_id) else {
+        return Err(rt::Error::NotFound);
+    };
+    if !state.apps[index].running {
+        return Err(rt::Error::NotFound);
+    }
+    cancel_animations(&mut state.animations, app_id);
+    let output_width = state.chrome.output_width;
+    let output_height = state.chrome.output_height;
+    let left_span = output_width / 2;
+    state.apps[index].window.maximized = false;
+    state.apps[index].window.minimized = false;
+    state.apps[index].window.x = if left { 0 } else { left_span as i32 };
+    state.apps[index].window.y = TOPBAR_HEIGHT as i32;
+    state.apps[index].window.width = if left {
+        left_span
+    } else {
+        output_width - left_span
+    };
+    state.apps[index].window.height = output_height.saturating_sub(TOPBAR_HEIGHT);
+    apply_window_geometry(&state.apps[index])?;
+    if state.apps[index].window.control_handle != rt::INVALID_HANDLE {
+        let _ = rt::app_control_resize(
+            state.apps[index].window.control_handle,
+            state.apps[index].window.width,
+            state.apps[index].window.height,
+        );
+    }
+    focus_app_internal(state, app_id, true, true)
+}
+
 pub(crate) fn move_app(
     state: &mut DesktopState,
     app_id: DesktopAppId,

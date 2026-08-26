@@ -1,6 +1,6 @@
 mod hit_test;
 mod keyboard;
-mod overlays;
+pub(crate) mod overlays;
 mod pointer;
 
 use rt::{AppKeyAction, AppPointerAction, DesktopAppId, DesktopInputAction};
@@ -8,19 +8,18 @@ use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
 
 use crate::{
-    APP_COUNT, CLIPBOARD_HISTORY_LINES, ContentCapture, DesktopState, DragState, HitTarget, KEY_1,
-    KEY_2, KEY_3, KEY_4, KEY_5, KEY_A, KEY_BACKSPACE, KEY_DOWN, KEY_ENTER, KEY_EQUAL, KEY_ESC,
-    KEY_F, KEY_F4, KEY_H, KEY_J, KEY_LEFT_ALT, KEY_M, KEY_MINUS, KEY_N, KEY_RIGHT_ALT, KEY_SPACE,
-    KEY_TAB, KEY_UP, KEY_V, MOD_ALT, MOD_CTRL, MOD_SHIFT, OVERLAY_RESULT_MAX, OverlayMode,
-    PaletteAction, PaletteEntry, RESIZE_GRIP_SIZE, ResizeEdges, WINDOW_MIN_HEIGHT,
-    WINDOW_MIN_WIDTH, WindowState,
+    APP_COUNT, CLIPBOARD_HISTORY_LINES, ContentCapture, DesktopState, DragState, HitTarget, KEY_A,
+    KEY_BACKSPACE, KEY_DOWN, KEY_ENTER, KEY_ESC, KEY_F, KEY_F4, KEY_LEFT, KEY_LEFT_ALT,
+    KEY_RIGHT,     KEY_RIGHT_ALT, KEY_SPACE, KEY_TAB, KEY_UP, KEY_V, MOD_ALT, MOD_CTRL, MOD_SHIFT,
+    OVERLAY_RESULT_MAX, OverlayMode, PaletteAction, PaletteEntry, RESIZE_GRIP_SIZE, ResizeEdges,
+    WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH, WORKSPACE_COUNT, WindowState,
     access::{Corner, sync_zoom, zoom_unmap_point},
     palette_matches,
     render::{render_desktop, render_overlays_only, sync_cursor},
     windows::{
         app_slot_index, clamp_window_x, clamp_window_y, close_app, focus_app, focused_surface_id,
-        maximize_app, minimize_app, move_app, move_focused_to_workspace, open_path_in_files,
-        post_notification, restore_app, switch_workspace, visible_on_workspace,
+        maximize_app, minimize_app, move_app, open_path_in_files, post_notification, restore_app,
+        switch_workspace, visible_on_workspace,
     },
 };
 
@@ -171,34 +170,23 @@ pub(crate) fn focus_next_visible_without_cycle(state: &mut DesktopState) -> rt::
     }
 }
 
-/// Hot-corner action dispatch: top-left task switcher, top-right notifications,
-/// bottom-left launcher (command palette), bottom-right show-desktop toggle.
+/// Hot-corner dispatch routes through the global action registry
+/// (`crate::actions`), which owns the corner-to-action mapping.
 pub(crate) fn fire_corner_action(state: &mut DesktopState, corner: Corner) -> rt::Result<()> {
-    match corner {
-        Corner::TopLeft => {
-            let model = crate::switcher::switcher_model(state);
-            state.overlay_mode = OverlayMode::Switcher;
-            state.switcher_selection = crate::switcher::open_selection(&model, state.focused_app);
-            state.overlay_selection = 0;
+    let Some(action) = crate::actions::action_for_corner(corner) else {
+        return Ok(());
+    };
+    match action {
+        crate::PaletteAction::ToggleShowDesktop => toggle_show_desktop(state)?,
+        _ => {
+            crate::actions::execute_shell_action(state, action)?;
             render_overlays_only(state)?;
         }
-        Corner::TopRight => {
-            state.overlay_mode = OverlayMode::Notifications;
-            state.overlay_selection = 0;
-            render_overlays_only(state)?;
-        }
-        Corner::BottomLeft => {
-            state.overlay_mode = OverlayMode::CommandPalette;
-            state.overlay_selection = 0;
-            state.palette_query_len = 0;
-            render_overlays_only(state)?;
-        }
-        Corner::BottomRight => toggle_show_desktop(state)?,
     }
     Ok(())
 }
 
-fn toggle_show_desktop(state: &mut DesktopState) -> rt::Result<()> {
+pub(crate) fn toggle_show_desktop(state: &mut DesktopState) -> rt::Result<()> {
     if state.show_desktop_active {
         let mask = state.show_desktop_restore_mask;
         for index in 0..APP_COUNT {

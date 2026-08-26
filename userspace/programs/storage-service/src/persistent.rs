@@ -10,7 +10,7 @@ use crate::state::{
 };
 
 /// v1 snapshots carried only mutable entries; v2 adds explicit mount records.
-const PERSISTENT_VERSION_V1: u32 = 1;
+pub(crate) const PERSISTENT_VERSION_V1: u32 = 1;
 
 pub(crate) fn initialize_persistent_store(
     block_handle: Handle,
@@ -127,12 +127,12 @@ pub(crate) fn persist_state(
     flush_persistent_store(store, mounts, mutable_entries)
 }
 
-fn parse_header(
+pub(crate) fn parse_header(
     store: &PersistentStore,
     _slot: usize,
     block: &[u8],
     block_size: usize,
-) -> Option<(u64, usize, usize, usize, usize, usize)> {
+) -> Option<(u64, usize, usize, usize, usize, usize, u64)> {
     if block[..PERSISTENT_MAGIC.len()] != PERSISTENT_MAGIC {
         return None;
     }
@@ -150,6 +150,7 @@ fn parse_header(
     } else {
         0
     };
+    let stored_checksum = u64::from_le_bytes(block[52..60].try_into().unwrap());
     if entry_count > MAX_MUTABLE_ENTRIES
         || mount_count > STORAGE_MOUNT_TABLE_MAX
         || records_offset < block_size
@@ -172,6 +173,7 @@ fn parse_header(
         records_offset,
         data_offset,
         total_bytes,
+        stored_checksum,
     ))
 }
 
@@ -191,7 +193,7 @@ pub(crate) fn load_persistent_slot(
         (slot * store.slot_blocks) as u64,
         &mut block[..block_size],
     )?;
-    let Some((generation, entry_count, mount_count, records_offset, _, _)) =
+    let Some((generation, entry_count, mount_count, records_offset, _, _, _)) =
         parse_header(store, slot, &block, block_size)
     else {
         return Ok(None);
@@ -279,7 +281,7 @@ pub(crate) fn load_persistent_slot(
 }
 
 /// Reads one metadata record that may straddle a block boundary.
-fn read_record_span(
+pub(crate) fn read_record_span(
     store: &PersistentStore,
     slot: usize,
     record_offset: usize,
@@ -393,12 +395,6 @@ fn flush_persistent_store(
     header_block[40..48].copy_from_slice(&(total_bytes as u64).to_le_bytes());
     header_block[48..52].copy_from_slice(&(mount_count as u32).to_le_bytes());
 
-    rt::block_device_write(
-        store.handle,
-        (next_slot * store.slot_blocks) as u64,
-        &header_block[..block_size],
-    )?;
-
     // Plan per-file data offsets before emitting any records.
     let mut file_offsets = [0usize; MAX_MUTABLE_ENTRIES];
     let mut file_plan_cursor = data_offset;
@@ -410,25 +406,59 @@ fn flush_persistent_store(
             file_plan_cursor += entry.data_len;
         }
     }
+
+    let build_entry_record = |index: usize| -> [u8; PERSISTENT_RECORD_BYTES] {
+        let entry = records[index];
+        let mut record = [0u8; PERSISTENT_RECORD_BYTES];
+        record[0] = 1;
+        record[1] = entry.kind as u32 as u8;
+        record[2..4].copy_from_slice(&(entry.path_len as u16).to_le_bytes());
+        record[8..16].copy_from_slice(&(entry.data_len as u64).to_le_bytes());
+        if entry.kind == rt::StorageEntryKind::File {
+            record[16..24].copy_from_slice(&(file_offsets[index] as u64).to_le_bytes());
+        }
+        record[24..24 + entry.path_len].copy_from_slice(&entry.path[..entry.path_len]);
+        record
+    };
+    let build_mount_record = |index: usize| -> [u8; PERSISTENT_RECORD_BYTES] {
+        let mount = active_mounts[index];
+        debug_assert_eq!(MOUNT_RECORD_BYTES, PERSISTENT_RECORD_BYTES);
+        let mut record = [0u8; PERSISTENT_RECORD_BYTES];
+        record[0] = 1;
+        record[2..4].copy_from_slice(&(mount.path_len as u16).to_le_bytes());
+        record[4..8].copy_from_slice(&(mount.kind as u32).to_le_bytes());
+        record[8..16].copy_from_slice(&mount.flags.to_le_bytes());
+        record[16..24].copy_from_slice(&mount.authority.to_le_bytes());
+        record[24..24 + mount.path_len].copy_from_slice(&mount.path[..mount.path_len]);
+        record
+    };
+
+    // Metadata integrity: FNV-1a64 over the checksum-free header prefix and
+    // every metadata record, stored at offset 52. Zero means absent so older
+    // snapshots keep loading untouched.
+    let mut summer = crate::fsck::SnapshotChecksummer::new();
+    summer.feed(&header_block[..52]);
+    for index in 0..record_count {
+        summer.feed(&build_entry_record(index));
+    }
+    for index in 0..mount_count {
+        summer.feed(&build_mount_record(index));
+    }
+    header_block[52..60].copy_from_slice(&summer.finish().to_le_bytes());
+
+    rt::block_device_write(
+        store.handle,
+        (next_slot * store.slot_blocks) as u64,
+        &header_block[..block_size],
+    )?;
+
     write_record_batch(
         store,
         next_slot,
         records_offset,
         &mut scratch_block,
         record_count,
-        |index| {
-            let entry = records[index];
-            let mut record = [0u8; PERSISTENT_RECORD_BYTES];
-            record[0] = 1;
-            record[1] = entry.kind as u32 as u8;
-            record[2..4].copy_from_slice(&(entry.path_len as u16).to_le_bytes());
-            record[8..16].copy_from_slice(&(entry.data_len as u64).to_le_bytes());
-            if entry.kind == rt::StorageEntryKind::File {
-                record[16..24].copy_from_slice(&(file_offsets[index] as u64).to_le_bytes());
-            }
-            record[24..24 + entry.path_len].copy_from_slice(&entry.path[..entry.path_len]);
-            record
-        },
+        |index| build_entry_record(index),
     )?;
 
     // File payloads land after all metadata so partial writes stay parseable.
@@ -445,18 +475,7 @@ fn flush_persistent_store(
         mounts_offset,
         &mut scratch_block,
         mount_count,
-        |index| {
-            let mount = active_mounts[index];
-            debug_assert_eq!(MOUNT_RECORD_BYTES, PERSISTENT_RECORD_BYTES);
-            let mut record = [0u8; PERSISTENT_RECORD_BYTES];
-            record[0] = 1;
-            record[2..4].copy_from_slice(&(mount.path_len as u16).to_le_bytes());
-            record[4..8].copy_from_slice(&(mount.kind as u32).to_le_bytes());
-            record[8..16].copy_from_slice(&mount.flags.to_le_bytes());
-            record[16..24].copy_from_slice(&mount.authority.to_le_bytes());
-            record[24..24 + mount.path_len].copy_from_slice(&mount.path[..mount.path_len]);
-            record
-        },
+        |index| build_mount_record(index),
     )?;
 
     store.active_slot = next_slot;

@@ -81,6 +81,13 @@ pub(crate) fn handle_root_request(
         x if x == GREP_REQUEST_TAG => {
             handle_grep_request(bootstore, entries, mutable_entries, search_index, message)
         }
+        x if x == crate::fsck::FSCK_REQUEST_TAG => crate::fsck::handle_fsck_request(
+            mounts,
+            mutable_entries,
+            search_index,
+            persistent_store,
+            message,
+        ),
         _ => Ok(()),
     }
 }

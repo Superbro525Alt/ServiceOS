@@ -3,6 +3,7 @@
 
 mod blob;
 mod directory;
+mod fsck;
 mod index;
 mod lifecycle;
 mod path;
@@ -143,6 +144,8 @@ fn main() -> u64 {
             persistent_store.is_some(),
         ),
     );
+
+    crate::fsck::boot_quick_scan(&mounts, &mutable_entries, persistent_store.as_ref());
 
     selftest::run_boot_selftest(
         &mut mounts,

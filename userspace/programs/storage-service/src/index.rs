@@ -120,6 +120,10 @@ impl SearchIndex {
         (self.count, self.dirty, self.last_rebuild)
     }
 
+    pub(crate) fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
+
     pub(crate) fn upsert(
         &mut self,
         path: &[u8],

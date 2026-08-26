@@ -8,7 +8,8 @@ use crate::{
     BlobSession, DirectorySession, EntrySlot, INITIAL_FILE_CAPACITY, MAX_BLOB_SESSIONS,
     MAX_DIRECTORY_SESSIONS, MAX_MUTABLE_ENTRIES, MountTable, MutableEntry, PersistentStore,
     path::find_mutable_entry,
-    persistent::{persist_state, release_blob_session, release_directory_session},
+    persistent::{persist_state, release_blob_session, release_directory_session,
+        release_mutable_entry},
     root::try_unmount,
 };
 
@@ -103,6 +104,24 @@ pub(crate) fn run_boot_selftest(
     logf_args(format_args!(
         "selftest index-probe entries={} dirty={} rebuild-tick={} search-hit={} grep-lines={}",
         probe_count, probe_dirty as u32, probe_rebuild, probe_hit as u32, probe_needle
+    ));
+
+    // 2b. Mutation probe: create dir+file, index-rename, delete both —
+    // exercises the same entry/index paths the files-app ops compose.
+    let mutation_ok = mutation_probe(mutable_entries);
+    logf_args(format_args!(
+        "selftest mutation-probe create=2 rename=1 delete=2 ok={}",
+        mutation_ok as u32
+    ));
+
+    let fsck_report = crate::fsck::scan_memory_report(mounts, mutable_entries);
+    let (fsck_errors, fsck_warnings, _, _) = fsck_report.counts();
+    logf_args(format_args!(
+        "selftest fsck-report errors={} warnings={} items={} ok={}",
+        fsck_errors,
+        fsck_warnings,
+        fsck_report.iter().count(),
+        fsck_report.is_clean() as u32,
     ));
 
     // 3. Open handle blocks unmount.
@@ -340,6 +359,81 @@ fn ensure_selftest_file(
         entry.data_len = SELFTEST_PAYLOAD.len();
     }
     entry.data_len
+}
+
+/// Direct-entry mutation probe (same layer the IPC handlers compose):
+/// create a directory and a file, rename the file through the search
+/// index helper, then delete both entries. Returns overall success.
+fn mutation_probe(mutable_entries: &mut [MutableEntry; MAX_MUTABLE_ENTRIES]) -> bool {
+    const PROBE_DIR: &[u8] = b"selfprobe/";
+    const PROBE_FILE: &[u8] = b"selfprobe/note.txt";
+    const PROBE_RENAMED: &[u8] = b"selfprobe/renamed.txt";
+    const PROBE_PAYLOAD: &[u8] = b"mutation-probe";
+
+    let tick = rt::monotonic_now().unwrap_or(0);
+
+    // CREATE directory + file entries.
+    let Some(dir_index) = mutable_entries
+        .iter()
+        .position(|entry| !entry.occupied)
+    else {
+        return false;
+    };
+    mutable_entries[dir_index] = MutableEntry::empty();
+    {
+        let slot = &mut mutable_entries[dir_index];
+        slot.kind = StorageEntryKind::Directory;
+        slot.path[..PROBE_DIR.len()].copy_from_slice(PROBE_DIR);
+        slot.path_len = PROBE_DIR.len();
+        slot.occupied = true;
+    }
+    let Some(file_index) = mutable_entries
+        .iter()
+        .position(|entry| !entry.occupied)
+    else {
+        release_mutable_entry(&mut mutable_entries[dir_index]);
+        return false;
+    };
+    mutable_entries[file_index] = MutableEntry::empty();
+    {
+        let slot = &mut mutable_entries[file_index];
+        slot.kind = StorageEntryKind::File;
+        slot.path[..PROBE_FILE.len()].copy_from_slice(PROBE_FILE);
+        slot.path_len = PROBE_FILE.len();
+        slot.data_handle =
+            rt::memory_create(PROBE_PAYLOAD.len().max(INITIAL_FILE_CAPACITY), true)
+                .unwrap_or(rt::INVALID_HANDLE);
+        slot.data_capacity = PROBE_PAYLOAD.len().max(INITIAL_FILE_CAPACITY);
+        if rt::memory_write(slot.data_handle, 0, PROBE_PAYLOAD).is_ok() {
+            slot.data_len = PROBE_PAYLOAD.len();
+        }
+        slot.occupied = true;
+    }
+
+    // RENAME through the index helper (wire-level composition target).
+    // The index must be built from the live entries before upsert/rename
+    // mutate it (lazy-build contract).
+    let mut probe_index = crate::index::SearchIndex::new();
+    probe_index.ensure_built(&[], mutable_entries, tick);
+    probe_index.rename(PROBE_FILE, PROBE_RENAMED, tick.wrapping_add(1));
+    let renamed_present = probe_index
+        .snapshot()
+        .iter()
+        .any(|entry| entry.path() == PROBE_RENAMED);
+    let old_gone = !probe_index
+        .snapshot()
+        .iter()
+        .any(|entry| entry.path() == PROBE_FILE);
+    let rename_ok = renamed_present && old_gone;
+
+    // DELETE both entries and confirm release.
+    release_mutable_entry(&mut mutable_entries[file_index]);
+    release_mutable_entry(&mut mutable_entries[dir_index]);
+    let deleted_ok = find_mutable_entry(mutable_entries, PROBE_FILE).is_none()
+        && find_mutable_entry(mutable_entries, PROBE_RENAMED).is_none()
+        && find_mutable_entry(mutable_entries, PROBE_DIR).is_none();
+
+    rename_ok && deleted_ok
 }
 
 fn open_selftest_blob(

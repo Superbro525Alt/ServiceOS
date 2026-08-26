@@ -26,7 +26,9 @@ pub(crate) fn map_spawn_error(error: SpawnError) -> SyscallError {
             | LoadError::UnsupportedMachine
             | LoadError::UnsupportedRelocation
             | LoadError::KernelAbiTooNew
-            | LoadError::DependencyInvalid,
+            | LoadError::DependencyInvalid
+            | LoadError::UnresolvedSymbol { .. }
+            | LoadError::SymbolSpaceExhausted,
         )) => SyscallError::Unsupported,
         SpawnError::AddressSpace(AddressSpacePreparationError::Load(
             LoadError::DependencyUnavailable,

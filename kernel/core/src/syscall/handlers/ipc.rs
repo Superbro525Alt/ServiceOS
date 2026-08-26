@@ -276,7 +276,12 @@ pub(crate) fn handle_handle_duplicate(context: &SyscallContext) -> SyscallReturn
         rights,
         None,
     ) {
-        Ok(handle) => SyscallReturn::success(handle.0 as u64),
+        Ok(handle) => {
+            // A duplicated pipe handle joins its side's refcount so EOF and
+            // broken-pipe stay keyed to the last handle of each side.
+            super::pipe::note_pipe_handle_duplicated(&current_task, handle);
+            SyscallReturn::success(handle.0 as u64)
+        }
         Err(error) => SyscallReturn::error(map_capability_error(error)),
     }
 }
@@ -288,6 +293,12 @@ pub(crate) fn handle_handle_close(context: &SyscallContext) -> SyscallReturn {
     let Some(task) = current_task.task() else {
         return SyscallReturn::error(SyscallError::NotInitialized);
     };
+    // Pipe handles update side refcounts before the table entry disappears;
+    // closing the last writer flips the reader side to EOF and vice versa.
+    super::pipe::note_pipe_handle_closed(
+        &current_task,
+        CapabilityHandle(context.arguments[0] as Handle),
+    );
     match task
         .capability_space()
         .close(CapabilityHandle(context.arguments[0] as Handle))

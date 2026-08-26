@@ -326,6 +326,7 @@ pub fn error_name(error: rt::Error) -> &'static str {
         rt::Error::NotFound => "not-found",
         rt::Error::Busy => "busy",
         rt::Error::CapacityExceeded => "capacity-exceeded",
+        rt::Error::BrokenPipe => "broken-pipe",
         rt::Error::Unknown(_) => "unknown",
     }
 }

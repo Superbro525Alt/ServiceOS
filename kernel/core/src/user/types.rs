@@ -261,6 +261,16 @@ pub enum LoadError {
     DependencyUnavailable,
     /// A resolved dependency image failed validation.
     DependencyInvalid,
+    /// A strong undefined symbol had no definition across the loaded main
+    /// image and its dependencies. `name` holds up to 32 bytes of the symbol
+    /// name; `len` is the number of valid bytes in `name`.
+    UnresolvedSymbol {
+        name: [u8; 32],
+        len: u8,
+    },
+    /// The load's shared symbol namespace ran out of entries while
+    /// registering dependency exports.
+    SymbolSpaceExhausted,
     Mapping(MappingError),
 }
 

@@ -78,6 +78,7 @@ pub enum Error {
     NotFound,
     Busy,
     CapacityExceeded,
+    BrokenPipe,
     Unknown(u64),
 }
 
@@ -94,6 +95,7 @@ impl Error {
             x if x == SyscallErrorCode::NotFound as u64 => Self::NotFound,
             x if x == SyscallErrorCode::Busy as u64 => Self::Busy,
             x if x == SyscallErrorCode::CapacityExceeded as u64 => Self::CapacityExceeded,
+            x if x == SyscallErrorCode::BrokenPipe as u64 => Self::BrokenPipe,
             other => Self::Unknown(other),
         }
     }

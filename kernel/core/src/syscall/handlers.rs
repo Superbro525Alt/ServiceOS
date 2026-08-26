@@ -3,6 +3,7 @@ mod devices;
 mod ipc;
 mod memory;
 mod object;
+mod pipe;
 mod system;
 mod task;
 
@@ -30,6 +31,7 @@ pub(crate) use object::{
     handle_event_create, handle_event_reset, handle_event_signal, handle_object_info,
     handle_object_wait,
 };
+pub(crate) use pipe::{handle_pipe_create, handle_pipe_read, handle_pipe_write};
 pub(crate) use system::{
     handle_abi_version, handle_debug_console_read, handle_debug_console_write,
     handle_debug_log_write, handle_kernel_event_query_info, handle_kernel_event_query_record,

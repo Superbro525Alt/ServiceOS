@@ -106,6 +106,7 @@ pub enum SyscallError {
     NotFound,
     Busy,
     CapacityExceeded,
+    BrokenPipe,
 }
 
 impl SyscallError {
@@ -121,6 +122,7 @@ impl SyscallError {
             Self::NotFound => AbiErrorCode::NotFound as u64,
             Self::Busy => AbiErrorCode::Busy as u64,
             Self::CapacityExceeded => AbiErrorCode::CapacityExceeded as u64,
+            Self::BrokenPipe => AbiErrorCode::BrokenPipe as u64,
         }
     }
 }
@@ -175,6 +177,9 @@ pub enum SyscallKind {
     FaultHandlerRegister = AbiSyscallNumber::FaultHandlerRegister as isize,
     FaultHandlerUnregister = AbiSyscallNumber::FaultHandlerUnregister as isize,
     AudioEndpointPcmWrite = AbiSyscallNumber::AudioEndpointPcmWrite as isize,
+    PipeCreate = AbiSyscallNumber::PipeCreate as isize,
+    PipeRead = AbiSyscallNumber::PipeRead as isize,
+    PipeWrite = AbiSyscallNumber::PipeWrite as isize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

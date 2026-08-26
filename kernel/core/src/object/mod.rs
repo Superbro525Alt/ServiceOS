@@ -6,7 +6,8 @@ mod types;
 pub use model::{KernelObjectModel, initialize, model};
 pub use objects::{
     BootstrapCapabilityObject, EventObject, EventStateView, MemoryAccessError, MemoryObject,
-    MemoryObjectInfo, TimerObject, TimerStateView,
+    MemoryObjectInfo, PIPE_BUFFER_BYTES, PipeObject, PipeReadOutcome, PipeSnapshot,
+    PipeWriteOutcome, TimerObject, TimerStateView,
 };
 pub use registry::{ObjectRegistry, ObjectRegistrySnapshot};
 pub use types::{

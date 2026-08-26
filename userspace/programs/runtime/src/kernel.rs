@@ -1,6 +1,7 @@
 use crate::{
-    Handle, KernelEventRecord, OBJECT_WAIT_FLAG_NONBLOCK, ObjectInfo, Result, ServiceImageId,
-    SyscallNumber, TaskStateCode, TaskStatus, syscall0, syscall1, syscall2, syscall3,
+    Handle, HandlePair, INVALID_HANDLE, KernelEventRecord, OBJECT_WAIT_FLAG_NONBLOCK,
+    ObjectInfo, PIPE_FLAG_NONBLOCK, Result, ServiceImageId, SyscallNumber, TaskStateCode,
+    TaskStatus, syscall0, syscall1, syscall2, syscall3, syscall4,
 };
 
 pub fn abi_version() -> Result<u64> {
@@ -50,6 +51,48 @@ pub fn handle_duplicate(handle: Handle, rights: u64) -> Result<Handle> {
 
 pub fn handle_close(handle: Handle) -> Result<()> {
     syscall1(SyscallNumber::HandleClose, handle as u64).map(|_| ())
+}
+
+pub fn pipe_create() -> Result<(Handle, Handle)> {
+    let mut pair = HandlePair {
+        first: INVALID_HANDLE,
+        second: INVALID_HANDLE,
+    };
+    syscall1(
+        SyscallNumber::PipeCreate,
+        &mut pair as *mut HandlePair as u64,
+    )?;
+    Ok((pair.first, pair.second))
+}
+
+pub fn pipe_read(handle: Handle, buffer: &mut [u8], nonblock: bool) -> Result<usize> {
+    let count = syscall4(
+        SyscallNumber::PipeRead,
+        handle as u64,
+        buffer.as_mut_ptr() as u64,
+        buffer.len() as u64,
+        if nonblock {
+            PIPE_FLAG_NONBLOCK as u64
+        } else {
+            0
+        },
+    )?;
+    Ok(count as usize)
+}
+
+pub fn pipe_write(handle: Handle, bytes: &[u8], nonblock: bool) -> Result<usize> {
+    let count = syscall4(
+        SyscallNumber::PipeWrite,
+        handle as u64,
+        bytes.as_ptr() as u64,
+        bytes.len() as u64,
+        if nonblock {
+            PIPE_FLAG_NONBLOCK as u64
+        } else {
+            0
+        },
+    )?;
+    Ok(count as usize)
 }
 
 pub fn service_spawn(

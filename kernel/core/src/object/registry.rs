@@ -20,7 +20,7 @@ use crate::{
 use super::{
     KernelObject, KernelObjectRecord, KernelObjectRef, KernelObjectWeak, ObjectHeader, ObjectId,
     ObjectKind,
-    objects::{BootstrapCapabilityObject, EventObject, MemoryObject, TimerObject},
+    objects::{BootstrapCapabilityObject, EventObject, MemoryObject, PipeObject, TimerObject},
 };
 
 struct ObjectRegistryState {
@@ -163,6 +163,16 @@ impl ObjectRegistry {
                 kind: ObjectKind::MemoryObject,
             },
             body: KernelObject::MemoryObject(MemoryObject::from_bytes(bytes)),
+        })
+    }
+
+    pub fn create_pipe(&self) -> KernelObjectRef {
+        self.register(KernelObjectRecord {
+            header: ObjectHeader {
+                id: self.allocate_id(ObjectKind::Pipe),
+                kind: ObjectKind::Pipe,
+            },
+            body: KernelObject::Pipe(PipeObject::new()),
         })
     }
 

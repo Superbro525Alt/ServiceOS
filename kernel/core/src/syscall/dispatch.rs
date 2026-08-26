@@ -17,8 +17,9 @@ use super::{
     handle_memory_map_range, handle_memory_protect, handle_memory_query, handle_memory_read,
     handle_memory_unmap, handle_memory_write, handle_monotonic_now, handle_object_info,
     handle_object_wait, handle_packet_interface_info, handle_packet_interface_receive,
-    handle_packet_interface_transmit, handle_service_spawn, handle_task_loaded_libraries,
-    handle_task_spawn_image, handle_task_status, handle_thread_exit, handle_yield_current,
+    handle_packet_interface_transmit, handle_pipe_create, handle_pipe_read, handle_pipe_write,
+    handle_service_spawn, handle_task_loaded_libraries, handle_task_spawn_image,
+    handle_task_status, handle_thread_exit, handle_yield_current,
 };
 
 type Handler = fn(&SyscallContext) -> SyscallReturn;
@@ -119,6 +120,9 @@ pub fn initialize() -> &'static DispatchTable {
         entries[46] = Some(handle_fault_handler_unregister);
         entries[47] = Some(handle_task_loaded_libraries);
         entries[48] = Some(handle_audio_endpoint_pcm_write);
+        entries[49] = Some(handle_pipe_create);
+        entries[50] = Some(handle_pipe_read);
+        entries[51] = Some(handle_pipe_write);
         DispatchTable::new(entries)
     })
 }

@@ -318,6 +318,7 @@ pub(crate) fn error_label(error: rt::Error) -> &'static str {
         rt::Error::BufferTooSmall => "buffer too small",
         rt::Error::CapacityExceeded => "capacity exceeded",
         rt::Error::QueueEmpty => "timeout",
+        rt::Error::BrokenPipe => "broken-pipe",
         rt::Error::Unknown(_) => "unknown",
     }
 }

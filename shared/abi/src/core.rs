@@ -6,6 +6,7 @@ pub const IPC_MAX_HANDLES: usize = 8;
 pub const IPC_FLAG_NONBLOCK: u32 = 1 << 0;
 pub const IPC_FLAG_RECEIVE_TIMEOUT: u32 = 1 << 1;
 pub const OBJECT_WAIT_FLAG_NONBLOCK: u32 = 1 << 0;
+pub const PIPE_FLAG_NONBLOCK: u32 = 1 << 0;
 
 pub mod memory_map_flags {
     pub const WRITABLE: u32 = 1 << 0;
@@ -88,6 +89,9 @@ pub enum SyscallNumber {
     FaultHandlerUnregister = 46,
     TaskLoadedLibraries = 47,
     AudioEndpointPcmWrite = 48,
+    PipeCreate = 49,
+    PipeRead = 50,
+    PipeWrite = 51,
 }
 
 #[repr(u32)]
@@ -104,6 +108,7 @@ pub enum SyscallErrorCode {
     NotFound = 8,
     Busy = 9,
     CapacityExceeded = 10,
+    BrokenPipe = 11,
 }
 
 #[repr(C)]
@@ -227,6 +232,7 @@ pub enum ObjectKindCode {
     InputSource = 10,
     AudioEndpoint = 11,
     BlockDevice = 12,
+    Pipe = 13,
 }
 
 #[repr(C)]

@@ -27,6 +27,7 @@ pub enum ObjectKind {
     InputSource,
     AudioEndpoint,
     BlockDevice,
+    Pipe,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -56,6 +57,7 @@ pub enum KernelObject {
     InputSource(InputSourceObject),
     AudioEndpoint(AudioEndpointObject),
     BlockDevice(BlockDeviceObject),
+    Pipe(super::objects::PipeObject),
 }
 
 impl KernelObjectRecord {
@@ -151,6 +153,13 @@ impl KernelObjectRecord {
     pub fn block_device(&self) -> Option<&BlockDeviceObject> {
         match &self.body {
             KernelObject::BlockDevice(device) => Some(device),
+            _ => None,
+        }
+    }
+
+    pub fn pipe(&self) -> Option<&super::objects::PipeObject> {
+        match &self.body {
+            KernelObject::Pipe(pipe) => Some(pipe),
             _ => None,
         }
     }

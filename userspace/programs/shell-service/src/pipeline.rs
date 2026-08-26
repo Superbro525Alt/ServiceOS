@@ -1,12 +1,19 @@
-//! Shell-mediated pipelines.
+//! Shell pipelines over real kernel pipe objects.
 //!
-//! Honest model: there are no kernel pipes or cross-command file
-//! descriptors, so `cmdA | cmdB` is executed by the shell itself — stage A
-//! runs first with its output captured into a bounded buffer, the captured
-//! text is split into lines, and those lines become stage B's input
-//! context. Line-consuming built-ins are opt-in (`filter <text>`, `count`,
-//! argument-less `cat`); stages that ignore piped input simply run
-//! normally after the capture.
+//! `cmdA | cmdB` is executed by the shell, which is also where the stage
+//! commands live (built-ins): there is no per-stage exec contract to attach
+//! handles to — the spawn path (`ServiceSpawn`) transfers exactly one
+//! bootstrap capability and stage commands are compiled into this binary,
+//! not separate images. What changed is the data path: every stage boundary
+//! now crosses a real kernel pipe object. The producing stage's captured
+//! bytes are pushed through the pipe's writer handle with `pipe_write`
+//! (blocking when the 64 KiB ring fills), the writer handle is closed so
+//! readers observe EOF, and the consuming stage's input lines are drained
+//! from the reader handle with `pipe_read` until that EOF arrives.
+//!
+//! Fallback: if the kernel does not answer the pipe syscalls (older kernel,
+//! table full), [`feed_captured`] restores the previous shell-mediated
+//! in-memory handoff and the caller announces the fallback loudly.
 //!
 //! Documented limits: at most [`MAX_PIPELINE_STAGES`] stages, no quoting or
 //! redirection syntax, intermediate output clamped to [`MAX_CAPTURE_BYTES`]
@@ -291,6 +298,79 @@ pub fn feed_captured(captured: &CaptureOut) -> usize {
     match captured.as_text() {
         Some(text) => input().push_text(text),
         None => 0,
+    }
+}
+
+/// Push the captured bytes of one stage boundary through a real kernel pipe
+/// object and drain them into the piped-input store.
+///
+/// Sequence: create the pipe, write every byte into the writer handle
+/// (looping over partial writes; a blocking write parks the shell thread on
+/// the pipe's wait queue when the ring is full), close the writer so the
+/// reader side reaches EOF, then read until `pipe_read` reports that EOF,
+/// feeding the bytes into the line store on the way.
+///
+/// Returns the stored line count, or the runtime error if the kernel could
+/// not service the pipe syscalls (caller falls back to [`feed_captured`]).
+pub fn feed_captured_via_kernel_pipe(captured: &CaptureOut) -> rt::Result<usize> {
+    let (reader, writer) = rt::pipe_create()?;
+
+    let data = &captured.buf[..captured.len];
+    let mut pushed = 0usize;
+    while pushed < data.len() {
+        match rt::pipe_write(writer, &data[pushed..], false) {
+            Ok(0) => break,
+            Ok(count) => pushed += count,
+            Err(rt::Error::BrokenPipe) => break,
+            Err(error) => {
+                let _ = rt::handle_close(writer);
+                let _ = rt::handle_close(reader);
+                return Err(error);
+            }
+        }
+    }
+
+    // Closing the last writer handle is what flips the reader side to EOF;
+    // without this the drain loop below would block forever.
+    if let Err(error) = rt::handle_close(writer) {
+        let _ = rt::handle_close(reader);
+        return Err(error);
+    }
+
+    let mut collected = [0u8; MAX_CAPTURE_BYTES];
+    let mut filled = 0usize;
+    input().clear();
+    loop {
+        let mut chunk = [0u8; 128];
+        match rt::pipe_read(reader, &mut chunk, false) {
+            Ok(0) => break,
+            Ok(count) => {
+                let room = collected.len() - filled;
+                let copy = count.min(room);
+                collected[filled..filled + copy].copy_from_slice(&chunk[..copy]);
+                filled += copy;
+                if room == 0 {
+                    break;
+                }
+            }
+            Err(error) => {
+                let _ = rt::handle_close(reader);
+                return Err(error);
+            }
+        }
+    }
+    let closed = rt::handle_close(reader);
+
+    match core::str::from_utf8(&collected[..filled]) {
+        Ok(text) => {
+            input().push_text(text);
+            let _ = closed;
+            Ok(input().len())
+        }
+        Err(_) => {
+            let _ = closed;
+            Ok(0)
+        }
     }
 }
 

@@ -343,3 +343,294 @@ fn write_page_backed(
     }
     source_offset
 }
+
+pub const PIPE_BUFFER_BYTES: usize = 64 * 1024;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PipeSnapshot {
+    pub readable_bytes: usize,
+    pub free_bytes: usize,
+    pub readers: u32,
+    pub writers: u32,
+}
+
+/// Nonblocking read result. `Bytes(0)` means "no data yet, writers alive";
+/// [`PipeReadOutcome::EndOfStream`] means the buffer is drained and every
+/// writer handle is closed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PipeReadOutcome {
+    Bytes(usize),
+    EndOfStream,
+}
+
+/// Nonblocking write result. `WouldBlock` means the ring is full while a
+/// reader remains; [`PipeWriteOutcome::BrokenPipe`] means every reader
+/// handle is closed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PipeWriteOutcome {
+    Bytes(usize),
+    WouldBlock,
+    BrokenPipe,
+}
+
+struct PipeState {
+    buf: Box<[u8; PIPE_BUFFER_BYTES]>,
+    head: usize,
+    len: usize,
+    readers: u32,
+    writers: u32,
+}
+
+/// Bounded byte-stream pipe: a 64 KiB ring buffer with explicit reader and
+/// writer side refcounts. All primitives are nonblocking; syscall handlers
+/// layer block/wakeup on top via the object-wait substrate so this type stays
+/// host-testable without a scheduler.
+pub struct PipeObject {
+    state: Mutex<PipeState>,
+}
+
+impl PipeObject {
+    pub fn new() -> Self {
+        Self {
+            state: Mutex::new(PipeState {
+                buf: Box::new([0; PIPE_BUFFER_BYTES]),
+                head: 0,
+                len: 0,
+                readers: 1,
+                writers: 1,
+            }),
+        }
+    }
+
+    pub fn snapshot(&self) -> PipeSnapshot {
+        let state = self.state.lock();
+        PipeSnapshot {
+            readable_bytes: state.len,
+            free_bytes: PIPE_BUFFER_BYTES - state.len,
+            readers: state.readers,
+            writers: state.writers,
+        }
+    }
+
+    pub fn read(&self, out: &mut [u8]) -> PipeReadOutcome {
+        let mut state = self.state.lock();
+        if state.len == 0 {
+            return if state.writers == 0 {
+                PipeReadOutcome::EndOfStream
+            } else {
+                PipeReadOutcome::Bytes(0)
+            };
+        }
+        if out.is_empty() {
+            return PipeReadOutcome::Bytes(0);
+        }
+        let tail = (state.head + PIPE_BUFFER_BYTES - state.len) % PIPE_BUFFER_BYTES;
+        let contiguous = PIPE_BUFFER_BYTES - tail;
+        let count = out.len().min(state.len).min(contiguous);
+        out[..count].copy_from_slice(&state.buf[tail..tail + count]);
+        state.len -= count;
+        PipeReadOutcome::Bytes(count)
+    }
+
+    pub fn write(&self, bytes: &[u8]) -> PipeWriteOutcome {
+        // Zero-length writes stay benign no-ops even on a broken pipe,
+        // matching the usual kernel convention.
+        if bytes.is_empty() {
+            return PipeWriteOutcome::Bytes(0);
+        }
+        let mut state = self.state.lock();
+        if state.readers == 0 {
+            return PipeWriteOutcome::BrokenPipe;
+        }
+        let space = PIPE_BUFFER_BYTES - state.len;
+        if space == 0 {
+            return PipeWriteOutcome::WouldBlock;
+        }
+        let count = space.min(bytes.len());
+        let head = state.head;
+        let contiguous = PIPE_BUFFER_BYTES - head;
+        let first = count.min(contiguous);
+        state.buf[head..head + first].copy_from_slice(&bytes[..first]);
+        if count > first {
+            state.buf[..count - first].copy_from_slice(&bytes[first..count]);
+        }
+        state.head = (head + count) % PIPE_BUFFER_BYTES;
+        state.len += count;
+        PipeWriteOutcome::Bytes(count)
+    }
+
+    /// Drops one writer reference; returns true when the last writer closed.
+    pub fn close_writer(&self) -> bool {
+        let mut state = self.state.lock();
+        if state.writers > 0 {
+            state.writers -= 1;
+        }
+        state.writers == 0
+    }
+
+    /// Drops one reader reference; returns true when the last reader closed.
+    pub fn close_reader(&self) -> bool {
+        let mut state = self.state.lock();
+        if state.readers > 0 {
+            state.readers -= 1;
+        }
+        state.readers == 0
+    }
+
+    pub fn add_reader(&self) {
+        let mut state = self.state.lock();
+        state.readers = state.readers.saturating_add(1);
+    }
+
+    pub fn add_writer(&self) {
+        let mut state = self.state.lock();
+        state.writers = state.writers.saturating_add(1);
+    }
+}
+
+#[cfg(test)]
+mod pipe_tests {
+    use super::*;
+
+    fn drain(pipe: &PipeObject, out: &mut Vec<u8>) -> PipeReadOutcome {
+        let mut chunk = [0u8; 512];
+        loop {
+            match pipe.read(&mut chunk) {
+                PipeReadOutcome::Bytes(0) => return PipeReadOutcome::Bytes(0),
+                PipeReadOutcome::Bytes(n) => out.extend_from_slice(&chunk[..n]),
+                other => return other,
+            }
+        }
+    }
+
+    #[test]
+    fn round_trip_small_payload() {
+        let pipe = PipeObject::new();
+        assert_eq!(pipe.write(b"hello"), PipeWriteOutcome::Bytes(5));
+        let mut out = [0u8; 8];
+        assert_eq!(pipe.read(&mut out), PipeReadOutcome::Bytes(5));
+        assert_eq!(&out[..5], b"hello");
+    }
+
+    #[test]
+    fn ring_wraparound_preserves_stream_order_across_boundary() {
+        let pipe = PipeObject::new();
+
+        // Prime the ring so the write head lands near the buffer end.
+        let prime = vec![7u8; 60_000];
+        assert_eq!(pipe.write(&prime), PipeWriteOutcome::Bytes(60_000));
+        let mut drained = Vec::new();
+        assert_eq!(drain(&pipe, &mut drained), PipeReadOutcome::Bytes(0));
+        assert_eq!(drained, prime);
+
+        // This write must split across the physical end of the ring and
+        // come back out in logical order.
+        let wrapped: Vec<u8> = (0..10_000).map(|i| (i % 251) as u8 + 1).collect();
+        assert_eq!(pipe.write(&wrapped), PipeWriteOutcome::Bytes(10_000));
+        let mut got = Vec::new();
+        assert_eq!(drain(&pipe, &mut got), PipeReadOutcome::Bytes(0));
+        assert_eq!(got, wrapped);
+
+        // Indices remain consistent after full wraparound.
+        assert_eq!(pipe.write(b"tail"), PipeWriteOutcome::Bytes(4));
+        let mut out = [0u8; 4];
+        assert_eq!(pipe.read(&mut out), PipeReadOutcome::Bytes(4));
+        assert_eq!(&out, b"tail");
+    }
+
+    #[test]
+    fn pending_data_still_readable_after_writer_close_then_eof() {
+        let pipe = PipeObject::new();
+        assert_eq!(pipe.write(b"leftover"), PipeWriteOutcome::Bytes(8));
+        assert!(pipe.close_writer());
+
+        let mut out = [0u8; 16];
+        assert_eq!(pipe.read(&mut out), PipeReadOutcome::Bytes(8));
+        assert_eq!(&out[..8], b"leftover");
+        assert_eq!(pipe.read(&mut out), PipeReadOutcome::EndOfStream);
+        assert_eq!(pipe.read(&mut out), PipeReadOutcome::EndOfStream);
+    }
+
+    #[test]
+    fn empty_read_blocks_only_while_writers_remain() {
+        let pipe = PipeObject::new();
+        let mut out = [0u8; 4];
+        assert_eq!(pipe.read(&mut out), PipeReadOutcome::Bytes(0));
+        assert!(pipe.close_writer());
+        assert_eq!(pipe.read(&mut out), PipeReadOutcome::EndOfStream);
+    }
+
+    #[test]
+    fn eof_requires_every_writer_to_close() {
+        let pipe = PipeObject::new();
+        pipe.add_writer();
+        let mut out = [0u8; 4];
+
+        assert!(!pipe.close_writer());
+        assert_eq!(pipe.read(&mut out), PipeReadOutcome::Bytes(0));
+
+        assert!(pipe.close_writer());
+        assert_eq!(pipe.read(&mut out), PipeReadOutcome::EndOfStream);
+    }
+
+    #[test]
+    fn write_after_last_reader_close_is_broken_pipe() {
+        let pipe = PipeObject::new();
+        assert!(pipe.close_reader());
+        assert_eq!(
+            pipe.write(b"nobody listening"),
+            PipeWriteOutcome::BrokenPipe
+        );
+
+        // Zero-length writes are benign no-ops even when broken.
+        assert_eq!(pipe.write(&[]), PipeWriteOutcome::Bytes(0));
+
+        // Buffered data is dropped once both ends are gone; reads report EOF.
+        assert!(pipe.close_writer());
+        let mut out = [0u8; 4];
+        assert_eq!(pipe.read(&mut out), PipeReadOutcome::EndOfStream);
+    }
+
+    #[test]
+    fn full_ring_reports_would_block_until_reader_drains() {
+        let pipe = PipeObject::new();
+        let filler = [0xA5u8; 512];
+        let mut pushed = 0usize;
+        while pushed < PIPE_BUFFER_BYTES {
+            match pipe.write(&filler) {
+                PipeWriteOutcome::Bytes(n) => pushed += n,
+                other => panic!("unexpected write outcome {other:?}"),
+            }
+        }
+        assert_eq!(pipe.snapshot().free_bytes, 0);
+        assert_eq!(pipe.write(b"x"), PipeWriteOutcome::WouldBlock);
+
+        let mut out = [0u8; 256];
+        assert_eq!(pipe.read(&mut out), PipeReadOutcome::Bytes(256));
+        assert_eq!(pipe.write(&[0x5A; 300]), PipeWriteOutcome::Bytes(256));
+        assert_eq!(pipe.write(b"x"), PipeWriteOutcome::WouldBlock);
+    }
+
+    #[test]
+    fn partial_write_fills_exactly_the_free_space() {
+        let pipe = PipeObject::new();
+        assert_eq!(pipe.write(&[1; 100]), PipeWriteOutcome::Bytes(100));
+        assert_eq!(
+            pipe.write(&[2; PIPE_BUFFER_BYTES]),
+            PipeWriteOutcome::Bytes(PIPE_BUFFER_BYTES - 100)
+        );
+        assert_eq!(pipe.write(&[3; 1]), PipeWriteOutcome::WouldBlock);
+    }
+
+    #[test]
+    fn snapshot_reflects_sides_and_counts() {
+        let pipe = PipeObject::new();
+        pipe.add_reader();
+        pipe.add_writer();
+        let snap = pipe.snapshot();
+        assert_eq!((snap.readers, snap.writers), (2, 2));
+        assert!(!pipe.close_reader());
+        assert!(pipe.close_reader());
+        assert_eq!(pipe.snapshot().readers, 0);
+    }
+}

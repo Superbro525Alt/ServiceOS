@@ -290,7 +290,20 @@ pub(crate) fn run_sync(
         let result = execute_command(bootstrap, pipeline::capturing_output(), stage);
         let captured = pipeline::capture_finish_scratch();
         result?;
-        pipeline::feed_captured(&captured);
+        match pipeline::feed_captured_via_kernel_pipe(&captured) {
+            Ok(_) => {}
+            Err(pipe_error) => {
+                // Loud fallback: without kernel pipes this boundary would be
+                // a plain in-memory handoff again.
+                write_output_linef(
+                    output,
+                    format_args!(
+                        "pipeline: kernel pipe unavailable ({pipe_error:?}); mediated fallback"
+                    ),
+                )?;
+                pipeline::feed_captured(&captured);
+            }
+        }
         if captured.truncated {
             write_output_linef(
                 output,

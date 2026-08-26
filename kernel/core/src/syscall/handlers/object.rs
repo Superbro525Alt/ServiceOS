@@ -151,6 +151,10 @@ fn object_is_wait_ready(object: &KernelObjectRecord) -> Result<bool, SyscallErro
             .info()
             .pending_events
             != 0),
+        ObjectKind::Pipe => {
+            let snapshot = object.pipe().expect("pipe object").snapshot();
+            Ok(snapshot.readable_bytes > 0 || snapshot.writers == 0)
+        }
         _ => Err(SyscallError::InvalidArgument),
     }
 }
@@ -283,6 +287,16 @@ fn object_info_view(object: &KernelObjectRecord) -> AbiObjectInfo {
             info.detail2 = snapshot.read_ops;
             info.detail3 = snapshot.write_ops;
         }
+        ObjectKind::Pipe => {
+            let snapshot = object.pipe().expect("pipe object").snapshot();
+            if snapshot.readable_bytes > 0 || snapshot.writers == 0 {
+                info.state_flags |= object_state_flags::READY;
+            }
+            info.detail0 = snapshot.readable_bytes as u64;
+            info.detail1 = snapshot.free_bytes as u64;
+            info.detail2 = snapshot.readers as u64;
+            info.detail3 = snapshot.writers as u64;
+        }
     }
 
     info
@@ -302,5 +316,6 @@ const fn map_kind(kind: ObjectKind) -> ObjectKindCode {
         ObjectKind::InputSource => ObjectKindCode::InputSource,
         ObjectKind::AudioEndpoint => ObjectKindCode::AudioEndpoint,
         ObjectKind::BlockDevice => ObjectKindCode::BlockDevice,
+        ObjectKind::Pipe => ObjectKindCode::Pipe,
     }
 }

@@ -3,6 +3,7 @@ mod onboard;
 pub(in crate::commands) mod parse;
 pub(in crate::commands) mod query;
 mod repos;
+mod keys;
 
 use serviceos_userspace_runtime as rt;
 
@@ -91,6 +92,7 @@ where
                 format_args!("usage: pkg ring <name> <production|preview|testing>"),
             ),
         },
+        Some("keys") => keys::cmd_pkg_keys(bootstrap, output, parts),
         Some("verify") => {
             mutate::cmd_pkg_maintenance(bootstrap, output, rt::PackageMaintenanceAction::Validate)
         }
@@ -107,7 +109,7 @@ where
         _ => write_output_linef(
             output,
             format_args!(
-                "usage: pkg <list|catalog|repos|repo|info|install|update|remove|rollback|history|provenance|policy|pin|channel|ring|verify|repair|recover|gc|sideload> ..."
+                "usage: pkg <list|catalog|repos|repo|info|install|update|remove|rollback|history|provenance|policy|keys|pin|channel|ring|verify|repair|recover|gc|sideload> ..."
             ),
         ),
     }

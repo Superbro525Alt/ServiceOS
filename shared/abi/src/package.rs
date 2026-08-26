@@ -33,6 +33,18 @@ pub enum PackageTag {
     PolicySetReply = 0x71d,
     MaintenanceRequest = 0x71e,
     MaintenanceReply = 0x71f,
+    /// Feed-keystore key management (additive, shell-driven):
+    /// list / enroll / activate-by-id / rotate-source / generate keypair.
+    KeysListRequest = 0x720,
+    KeysListReply = 0x721,
+    KeysEnrollRequest = 0x722,
+    KeysEnrollReply = 0x723,
+    KeysActivateRequest = 0x724,
+    KeysActivateReply = 0x725,
+    KeysRotateRequest = 0x726,
+    KeysRotateReply = 0x727,
+    KeysGenRequest = 0x728,
+    KeysGenReply = 0x729,
 }
 
 #[repr(u32)]
@@ -52,6 +64,8 @@ pub enum PackageStatus {
     Offline = 11,
     Interrupted = 12,
     VerificationFailed = 13,
+    InvalidParameter = 14,
+    AlreadyExists = 15,
 }
 
 #[repr(u32)]

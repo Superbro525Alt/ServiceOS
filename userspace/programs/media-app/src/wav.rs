@@ -9,6 +9,12 @@ pub(crate) struct WavInfo {
     pub(crate) sample_rate: u32,
     pub(crate) bits_per_sample: u32,
     pub(crate) is_float: bool,
+    /// Raw fmt-chunk encoding tag: 1 PCM, 3 float, 0x11 IMA ADPCM.
+    pub(crate) format_tag: u16,
+    /// Declared block alignment from the fmt chunk.
+    pub(crate) block_align: u32,
+    /// wSamplesPerBlock for compressed formats; 0 when absent.
+    pub(crate) samples_per_block: u32,
     pub(crate) data_offset: usize,
     pub(crate) data_len: usize,
 }
@@ -47,6 +53,15 @@ impl WavInfo {
     }
 }
 
+/// Byte width of one sample for a stream format.
+pub(crate) fn sample_width(format: AudioSampleFormat) -> usize {
+    match format {
+        AudioSampleFormat::U8 => 1,
+        AudioSampleFormat::S16Le => 2,
+        AudioSampleFormat::S32Le | AudioSampleFormat::F32Le => 4,
+    }
+}
+
 fn le_u16(bytes: &[u8], offset: usize) -> Option<u16> {
     let hi = *bytes.get(offset + 1)?;
     let lo = *bytes.get(offset)?;
@@ -76,6 +91,9 @@ pub(crate) fn parse_wav(bytes: &[u8]) -> Option<WavInfo> {
         sample_rate: 0,
         bits_per_sample: 0,
         is_float: false,
+        format_tag: 0,
+        block_align: 0,
+        samples_per_block: 0,
         data_offset: 0,
         data_len: 0,
     };
@@ -91,10 +109,31 @@ pub(crate) fn parse_wav(bytes: &[u8]) -> Option<WavInfo> {
             let format_tag = le_u16(bytes, body)?;
             let channels = u32::from(le_u16(bytes, body + 2)?);
             let rate = le_u32(bytes, body + 4)?;
+            let block_align = u32::from(le_u16(bytes, body + 12)?);
             let bits = u32::from(le_u16(bytes, body + 14)?);
             match format_tag {
-                1 => info.is_float = false,
-                3 => info.is_float = true,
+                1 => {
+                    info.is_float = false;
+                    if !matches!(bits, 8 | 16 | 32) {
+                        return None;
+                    }
+                }
+                3 => {
+                    info.is_float = true;
+                    if bits != 32 {
+                        return None;
+                    }
+                }
+                0x11 => {
+                    // IMA ADPCM: header needs the two extension fields,
+                    // 4-bit encoding, and a roomy per-channel block.
+                    if chunk_len < 20 || bits != 4 {
+                        return None;
+                    }
+                    if block_align < channels * 4 || block_align % 4 != 0 {
+                        return None;
+                    }
+                }
                 _ => return None,
             }
             if (channels != 1 && channels != 2) || rate == 0 {
@@ -102,6 +141,9 @@ pub(crate) fn parse_wav(bytes: &[u8]) -> Option<WavInfo> {
             }
             info.channels = channels;
             info.sample_rate = rate;
+            info.format_tag = format_tag;
+            info.block_align = block_align;
+            info.samples_per_block = u32::from(le_u16(bytes, body + 18).unwrap_or(0));
             info.bits_per_sample = bits;
             have_fmt = true;
         } else if tag_at(bytes, cursor, b"data") {
@@ -115,8 +157,25 @@ pub(crate) fn parse_wav(bytes: &[u8]) -> Option<WavInfo> {
     if !have_fmt || info.data_len == 0 || info.data_offset == 0 {
         return None;
     }
-    info.sample_format()?;
     Some(info)
+}
+
+/// Cheap container sniff: verifies the RIFF/WAVE magic and returns the
+/// fmt-chunk encoding tag without full validation. Registry input.
+pub(crate) fn fmt_tag_of(bytes: &[u8]) -> Option<u16> {
+    if bytes.len() < 12 || !tag_at(bytes, 0, b"RIFF") || !tag_at(bytes, 8, b"WAVE") {
+        return None;
+    }
+    let mut cursor = 12usize;
+    while cursor + 8 <= bytes.len() {
+        let chunk_len = le_u32(bytes, cursor + 4)? as usize;
+        let body = cursor + 8;
+        if tag_at(bytes, cursor, b"fmt ") {
+            return le_u16(bytes, body);
+        }
+        cursor = body + chunk_len + (chunk_len & 1);
+    }
+    None
 }
 
 /// Converts interleaved raw samples starting at byte `start` into
@@ -221,11 +280,29 @@ mod tests {
         let odd = riff(&[0u8; 9], &pcm_fmt(1, 44100, 24));
         assert_eq!(parse_wav(&odd), None);
 
-        // ADPCM (tag 0x11) is unsupported.
-        let mut adpcm = pcm_fmt(2, 48000, 4);
-        adpcm[0] = 0x11;
-        let adpcm_file = riff(&[0u8; 8], &adpcm);
-        assert_eq!(parse_wav(&adpcm_file), None);
+        // ADPCM (tag 0x11) is now registry-supported; header sanity holds.
+        let mut adpcm_body = Vec::new();
+        adpcm_body.extend_from_slice(&0x11u16.to_le_bytes());
+        adpcm_body.extend_from_slice(&2u16.to_le_bytes());
+        adpcm_body.extend_from_slice(&44100u32.to_le_bytes());
+        adpcm_body.extend_from_slice(&(88200u32).to_le_bytes());
+        adpcm_body.extend_from_slice(&512u16.to_le_bytes()); // block align
+        adpcm_body.extend_from_slice(&4u16.to_le_bytes());
+        adpcm_body.extend_from_slice(&2u16.to_le_bytes());
+        adpcm_body.extend_from_slice(&1017u16.to_le_bytes());
+        let adpcm_file = riff(&[0u8; 1024], &adpcm_body);
+        let info = parse_wav(&adpcm_file).expect("ima wav parses");
+        assert_eq!(info.format_tag, 0x11);
+        assert_eq!(info.block_align, 512);
+
+        let mut bad_bits = adpcm_body.clone();
+        bad_bits[14] = 16;
+        assert_eq!(parse_wav(&riff(&[0u8; 8], &bad_bits)), None);
+
+        let mut small_block = adpcm_body.clone();
+        small_block[12] = 4;
+        small_block[13] = 0;
+        assert_eq!(parse_wav(&riff(&[0u8; 64], &small_block)), None);
 
         assert_eq!(parse_wav(b"not a wave"), None);
         assert_eq!(parse_wav(&[]), None);

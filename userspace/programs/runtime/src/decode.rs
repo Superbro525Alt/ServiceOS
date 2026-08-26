@@ -236,6 +236,7 @@ pub(crate) fn package_status_error(status: PackageStatus) -> Error {
         | PackageStatus::Unsupported => Error::InvalidArgument,
         PackageStatus::Denied => Error::PermissionDenied,
         PackageStatus::IntegrityFailed | PackageStatus::VerificationFailed => Error::InvalidCall,
+        PackageStatus::InvalidParameter | PackageStatus::AlreadyExists => Error::InvalidArgument,
         PackageStatus::Ok => Error::InvalidArgument,
     }
 }

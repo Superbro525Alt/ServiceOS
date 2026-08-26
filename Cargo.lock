@@ -247,6 +247,7 @@ name = "serviceos-platform-raspi5"
 version = "0.1.0"
 dependencies = [
  "fdt",
+ "serviceos-abi",
  "serviceos-kernel-arch-aarch64",
  "serviceos-kernel-core",
 ]

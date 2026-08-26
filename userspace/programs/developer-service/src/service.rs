@@ -2,11 +2,15 @@ use rt::{ControlTag, LifecycleEvent, RawMessage, ServiceId};
 use serviceos_userspace_runtime as rt;
 
 use crate::{
-    consts::{MAX_JOBS, MAX_TOOLCHAINS, MAX_WORKSPACES},
+    consts::{
+        MAX_JOBS, MAX_TOOLCHAINS, MAX_WORKSPACES, FARM_SELFTEST_REPLY_TAG,
+        FARM_SELFTEST_REQUEST_TAG,
+    },
     payload,
     protocol::{Catalog, handle_public_request, poll_job_exits, poll_job_reports},
-    registry,
     types::{JobSlot, ToolchainSlot, WorkspaceSlot},
+    farm_harness,
+    registry,
     util::{emit_log, read_catalog},
 };
 
@@ -75,7 +79,16 @@ pub(crate) fn run() -> u64 {
 
     let mut jobs = [JobSlot::empty(); MAX_JOBS];
 
+    // Loopback farm live-accept harness: compile-time gated via
+    // SERVICEOS_FARM_SELFTEST=1 so default boots are byte-for-byte
+    // unchanged. Fires once, late in boot, after the network selftest
+    // window has finished; runs bounded and non-fatal on failure.
+    const FARM_SELFTEST_DELAY_TURNS: u32 = 2_500;
+    let mut farm_selftest_started = false;
+    let mut loop_turns: u32 = 0;
+
     loop {
+        loop_turns = loop_turns.wrapping_add(1);
         if poll_lifecycle(bootstrap).unwrap_or(false) {
             for job in &mut jobs {
                 if job.occupied {
@@ -91,6 +104,17 @@ pub(crate) fn run() -> u64 {
         match rt::channel_receive_nonblocking(public.first, &mut request) {
             Ok(()) => {
                 had_work = true;
+                if request.tag == FARM_SELFTEST_REQUEST_TAG {
+                    let report =
+                        farm_harness::run(bootstrap, log_handle, &mut jobs);
+                    if let Some(reply_handle) = request.handles.first().copied() {
+                        let reply = farm_harness::build_control_reply(report.pass);
+                        let _ = rt::channel_send(reply_handle, &reply);
+                        let _ = rt::handle_close(reply_handle);
+                    }
+                    continue;
+                }
+                let _ = (FARM_SELFTEST_REPLY_TAG, FARM_SELFTEST_REQUEST_TAG);
                 let catalog = Catalog {
                     toolchains: &toolchains,
                     toolchain_count,
@@ -117,6 +141,14 @@ pub(crate) fn run() -> u64 {
 
         poll_job_reports(log_handle, &mut jobs);
         poll_job_exits(log_handle, &mut jobs);
+
+        if !farm_selftest_started
+            && farm_harness::enabled()
+            && loop_turns >= FARM_SELFTEST_DELAY_TURNS
+        {
+            farm_selftest_started = true;
+            let _ = farm_harness::run(bootstrap, log_handle, &mut jobs);
+        }
 
         if !had_work && rt::yield_current().is_err() {
             return 0xfd08;

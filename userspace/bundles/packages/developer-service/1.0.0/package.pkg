@@ -17,4 +17,4 @@ content=packages/developer-service/1.0.0/sdk/native/README.txt
 content=packages/developer-service/1.0.0/sdk/linux/README.txt
 content=packages/developer-service/1.0.0/sdk/windows/README.txt
 content=packages/developer-service/1.0.0/sdk/macos/README.txt
-integrity=fnv64:0xdc71b376027733d3
+integrity=fnv64:0x2b642bac321b08a8

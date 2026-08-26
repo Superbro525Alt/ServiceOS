@@ -64,6 +64,8 @@ pub struct DeviceTreeBootInfo<'boot> {
     pub memory_map_truncated: bool,
     pub stdout_uart: Option<UartDescriptor<'boot>>,
     pub interrupt_controller: Option<InterruptControllerRegions>,
+    /// VideoCore property-mailbox MMIO span resolved from the device tree.
+    pub mailbox: Option<MemoryRange>,
 }
 
 pub const fn status() -> DeviceTreeStatus {
@@ -217,6 +219,70 @@ pub fn parse(dtb_ptr: *const u8) -> Result<DeviceTreeBootInfo<'static>, DeviceTr
         None
     })();
 
+    // VideoCore mailbox discovery: Pi-family DTBs (including the BCM2712's
+    // firmware-provided blob) expose the mailbox node under a compatible that
+    // still advertises the original `brcm,bcm2835-mbox` register interface.
+    // The address is translated through every intermediate `ranges` entry, so
+    // the Pi 5's relocated peripheral windows resolve to real physical MMIO
+    // without hardcoded board constants. UNTESTED WITHOUT HARDWARE: QEMU's
+    // arm `virt` machine carries no such node (the scan returns None there),
+    // and no BCM2712 firmware DTB has been parsed on silicon yet.
+    let mut mailbox: Option<MemoryRange> = None;
+    'mailbox_scan: for (_, node) in root.all_nodes() {
+        let Some(compatible) = node.property::<Compatible>() else {
+            continue;
+        };
+        if !compatible.compatible_with("brcm,bcm2835-mbox") {
+            continue;
+        }
+        let Some(reg) = node.property::<Reg>() else {
+            break 'mailbox_scan;
+        };
+        let Some(Ok(entry)) = reg.iter::<u64, u64>().next() else {
+            break 'mailbox_scan;
+        };
+        let mut address = entry.address;
+        let mut walker = Some(node);
+        while let Some(current) = walker {
+            let Some(parent) = current.parent() else {
+                break;
+            };
+            match parent.ranges() {
+                Some(ranges) => {
+                    let mut matched = false;
+                    for range in ranges.iter::<u64, u64, u64>() {
+                        let Ok(range) = range else { continue };
+                        let range_end = range.child_bus_address.checked_add(range.len);
+                        if address >= range.child_bus_address
+                            && range_end.is_some_and(|end| address < end)
+                        {
+                            if let Some(mapped) = range
+                                .parent_bus_address
+                                .checked_add(address - range.child_bus_address)
+                            {
+                                address = mapped;
+                                matched = true;
+                            }
+                            break;
+                        }
+                    }
+                    // Fully-specified ranges that failed to cover the child
+                    // address mean an unmappable peripheral window.
+                    if !matched && ranges.iter::<u64, u64, u64>().next().is_some() {
+                        break 'mailbox_scan;
+                    }
+                }
+                None => break,
+            }
+            walker = parent.parent();
+        }
+        mailbox = Some(MemoryRange {
+            start: PhysicalAddress::new(address),
+            end: PhysicalAddress::new(address.saturating_add(entry.len)),
+        });
+        break;
+    }
+
     Ok(DeviceTreeBootInfo {
         model: root.model(),
         compatible: Some(root.compatible().first()),
@@ -228,6 +294,7 @@ pub fn parse(dtb_ptr: *const u8) -> Result<DeviceTreeBootInfo<'static>, DeviceTr
         memory_map_truncated,
         stdout_uart,
         interrupt_controller,
+        mailbox,
     })
 }
 

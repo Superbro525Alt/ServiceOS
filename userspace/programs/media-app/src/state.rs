@@ -87,6 +87,8 @@ pub(crate) struct MediaState {
     pub(crate) desktop_handle: rt::Handle,
     pub(crate) frame_cursor: usize,
     pub(crate) total_frames: usize,
+    /// Active codec pipeline for the loaded track.
+    pub(crate) decoder: Option<crate::codec::Decoder>,
     pub(crate) total_ms: u64,
     pub(crate) status_note: [u8; 96],
     pub(crate) status_note_len: usize,
@@ -114,6 +116,7 @@ impl MediaState {
             desktop_handle: rt::INVALID_HANDLE,
             frame_cursor: 0,
             total_frames: 0,
+            decoder: None,
             total_ms: 0,
             status_note: [0; 96],
             status_note_len: 0,

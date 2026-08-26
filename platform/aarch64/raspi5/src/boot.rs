@@ -6,7 +6,7 @@ use serviceos_kernel_core::{
 };
 
 use crate::{
-    dtb::{self, DeviceTreeBootInfo, DeviceTreeError, InterruptControllerRegions},
+    dtb::{self, DeviceTreeBootInfo, DeviceTreeError, InterruptControllerRegions, MemoryRange},
     uart::UartDescriptor,
 };
 
@@ -48,6 +48,8 @@ pub struct BootSummary<'boot> {
     pub dtb_size: usize,
     pub uart: Option<UartDescriptor<'boot>>,
     pub interrupt_controller: Option<InterruptControllerRegions>,
+    /// VideoCore property-mailbox MMIO span (device-tree resolved).
+    pub mailbox: Option<MemoryRange>,
 }
 
 pub struct CapturedBootState<'boot> {
@@ -90,6 +92,7 @@ pub fn capture_boot_info(
             dtb_size: dtb.dtb_size,
             uart: dtb.stdout_uart,
             interrupt_controller: dtb.interrupt_controller,
+            mailbox: dtb.mailbox,
         },
     })
 }

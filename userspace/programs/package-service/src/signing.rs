@@ -280,6 +280,31 @@ impl SourceKeys {
         }
     }
 
+    /// Whole-source rotation: promote the MOST RECENTLY enrolled retired
+    /// key (the just-provisioned standby) to active and retire the current
+    /// active key at `now`. Returns the promoted key's slot index so the
+    /// caller can report which id became active.
+    pub fn rotate_source(&mut self, now: u64) -> Result<usize, KeystoreError> {
+        let Some(new_slot) = self.keys[..self.key_count]
+            .iter()
+            .rposition(|key| key.state == KeyState::Retired)
+        else {
+            return Err(KeystoreError::UnknownKey);
+        };
+        // Copy the id out first so the immutable slot borrow ends before
+        // rotate_active takes the entry mutably again.
+        let id_bytes = self.keys[new_slot].key_id.as_str().as_bytes();
+        if id_bytes.is_empty() || id_bytes.len() > KEY_ID_MAX {
+            return Err(KeystoreError::UnknownKey);
+        }
+        let mut id_buffer = [0u8; KEY_ID_MAX];
+        id_buffer[..id_bytes.len()].copy_from_slice(id_bytes);
+        let key_id = core::str::from_utf8(&id_buffer[..id_bytes.len()])
+            .map_err(|_| KeystoreError::InvalidKeyId)?;
+        self.rotate_active(key_id, now)?;
+        Ok(new_slot)
+    }
+
     pub fn retired_within_window(&self, key: &TrustedKey, now: u64) -> bool {
         if self.accept_retired_ticks == 0 || key.state != KeyState::Retired {
             return false;
@@ -330,6 +355,133 @@ impl Keystore {
         self.sources[self.source_count].source.set(source);
         self.source_count += 1;
         Ok(&mut self.sources[self.source_count - 1])
+    }
+}
+
+/// Wire encoding for key algorithm words: 1 = keyed FNV digest, 2 =
+/// Ed25519 verification key.
+pub const ALG_WORD_FNV: u64 = 1;
+pub const ALG_WORD_ED25519: u64 = 2;
+/// Wire encoding for key state words: 1 = active, 2 = retired.
+pub const STATE_WORD_ACTIVE: u64 = 1;
+pub const STATE_WORD_RETIRED: u64 = 2;
+
+pub fn alg_word(alg: KeyAlg) -> u64 {
+    match alg {
+        KeyAlg::Fnv => ALG_WORD_FNV,
+        KeyAlg::Ed25519 => ALG_WORD_ED25519,
+    }
+}
+
+pub fn state_word(state: KeyState) -> u64 {
+    match state {
+        KeyState::Active => STATE_WORD_ACTIVE,
+        KeyState::Retired => STATE_WORD_RETIRED,
+    }
+}
+
+/// Encode `bytes` as lowercase hex into `out`; returns the written length
+/// (2 * bytes.len(), capped by the caller's buffer).
+pub fn encode_hex(bytes: &[u8], out: &mut [u8]) -> usize {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut len = 0usize;
+    for byte in bytes {
+        if len + 2 > out.len() {
+            break;
+        }
+        out[len] = DIGITS[(byte >> 4) as usize];
+        out[len + 1] = DIGITS[(byte & 0xf) as usize];
+        len += 2;
+    }
+    len
+}
+
+/// Deterministic short key id derived from the key material itself:
+/// `k-` plus 16 lowercase hex digits of FNV-1a64 over the decoded key
+/// bytes. Returned as (`bytes`, `len`) ready for FixedText::set via
+/// core::str::from_utf8.
+pub fn auto_key_id(key_bytes: &[u8]) -> ([u8; KEY_ID_MAX + 2], usize) {
+    let mut buffer = [0u8; KEY_ID_MAX + 2];
+    let prefix = b"k-";
+    buffer[..prefix.len()].copy_from_slice(prefix);
+    let mut hex_out = [0u8; 16];
+    let mut word = FNV_OFFSET;
+    for byte in key_bytes {
+        word ^= u64::from(*byte);
+        word = word.wrapping_mul(FNV_PRIME);
+    }
+    // Big-endian nibble emit keeps the id stable across readers.
+    for index in 0..16 {
+        hex_out[index] = ((word >> (60 - 4 * index)) & 0xf) as u8;
+        if hex_out[index] < 10 {
+            hex_out[index] += b'0';
+        } else {
+            hex_out[index] += b'a' - 10;
+        }
+    }
+    buffer[prefix.len()..prefix.len() + 16].copy_from_slice(&hex_out);
+    let len = prefix.len() + 16;
+    (buffer, len)
+}
+
+/// Candidate struct returned by [`derive_generated_identity`]: a fresh
+/// Ed25519 seed, its compressed public key, both in hex, and the derived
+/// auto key id.
+#[derive(Clone, Copy)]
+pub struct GeneratedKey {
+    pub seed: [u8; 32],
+    pub public: [u8; 32],
+    pub id_bytes: [u8; KEY_ID_MAX + 2],
+    pub id_len: usize,
+}
+
+impl GeneratedKey {
+    pub fn seed_hex(&self) -> [u8; 64] {
+        let mut out = [0u8; 64];
+        let _ = encode_hex(&self.seed, &mut out);
+        out
+    }
+
+    pub fn public_hex(&self) -> [u8; 64] {
+        let mut out = [0u8; 64];
+        let _ = encode_hex(&self.public, &mut out);
+        out
+    }
+
+    pub fn id_str(&self) -> Option<&str> {
+        core::str::from_utf8(&self.id_bytes[..self.id_len]).ok()
+    }
+}
+
+/// Build one fresh Ed25519 identity from guest-local entropy substitutes:
+/// SHA-512 over (source, monotonic tick, per-call counter, store fingerprint).
+///
+/// HONEST LIMITS: this kernel exposes no hardware RNG yet and its monotonic
+/// tick may stand still on some builds, so the seed is UNIQUE-ISH, not
+/// cryptographically random. Suitable for test/tooling flows; production
+/// keys should be generated on the host and enrolled with their hex pubkey.
+pub fn derive_generated_identity(
+    source: &[u8],
+    tick: u64,
+    counter: u64,
+    store_fingerprint: u64,
+) -> GeneratedKey {
+    let mut block = [0u8; 64];
+    let source_len = source.len().min(24);
+    block[..source_len].copy_from_slice(&source[..source_len]);
+    block[24..32].copy_from_slice(&tick.to_le_bytes());
+    block[32..40].copy_from_slice(&counter.to_le_bytes());
+    block[40..48].copy_from_slice(&store_fingerprint.to_le_bytes());
+    let digest = serviceos_crypto::sha512::digest(&[&block]);
+    let mut seed = [0u8; 32];
+    seed.copy_from_slice(&digest[..32]);
+    let public = serviceos_crypto::ed25519::public_key(&seed);
+    let (id_bytes, id_len) = auto_key_id(&public);
+    GeneratedKey {
+        seed,
+        public,
+        id_bytes,
+        id_len,
     }
 }
 
@@ -1330,5 +1482,78 @@ mod tests {
                 0xee, 0xff
             ])
         );
+    }
+
+    fn pubkey_hex_for(byte: u8) -> String {
+        let mut seed = [byte; 32];
+        seed[31] = byte.wrapping_mul(7);
+        hex_of(&serviceos_crypto::ed25519::public_key(&seed))
+    }
+
+    #[test]
+    fn auto_key_id_is_stable_prefixed_and_unique_enough() {
+        let (a, len_a) = auto_key_id(b"\x01\x02\x03");
+        let (b, len_b) = auto_key_id(b"\x01\x02\x03");
+        assert_eq!((&a[..len_a], &b[..len_b]), (&b[..len_b], &a[..len_a]));
+        assert_eq!(&a[..2], b"k-");
+        assert_eq!(len_a, 18);
+        let (c, _) = auto_key_id(b"different");
+        assert_ne!(&a[2..len_a], &c[2..18]);
+    }
+
+    #[test]
+    fn encode_hex_emits_lowercase_pairs() {
+        let mut out = [0u8; 8];
+        assert_eq!(encode_hex(&[0xde, 0xad, 0xbe, 0xef], &mut out), 8);
+        assert_eq!(&out, b"deadbeef");
+        let mut small = [0u8; 3];
+        // Odd-length buffers cap at whole pairs.
+        assert_eq!(encode_hex(&[0xaa, 0xbb], &mut small), 2);
+        assert_eq!(&small[..2], b"aa");
+    }
+
+    #[test]
+    fn generated_identity_varies_and_enrolls_as_valid_pubkey() {
+        let first = derive_generated_identity(b"boot", 7, 1, 0);
+        let second = derive_generated_identity(b"boot", 7, 2, 0);
+        assert_ne!(first.seed, second.seed);
+        let mut entry = SourceKeys::empty();
+        let pub_binding = first.public_hex();
+        let pub_text = core::str::from_utf8(&pub_binding).unwrap();
+        let id_text = first.id_str().unwrap();
+        assert_eq!(entry.enroll_ed25519(id_text, pub_text), Ok(()));
+        assert_eq!(
+            entry.find_key(id_text).map(|key| key.state),
+            Some(KeyState::Active)
+        );
+    }
+
+    #[test]
+    fn rotate_source_promotes_latest_retired_standby() {
+        let mut entry = SourceKeys::empty();
+        entry.enroll_ed25519("k1", &pubkey_hex_for(1)).unwrap();
+        entry.enroll_ed25519("k2", &pubkey_hex_for(2)).unwrap();
+        entry.enroll_ed25519("k3", &pubkey_hex_for(3)).unwrap();
+        let slot = entry.rotate_source(500).unwrap();
+        assert_eq!(entry.keys[slot].key_id.as_str(), "k3");
+        assert_eq!(entry.keys[slot].state, KeyState::Active);
+        assert_eq!(entry.keys[0].state, KeyState::Retired);
+        assert_eq!(entry.keys[0].retired_tick, 500);
+        // k2 stays retired with no tick stamped by THIS rotation.
+        assert_eq!(entry.keys[1].retired_tick, 0);
+    }
+
+    #[test]
+    fn rotate_source_fails_without_any_standby() {
+        let mut entry = SourceKeys::empty();
+        assert!(matches!(
+            entry.rotate_source(1),
+            Err(KeystoreError::UnknownKey)
+        ));
+        entry.enroll_ed25519("only", &pubkey_hex_for(4)).unwrap();
+        assert!(matches!(
+            entry.rotate_source(2),
+            Err(KeystoreError::UnknownKey)
+        ));
     }
 }

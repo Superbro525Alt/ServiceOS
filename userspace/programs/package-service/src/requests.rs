@@ -116,6 +116,19 @@ pub(crate) fn handle_request(
             journal,
             message,
         ),
+        x if x == PackageTag::KeysListRequest as u32 => handle_keys_list_request(message),
+        x if x == PackageTag::KeysEnrollRequest as u32 => {
+            handle_keys_enroll_request(storage_handle, message)
+        }
+        x if x == PackageTag::KeysActivateRequest as u32 => {
+            handle_keys_activate_request(storage_handle, message)
+        }
+        x if x == PackageTag::KeysRotateRequest as u32 => {
+            handle_keys_rotate_request(storage_handle, message)
+        }
+        x if x == PackageTag::KeysGenRequest as u32 => {
+            handle_keys_gen_request(storage_handle, message)
+        }
         _ => Ok(()),
     }
 }
@@ -751,4 +764,477 @@ fn recover_interrupted_operation(
         PackageStatus::Interrupted,
         ops_model::RECOVERY_OUTCOME_RESUME_FAILED,
     )
+}
+
+// ---------------------------------------------------------------------------
+// Feed-keystore key management (additive shell surface, PackageTag 0x720..)
+//
+// Variable-length fields ride inline as [len words][packed bytes], matching
+// the repository-add convention (`pack_bytes`/`unpack_bytes`). The IPC word
+// budget caps any single reply at 16 words, so list replies carry source+
+// key-id only; the full pinned hex is echoed where the flow already holds
+// it (enroll/gen inputs, gen replies). Mutations persist the keystore
+// before the reply so a crash never advertises un-persisted state.
+// ---------------------------------------------------------------------------
+
+/// Per-boot counter mixed into generated key seeds.
+static KEYS_GEN_COUNTER: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// GenRequest flag: reply carries the SECRET SEED instead of the pubkey.
+pub(crate) const KEYS_GEN_FLAG_SHOW_SEED: u64 = 1;
+
+fn keystore_error_word(error: crate::signing::KeystoreError) -> u64 {
+    use crate::signing::KeystoreError as E;
+    let status = match error {
+        E::UnknownSource | E::UnknownKey | E::NoActiveKey => PackageStatus::NotFound,
+        E::SourceFull => PackageStatus::Busy,
+        E::DuplicateKey => PackageStatus::AlreadyExists,
+        E::SameKeyActive => PackageStatus::NoChange,
+        E::InvalidKeyId | E::InvalidKeyHex => PackageStatus::InvalidParameter,
+    };
+    status as u32 as u64
+}
+
+fn keys_send_reply(reply_handle: rt::Handle, reply: &RawMessage) {
+    let _ = rt::channel_send(reply_handle, reply);
+    let _ = rt::handle_close(reply_handle);
+}
+
+fn keys_reject(reply_handle: rt::Handle, reply_tag: PackageTag, status: PackageStatus) {
+    let mut reply = RawMessage::empty(reply_tag as u32);
+    reply.word_count = 1;
+    reply.words[0] = status as u32 as u64;
+    keys_send_reply(reply_handle, &reply);
+}
+
+/// Unpack `[len_a][len_b][a bytes][b bytes]` starting at `words[0]` into
+/// `combined`, returning borrowed UTF-8 slices valid as long as it lives.
+fn keys_read_two_fields<'a>(
+    words: &[u64],
+    combined: &'a mut [u8],
+) -> Option<(&'a str, &'a str)> {
+    use crate::signing::{KEY_HEX_MAX, SOURCE_NAME_MAX};
+    if words.len() < 2 || combined.len() < SOURCE_NAME_MAX + KEY_HEX_MAX {
+        return None;
+    }
+    let len_a = words[0] as usize;
+    let len_b = words[1] as usize;
+    if len_a == 0 || len_a > SOURCE_NAME_MAX || len_b == 0 || len_b > KEY_HEX_MAX {
+        return None;
+    }
+    unpack_bytes(&words[2..words.len()], len_a + len_b, &mut combined[..]).ok()?;
+    let source = core::str::from_utf8(&combined[..len_a]).ok()?;
+    let field_b = core::str::from_utf8(&combined[len_a..len_a + len_b]).ok()?;
+    Some((source, field_b))
+}
+
+/// Unpack `[len_a][a bytes]` starting at `words[0]` into `combined`.
+fn keys_read_one_field<'a>(words: &[u64], combined: &'a mut [u8]) -> Option<&'a str> {
+    use crate::signing::SOURCE_NAME_MAX;
+    if words.is_empty() || combined.len() < SOURCE_NAME_MAX {
+        return None;
+    }
+    let len_a = words[0] as usize;
+    if len_a == 0 || len_a > SOURCE_NAME_MAX {
+        return None;
+    }
+    unpack_bytes(&words[1..words.len()], len_a, &mut combined[..]).ok()?;
+    core::str::from_utf8(&combined[..len_a]).ok()
+}
+
+/// KeysListRequest: words[0] = flat index across every source and key.
+/// Reply per entry: [status][index][alg][state][retired_tick][source_len]
+/// [id_len][reserved] + packed(source, id). End-of-list is status=End with
+/// word_count=1, mirroring the repository-list contract.
+fn handle_keys_list_request(message: &RawMessage) -> rt::Result<()> {
+    if message.word_count < 1 || message.handle_count < 1 {
+        return Ok(());
+    }
+    let reply_handle = message.handles[0];
+    let target_index = message.words[0] as usize;
+    let keystore = unsafe { &*core::ptr::addr_of!(FEED_KEYSTORE) };
+
+    let mut flat = 0usize;
+    let mut hit: Option<(usize, usize)> = None;
+    'outer: for (source_index, entry) in keystore.sources[..keystore.source_count]
+        .iter()
+        .enumerate()
+    {
+        for key_index in 0..entry.key_count {
+            if flat == target_index {
+                hit = Some((source_index, key_index));
+                break 'outer;
+            }
+            flat += 1;
+        }
+    }
+
+    let Some((source_index, key_index)) = hit else {
+        keys_reject(reply_handle, PackageTag::KeysListReply, PackageStatus::End);
+        return Ok(());
+    };
+    let entry = &keystore.sources[source_index];
+    let key = &entry.keys[key_index];
+    let source_bytes = entry.source.as_str().as_bytes();
+    let id_bytes = key.key_id.as_str().as_bytes();
+    let total = source_bytes.len() + id_bytes.len();
+    if total > (IPC_MAX_WORDS - 8) * 8 {
+        return Ok(());
+    }
+
+    let mut reply = RawMessage::empty(PackageTag::KeysListReply as u32);
+    reply.word_count = 8;
+    reply.words[0] = PackageStatus::Ok as u32 as u64;
+    reply.words[1] = target_index as u64;
+    reply.words[2] = crate::signing::alg_word(key.alg);
+    reply.words[3] = crate::signing::state_word(key.state);
+    reply.words[4] = key.retired_tick;
+    reply.words[5] = source_bytes.len() as u64;
+    reply.words[6] = id_bytes.len() as u64;
+    reply.words[7] = 0;
+
+    let mut combined = [0u8; (IPC_MAX_WORDS - 8) * 8];
+    let mut cursor = 0usize;
+    for chunk in [source_bytes, id_bytes] {
+        let _ = copy_into(&mut combined[cursor..], chunk);
+        cursor += chunk.len();
+    }
+    reply.word_count += pack_bytes(&combined[..total], &mut reply.words[8..])?;
+    keys_send_reply(reply_handle, &reply);
+    Ok(())
+}
+
+/// Post-mutation state lookup: state word of `key_id` under `source`.
+unsafe fn keys_state_word_of(
+    keystore: &crate::signing::Keystore,
+    source: &str,
+    key_id: &str,
+) -> u64 {
+    keystore
+        .source_keys(source)
+        .and_then(|entry| entry.find_key(key_id))
+        .map(|key| crate::signing::state_word(key.state))
+        .unwrap_or(0)
+}
+
+/// Store fingerprint mixed into generated seeds: FNV-1a64 over every
+/// (id, hex) pair currently pinned plus each source name.
+unsafe fn keys_store_fingerprint() -> u64 {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x100_0000_01b3;
+    let keystore = unsafe { &*core::ptr::addr_of!(FEED_KEYSTORE) };
+    let mut word = OFFSET;
+    for entry in keystore.sources[..keystore.source_count].iter() {
+        for byte in entry.source.as_str().as_bytes() {
+            word ^= u64::from(*byte);
+            word = word.wrapping_mul(PRIME);
+        }
+        for key in entry.keys[..entry.key_count].iter() {
+            for byte in key
+                .key_id
+                .as_str()
+                .as_bytes()
+                .iter()
+                .copied()
+                .chain(key.key_hex.as_str().as_bytes().iter().copied())
+            {
+                word ^= u64::from(byte);
+                word = word.wrapping_mul(PRIME);
+            }
+        }
+    }
+    word
+}
+
+/// KeysEnrollRequest: words[1]=source_len, words[2]=hex_len, then packed
+/// (source, pubkey-hex). Key id derives from the key material (`k-<16hex>`).
+/// The first key of a fresh source bootstraps active; later ones enroll
+/// retired until rotation promotes them. Only the public half is stored.
+/// Reply: [status][state_word].
+fn handle_keys_enroll_request(storage_handle: rt::Handle, message: &RawMessage) -> rt::Result<()> {
+    const HEADER_WORDS: u32 = 3; // reserved + two length words
+    if message.word_count < HEADER_WORDS || message.handle_count < 1 {
+        return Ok(());
+    }
+    let reply_handle = message.handles[0];
+    let fields_words = &message.words[HEADER_WORDS as usize - 2..message.word_count as usize];
+    let mut field_bytes =
+        [0u8; crate::signing::SOURCE_NAME_MAX + crate::signing::KEY_HEX_MAX];
+    let Some((source, key_hex)) = keys_read_two_fields(fields_words, &mut field_bytes) else {
+        keys_reject(
+            reply_handle,
+            PackageTag::KeysEnrollReply,
+            PackageStatus::InvalidParameter,
+        );
+        return Ok(());
+    };
+    // Validate once here so id derivation and enrollment cannot disagree.
+    let Some(key_bytes) = crate::signing::decode_pubkey_hex(key_hex) else {
+        keys_reject(
+            reply_handle,
+            PackageTag::KeysEnrollReply,
+            PackageStatus::InvalidParameter,
+        );
+        return Ok(());
+    };
+    let (id_buffer, id_len) = crate::signing::auto_key_id(&key_bytes);
+
+    let mut reply = RawMessage::empty(PackageTag::KeysEnrollReply as u32);
+    reply.word_count = 2;
+
+    let outcome_word: Result<(u64, u64), crate::signing::KeystoreError> =
+        match core::str::from_utf8(&id_buffer[..id_len]) {
+            Err(_) => Err(crate::signing::KeystoreError::InvalidKeyId),
+            Ok(id_text) => unsafe {
+                let keystore = &mut *core::ptr::addr_of_mut!(FEED_KEYSTORE);
+                match keystore.ensure_source(source) {
+                    Err(error) => Err(error),
+                    Ok(entry) => entry.enroll_ed25519(id_text, key_hex).map(|_| {
+                        (
+                            PackageStatus::Ok as u32 as u64,
+                            keys_state_word_of(keystore, source, id_text),
+                        )
+                    }),
+                }
+            },
+        };
+
+    let mut persist_needed = false;
+    match outcome_word {
+        Err(error) => {
+            reply.words[0] = keystore_error_word(error);
+            reply.words[1] = 0;
+        }
+        Ok((status_word, state_word)) => {
+            reply.words[0] = status_word;
+            reply.words[1] = state_word;
+            persist_needed = true;
+        }
+    }
+    if persist_needed && crate::storage::persist_feed_keystore(storage_handle).is_err() {
+        reply.words[0] = PackageStatus::VerificationFailed as u32 as u64;
+        reply.words[1] = 0;
+    }
+    keys_send_reply(reply_handle, &reply);
+    Ok(())
+}
+
+/// KeysActivateRequest: words[0]=now_tick, words[1]=source_len,
+/// words[2]=id_len, then packed (source, key-id). Promotes the named key to
+/// active, retiring the current active key at `now`. Reply: [status].
+fn handle_keys_activate_request(storage_handle: rt::Handle, message: &RawMessage) -> rt::Result<()> {
+    const HEADER_WORDS: u32 = 3; // now tick + two length words
+    if message.word_count < HEADER_WORDS || message.handle_count < 1 {
+        return Ok(());
+    }
+    let reply_handle = message.handles[0];
+    let now = message.words[0];
+    let fields_words = &message.words[HEADER_WORDS as usize - 2..message.word_count as usize];
+    let mut field_bytes =
+        [0u8; crate::signing::SOURCE_NAME_MAX + crate::signing::KEY_HEX_MAX];
+    let Some((source, key_id)) = keys_read_two_fields(fields_words, &mut field_bytes) else {
+        keys_reject(
+            reply_handle,
+            PackageTag::KeysActivateReply,
+            PackageStatus::InvalidParameter,
+        );
+        return Ok(());
+    };
+
+    let mut reply = RawMessage::empty(PackageTag::KeysActivateReply as u32);
+    reply.word_count = 1;
+    let mut persist_needed = false;
+    unsafe {
+        let keystore = &mut *core::ptr::addr_of_mut!(FEED_KEYSTORE);
+        let outcome = match keystore.source_keys_mut(source) {
+            Some(entry) => entry.rotate_active(key_id, now),
+            None => Err(crate::signing::KeystoreError::UnknownSource),
+        };
+        match outcome {
+            Err(error) => reply.words[0] = keystore_error_word(error),
+            Ok(()) => {
+                reply.words[0] = PackageStatus::Ok as u32 as u64;
+                persist_needed = true;
+            }
+        }
+    }
+    if persist_needed && crate::storage::persist_feed_keystore(storage_handle).is_err() {
+        reply.words[0] = PackageStatus::VerificationFailed as u32 as u64;
+    }
+    keys_send_reply(reply_handle, &reply);
+    Ok(())
+}
+
+/// KeysRotateRequest: words[0]=now_tick, words[1]=source_len, then packed
+/// (source). Promotes the MOST RECENTLY enrolled retired key of the source
+/// (the provisioned standby) and retires the active key at `now`.
+/// Reply: [status][id_len] + packed(promoted-id).
+fn handle_keys_rotate_request(storage_handle: rt::Handle, message: &RawMessage) -> rt::Result<()> {
+    const HEADER_WORDS: u32 = 2; // now tick + length word
+    if message.word_count < HEADER_WORDS || message.handle_count < 1 {
+        return Ok(());
+    }
+    let reply_handle = message.handles[0];
+    let now = message.words[0];
+    let mut field_bytes = [0u8; crate::signing::SOURCE_NAME_MAX];
+    let Some(source) =
+        keys_read_one_field(&message.words[HEADER_WORDS as usize - 1..message.word_count as usize], &mut field_bytes)
+    else {
+        keys_reject(
+            reply_handle,
+            PackageTag::KeysRotateReply,
+            PackageStatus::InvalidParameter,
+        );
+        return Ok(());
+    };
+
+    let mut promoted_buffer = [0u8; crate::signing::KEY_ID_MAX];
+    let mut promoted_len = 0usize;
+    let mut fail_word: Option<u64> = None;
+
+    unsafe {
+        let keystore = &mut *core::ptr::addr_of_mut!(FEED_KEYSTORE);
+        match keystore.source_keys_mut(source) {
+            None => {
+                fail_word = Some(keystore_error_word(crate::signing::KeystoreError::UnknownSource))
+            }
+            Some(entry) => match entry.rotate_source(now) {
+                Ok(slot_index) => {
+                    let id_bytes = entry.keys[slot_index].key_id.as_str().as_bytes();
+                    promoted_len = id_bytes.len().min(promoted_buffer.len());
+                    promoted_buffer[..promoted_len].copy_from_slice(&id_bytes[..promoted_len]);
+                }
+                Err(error) => fail_word = Some(keystore_error_word(error)),
+            },
+        }
+    }
+
+    let mut reply = RawMessage::empty(PackageTag::KeysRotateReply as u32);
+    reply.word_count = 2;
+    match fail_word {
+        Some(word) => {
+            reply.words[0] = word;
+            reply.words[1] = 0;
+        }
+        None => {
+            reply.words[0] = PackageStatus::Ok as u32 as u64;
+            reply.words[1] = promoted_len as u64;
+            if crate::storage::persist_feed_keystore(storage_handle).is_err() {
+                reply.words[0] = PackageStatus::VerificationFailed as u32 as u64;
+                reply.words[1] = 0;
+            }
+        }
+    }
+    if reply.words[1] > 0 {
+        reply.word_count += pack_bytes(&promoted_buffer[..promoted_len], &mut reply.words[2..])?;
+    }
+    keys_send_reply(reply_handle, &reply);
+    Ok(())
+}
+
+/// KeysGenRequest: words[0]=flags(bit0 = reply carries the secret seed hex
+/// instead of the pubkey hex), words[1]=source_len, then packed (source).
+///
+/// Generates a fresh Ed25519 seed guest-side (SHA-512 mix of source name,
+/// monotonic tick, per-boot counter, store fingerprint), derives the
+/// compressed public key, enrolls it under an auto id, and persists ONLY
+/// the public half. When bit0 is clear the reply carries the PUBLIC KEY so
+/// the operator can record it; with bit0 set it carries the SECRET SEED —
+/// shown once, never stored anywhere in the guest.
+///
+/// HONEST LIMITS (see signing::derive_generated_identity): the kernel has
+/// no RNG yet, so this seed is entropy-substituted, not CSPRNG output. It
+/// varies across calls and boots but is predictable given complete host
+/// timing knowledge; treat it as tooling-grade until an RNG lands.
+/// Reply: [status][state_word][field0_len][field1_len] + packed(id, field).
+fn handle_keys_gen_request(storage_handle: rt::Handle, message: &RawMessage) -> rt::Result<()> {
+    const HEADER_WORDS: u32 = 2; // flags + length word
+    if message.word_count < HEADER_WORDS || message.handle_count < 1 {
+        return Ok(());
+    }
+    let reply_handle = message.handles[0];
+    let show_seed = message.words[0] & KEYS_GEN_FLAG_SHOW_SEED != 0;
+    let mut field_bytes = [0u8; crate::signing::SOURCE_NAME_MAX];
+    let Some(source) =
+        keys_read_one_field(&message.words[HEADER_WORDS as usize - 1..message.word_count as usize], &mut field_bytes)
+    else {
+        keys_reject(
+            reply_handle,
+            PackageTag::KeysGenReply,
+            PackageStatus::InvalidParameter,
+        );
+        return Ok(());
+    };
+
+    let tick = rt::monotonic_now().unwrap_or(0);
+    let counter = KEYS_GEN_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed) + 1;
+    let identity = unsafe {
+        crate::signing::derive_generated_identity(
+            source.as_bytes(),
+            tick,
+            counter,
+            keys_store_fingerprint(),
+        )
+    };
+    let Some(id_text) = identity.id_str() else {
+        keys_reject(reply_handle, PackageTag::KeysGenReply, PackageStatus::Unsupported);
+        return Ok(());
+    };
+    let pub_hex_array = identity.public_hex();
+    let seed_hex_array = identity.seed_hex();
+    let secret_field: &[u8] = if show_seed {
+        &seed_hex_array
+    } else {
+        &pub_hex_array
+    };
+    let pub_text = core::str::from_utf8(&pub_hex_array).unwrap_or("");
+
+    let mut reply = RawMessage::empty(PackageTag::KeysGenReply as u32);
+    reply.word_count = 4;
+    let mut persist_needed = false;
+
+    unsafe {
+        let keystore = &mut *core::ptr::addr_of_mut!(FEED_KEYSTORE);
+        let outcome = match keystore.ensure_source(source) {
+            Err(error) => Err(error),
+            Ok(entry) => entry.enroll_ed25519(id_text, pub_text).map(|_| ()),
+        };
+        match outcome {
+            Err(error) => reply.words[0] = keystore_error_word(error),
+            Ok(()) => {
+                reply.words[0] = PackageStatus::Ok as u32 as u64;
+                reply.words[1] = keys_state_word_of(keystore, source, id_text);
+                persist_needed = true;
+            }
+        }
+    }
+
+    if persist_needed && crate::storage::persist_feed_keystore(storage_handle).is_err() {
+        reply.words[0] = PackageStatus::VerificationFailed as u32 as u64;
+        reply.words[1] = 0;
+    }
+
+    if reply.words[0] == PackageStatus::Ok as u32 as u64 {
+        let id_bytes = id_text.as_bytes();
+        let total = id_bytes.len() + secret_field.len();
+        if total <= (IPC_MAX_WORDS - 4) * 8 {
+            reply.words[2] = id_bytes.len() as u64;
+            reply.words[3] = secret_field.len() as u64;
+            let mut combined = [0u8; (IPC_MAX_WORDS - 4) * 8];
+            let mut cursor = 0usize;
+            for chunk in [id_bytes, secret_field] {
+                let _ = copy_into(&mut combined[cursor..], chunk);
+                cursor += chunk.len();
+            }
+            reply.word_count += pack_bytes(&combined[..total], &mut reply.words[4..])?;
+        } else {
+            reply.words[2] = 0;
+            reply.words[3] = 0;
+        }
+    } else {
+        reply.words[2] = 0;
+        reply.words[3] = 0;
+    }
+    keys_send_reply(reply_handle, &reply);
+    Ok(())
 }

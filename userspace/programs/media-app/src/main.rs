@@ -2,6 +2,7 @@
 #![cfg_attr(not(test), no_main)]
 
 mod audioclient;
+mod codec;
 mod control;
 mod library;
 mod plan;
@@ -13,7 +14,7 @@ use rt::{ControlTag, RawMessage};
 use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
 
-use crate::control::{open_intent_path, poll_control, pump_playback, stop_playback};
+use crate::control::{poll_control, pump_playback, stop_playback};
 use crate::render::render;
 use crate::state::{BUFFER_BYTES, BUFFER_HEIGHT, BUFFER_WIDTH, MediaState, SURFACE_BUFFER_SLOTS};
 

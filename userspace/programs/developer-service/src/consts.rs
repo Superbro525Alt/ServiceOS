@@ -12,3 +12,15 @@ pub(crate) const BUILDER_REPORT_TAG: u32 = 1;
 /// layout is documented on `reply_ide_job_info` in protocol.rs.
 pub(crate) const IDE_JOB_INFO_REQUEST_TAG: u32 = 0xd20;
 pub(crate) const IDE_JOB_INFO_REPLY_TAG: u32 = 0xd21;
+
+/// Farm loopback live-accept harness (SERVICEOS_FARM_SELFTEST=1 builds
+/// only): one remote-target job is queued through the standard registry/
+/// dispatch slot model, dispatched over guest-internal loopback TCP to an
+/// in-process accept listener running the minimal FARMQ1 job-accept wire
+/// protocol, and completed end-to-end (queue -> dispatch -> connect ->
+/// accept -> ack -> Succeeded).
+pub(crate) const FARM_SELFTEST_PORT: u16 = 44_210;
+/// Local IDE-adjacent control tags, past TerminalTag-style reserved ranges
+/// and next to IDE_JOB_INFO_* (shared DeveloperTag stays 0xd00-0xd0f).
+pub(crate) const FARM_SELFTEST_REQUEST_TAG: u32 = 0xd22;
+pub(crate) const FARM_SELFTEST_REPLY_TAG: u32 = 0xd23;

@@ -26,7 +26,7 @@ use serviceos_kernel_core::{
     task::{ExecutionState, SchedulerError, TaskRole, ThreadId, ThreadMode},
     user::{self as kernel_user, SpawnError, TaskExitStatus},
 };
-use serviceos_platform_raspi5::{boot, dtb::InterruptControllerRegions, timer, uart};
+use serviceos_platform_raspi5::{boot, dtb::InterruptControllerRegions, framebuffer, timer, uart};
 use serviceos_userspace_catalog::BOOT_STORE_IMAGE;
 use spin::Once;
 
@@ -196,10 +196,37 @@ extern "C" fn serviceos_raspi5_entry(dtb_ptr: usize) -> ! {
         );
     }
 
+    // Pre-MMU framebuffer negotiation: the VideoCore property-channel mailbox
+    // must be exercised before page tables exist (the firmware-allocated
+    // scanout buffer then joins the MMIO region list like any other device
+    // window). Missing mailbox node or any rejected tag keeps the platform
+    // serial-first. UNTESTED WITHOUT HARDWARE.
+    let negotiated_display =
+        framebuffer::negotiate(true);
+    match &negotiated_display {
+        Some(display) => {
+            boot_state.boot_info.framebuffer = Some(display.info);
+            log(
+                "display",
+                format_args!(
+                    "backend=vc4-framebuffer base={:#x} bytes={} {}x{} stride-bytes={} pitch={} fw-rev={:#010x}",
+                    display.info.physical_base.as_u64(),
+                    display.info.byte_len,
+                    display.info.width,
+                    display.info.height,
+                    display.info.stride,
+                    display.pitch_bytes,
+                    display.firmware_revision,
+                ),
+            );
+        }
+        None => log_line("display", "no video mailbox framebuffer; serial-first"),
+    }
+
     let mut mmio_regions = [MmioRegion {
         base: PhysicalAddress::new(0),
         size: 0,
-    }; 3];
+    }; 5];
     let mut mmio_region_count = 0usize;
     if let Some(descriptor) = boot_state.summary.uart {
         mmio_regions[mmio_region_count] = MmioRegion {
@@ -216,6 +243,22 @@ extern "C" fn serviceos_raspi5_entry(dtb_ptr: usize) -> ! {
             };
             mmio_region_count += 1;
         }
+    }
+    // DTB-resolved mailbox registers must stay mapped too: later property
+    // exchanges (mode queries) still need MMIO access post-MMU.
+    if let Some(range) = boot_state.summary.mailbox {
+        mmio_regions[mmio_region_count] = MmioRegion {
+            base: range.start,
+            size: range.span_bytes() as usize,
+        };
+        mmio_region_count += 1;
+    }
+    if let Some(display) = &negotiated_display {
+        mmio_regions[mmio_region_count] = MmioRegion {
+            base: display.info.physical_base,
+            size: display.info.byte_len,
+        };
+        mmio_region_count += 1;
     }
 
     let mut mapper = match ActivePageTable::initialize(
@@ -238,6 +281,20 @@ extern "C" fn serviceos_raspi5_entry(dtb_ptr: usize) -> ! {
     syscall::register_debug_log_writer(debug_log_writer);
     syscall::register_debug_console_reader(uart::try_read_byte);
     syscall::register_debug_console_writer(uart::write_bytes);
+
+    // Register the boot framebuffer with the kernel display object registry
+    // once the negotiated scanout is mapped; skipping keeps headless mode.
+    if let Some(backend) = framebuffer::initialize_backend() {
+        let info = backend.info();
+        let _ = kernel.objects().registry().create_display_output(backend);
+        log(
+            "display",
+            format_args!(
+                "display-object registered {}x{} stride={} bytes={}",
+                info.width, info.height, info.stride, info.byte_len
+            ),
+        );
+    }
 
     log_memory_summary(&boot_state.boot_info);
     log(

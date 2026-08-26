@@ -8,7 +8,9 @@ use crate::state::{
     BUTTON_H, BUTTON_W, BUTTON_Y, FILE_MAX_BYTES, KEY_DOWN, KEY_ENTER, KEY_EQUAL, KEY_MINUS, KEY_P,
     KEY_S, KEY_SPACE, KEY_UP, LIST_Y, MAX_PATH, MediaState, PLAY_X, PlayState, ROW_HEIGHT, STOP_X,
 };
-use crate::wav;
+use serviceos_userspace_runtime::AudioSampleFormat;
+
+use crate::codec::{self, CodecError};
 
 /// Nonblocking drain of the app control channel: focus, resize, pointer,
 /// keys, and shell open-with handoffs. Returns whether state changed.
@@ -185,14 +187,14 @@ pub(crate) fn play_selected(
     let _ = rt::handle_close(blob);
     state.file_truncated = size > FILE_MAX_BYTES;
 
-    let Some(info) = wav::parse_wav(&state.file_bytes[..state.file_len]) else {
-        state.set_note(b"UNSUPPORTED FORMAT");
-        return true;
+    let mut decoder = match codec::Decoder::open(&state.file_bytes[..state.file_len]) {
+        Ok(decoder) => decoder,
+        Err(err) => {
+            state.set_note(open_error_note(err));
+            return true;
+        }
     };
-    let Some(format) = info.sample_format() else {
-        state.set_note(b"CODEC UNSUPPORTED");
-        return true;
-    };
+    let format = pipeline_format();
 
     let stream = match audioclient::stream_open(audio_handle) {
         Ok(stream) => stream,
@@ -201,7 +203,8 @@ pub(crate) fn play_selected(
             return true;
         }
     };
-    if audioclient::stream_configure(stream, format, info.sample_rate, info.channels).is_err() {
+    if audioclient::stream_configure(stream, format, decoder.sample_rate, decoder.channels).is_err()
+    {
         let _ = audioclient::stream_close(stream);
         state.set_note(b"CONFIG REJECTED");
         return true;
@@ -211,11 +214,28 @@ pub(crate) fn play_selected(
     state.stream_handle = stream;
     state.playing_track = state.selected.min(state.track_count.saturating_sub(1));
     state.frame_cursor = 0;
-    state.total_frames = info.frame_count();
-    state.total_ms = info.duration_ms();
+    state.decoder = Some(decoder);
+    state.total_frames = state
+        .decoder
+        .map(|dec| dec.total_frames())
+        .unwrap_or_default();
+    state.total_ms = state.decoder.map(|dec| dec.duration_ms()).unwrap_or(0);
     state.play_state = PlayState::Playing;
     state.set_note(b"PLAYING");
     true
+}
+
+/// Honest status-note text for every registry rejection reason.
+fn open_error_note(err: CodecError) -> &'static [u8] {
+    match err {
+        CodecError::NotWav => b"UNSUPPORTED FORMAT",
+        CodecError::UnsupportedEncoding | CodecError::BadHeader => b"CODEC UNSUPPORTED",
+    }
+}
+
+/// Wire format fed into audio-service: decoders normalize to f32.
+const fn pipeline_format() -> AudioSampleFormat {
+    AudioSampleFormat::F32Le
 }
 
 /// Closes any active stream and posts `message` to notification history.
@@ -229,6 +249,7 @@ pub(crate) fn stop_playback(state: &mut MediaState, message: &str) -> bool {
     state.playing_track = usize::MAX;
     state.frame_cursor = 0;
     state.total_frames = 0;
+    state.decoder = None;
     if was_active {
         post_notification(state, message);
         true
@@ -250,6 +271,7 @@ fn finish_playback(state: &mut MediaState) -> bool {
     state.playing_track = usize::MAX;
     state.frame_cursor = 0;
     state.total_frames = 0;
+    state.decoder = None;
     let mut note = [0u8; 64];
     let prefix = b"MEDIA finished: ";
     let body_len = name_len.min(note.len() - prefix.len());
@@ -293,53 +315,50 @@ pub(crate) fn pump_playback(state: &mut MediaState) -> bool {
     if state.play_state != PlayState::Playing || state.stream_handle == rt::INVALID_HANDLE {
         return false;
     }
-    let Some(info) = wav::parse_wav(&state.file_bytes[..state.file_len]) else {
+    let Some(mut decoder) = state.decoder else {
         return finish_playback(state);
     };
-    let Some(format) = info.sample_format() else {
-        return finish_playback(state);
-    };
-    let chunk_frames = plan::frames_per_chunk(info.channels, format);
-    let data_start = info.data_offset;
-    let frame_bytes = info.frame_bytes().max(1);
+    let channels = decoder.channels as usize;
+    let format = pipeline_format();
+    let chunk_frames = plan::frames_per_chunk(decoder.channels, format);
+    let data_end = state.file_len;
 
     for _ in 0..CHUNKS_PER_TICK {
         if state.frame_cursor >= state.total_frames {
             break;
         }
         let remaining = state.total_frames - state.frame_cursor;
-        let samples = plan::chunk_sample_count(remaining, chunk_frames, info.channels);
-        let byte_span = samples * (info.bits_per_sample as usize / 8);
-        let start = data_start + state.frame_cursor * frame_bytes;
+        let want_frames =
+            plan::chunk_sample_count(remaining, chunk_frames, decoder.channels) / channels.max(1);
         let mut sample_buffer = [0f32; plan::SERVICE_SAMPLE_BUFFER];
-        let decoded = wav::decode_samples(
-            &state.file_bytes[..state.file_len],
-            start,
-            samples,
-            format,
+        let decoded_frames = decoder.decode_next(
+            &state.file_bytes[..data_end],
+            want_frames,
             &mut sample_buffer,
         );
+        if decoded_frames == 0 {
+            break;
+        }
+        let used = decoded_frames * channels;
         let mut words = [0u64; crate::state::PACKED_WORDS_MAX];
-        let word_count = audioclient::pack_samples(format, &sample_buffer[..decoded], &mut words);
-        match audioclient::stream_write(
-            state.stream_handle,
-            decoded / info.channels as usize,
-            &words[..word_count],
-        ) {
+        let word_count = audioclient::pack_samples(format, &sample_buffer[..used], &mut words);
+        match audioclient::stream_write(state.stream_handle, decoded_frames, &words[..word_count]) {
             Ok(_) => {
-                state.frame_cursor += decoded / info.channels as usize;
+                state.frame_cursor += decoded_frames;
+                state.decoder = Some(decoder);
             }
             Err(rt::Error::Busy) => break,
             Err(_) => {
+                state.decoder = Some(decoder);
                 state.set_note(b"WRITE FAILED");
                 return finish_playback(state);
             }
         }
-        if byte_span == 0 {
-            break;
-        }
     }
-    if state.frame_cursor >= state.total_frames {
+    if !state.decoder.is_some() {
+        state.decoder = Some(decoder);
+    }
+    if state.frame_cursor >= state.total_frames || decoder.total_frames() == 0 {
         return finish_playback(state);
     }
     false
@@ -381,4 +400,33 @@ pub(crate) fn open_intent_path(
     library::push_track_at_front(state, path);
     state.selected = 0;
     play_selected(state, storage_handle, audio_handle)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::codec::CodecError;
+
+    #[test]
+    fn codec_errors_map_to_honest_notices() {
+        assert_eq!(
+            open_error_note(CodecError::NotWav),
+            b"UNSUPPORTED FORMAT".as_slice()
+        );
+        assert_eq!(
+            open_error_note(CodecError::UnsupportedEncoding),
+            b"CODEC UNSUPPORTED".as_slice()
+        );
+        assert_eq!(
+            open_error_note(CodecError::BadHeader),
+            b"CODEC UNSUPPORTED".as_slice()
+        );
+    }
+
+    #[test]
+    fn pipeline_streams_normalized_f32() {
+        // Every decoder feeds the stream as f32 stereo-capable frames; the
+        // service config always uses F32Le regardless of source encoding.
+        assert_eq!(pipeline_format(), AudioSampleFormat::F32Le);
+    }
 }

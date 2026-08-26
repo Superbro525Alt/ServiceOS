@@ -3,6 +3,7 @@
 
 mod consts;
 mod farm;
+mod farm_harness;
 mod payload;
 mod protocol;
 mod registry;

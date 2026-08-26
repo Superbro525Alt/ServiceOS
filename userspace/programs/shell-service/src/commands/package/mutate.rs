@@ -168,6 +168,8 @@ pub(in crate::commands) fn package_status_name(status: PackageStatus) -> &'stati
         PackageStatus::Offline => "offline",
         PackageStatus::Interrupted => "interrupted",
         PackageStatus::VerificationFailed => "verification-failed",
+        PackageStatus::InvalidParameter => "invalid-parameter",
+        PackageStatus::AlreadyExists => "already-exists",
     }
 }
 

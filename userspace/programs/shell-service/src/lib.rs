@@ -1,6 +1,7 @@
 #![cfg_attr(not(test), no_std)]
 
 pub mod commands;
+pub mod history_search;
 pub mod jobs;
 pub mod pipeline;
 pub mod sessions;

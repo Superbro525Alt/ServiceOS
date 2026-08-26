@@ -1,5 +1,6 @@
 use core::cell::UnsafeCell;
 
+use crate::profiles::TerminalProfile;
 use serviceos_userspace_runtime as rt;
 
 pub(crate) const BUFFER_WIDTH: u32 = 1024;
@@ -23,11 +24,13 @@ pub(crate) const TAB_WIDTH: usize = 100;
 pub(crate) const KEY_1: u32 = 2;
 pub(crate) const KEY_2: u32 = 3;
 pub(crate) const KEY_3: u32 = 4;
+pub(crate) const KEY_ESC: u32 = 1;
 pub(crate) const KEY_BACKSPACE: u32 = 14;
 pub(crate) const KEY_TAB: u32 = 15;
 pub(crate) const KEY_Q: u32 = 16;
 pub(crate) const KEY_W: u32 = 17;
 pub(crate) const KEY_E: u32 = 18;
+pub(crate) const KEY_R: u32 = 19;
 pub(crate) const KEY_T: u32 = 20;
 pub(crate) const KEY_P: u32 = 25;
 pub(crate) const KEY_D: u32 = 32;
@@ -214,6 +217,9 @@ pub(crate) struct TerminalState {
     pub(crate) focused: bool,
     pub(crate) terminal_handle: rt::Handle,
     pub(crate) clipboard_handle: rt::Handle,
+    /// Storage-service channel for durable profile persistence; stays
+    /// INVALID_HANDLE when lookup failed (profiles then run in-memory only).
+    pub(crate) storage_handle: rt::Handle,
     pub(crate) columns: usize,
     pub(crate) rows: usize,
     pub(crate) content_x: usize,
@@ -223,10 +229,22 @@ pub(crate) struct TerminalState {
     pub(crate) active_tab: usize,
     pub(crate) theme_index: usize,
     pub(crate) profile_index: usize,
+    /// Working profile set: defaults overlaid by the persisted store, written
+    /// back whenever the operator picks a new theme.
+    pub(crate) profiles: [TerminalProfile; crate::profiles::PROFILE_COUNT],
+    /// Active Ctrl-R reverse history search overlay, if any.
+    pub(crate) search: Option<SearchOverlay>,
     pub(crate) tabs: [TerminalTab; MAX_TABS],
     pub(crate) selection: Option<Selection>,
     pub(crate) clipboard: [u8; CLIPBOARD_BYTES],
     pub(crate) clipboard_len: usize,
+}
+
+/// Ctrl-R state bound to one pane of the active tab.
+#[derive(Clone, Copy)]
+pub(crate) struct SearchOverlay {
+    pub(crate) pane_index: usize,
+    pub(crate) inner: serviceos_shell_service::history_search::HistorySearch,
 }
 
 #[derive(Clone, Copy)]
@@ -290,6 +308,84 @@ pub(crate) struct TerminalPane {
     pub(crate) current_bg: u8,
     pub(crate) current_flags: u8,
     pub(crate) cursor_visible: bool,
+    /// Local echo of the service-side editable line (typed chars, backspaces,
+    /// arrow recalls) so the app can run Ctrl-R over this pane's commands.
+    pub(crate) input_mirror: [u8; MIRROR_LINE_BYTES],
+    pub(crate) input_mirror_len: usize,
+    /// Mirror of the service-side history navigation view.
+    pub(crate) hist_view: Option<usize>,
+    pub(crate) hist_stash: [u8; MIRROR_LINE_BYTES],
+    pub(crate) hist_stash_len: usize,
+    /// Commands submitted in this pane, newest last; the Ctrl-R corpus.
+    pub(crate) history: PaneHistory,
+}
+
+/// Bounded per-pane command ring backing reverse search. Newest-last order
+/// indexing matches the shell session rings so `HistorySource` applies.
+#[derive(Clone, Copy)]
+pub(crate) struct PaneHistory {
+    entries: [[u8; PANE_HISTORY_LINE_BYTES]; PANE_HISTORY_ENTRIES],
+    lens: [usize; PANE_HISTORY_ENTRIES],
+    count: usize,
+    head: usize,
+}
+
+pub(crate) const PANE_HISTORY_ENTRIES: usize = 16;
+pub(crate) const PANE_HISTORY_LINE_BYTES: usize = 96;
+pub(crate) const MIRROR_LINE_BYTES: usize = 96;
+
+impl PaneHistory {
+    pub(crate) const fn new() -> Self {
+        Self {
+            entries: [[0; PANE_HISTORY_LINE_BYTES]; PANE_HISTORY_ENTRIES],
+            lens: [0; PANE_HISTORY_ENTRIES],
+            count: 0,
+            head: 0,
+        }
+    }
+
+    /// Record one submitted line; consecutive duplicates collapse.
+    pub(crate) fn push(&mut self, line: &[u8]) {
+        let len = line.len().min(PANE_HISTORY_LINE_BYTES);
+        let line = &line[..len];
+        if line.is_empty() {
+            return;
+        }
+        let slot = self.latest_slot();
+        if self.count > 0 && self.lens[slot] == len && &self.entries[slot][..len] == line {
+            return;
+        }
+        self.entries[self.head][..len].copy_from_slice(line);
+        self.lens[self.head] = len;
+        self.head = (self.head + 1) % PANE_HISTORY_ENTRIES;
+        if self.count < PANE_HISTORY_ENTRIES {
+            self.count += 1;
+        }
+    }
+
+    fn latest_slot(&self) -> usize {
+        (self.head + PANE_HISTORY_ENTRIES - 1) % PANE_HISTORY_ENTRIES
+    }
+
+    fn slot(&self, order: usize) -> usize {
+        (self.head + PANE_HISTORY_ENTRIES - self.count + order) % PANE_HISTORY_ENTRIES
+    }
+}
+
+impl serviceos_shell_service::history_search::HistorySource for PaneHistory {
+    fn count(&self) -> usize {
+        self.count
+    }
+
+    fn entry(&self, order: usize, out: &mut [u8]) -> Option<usize> {
+        if order >= self.count {
+            return None;
+        }
+        let slot = self.slot(order);
+        let len = self.lens[slot].min(out.len());
+        out[..len].copy_from_slice(&self.entries[slot][..len]);
+        Some(len)
+    }
 }
 
 impl TerminalPane {
@@ -318,6 +414,12 @@ impl TerminalPane {
             current_bg: COLOR_DEFAULT,
             current_flags: 0,
             cursor_visible: true,
+            input_mirror: [0; MIRROR_LINE_BYTES],
+            input_mirror_len: 0,
+            hist_view: None,
+            hist_stash: [0; MIRROR_LINE_BYTES],
+            hist_stash_len: 0,
+            history: PaneHistory::new(),
         }
     }
 
@@ -326,6 +428,33 @@ impl TerminalPane {
         pane.session_handle = session_handle;
         pane.session_id = session_id;
         pane
+    }
+
+    /// Mirror contents with surrounding whitespace trimmed.
+    pub(crate) fn trimmed_mirror(&self) -> &[u8] {
+        let end = self.input_mirror_len.min(self.input_mirror.len());
+        let slice = &self.input_mirror[..end];
+        let start = slice
+            .iter()
+            .position(|byte| *byte != b' ' && *byte != b'\t')
+            .unwrap_or(end);
+        let end = slice
+            [start..]
+            .iter()
+            .rposition(|byte| *byte != b' ' && *byte != b'\t')
+            .map_or(start, |offset| start + offset + 1);
+        &slice[start..end]
+    }
+
+    /// Replace the mirror with an externally chosen line (search accept) and
+    /// clear the recall navigation state.
+    pub(crate) fn mirror_reset(&mut self, line: &[u8]) {
+        let len = line.len().min(MIRROR_LINE_BYTES);
+        self.input_mirror = [0; MIRROR_LINE_BYTES];
+        self.input_mirror[..len].copy_from_slice(&line[..len]);
+        self.input_mirror_len = len;
+        self.hist_view = None;
+        self.hist_stash_len = 0;
     }
 }
 

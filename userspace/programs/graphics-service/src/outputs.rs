@@ -36,6 +36,7 @@ pub(crate) struct OutputSlot {
     pub(crate) present_count: u64,
     pub(crate) noop_skips: u64,
     pub(crate) noop_saved_bytes: u64,
+    pub(crate) band_saved_bytes: u64,
 }
 
 impl OutputSlot {
@@ -60,6 +61,7 @@ impl OutputSlot {
             present_count: 0,
             noop_skips: 0,
             noop_saved_bytes: 0,
+            band_saved_bytes: 0,
         }
     }
 
@@ -71,6 +73,9 @@ impl OutputSlot {
                 .noop_saved_bytes
                 .saturating_add(outcome.saved_bytes);
         }
+        self.band_saved_bytes = self
+            .band_saved_bytes
+            .saturating_add(outcome.band_saved_bytes);
     }
 }
 

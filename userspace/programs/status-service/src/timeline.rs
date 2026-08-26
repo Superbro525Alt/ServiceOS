@@ -5,17 +5,33 @@ pub(crate) const TIMELINE_REPLY_EVENTS: usize = 5;
 use serviceos_userspace_runtime::{LogDomain, LogEvent, LogSeverity};
 
 /// Local protocol tags (ABI `StatusTag` ends at `0x409`).
-/// Query request words: `[mode, arg]`, handle 0 = reply channel; mode
-/// `QUERY_MODE_SINCE` filters `tick >= arg`, any other value means "last N"
-/// where N is `arg`. Reply: `[count, (id|kind<<32), tick, from|to<<32] * count`.
+/// Query request words: `[mode, arg...]`, handle 0 = reply channel; mode
+/// `QUERY_MODE_SINCE` filters `tick >= arg`, mode `QUERY_MODE_SERVICE`
+/// drills down with `[service_id|ANY, kind|ANY, skip]` filters, mode
+/// `QUERY_MODE_SERVICE_STATS` takes `[service_id]` and answers on the
+/// stats tag, any other value means "last N" where N is `arg`.
+/// Reply: `[count, (id|kind<<32), tick, from|to<<32] * count` where the
+/// drilldown reply packs the total window matches into `count`'s high half.
 pub(crate) mod timeline_tag {
     pub const QUERY_REQUEST: u32 = 0x410;
     pub const QUERY_REPLY: u32 = 0x411;
     pub const SUMMARY_REQUEST: u32 = 0x412;
     pub const SUMMARY_REPLY: u32 = 0x413;
+    pub const STATS_REPLY: u32 = 0x415;
 
     pub const QUERY_MODE_SINCE: u64 = 1;
+    pub const QUERY_MODE_SERVICE: u64 = 2;
+    pub const QUERY_MODE_SERVICE_STATS: u64 = 3;
 }
+
+/// Drilldown filter sentinel: a request word of this value means "do not
+/// constrain by that field". Real service ids and event kinds stay below it.
+pub(crate) const FILTER_ANY: u32 = u32::MAX;
+
+/// Distinct per-kind buckets kept in a [`ServiceStats`] line. Covers all
+/// nine defined kinds plus slack for unknown kinds; overflow kinds are
+/// dropped like over-cap services in the summary.
+pub(crate) const SERVICE_KINDS_CAP: usize = 12;
 
 pub(crate) mod event_kind {
     pub const SEED: u32 = 0;
@@ -401,6 +417,68 @@ impl Timeline {
         count
     }
 
+    /// Drilldown: fills `out` with retained events matching `filter`, in push
+    /// order, after skipping the first `skip` matches so callers can page
+    /// through the window in bounded replies.
+    pub(crate) fn query_filtered(
+        &self,
+        filter: TimelineFilter,
+        skip: usize,
+        out: &mut [TimelineEvent],
+    ) -> usize {
+        let mut matched = 0usize;
+        let mut written = 0usize;
+        for event in self.iter_oldest_first() {
+            if !filter.matches(&event) {
+                continue;
+            }
+            if matched >= skip && written < out.len() {
+                out[written] = event;
+                written += 1;
+            }
+            matched += 1;
+        }
+        written
+    }
+
+    /// Total retained events matching `filter` — lets drilldown clients size
+    /// pagination before walking pages.
+    pub(crate) fn count_filtered(&self, filter: TimelineFilter) -> usize {
+        self.iter_oldest_first()
+            .filter(|event| filter.matches(event))
+            .count()
+    }
+
+    /// Per-service stat line over the retained window: total events,
+    /// first/last seen ticks, and per-kind counts capped at
+    /// [`SERVICE_KINDS_CAP`] buckets.
+    pub(crate) fn service_stats(&self, service_id: u32) -> ServiceStats {
+        let mut stats = ServiceStats::empty(service_id);
+        for event in self.iter_oldest_first() {
+            if event.service_id != service_id {
+                continue;
+            }
+            stats.total += 1;
+            if stats.first_tick.is_none() {
+                stats.first_tick = Some(event.tick);
+            }
+            stats.last_tick = Some(event.tick);
+
+            let existing = stats.per_kind[..stats.per_kind_len]
+                .iter_mut()
+                .find(|(kind, _)| *kind == event.kind);
+            match existing {
+                Some((_, count)) => *count += 1,
+                None if stats.per_kind_len < SERVICE_KINDS_CAP => {
+                    stats.per_kind[stats.per_kind_len] = (event.kind, 1);
+                    stats.per_kind_len += 1;
+                }
+                None => {}
+            }
+        }
+        stats
+    }
+
     fn len_cap(&self) -> usize {
         TIMELINE_CAP
     }
@@ -455,6 +533,72 @@ pub(crate) fn compute_timeline_summary(timeline: &Timeline) -> TimelineSummary {
 
 fn busiest_better(candidate: u32, incumbent: u32) -> bool {
     incumbent == 0 || candidate < incumbent
+}
+
+/// Drilldown predicate: optional service-id and event-kind constraints
+/// composed conjunctively (`None` = unconstrained).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TimelineFilter {
+    pub service_id: Option<u32>,
+    pub kind: Option<u32>,
+}
+
+impl TimelineFilter {
+    #[allow(dead_code)]
+    pub(crate) const fn any() -> Self {
+        Self {
+            service_id: None,
+            kind: None,
+        }
+    }
+
+    fn matches(&self, event: &TimelineEvent) -> bool {
+        self.service_id.is_none_or(|id| event.service_id == id)
+            && self.kind.is_none_or(|kind| event.kind == kind)
+    }
+}
+
+/// Per-service stat line aggregated over the retained window: total events
+/// for the service, first/last seen ticks, and counts by event kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ServiceStats {
+    pub service_id: u32,
+    pub total: usize,
+    pub first_tick: Option<u64>,
+    pub last_tick: Option<u64>,
+    pub per_kind: [(u32, usize); SERVICE_KINDS_CAP],
+    pub per_kind_len: usize,
+}
+
+impl ServiceStats {
+    pub(crate) const fn empty(service_id: u32) -> Self {
+        Self {
+            service_id,
+            total: 0,
+            first_tick: None,
+            last_tick: None,
+            per_kind: [(0, 0); SERVICE_KINDS_CAP],
+            per_kind_len: 0,
+        }
+    }
+
+    /// Packs into the 16-word STATS_REPLY envelope:
+    /// `[0]` service id | total<<32, `[1]` distinct kinds shown,
+    /// `[2]` first tick (0 = none), `[3]` last tick (0 = none),
+    /// `[4..16]` up to six `(kind | count<<32)` rows.
+    pub(crate) fn pack_reply_words(&self) -> [u64; 16] {
+        let mut words = [0u64; 16];
+        words[0] =
+            self.service_id as u64 | ((self.total.min(u32::MAX as usize) as u64) << 32);
+        words[1] = self.per_kind_len as u64;
+        words[2] = self.first_tick.unwrap_or(0);
+        words[3] = self.last_tick.unwrap_or(0);
+        for slot in 0..self.per_kind_len.min(6) {
+            let (kind, count) = self.per_kind[slot];
+            words[4 + slot] = kind as u64 | ((count.min(u32::MAX as usize) as u64) << 32);
+        }
+        words
+    }
 }
 
 #[cfg(test)]
@@ -558,6 +702,195 @@ mod tests {
     fn summary_empty_timeline_is_zeroed() {
         let summary = compute_timeline_summary(&Timeline::new());
         assert_eq!(summary, TimelineSummary::empty());
+    }
+
+    fn drilldown_fixture() -> Timeline {
+        let mut timeline = Timeline::new();
+        timeline.push(ev(SID_A, event_kind::RESTART, 10));
+        timeline.push(ev(SID_B, event_kind::CRASH, 20));
+        timeline.push(ev(SID_A, event_kind::CRASH, 30));
+        timeline.push(ev(SID_A, event_kind::RESTART, 40));
+        timeline.push(ev(SID_B, event_kind::RESTART, 50));
+        timeline
+    }
+
+    #[test]
+    fn drilldown_filter_composes_service_and_kind() {
+        let timeline = drilldown_fixture();
+        let mut out = [TimelineEvent::zeroed(); TIMELINE_CAP];
+
+        // Service only.
+        let count = timeline.query_filtered(
+            TimelineFilter {
+                service_id: Some(SID_A),
+                kind: None,
+            },
+            0,
+            &mut out,
+        );
+        assert_eq!(count, 3);
+        assert_eq!((out[0].tick, out[1].tick, out[2].tick), (10, 30, 40));
+
+        // Kind only.
+        let count = timeline.query_filtered(
+            TimelineFilter {
+                service_id: None,
+                kind: Some(event_kind::CRASH),
+            },
+            0,
+            &mut out,
+        );
+        assert_eq!(count, 2);
+        assert_eq!(out[0].service_id, SID_B);
+        assert_eq!(out[1].service_id, SID_A);
+
+        // Both constraints AND together.
+        let count = timeline.query_filtered(
+            TimelineFilter {
+                service_id: Some(SID_B),
+                kind: Some(event_kind::CRASH),
+            },
+            0,
+            &mut out,
+        );
+        assert_eq!(count, 1);
+        assert_eq!(out[0].tick, 20);
+
+        // Unconstrained filter returns the whole window in push order.
+        let count = timeline.query_filtered(TimelineFilter::any(), 0, &mut out);
+        assert_eq!(count, 5);
+        assert_eq!(out[0].tick, 10);
+        assert_eq!(out[4].tick, 50);
+
+        // Matching counts agree with the returned pages.
+        for service_id in [SID_A, SID_B] {
+            for kind in [
+                None,
+                Some(event_kind::RESTART),
+                Some(event_kind::CRASH),
+            ] {
+                let filter = TimelineFilter { service_id: Some(service_id), kind };
+                assert_eq!(timeline.count_filtered(filter), {
+                    let mut seen = 0;
+                    for slot in 0..5 {
+                        if out[slot].service_id == service_id
+                            && kind.is_none_or(|k| out[slot].kind == k)
+                        {
+                            seen += 1;
+                        }
+                    }
+                    seen
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn drilldown_pagination_bounds_skip_pages_and_truncate() {
+        let timeline = drilldown_fixture();
+        let mut page = [TimelineEvent::zeroed(); 2];
+
+        // Page size bounds output even when more matches remain.
+        let written = timeline.query_filtered(
+            TimelineFilter {
+                service_id: Some(SID_A),
+                kind: None,
+            },
+            0,
+            &mut page,
+        );
+        assert_eq!(written, 2);
+        assert_eq!((page[0].tick, page[1].tick), (10, 30));
+
+        // Skip walks forward through the matched stream.
+        let written = timeline.query_filtered(
+            TimelineFilter {
+                service_id: Some(SID_A),
+                kind: None,
+            },
+            2,
+            &mut page,
+        );
+        assert_eq!(written, 1);
+        assert_eq!(page[0].tick, 40);
+
+        // Skipping past the end of the match set is empty, not a panic.
+        for skip in [3usize, 99] {
+            let written = timeline.query_filtered(
+                TimelineFilter {
+                    service_id: Some(SID_A),
+                    kind: None,
+                },
+                skip,
+                &mut page,
+            );
+            assert_eq!(written, 0);
+        }
+
+        // Zero-capacity buffer returns nothing but reports via count_filtered.
+        let written = timeline.query_filtered(TimelineFilter::any(), 0, &mut []);
+        assert_eq!(written, 0);
+        assert_eq!(timeline.count_filtered(TimelineFilter::any()), 5);
+    }
+
+    #[test]
+    fn service_stats_counts_kinds_first_last_within_window() {
+        let mut timeline = Timeline::new();
+        timeline.push(ev(SID_A, event_kind::SEED, 100));
+        timeline.push(ev(SID_B, event_kind::SEED, 110));
+        timeline.push(ev(SID_A, event_kind::CRASH, 120));
+        timeline.push(ev(SID_A, event_kind::CRASH, 130));
+        timeline.push(ev(SID_A, event_kind::RESTART, 140));
+
+        let stats = timeline.service_stats(SID_A);
+        assert_eq!(stats.service_id, SID_A);
+        assert_eq!(stats.total, 4);
+        assert_eq!(stats.first_tick, Some(100));
+        assert_eq!(stats.last_tick, Some(140));
+        assert_eq!(stats.per_kind_len, 3);
+        assert!(stats.per_kind[..stats.per_kind_len].contains(&(event_kind::SEED, 1)));
+        assert!(stats.per_kind[..stats.per_kind_len].contains(&(event_kind::CRASH, 2)));
+        assert!(stats.per_kind[..stats.per_kind_len].contains(&(event_kind::RESTART, 1)));
+
+        // Unknown service id yields an all-zero stat line.
+        assert_eq!(
+            timeline.service_stats(42),
+            ServiceStats::empty(42)
+        );
+
+        // Window bounds hold under ring eviction: first/last reflect the
+        // retained window, not total pushes.
+        for tick in 200..(200 + TIMELINE_CAP as u64) {
+            timeline.push(ev(SID_A, event_kind::STATE_CHANGE, tick));
+        }
+        let stats = timeline.service_stats(SID_A);
+        assert_eq!(timeline.len(), TIMELINE_CAP);
+        assert_eq!(stats.total, TIMELINE_CAP);
+        assert_eq!(stats.first_tick, Some(200));
+        assert_eq!(stats.last_tick, Some(200 + TIMELINE_CAP as u64 - 1));
+        assert_eq!(stats.per_kind_len, 1);
+        assert_eq!(stats.per_kind[0], (event_kind::STATE_CHANGE, TIMELINE_CAP));
+    }
+
+    #[test]
+    fn service_stats_reply_packs_stat_line_layout() {
+        let mut timeline = Timeline::new();
+        timeline.push(ev(SID_A, event_kind::CRASH, 120));
+        timeline.push(ev(SID_A, event_kind::CRASH, 130));
+
+        let stats = timeline.service_stats(SID_A);
+        let words = stats.pack_reply_words();
+        assert_eq!(words.len(), 16);
+        assert_eq!(words[0], SID_A as u64 | (2 << 32));
+        assert_eq!(words[1], 1);
+        assert_eq!(words[2], 120);
+        assert_eq!(words[3], 130);
+        assert_eq!(words[4], event_kind::CRASH as u64 | (2 << 32));
+        assert!(words[5..].iter().all(|word| *word == 0));
+        assert_eq!(
+            ServiceStats::empty(SID_B).pack_reply_words()[0],
+            SID_B as u64
+        );
     }
 
     const DEV_SID: u32 = 16;

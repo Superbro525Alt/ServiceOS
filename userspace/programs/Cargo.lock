@@ -312,6 +312,7 @@ name = "serviceos-terminal-app"
 version = "0.1.0"
 dependencies = [
  "serviceos-desktop-ui",
+ "serviceos-shell-service",
  "serviceos-userspace-runtime",
 ]
 

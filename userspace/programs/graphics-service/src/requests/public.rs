@@ -2,6 +2,10 @@ use rt::{GraphicsStatus, GraphicsTag, LogEvent, LogSeverity, RawMessage};
 use serviceos_userspace_runtime as rt;
 
 use crate::{
+    fence::{
+        FenceWaiter, FenceWaiters, FENCE_WAIT_REPLY_TAG, FENCE_WAIT_REQUEST_TAG,
+        MAX_FENCE_WAITERS, ReapedWait, WaitDecision, decide_fence_wait,
+    },
     logging::emit_log,
     outputs::{
         OUTPUT_CREATE_REPLY_TAG, OUTPUT_CREATE_REQUEST_TAG, MAX_OUTPUTS, OutputCreateError,
@@ -19,6 +23,7 @@ pub(crate) fn drain_public_requests(
     log_handle: rt::Handle,
     registry: &mut OutputRegistry,
     fence_completed: u64,
+    waiters: &mut FenceWaiters,
     surfaces: &mut Surfaces,
     next_surface_id: &mut u32,
     dirty: &mut DirtyState,
@@ -39,6 +44,7 @@ pub(crate) fn drain_public_requests(
                     log_handle,
                     registry,
                     fence_completed,
+                    waiters,
                     surfaces,
                     next_surface_id,
                     dirty,
@@ -50,11 +56,45 @@ pub(crate) fn drain_public_requests(
     }
 }
 
+/// Answer parked fence waiters that completed or expired. Runs after each
+/// compositor present (completion side) and once per main-loop turn (timeout
+/// side), so clients block on the reply instead of spinning.
+pub(crate) fn release_fence_waiters(waiters: &mut FenceWaiters, completed: u64) -> usize {
+    if waiters.is_empty() {
+        return 0;
+    }
+    let now = rt::monotonic_now().unwrap_or(0);
+    let mut out = [ReapedWait::TimedOut(rt::INVALID_HANDLE); MAX_FENCE_WAITERS];
+    let reaped = waiters.reap(completed, now, &mut out);
+    for wait in out[..reaped].iter().copied() {
+        reply_fence_wait(
+            wait.handle(),
+            if wait.completed() {
+                GraphicsStatus::Ok
+            } else {
+                GraphicsStatus::Busy
+            },
+            completed,
+        );
+    }
+    reaped
+}
+
+fn reply_fence_wait(reply_handle: rt::Handle, status: GraphicsStatus, completed: u64) {
+    let mut reply = RawMessage::empty(FENCE_WAIT_REPLY_TAG as u32);
+    reply.word_count = 2;
+    reply.words[0] = status as u32 as u64;
+    reply.words[1] = completed;
+    let _ = rt::channel_send(reply_handle, &reply);
+    let _ = rt::handle_close(reply_handle);
+}
+
 pub(crate) fn handle_public_request(
     request: &RawMessage,
     log_handle: rt::Handle,
     registry: &mut OutputRegistry,
     fence_completed: u64,
+    waiters: &mut FenceWaiters,
     surfaces: &mut Surfaces,
     next_surface_id: &mut u32,
     dirty: &mut DirtyState,
@@ -265,6 +305,37 @@ pub(crate) fn handle_public_request(
                 slot.id as u64,
                 slot.owner_session as u64,
             );
+        }
+        x if x == FENCE_WAIT_REQUEST_TAG as u32 => {
+            if request.word_count < 2 || request.handle_count < 1 {
+                return Ok(());
+            }
+            let reply_handle = request.handles[0];
+            let token = request.words[0];
+            let timeout_ticks = request.words[1];
+            let now = rt::monotonic_now().unwrap_or(0);
+            match decide_fence_wait(fence_completed, token, now, timeout_ticks) {
+                WaitDecision::AlreadyComplete => {
+                    reply_fence_wait(reply_handle, GraphicsStatus::Ok, fence_completed);
+                }
+                WaitDecision::ImmediateTimeout => {
+                    reply_fence_wait(reply_handle, GraphicsStatus::Busy, fence_completed);
+                }
+                WaitDecision::Park { deadline_tick } => {
+                    let waiter = FenceWaiter {
+                        reply_handle,
+                        token,
+                        deadline_tick,
+                    };
+                    if waiters.park(waiter).is_err() {
+                        reply_fence_wait(
+                            waiter.reply_handle,
+                            GraphicsStatus::CapacityExceeded,
+                            fence_completed,
+                        );
+                    }
+                }
+            }
         }
         _ => {}
     }

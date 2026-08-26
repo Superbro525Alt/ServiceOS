@@ -11,7 +11,7 @@ use rt::{
 };
 use serviceos_userspace_runtime as rt;
 use timeline::{
-    DomainCounters, DomainSampler, TIMELINE_REPLY_EVENTS, Timeline, TimelineEvent,
+    DomainCounters, DomainSampler, TIMELINE_REPLY_EVENTS, Timeline, TimelineEvent, TimelineFilter,
     compute_timeline_summary, event_kind, ingest_domain_event, timeline_tag,
 };
 
@@ -631,14 +631,56 @@ fn handle_request(
             }
             let reply_handle = request.handles[0];
             let mut out = [TimelineEvent::zeroed(); TIMELINE_REPLY_EVENTS];
-            let count = if request.words[0] == timeline_tag::QUERY_MODE_SINCE {
-                timeline.query_since(request.words[1], &mut out)
+            let mode = request.words[0];
+            let (count, total, tag) = if mode == timeline_tag::QUERY_MODE_SINCE {
+                (
+                    timeline.query_since(request.words[1], &mut out),
+                    0u64,
+                    timeline_tag::QUERY_REPLY,
+                )
+            } else if mode == timeline_tag::QUERY_MODE_SERVICE {
+                // Drilldown: `[mode, service_id|ANY, kind|ANY, skip]`.
+                if request.word_count < 4 {
+                    return Ok(());
+                }
+                let filter = TimelineFilter {
+                    service_id: (request.words[1] as u32 != timeline::FILTER_ANY)
+                        .then_some(request.words[1] as u32),
+                    kind: (request.words[2] as u32 != timeline::FILTER_ANY)
+                        .then_some(request.words[2] as u32),
+                };
+                let total_matches = timeline.count_filtered(filter) as u64;
+                (
+                    timeline.query_filtered(filter, request.words[3] as usize, &mut out),
+                    total_matches,
+                    timeline_tag::QUERY_REPLY,
+                )
+            } else if mode == timeline_tag::QUERY_MODE_SERVICE_STATS {
+                // Stat line: `[mode, service_id]` answers on the stats tag.
+                if request.word_count < 2 {
+                    return Ok(());
+                }
+                let stats = timeline.service_stats(request.words[1] as u32);
+                let mut stats_reply =
+                    RawMessage::empty(timeline_tag::STATS_REPLY);
+                let packed = stats.pack_reply_words();
+                stats_reply.word_count = packed.len() as u32;
+                stats_reply.words = packed;
+                let _ = rt::channel_send(reply_handle, &stats_reply);
+                let _ = rt::handle_close(reply_handle);
+                return Ok(());
             } else {
-                timeline.query_last(request.words[1] as usize, &mut out)
+                (
+                    timeline.query_last(request.words[1] as usize, &mut out),
+                    0u64,
+                    timeline_tag::QUERY_REPLY,
+                )
             };
-            let mut reply = RawMessage::empty(timeline_tag::QUERY_REPLY);
+            let mut reply = RawMessage::empty(tag);
             reply.word_count = 1;
-            reply.words[0] = count as u64;
+            // Drilldown replies pack total window matches into the count
+            // word's high half; other modes leave it zero.
+            reply.words[0] = count as u64 | (total << 32);
             for slot in 0..count {
                 let base = 1 + slot * 3;
                 reply.words[base] = out[slot].service_id as u64 | ((out[slot].kind as u64) << 32);

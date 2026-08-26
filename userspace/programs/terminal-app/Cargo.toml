@@ -10,3 +10,4 @@ path = "src/main.rs"
 [dependencies]
 serviceos-userspace-runtime = { path = "../runtime" }
 serviceos-desktop-ui = { path = "../ui" }
+serviceos-shell-service = { path = "../shell-service" }

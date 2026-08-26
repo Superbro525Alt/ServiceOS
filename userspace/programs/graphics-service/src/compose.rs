@@ -16,6 +16,10 @@ static mut PRESENTED_FRAMEBUFFER_BYTES: [u8; MAX_FRAMEBUFFER_BYTES] = [0; MAX_FR
 pub(crate) struct PresentOutcome {
     pub(crate) skipped: bool,
     pub(crate) saved_bytes: u64,
+    /// Bytes the kernel did not have to copy this present because the flush
+    /// was narrowed to damaged scanline bands (distinct from noop skips,
+    /// which issue no kernel present at all).
+    pub(crate) band_saved_bytes: u64,
 }
 
 impl PresentOutcome {
@@ -23,6 +27,7 @@ impl PresentOutcome {
         Self {
             skipped: false,
             saved_bytes: 0,
+            band_saved_bytes: 0,
         }
     }
 
@@ -30,8 +35,238 @@ impl PresentOutcome {
         Self {
             skipped: true,
             saved_bytes,
+            band_saved_bytes: 0,
         }
     }
+
+    pub(crate) const fn banded(saved_bytes: u64) -> Self {
+        Self {
+            skipped: false,
+            saved_bytes: 0,
+            band_saved_bytes: saved_bytes,
+        }
+    }
+}
+
+/// Upper bound on scanline bands flushed per present; more runs than this
+/// falls back to presenting the whole clip region honestly.
+pub(crate) const MAX_FLUSH_BANDS: usize = 8;
+
+/// Strict-subset threshold: bands flush only while the changed area stays
+/// under half of the frame (`changed * 2 < frame_total`).
+const PARTIAL_FLUSH_DIVISOR: u64 = 2;
+
+/// Half-open run of framebuffer scanlines `[start_y, end_y)` to flush.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ScanBand {
+    pub(crate) start_y: u32,
+    pub(crate) end_y: u32,
+}
+
+/// Merge half-open row spans into disjoint bands, uniting overlapping or
+/// adjacent spans (damage rects commonly touch row edges). Returns the band
+/// count, or `None` when the merged result would exceed the capacity.
+pub(crate) fn merge_row_spans(
+    spans: &[(u32, u32)],
+    bands: &mut [ScanBand],
+) -> Option<usize> {
+    let mut count = 0usize;
+    for &(start, end) in spans {
+        if end <= start {
+            continue;
+        }
+        let mut start = start;
+        let mut end = end;
+        let mut write = 0usize;
+        let mut merged_existing = false;
+        while write < count {
+            let band = bands[write];
+            if band.end_y < start {
+                write += 1;
+                continue;
+            }
+            if band.start_y > end {
+                // Keep bands ordered by shifting the tail down one slot.
+                if count >= bands.len() {
+                    return None;
+                }
+                let mut shift = count;
+                while shift > write {
+                    bands[shift] = bands[shift - 1];
+                    shift -= 1;
+                }
+                bands[write] = ScanBand { start_y: start, end_y: end };
+                count += 1;
+                merged_existing = true;
+                break;
+            }
+            // Overlapping or adjacent: absorb into the existing band.
+            start = start.min(band.start_y);
+            end = end.max(band.end_y);
+            bands[write] = ScanBand { start_y: start, end_y: end };
+            merged_existing = true;
+            // Absorb any later bands the grown span now touches.
+            let mut read = write + 1;
+            while read < count && bands[read].start_y <= end {
+                end = end.max(bands[read].end_y);
+                bands[write].end_y = end;
+                read += 1;
+            }
+            while read < count {
+                bands[write + 1] = bands[read];
+                write += 1;
+                read += 1;
+            }
+            count = write + 1;
+            break;
+        }
+        if merged_existing {
+            continue;
+        }
+        if write >= count {
+            if count >= bands.len() {
+                return None;
+            }
+            bands[count] = ScanBand { start_y: start, end_y: end };
+            count += 1;
+        }
+    }
+    Some(count)
+}
+
+/// What the presenter should do for this frame given the diff between the
+/// composed frame and the presented shadow.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BandAction {
+    /// Frame matches the shadow inside the clip: no kernel present at all.
+    Skip(u64),
+    /// Flush only these scanline bands; carries bytes not copied.
+    Bands { saved_bytes: u64 },
+    /// Fall back to presenting the whole clip region in one call.
+    WholeClip,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct BandFlushPlan {
+    pub(crate) action: BandAction,
+    pub(crate) bands: [ScanBand; MAX_FLUSH_BANDS],
+    pub(crate) band_count: usize,
+}
+
+impl BandFlushPlan {
+    fn full() -> Self {
+        Self {
+            action: BandAction::WholeClip,
+            bands: [ScanBand { start_y: 0, end_y: 0 }; MAX_FLUSH_BANDS],
+            band_count: 0,
+        }
+    }
+}
+
+/// Compare `frame` against the presented shadow inside `clip` (`None` = the
+/// whole visible frame) and decide how to flush. Rows are compared over the
+/// clipped column range only, so stride padding never counts as damage.
+pub(crate) fn plan_band_flush(
+    frame: &[u8],
+    presented: &[u8],
+    output: rt::DisplayOutputInfo,
+    clip: Option<DamageRect>,
+    allow_partial: bool,
+) -> BandFlushPlan {
+    let Some((start_y, end_y, cmp_bytes)) = flush_span(output, clip) else {
+        return BandFlushPlan::full();
+    };
+    if frame.len() != presented.len() {
+        return BandFlushPlan::full();
+    }
+    let stride_bytes = output.stride as usize * output.bytes_per_pixel as usize;
+    let frame_total_bytes = output.height as u64 * stride_bytes as u64;
+
+    let mut spans = [(0u32, 0u32); MAX_FLUSH_BANDS];
+    let mut span_count = 0usize;
+    let mut overflow = false;
+    let mut run_start: Option<u32> = None;
+    for row in start_y..end_y {
+        let offset = row as usize * stride_bytes;
+        let changed =
+            frame[offset..offset + cmp_bytes] != presented[offset..offset + cmp_bytes];
+        if changed && run_start.is_none() {
+            run_start = Some(row);
+        }
+        if !changed {
+            if let Some(start) = run_start.take() {
+                if span_count >= spans.len() {
+                    overflow = true;
+                    break;
+                }
+                spans[span_count] = (start, row);
+                span_count += 1;
+            }
+        }
+    }
+    if overflow {
+        return BandFlushPlan::full();
+    }
+    if let Some(start) = run_start.take() {
+        if span_count >= spans.len() {
+            return BandFlushPlan::full();
+        }
+        spans[span_count] = (start, end_y);
+        span_count += 1;
+    }
+
+    let mut plan = BandFlushPlan::full();
+    let Some(band_count) = merge_row_spans(&spans[..span_count], &mut plan.bands) else {
+        return BandFlushPlan::full();
+    };
+    plan.band_count = band_count;
+
+    let span_rows = (end_y - start_y) as u64;
+    let would_flush_bytes = span_rows * cmp_bytes as u64;
+    if band_count == 0 {
+        plan.action = BandAction::Skip(would_flush_bytes);
+        return plan;
+    }
+    let changed_bytes: u64 = plan.bands[..band_count]
+        .iter()
+        .map(|band| (band.end_y - band.start_y) as u64 * cmp_bytes as u64)
+        .sum();
+    let subset_of_frame = changed_bytes.saturating_mul(PARTIAL_FLUSH_DIVISOR) < frame_total_bytes;
+    if !allow_partial || !subset_of_frame || changed_bytes >= would_flush_bytes {
+        return plan;
+    }
+    plan.action = BandAction::Bands {
+        saved_bytes: would_flush_bytes - changed_bytes,
+    };
+    plan
+}
+
+/// Visible-row range plus compared byte width for `clip` (`None` = whole
+/// frame width), mirroring the clamping rules of `region_byte_span`.
+fn flush_span(
+    output: rt::DisplayOutputInfo,
+    clip: Option<DamageRect>,
+) -> Option<(u32, u32, usize)> {
+    let bpp = output.bytes_per_pixel as usize;
+    if output.width == 0 || output.height == 0 || bpp == 0 {
+        return None;
+    }
+    let (start_x, end_x, start_y, end_y) = match clip {
+        None => (0usize, output.width as usize, 0u32, output.height),
+        Some(rect) => {
+            let sx = rect.x.max(0) as usize;
+            let sy = rect.y.max(0) as u32;
+            let ex = ((rect.x.saturating_add(rect.width as i32)).max(0) as usize)
+                .min(output.width as usize);
+            let ey = ((rect.y.saturating_add(rect.height as i32)).max(0) as u32)
+                .min(output.height);
+            (sx, ex, sy, ey)
+        }
+    };
+    if start_x >= end_x || start_y >= end_y {
+        return None;
+    }
+    Some((start_y, end_y, (end_x - start_x) * bpp))
 }
 
 pub(crate) fn compose_and_present(
@@ -49,6 +284,7 @@ pub(crate) fn compose_and_present(
     overlay_cursor_surfaces(frame, output, surfaces);
     present_full_inner(
         output_handle,
+        output,
         &frame[..byte_len],
         presented,
         allow_noop_skip,
@@ -131,22 +367,6 @@ struct RegionSpan {
 }
 
 impl RegionSpan {
-    fn byte_span(&self) -> u64 {
-        (self.row_end - self.row_start) as u64 * (self.col_end - self.col_start) as u64
-    }
-
-    fn rows_identical(&self, left: &[u8], right: &[u8]) -> bool {
-        for row in self.row_start..self.row_end {
-            let offset = row * self.stride_bytes;
-            if left[offset + self.col_start..offset + self.col_end]
-                != right[offset + self.col_start..offset + self.col_end]
-            {
-                return false;
-            }
-        }
-        true
-    }
-
     fn update_rows(&self, presented: &mut [u8], frame: &[u8]) {
         for row in self.row_start..self.row_end {
             let offset = row * self.stride_bytes;
@@ -154,23 +374,6 @@ impl RegionSpan {
             presented[range.clone()].copy_from_slice(&frame[range]);
         }
     }
-}
-
-fn region_identical_bytes(
-    presented: &[u8],
-    frame: &[u8],
-    output: rt::DisplayOutputInfo,
-    damage: DamageRect,
-) -> Option<u64> {
-    let span = region_byte_span(output, damage)?;
-    if presented.len() != frame.len() {
-        return None;
-    }
-    let bytes = span.byte_span();
-    if bytes == 0 || span.rows_identical(presented, frame) {
-        return Some(bytes);
-    }
-    None
 }
 
 fn present_damage_inner(
@@ -182,8 +385,14 @@ fn present_damage_inner(
     allow_noop_skip: bool,
 ) -> rt::Result<PresentOutcome> {
     if allow_noop_skip {
-        if let Some(saved) = region_identical_bytes(presented, frame, output, damage) {
-            return Ok(PresentOutcome::noop(saved));
+        let plan = plan_band_flush(frame, presented, output, Some(damage), true);
+        match plan.action {
+            BandAction::Skip(saved) => return Ok(PresentOutcome::noop(saved)),
+            BandAction::Bands { saved_bytes } => {
+                present_bands(output_handle, output, frame, presented, &plan)?;
+                return Ok(PresentOutcome::banded(saved_bytes));
+            }
+            BandAction::WholeClip => {}
         }
     }
     rt::display_output_present_damage(
@@ -204,18 +413,60 @@ fn present_damage_inner(
 
 fn present_full_inner(
     output_handle: rt::Handle,
+    output: rt::DisplayOutputInfo,
     frame: &[u8],
     presented: &mut [u8],
     allow_noop_skip: bool,
 ) -> rt::Result<PresentOutcome> {
-    if allow_noop_skip && presented.len() == frame.len() && presented == frame {
-        return Ok(PresentOutcome::noop(frame.len() as u64));
+    if allow_noop_skip {
+        let plan = plan_band_flush(frame, presented, output, None, true);
+        match plan.action {
+            BandAction::Skip(saved) => return Ok(PresentOutcome::noop(saved)),
+            BandAction::Bands { saved_bytes } => {
+                present_bands(output_handle, output, frame, presented, &plan)?;
+                return Ok(PresentOutcome::banded(saved_bytes));
+            }
+            BandAction::WholeClip => {}
+        }
     }
     rt::display_output_present(output_handle, frame)?;
     if presented.len() == frame.len() {
         presented.copy_from_slice(frame);
     }
     Ok(PresentOutcome::presented())
+}
+
+/// Flush the planned scanline bands through per-band kernel present-damage
+/// calls (full-width rows) and mirror exactly those rows into the shadow.
+fn present_bands(
+    output_handle: rt::Handle,
+    output: rt::DisplayOutputInfo,
+    frame: &[u8],
+    presented: &mut [u8],
+    plan: &BandFlushPlan,
+) -> rt::Result<()> {
+    for band in plan.bands[..plan.band_count].iter().copied() {
+        rt::display_output_present_damage(
+            output_handle,
+            frame,
+            0,
+            band.start_y as i32,
+            output.width,
+            band.end_y - band.start_y,
+        )?;
+    }
+    if presented.len() == frame.len() {
+        let stride_bytes = output.stride as usize * output.bytes_per_pixel as usize;
+        let row_bytes = output.width as usize * output.bytes_per_pixel as usize;
+        for band in plan.bands[..plan.band_count].iter().copied() {
+            for row in band.start_y..band.end_y {
+                let offset = row as usize * stride_bytes;
+                let range = offset..offset + row_bytes;
+                presented[range.clone()].copy_from_slice(&frame[range]);
+            }
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn presented_frame_slice(len: usize) -> &'static mut [u8] {
@@ -681,58 +932,122 @@ mod tests {
     }
 
     #[test]
-    fn region_identical_bytes_reports_saved_region_size() {
-        let out = output(4, 2, 4, 4);
+    fn row_spans_merge_overlapping_and_adjacent_rects() {
+        let mut bands = [ScanBand { start_y: 0, end_y: 0 }; MAX_FLUSH_BANDS];
+        // Two overlapping rects plus one touching edge and one disjoint.
+        let count = merge_row_spans(
+            &[(2, 5), (4, 9), (9, 12), (20, 22)],
+            &mut bands,
+        )
+        .unwrap();
+        assert_eq!(count, 2);
+        assert_eq!(bands[0], ScanBand { start_y: 2, end_y: 12 });
+        assert_eq!(bands[1], ScanBand { start_y: 20, end_y: 22 });
+    }
+
+    #[test]
+    fn row_spans_ignore_empty_and_report_capacity_overflow() {
+        let mut bands = [ScanBand { start_y: 0, end_y: 0 }; MAX_FLUSH_BANDS];
+        assert_eq!(merge_row_spans(&[(3, 3), (1, 1)], &mut bands), Some(0));
+        let wide: Vec<(u32, u32)> =
+            (0..MAX_FLUSH_BANDS as u32 + 2).map(|y| (y * 10, y * 10 + 5)).collect();
+        assert!(merge_row_spans(&wide, &mut bands).is_none());
+    }
+
+    #[test]
+    fn band_plan_skips_identical_region_with_span_savings() {
+        let out = output(4, 4, 4, 4);
         let frame = vec![7u8; out.byte_len as usize];
         let presented = frame.clone();
-        assert_eq!(
-            region_identical_bytes(&presented, &frame, out, rect(0, 0, 4, 2)),
-            Some(32)
-        );
+        // Savings count only visible compared bytes, never stride padding.
+        let plan = plan_band_flush(&frame, &presented, out, Some(rect(0, 1, 4, 2)), true);
+        assert_eq!(plan.action, BandAction::Skip(4 * 4 * 2));
+        // Whole-frame clip reports the full visible byte span.
+        let whole = plan_band_flush(&frame, &presented, out, None, true);
+        assert_eq!(whole.action, BandAction::Skip(out.byte_len));
     }
 
     #[test]
-    fn region_differs_when_any_row_byte_changes() {
-        let out = output(4, 2, 4, 4);
-        let mut frame = vec![7u8; out.byte_len as usize];
-        let presented = frame.clone();
-        frame[20] ^= 0xff;
-        assert_eq!(
-            region_identical_bytes(&presented, &frame, out, rect(0, 0, 4, 2)),
-            None
-        );
-    }
-
-    #[test]
-    fn identical_check_ignores_bytes_outside_damage() {
-        let out = output(4, 2, 4, 4);
+    fn band_plan_flushes_bands_under_half_frame_and_tracks_saved_bytes() {
+        let out = output(4, 8, 4, 4);
         let mut frame = vec![0u8; out.byte_len as usize];
-        let presented = frame.clone();
-        frame[1] = 9;
+        let presented = vec![0u8; out.byte_len as usize];
+        // Change rows 0 and 7 only: two single-row bands, a quarter of the
+        // frame — a strict subset under the <50% rule.
+        for x in 0..4usize {
+            let at = x * 4;
+            frame[at] = 0xAA;
+            let at = 7 * 16 + x * 4;
+            frame[at] = 0xBB;
+        }
+        let plan = plan_band_flush(&frame, &presented, out, None, true);
+        let saved = match plan.action {
+            BandAction::Bands { saved_bytes } => saved_bytes,
+            other => panic!("expected bands, got {other:?}"),
+        };
+        assert_eq!(plan.band_count, 2);
         assert_eq!(
-            region_identical_bytes(&presented, &frame, out, rect(1, 0, 3, 2)),
-            Some(24)
+            plan.bands[..2],
+            [
+                ScanBand { start_y: 0, end_y: 1 },
+                ScanBand { start_y: 7, end_y: 8 }
+            ]
         );
+        // Would-flush is all 8 rows (128 bytes); only 32 bytes changed.
+        assert_eq!(saved, 96);
     }
 
     #[test]
-    fn length_mismatch_never_reports_noop() {
-        let out = output(4, 2, 4, 4);
-        let frame = vec![7u8; out.byte_len as usize];
-        assert_eq!(
-            region_identical_bytes(&[], &frame, out, rect(0, 0, 4, 2)),
-            None
-        );
+    fn band_plan_falls_back_to_whole_clip_at_half_frame() {
+        let out = output(4, 4, 4, 4);
+        let mut frame = vec![0u8; out.byte_len as usize];
+        let presented = vec![1u8; out.byte_len as usize];
+        // Rows 0-1 differ: exactly half the visible bytes -> not a strict
+        // subset under the <50% rule.
+        for offset in 0..2 * 16usize {
+            frame[offset] = 9;
+        }
+        let plan = plan_band_flush(&frame, &presented, out, None, true);
+        assert_eq!(plan.action, BandAction::WholeClip);
     }
 
     #[test]
-    fn outcome_records_noop_savings() {
+    fn band_plan_ignores_stride_padding_damage() {
+        let out = output(4, 2, 6, 4); // stride 6 > width 4: 8 padding bytes/row
+        let mut frame = vec![0u8; out.byte_len as usize];
+        let presented = vec![0u8; out.byte_len as usize];
+        // Touch only stride padding; compared columns stay identical.
+        for row in 0..2usize {
+            frame[row * 24 + 4 * 4] = 0xEE;
+            frame[row * 24 + 5 * 4] = 0xEE;
+        }
+        // Would-flush covers the two visible 16-byte rows only.
+        let plan = plan_band_flush(&frame, &presented, out, None, true);
+        assert_eq!(plan.action, BandAction::Skip(32));
+    }
+
+    #[test]
+    fn band_plan_partial_disabled_or_short_shadow_uses_whole_clip() {
+        let out = output(4, 4, 4, 4);
+        let mut frame = vec![0u8; out.byte_len as usize];
+        let presented = vec![0u8; out.byte_len as usize];
+        frame[0] = 1; // single changed pixel
+        let gated = plan_band_flush(&frame, &presented, out, None, false);
+        assert_eq!(gated.action, BandAction::WholeClip);
+        let short = plan_band_flush(&frame, &[], out, None, true);
+        assert_eq!(short.action, BandAction::WholeClip);
+    }
+
+    #[test]
+    fn outcome_records_band_savings_separate_from_noop_skips() {
         let mut stats = crate::types::PresentStats::default();
-        stats.record(&PresentOutcome::noop(96));
-        stats.record(&PresentOutcome::presented());
-        stats.record(&PresentOutcome::noop(32));
+        stats.record(&PresentOutcome::banded(96));
+        stats.record(&PresentOutcome::noop(64));
+        stats.record(&PresentOutcome::banded(32));
         assert_eq!(stats.presents, 3);
-        assert_eq!(stats.noop_skips, 2);
-        assert_eq!(stats.noop_saved_bytes, 128);
+        assert_eq!(stats.noop_skips, 1);
+        assert_eq!(stats.noop_saved_bytes, 64);
+        assert_eq!(stats.band_presents, 2);
+        assert_eq!(stats.band_saved_bytes, 128);
     }
 }

@@ -56,7 +56,14 @@ pub(crate) fn poll_control(
                 }
             }
             Ok(()) if message.tag == AppControlTag::Text as u32 && message.word_count > 0 => {
+                did_work = true;
                 if let Some(ch) = core::char::from_u32(message.words[0] as u32) {
+                    // Active Ctrl-R search swallows typed text first; Enter
+                    // accepts the match and executes it.
+                    if crate::search::handle_text(state, ch)? {
+                        changed = true;
+                        continue;
+                    }
                     let mut visual_changed = state.selection.is_some();
                     state.selection = None;
                     let session_handle = {
@@ -68,13 +75,19 @@ pub(crate) fn poll_control(
                         };
                         visual_changed |= pane.scroll_offset != 0;
                         pane.scroll_offset = 0;
+                        // Keep the local line mirror in lockstep with what we
+                        // forward so Ctrl-R searches this pane's commands.
+                        if ch == '\n' || ch == '\r' {
+                            crate::search::commit_line(pane);
+                        } else if !ch.is_control() {
+                            crate::search::note_char(pane, ch);
+                        }
                         pane.session_handle
                     };
                     let mut bytes = [0u8; 4];
                     let encoded = ch.encode_utf8(&mut bytes);
                     let _ = rt::terminal_session_send_input(session_handle, encoded.as_bytes());
                     changed |= visual_changed;
-                    did_work = true;
                 }
             }
             Ok(()) if message.tag == AppControlTag::Key as u32 && message.word_count >= 2 => {
@@ -134,6 +147,12 @@ pub(crate) fn handle_key_down(
                 state.profile_index = (state.profile_index + 1) % profiles::PROFILE_COUNT;
                 return Ok(true);
             }
+            // Ctrl-R: start (or cycle older) reverse incremental history
+            // search on the focused pane.
+            KEY_R => {
+                let _ = crate::search::begin_or_cycle(state);
+                return Ok(true);
+            }
             KEY_C => {
                 crate::render::copy_selection(state);
                 return Ok(true);
@@ -143,15 +162,15 @@ pub(crate) fn handle_key_down(
                 return Ok(true);
             }
             KEY_1 => {
-                state.theme_index = 0;
+                set_theme(state, 0);
                 return Ok(true);
             }
             KEY_2 => {
-                state.theme_index = 1;
+                set_theme(state, 1);
                 return Ok(true);
             }
             KEY_3 => {
-                state.theme_index = 2;
+                set_theme(state, 2);
                 return Ok(true);
             }
             _ => {}
@@ -186,6 +205,10 @@ pub(crate) fn handle_key_down(
         }
     }
 
+    // Esc leaves an active search untouched; Ctrl-R cycles older matches.
+    if key_code == KEY_ESC && crate::search::cancel(state) {
+        return Ok(true);
+    }
     if modifiers & MOD_CTRL != 0 && key_code == KEY_TAB {
         if modifiers & MOD_SHIFT != 0 {
             crate::tabs::focus_previous_tab(state);
@@ -246,6 +269,12 @@ pub(crate) fn handle_key_down(
         }
     }
 
+    // While a Ctrl-R search is active on this pane, backspace edits the query.
+    if key_code == KEY_BACKSPACE && state.search.is_some() {
+        if crate::search::handle_backspace(state) {
+            return Ok(true);
+        }
+    }
     state.selection = None;
     let Some(tab) = crate::tabs::active_tab_mut(state) else {
         return Ok(false);
@@ -256,14 +285,34 @@ pub(crate) fn handle_key_down(
     let visual_changed = pane.scroll_offset != 0;
     pane.scroll_offset = 0;
     match key_code {
-        KEY_BACKSPACE => rt::terminal_session_send_input(pane.session_handle, &[0x7f])?,
-        KEY_UP => rt::terminal_session_send_input(pane.session_handle, b"\x1b[A")?,
-        KEY_DOWN => rt::terminal_session_send_input(pane.session_handle, b"\x1b[B")?,
+        KEY_BACKSPACE => {
+            crate::search::note_backspace(pane);
+            rt::terminal_session_send_input(pane.session_handle, &[0x7f])?
+        }
+        KEY_UP => {
+            crate::search::history_up(pane);
+            rt::terminal_session_send_input(pane.session_handle, b"\x1b[A")?
+        }
+        KEY_DOWN => {
+            crate::search::history_down(pane);
+            rt::terminal_session_send_input(pane.session_handle, b"\x1b[B")?
+        }
         KEY_RIGHT => rt::terminal_session_send_input(pane.session_handle, b"\x1b[C")?,
         KEY_LEFT => rt::terminal_session_send_input(pane.session_handle, b"\x1b[D")?,
         _ => return Ok(false),
     }
     Ok(visual_changed)
+}
+
+/// Apply a theme pick: recolor now, fold it into the active profile's stored
+/// theme, and persist the profile set durably (best effort).
+fn set_theme(state: &mut TerminalState, theme_index: usize) {
+    state.theme_index = theme_index % crate::THEMES.len();
+    let profile_index = state.profile_index % profiles::PROFILE_COUNT;
+    state.profiles[profile_index].theme_index = state.theme_index as u8;
+    if state.storage_handle != rt::INVALID_HANDLE {
+        let _ = profiles::store_profiles(state.storage_handle, &state.profiles);
+    }
 }
 
 fn handle_pointer_down(state: &mut TerminalState, x: i32, y: i32) -> bool {

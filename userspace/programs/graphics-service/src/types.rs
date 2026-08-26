@@ -250,6 +250,8 @@ pub(crate) struct PresentStats {
     pub(crate) presents: u64,
     pub(crate) noop_skips: u64,
     pub(crate) noop_saved_bytes: u64,
+    pub(crate) band_presents: u64,
+    pub(crate) band_saved_bytes: u64,
 }
 
 impl PresentStats {
@@ -258,6 +260,12 @@ impl PresentStats {
         if outcome.skipped {
             self.noop_skips = self.noop_skips.saturating_add(1);
             self.noop_saved_bytes = self.noop_saved_bytes.saturating_add(outcome.saved_bytes);
+        }
+        if outcome.band_saved_bytes > 0 {
+            self.band_presents = self.band_presents.saturating_add(1);
+            self.band_saved_bytes = self
+                .band_saved_bytes
+                .saturating_add(outcome.band_saved_bytes);
         }
     }
 }

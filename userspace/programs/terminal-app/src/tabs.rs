@@ -121,7 +121,7 @@ fn open_tab_with_profile(
     index: usize,
     profile_index: usize,
 ) -> rt::Result<()> {
-    let profile = profiles::DEFAULT_PROFILES[profile_index % profiles::PROFILE_COUNT];
+    let profile = state.profiles[profile_index % profiles::PROFILE_COUNT];
     let (_, session_handle, _, _) =
         profiles::open_session_with_profile(state.terminal_handle, &profile)?;
     clear_tab_grid(index);
@@ -150,7 +150,7 @@ pub(crate) fn split_active_pane(
         return Ok(());
     }
     let profile_index = state.tabs[index].profile_index;
-    let profile = profiles::DEFAULT_PROFILES[profile_index % profiles::PROFILE_COUNT];
+    let profile = state.profiles[profile_index % profiles::PROFILE_COUNT];
     let (_, session_handle, _, _) =
         profiles::open_session_with_profile(state.terminal_handle, &profile)?;
     let slot = grid_slot(index, 1);

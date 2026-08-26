@@ -25,6 +25,7 @@ pub(crate) fn render(
     draw_titlebar(bytes, width, state);
     draw_tab_strip(bytes, width, state, theme);
     draw_terminal_contents(bytes, width, height, state, theme);
+    draw_search_overlay(bytes, state, theme);
     presenter.present(
         buffer_slot,
         state.width.min(BUFFER_WIDTH),
@@ -87,7 +88,7 @@ fn draw_titlebar(bytes: &mut [u8], width: usize, state: &TerminalState) {
     );
     rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, 10, 9, ui::TEXT_PRIMARY, "TERMINAL");
     let profile =
-        profiles::DEFAULT_PROFILES[state.profile_index % profiles::PROFILE_COUNT].name_str();
+        state.profiles[state.profile_index % profiles::PROFILE_COUNT].name_str();
     rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, 76, 9, ui::TEXT_PRIMARY, profile);
     rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, 140, 9, theme.muted, theme.name);
 }
@@ -304,8 +305,52 @@ fn draw_pane(
     }
 }
 
-fn resolve_cell_colors(cell: Cell, theme: &Theme) -> (u32, u32) {
-    let mut fg = if cell.fg == COLOR_DEFAULT {
+/// Overlay-ish search status line across the bottom of the searched pane:
+/// ``(reverse-i-search)`query': match`` while Ctrl-R is active.
+fn draw_search_overlay(bytes: &mut [u8], state: &TerminalState, theme: &Theme) {
+    let Some(overlay) = state.search.as_ref() else {
+        return;
+    };
+    let Some(tab) = crate::tabs::active_tab_ref(state) else {
+        return;
+    };
+    if overlay.pane_index >= tab.pane_count {
+        return;
+    }
+    let area = crate::panes::content_area(state);
+    let rects = crate::panes::pane_rects(area, &tab.tree);
+    let rect = rects[overlay.pane_index];
+    if rect.h < CELL_HEIGHT * 2 {
+        return;
+    }
+    let row_y = rect.y + rect.h - CELL_HEIGHT - 1;
+    fill_rect(bytes, rect.x, row_y, rect.w, CELL_HEIGHT + 1, theme.panel_alt);
+
+    use serviceos_shell_service::history_search as hs;
+    let pane = &tab.panes[overlay.pane_index];
+    let mut matched = [0u8; hs::MAX_ENTRY_BYTES];
+    let matched_len = overlay
+        .inner
+        .matched_entry(&pane.history, &mut matched)
+        .unwrap_or(0);
+    let mut line = [0u8; hs::MAX_QUERY_BYTES + hs::MAX_ENTRY_BYTES + 32];
+    let len = hs::render_search_line(&overlay.inner, &matched[..matched_len], &mut line);
+    let text = core::str::from_utf8(&line[..len]).unwrap_or("");
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        (rect.x + 4) as i32,
+        (row_y + 2) as i32,
+        if overlay.inner.is_failed() {
+            ui::STATUS_WARN
+        } else {
+            ui::TEXT_PRIMARY
+        },
+        text,
+    );
+}
+
+fn resolve_cell_colors(cell: Cell, theme: &Theme) -> (u32, u32) {    let mut fg = if cell.fg == COLOR_DEFAULT {
         theme.fg
     } else {
         theme.ansi[(cell.fg - 1).min(15) as usize]

@@ -14,6 +14,14 @@ pub(crate) const PROFILE_WIRE_LEN: usize = PROFILE_NAME_BYTES
     + 1;
 pub(crate) const PROFILE_COUNT: usize = 3;
 
+/// Durable profile store location on the persistent storage mount, following
+/// the `state/<app>/` convention used by desktop-shell's access store.
+const STORE_DIR_PATH: &str = "state/terminal/";
+const STORE_ROOT_PATH: &str = "state/";
+const STORE_DIR_NAME: &str = "terminal";
+const STORE_FILE_NAME: &str = "profiles.cfg";
+const STORE_FILE_MAX_BYTES: usize = 512;
+
 #[derive(Clone, Copy, Eq, PartialEq, Debug)]
 pub(crate) struct TerminalProfile {
     pub(crate) name: [u8; PROFILE_NAME_BYTES],
@@ -151,6 +159,52 @@ fn cstr_len(field: &[u8]) -> usize {
         .iter()
         .position(|byte| *byte == 0)
         .unwrap_or(field.len())
+}
+
+/// Load the persisted profile set from storage. Returns None on any missing
+/// piece (no store file yet, transport error, malformed text) so the caller
+/// falls back to the built-in defaults.
+pub(crate) fn load_profiles(storage: rt::Handle) -> Option<[TerminalProfile; PROFILE_COUNT]> {
+    let (blob, size) = rt::storage_open(storage, "state/terminal/profiles.cfg").ok()?;
+    let mut buffer = [0u8; STORE_FILE_MAX_BYTES];
+    let want = size.min(buffer.len());
+    let read = rt::storage_read_all(blob, &mut buffer, want);
+    let _ = rt::storage_blob_close(blob);
+    let read = read.ok()?;
+    parse_config_text(&buffer[..read])
+}
+
+/// Persist the profile set (including each profile's theme index) durably.
+/// Creates the `state/terminal/` directory when missing. Best effort: returns
+/// whether the write landed.
+pub(crate) fn store_profiles(
+    storage: rt::Handle,
+    profiles: &[TerminalProfile; PROFILE_COUNT],
+) -> bool {
+    if rt::storage_open_directory(storage, STORE_DIR_PATH, true).is_err() {
+        let Ok(root) = rt::storage_open_directory(storage, STORE_ROOT_PATH, true) else {
+            return false;
+        };
+        let created =
+            rt::storage_directory_create(root, STORE_DIR_NAME, rt::StorageEntryKind::Directory);
+        let _ = rt::handle_close(root);
+        if created.is_err() && rt::storage_open_directory(storage, STORE_DIR_PATH, true).is_err() {
+            return false;
+        }
+    }
+    let Ok(dir) = rt::storage_open_directory(storage, STORE_DIR_PATH, true) else {
+        return false;
+    };
+    let file = rt::storage_directory_open_file(dir, STORE_FILE_NAME, true, true);
+    let _ = rt::handle_close(dir);
+    let Ok((blob, _)) = file else {
+        return false;
+    };
+    let mut buffer = [0u8; STORE_FILE_MAX_BYTES];
+    let len = write_config_text(profiles, &mut buffer);
+    let written = rt::storage_write(blob, 0, len, &buffer[..len]);
+    let _ = rt::storage_blob_close(blob);
+    written.is_ok()
 }
 
 /// Serialize profiles in the config-service `key=value` line style.
@@ -421,6 +475,53 @@ mod tests {
         let mut buffer = [0u8; 512];
         let len = write_config_text(&profiles, &mut buffer);
         assert!(len > 0 && len <= buffer.len());
+        let parsed = parse_config_text(&buffer[..len]).expect("parse");
+        assert_eq!(parsed, profiles);
+    }
+
+    #[test]
+    fn theme_codec_roundtrips_every_theme_index() {
+        for theme_index in 0..crate::THEMES.len() {
+            let mut profiles = DEFAULT_PROFILES;
+            profiles[1].theme_index = theme_index as u8;
+            let mut buffer = [0u8; 512];
+            let len = write_config_text(&profiles, &mut buffer);
+            let parsed = parse_config_text(&buffer[..len]).expect("parse");
+            assert_eq!(parsed[1].theme_index as usize, theme_index);
+            // Theme selection drives rendering through the same modulo.
+            assert_eq!(
+                parsed[1].theme_index as usize % crate::THEMES.len(),
+                theme_index
+            );
+        }
+    }
+
+    #[test]
+    fn theme_codec_rejects_out_of_range_values() {
+        let mut buffer = [0u8; 512];
+        let len = write_config_text(&DEFAULT_PROFILES, &mut buffer);
+        // Corrupt the DEV profile's theme value past u8 range; the trailing
+        // byte eats the newline so the value swallows the next key.
+        let marker = b"p1.theme=1\n";
+        let start = buffer[..len]
+            .windows(marker.len())
+            .position(|window| window == marker)
+            .expect("theme line present");
+        for (offset, byte) in b"256".iter().enumerate() {
+            buffer[start + 9 + offset] = *byte;
+        }
+        assert_eq!(&buffer[start..start + 12], b"p1.theme=256");
+        assert!(parse_config_text(&buffer[..len]).is_none());
+    }
+
+    #[test]
+    fn stored_profiles_survive_codec_with_themes_and_fields() {
+        let mut profiles = DEFAULT_PROFILES;
+        profiles[0].theme_index = 2;
+        profiles[2].theme_index = 0;
+        let mut buffer = [0u8; STORE_FILE_MAX_BYTES];
+        let len = write_config_text(&profiles, &mut buffer);
+        assert!(len <= STORE_FILE_MAX_BYTES, "store file stays bounded");
         let parsed = parse_config_text(&buffer[..len]).expect("parse");
         assert_eq!(parsed, profiles);
     }

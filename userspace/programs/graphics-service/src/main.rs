@@ -15,11 +15,11 @@ use crate::{
     compose::{
         compose_and_present, compose_damage_and_present, cursor_present, presented_frame_slice,
     },
-    fence::FenceTracker,
+    fence::{FenceTracker, FenceWaiters},
     logging::{emit_log, poll_lifecycle},
     requests::{
         drain_public_requests, drain_surface_requests, flush_close_pending_surfaces,
-        handle_public_request,
+        handle_public_request, release_fence_waiters,
     },
     types::{
         CURSOR_PRESENT_COALESCE_TICKS, DirtyState, MAX_FRAMEBUFFER_BYTES, MAX_SURFACES,
@@ -76,6 +76,14 @@ fn main() -> u64 {
         "present-fence v0: PresentBufferReply word1 carries frame-counter token; \
          completion query = output-status word12 >= token; noop-skip/saved-bytes/close-pending stats in words 13..=15",
     );
+    let _ = rt::write_log(
+        "graphics",
+        "fence-wait v1: op 0x912 (token, timeout_ticks) blocks clients on the \
+         completed high-water via bounded waiter reap; reply 0x913 = status + completed. \
+         Partial flush: full-frame and damage presents diff against the presented shadow \
+         and flush only changed scanline bands when the changed area is a strict subset \
+         (<50% of frame), logging 'partial-flush savings' lines with bytes not copied.",
+    );
 
     let mut surfaces = [SurfaceSlot::empty(); MAX_SURFACES];
     let mut next_surface_id = 1u32;
@@ -85,6 +93,7 @@ fn main() -> u64 {
     let mut present_deadline = 0u64;
     let mut stats = PresentStats::default();
     let mut fences = FenceTracker::new();
+    let mut waiters = FenceWaiters::new();
 
     loop {
         match poll_lifecycle(bootstrap) {
@@ -92,12 +101,15 @@ fn main() -> u64 {
             Ok(false) => {}
             Err(_) => return 0xfc07,
         }
+        // Expire fence waits whose deadlines passed without a covering present.
+        release_fence_waiters(&mut waiters, fences.completed());
 
         let had_public_work = match drain_public_requests(
             public.first,
             log_handle,
             &mut registry,
             fences.completed(),
+            &mut waiters,
             &mut surfaces,
             &mut next_surface_id,
             &mut dirty,
@@ -174,11 +186,27 @@ fn main() -> u64 {
                 match result {
                     Ok(outcome) => {
                         let skips_before = stats.noop_skips;
+                        let bands_before = stats.band_presents;
+                        let band_saved = outcome.band_saved_bytes;
                         stats.record(&outcome);
                         if let Some(slot) = registry.primary_mut() {
                             slot.record_outcome(&outcome);
                         }
                         fences.complete(fence);
+                        release_fence_waiters(&mut waiters, fences.completed());
+                        if band_saved > 0 && (bands_before == 0 || bands_before % 64 == 63) {
+                            let _ = rt::write_logf(
+                                "graphics",
+                                format_args!(
+                                    "partial-flush savings: event={} saved_bytes={} total_band_events={} total_band_saved_bytes={} present_count={}",
+                                    bands_before + 1,
+                                    band_saved,
+                                    bands_before + 1,
+                                    stats.band_saved_bytes,
+                                    present_count
+                                ),
+                            );
+                        }
                         if outcome.skipped && skips_before == 0 {
                             let _ = rt::write_logf(
                                 "graphics",
@@ -223,12 +251,19 @@ fn main() -> u64 {
             present_deadline = 0;
         }
 
-        let wait_ticks = match dirty {
+        let mut wait_ticks = match dirty {
             DirtyState::Clean => IDLE_WAIT_TICKS,
             _ => present_deadline
                 .saturating_sub(rt::monotonic_now().unwrap_or(0))
                 .max(1),
         };
+        // Wake in time to expire parked fence waits at their deadlines.
+        if let Some(deadline) = waiters.earliest_deadline() {
+            let until_deadline = deadline
+                .saturating_sub(rt::monotonic_now().unwrap_or(0))
+                .max(1);
+            wait_ticks = wait_ticks.min(until_deadline);
+        }
         let mut waited = RawMessage::empty(0);
         match rt::channel_receive_blocking_timeout(public.first, &mut waited, wait_ticks) {
             Ok(()) => {
@@ -237,6 +272,7 @@ fn main() -> u64 {
                     log_handle,
                     &mut registry,
                     fences.completed(),
+                    &mut waiters,
                     &mut surfaces,
                     &mut next_surface_id,
                     &mut dirty,

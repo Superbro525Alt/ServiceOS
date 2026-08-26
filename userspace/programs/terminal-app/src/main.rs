@@ -5,6 +5,7 @@ mod control;
 mod panes;
 mod profiles;
 mod render;
+mod search;
 mod state;
 mod tabs;
 mod vt;
@@ -56,12 +57,24 @@ fn main() -> u64 {
     let mut presenter = ui::FirstPresentSurface::new(surface_handle);
 
     tabs::clear_all_grids();
+    // Durable profile persistence: pull the stored profile set (theme picks
+    // included) from the persistent storage mount when reachable; otherwise
+    // run on the built-in defaults.
+    let storage_handle = rt::lookup_service(bootstrap, rt::ServiceId::Storage)
+        .unwrap_or(rt::INVALID_HANDLE);
+    let mut profiles = profiles::DEFAULT_PROFILES;
+    if storage_handle != rt::INVALID_HANDLE {
+        if let Some(stored) = profiles::load_profiles(storage_handle) {
+            profiles = stored;
+        }
+    }
     let mut state = TerminalState {
         width,
         height,
         focused,
         terminal_handle,
         clipboard_handle,
+        storage_handle,
         columns: 0,
         rows: 0,
         content_x: 0,
@@ -69,8 +82,10 @@ fn main() -> u64 {
         content_w: 0,
         content_h: 0,
         active_tab: 0,
-        theme_index: 0,
+        theme_index: profiles[0].theme_index as usize % THEMES.len(),
         profile_index: 0,
+        profiles,
+        search: None,
         tabs: [TerminalTab::empty(); MAX_TABS],
         selection: None,
         clipboard: [0; CLIPBOARD_BYTES],

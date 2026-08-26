@@ -230,6 +230,12 @@ impl PacketBackend for VirtioPacketBackend {
         let mut state = self.state.lock();
         let mut became_ready = false;
 
+        // Read-and-clear the ISR status so a level-triggered PCI interrupt
+        // deasserts and can fire again for packets that arrive later. Without
+        // this the line stays stuck asserted after the first delivery and
+        // every subsequent inbound frame is silently lost.
+        let _ = state.device.ack_interrupt();
+
         while state.device.can_recv() {
             match state.device.receive() {
                 Ok(rx) => {

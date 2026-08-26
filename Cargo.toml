@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "shared/abi",
     "shared/bundle",
+    "shared/crypto",
     "kernel/core",
     "arch/x86_64",
     "arch/aarch64",

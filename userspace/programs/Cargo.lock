@@ -118,6 +118,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "serviceos-crypto"
+version = "0.1.0"
+
+[[package]]
 name = "serviceos-desktop-shell-service"
 version = "0.1.0"
 dependencies = [
@@ -192,6 +196,7 @@ version = "0.1.0"
 dependencies = [
  "serviceos-abi",
  "serviceos-bundle",
+ "serviceos-crypto",
  "serviceos-userspace-runtime",
 ]
 

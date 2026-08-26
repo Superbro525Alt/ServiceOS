@@ -15,4 +15,10 @@ path = "src/main.rs"
 [dependencies]
 serviceos-abi = { path = "../../../shared/abi" }
 serviceos-bundle = { path = "../../../shared/bundle" }
+serviceos-crypto = { path = "../../../shared/crypto" }
 serviceos-userspace-runtime = { path = "../runtime" }
+
+[dev-dependencies]
+# Host-only fixtures (keypair generation / feed signing) for the signing
+# module's Ed25519 roundtrip tests.
+serviceos-crypto = { path = "../../../shared/crypto", features = ["std-helper"] }

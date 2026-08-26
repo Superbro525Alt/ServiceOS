@@ -15,15 +15,22 @@
 //! remain open roadmap work.
 
 pub const KEY_ID_MAX: usize = 24;
-pub const KEY_HEX_MAX: usize = 32;
+/// Longest pinned-key hex: 32 chars for the legacy FNV secret, 64 for an
+/// Ed25519 compressed public key.
+pub const KEY_HEX_MAX: usize = 64;
 pub const SOURCE_NAME_MAX: usize = 32;
 pub const MAX_KEYS_PER_SOURCE: usize = 4;
 pub const MAX_SIGNED_SOURCES: usize = 4;
 pub const MAX_CANON_LINES: usize = 256;
 pub const REJECT_RECORDS_MAX: usize = 8;
+/// Hard cap on the canonical byte stream an Ed25519 signature may cover.
+pub const ED25519_MSG_MAX: usize = 8192;
 
 pub const SIG_KEY_PREFIX: &str = "sig-key=";
 pub const SIG_DIGEST_PREFIX: &str = "sig-digest=";
+pub const SIG_ALG_PREFIX: &str = "sig-alg=";
+pub const SIG_SIG_PREFIX: &str = "sig-sig=";
+pub const ALG_ED25519: &str = "ed25519";
 
 /// Rejection reason words persisted in the feed-reject journal.
 pub const REJECT_UNSIGNED_REQUIRED: u64 = 1;
@@ -97,9 +104,18 @@ impl<const N: usize> FixedText<N> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum KeyAlg {
+    /// Legacy keyed double-FNV integrity digest (secret key material).
+    Fnv,
+    /// Real Ed25519 signature verification (compressed public key).
+    Ed25519,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TrustedKey {
     pub key_id: FixedText<KEY_ID_MAX>,
     pub key_hex: FixedText<KEY_HEX_MAX>,
+    pub alg: KeyAlg,
     pub state: KeyState,
     pub retired_tick: u64,
 }
@@ -109,6 +125,7 @@ impl TrustedKey {
         Self {
             key_id: FixedText::empty(),
             key_hex: FixedText::empty(),
+            alg: KeyAlg::Fnv,
             state: KeyState::Retired,
             retired_tick: 0,
         }
@@ -182,6 +199,47 @@ impl SourceKeys {
         };
         slot.key_id.set(key_id);
         slot.key_hex.set(key_hex);
+        slot.alg = KeyAlg::Fnv;
+        slot.state = if has_active {
+            KeyState::Retired
+        } else {
+            KeyState::Active
+        };
+        slot.retired_tick = 0;
+        Ok(())
+    }
+
+    /// Enroll an Ed25519 verification key (64-hex compressed public key).
+    /// The first enrolled key bootstraps as the active anchor; later keys
+    /// start retired so they only verify once rotation promotes them.
+    #[allow(dead_code)]
+    pub fn enroll_ed25519(&mut self, key_id: &str, pubkey_hex: &str) -> Result<(), KeystoreError> {
+        if key_id.is_empty() || key_id.len() > KEY_ID_MAX {
+            return Err(KeystoreError::InvalidKeyId);
+        }
+        if decode_pubkey_hex(pubkey_hex).is_none() {
+            return Err(KeystoreError::InvalidKeyHex);
+        }
+        if self.find_key(key_id).is_some() {
+            return Err(KeystoreError::DuplicateKey);
+        }
+        let has_active = self.keys[..self.key_count]
+            .iter()
+            .any(|key| key.state == KeyState::Active);
+        let slot = match self.keys[..self.key_count]
+            .iter_mut()
+            .find(|key| key.key_id.is_empty())
+        {
+            Some(slot) => slot,
+            None if self.key_count < MAX_KEYS_PER_SOURCE => {
+                self.key_count += 1;
+                &mut self.keys[self.key_count - 1]
+            }
+            None => return Err(KeystoreError::SourceFull),
+        };
+        slot.key_id.set(key_id);
+        slot.key_hex.set(pubkey_hex);
+        slot.alg = KeyAlg::Ed25519;
         slot.state = if has_active {
             KeyState::Retired
         } else {
@@ -276,9 +334,21 @@ impl Keystore {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SigKind {
+    /// Legacy keyed double-FNV integrity checksum.
+    FnvDigest,
+    /// Real Ed25519 signature over the canonical content stream.
+    Ed25519,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FeedSignature {
     pub key_id: FixedText<KEY_ID_MAX>,
+    pub kind: SigKind,
+    /// FNV digest (meaningful only for `SigKind::FnvDigest`).
     pub digest: u64,
+    /// R||S signature bytes (meaningful only for `SigKind::Ed25519`).
+    pub sig: [u8; 64],
 }
 
 pub fn parse_hex_u64(value: &str) -> Option<u64> {
@@ -299,7 +369,7 @@ pub fn parse_hex_u64(value: &str) -> Option<u64> {
 }
 
 pub fn decode_key_hex(value: &str) -> Option<[u8; 16]> {
-    if value.is_empty() || value.len() > KEY_HEX_MAX || value.len() % 2 != 0 {
+    if value.is_empty() || value.len() > 32 || value.len() % 2 != 0 {
         return None;
     }
     let mut key = [0u8; 16];
@@ -321,28 +391,74 @@ fn parse_hex_nibble(byte: u8) -> Option<u8> {
     }
 }
 
-fn is_signature_line(line: &str) -> bool {
-    line.starts_with(SIG_KEY_PREFIX) || line.starts_with(SIG_DIGEST_PREFIX)
+fn decode_hex_bytes<const N: usize>(value: &str) -> Option<[u8; N]> {
+    if value.len() != N * 2 {
+        return None;
+    }
+    let bytes = value.as_bytes();
+    let mut out = [0u8; N];
+    for index in 0..N {
+        let hi = parse_hex_nibble(bytes[index * 2])?;
+        let lo = parse_hex_nibble(bytes[index * 2 + 1])?;
+        out[index] = (hi << 4) | lo;
+    }
+    Some(out)
 }
 
-/// Extract the trailing signature lines from a feed, if present.
+/// Decode an Ed25519 compressed public key from its 64-hex encoding.
+pub fn decode_pubkey_hex(value: &str) -> Option<[u8; 32]> {
+    decode_hex_bytes::<32>(value)
+}
+
+fn is_signature_line(line: &str) -> bool {
+    line.starts_with(SIG_KEY_PREFIX)
+        || line.starts_with(SIG_DIGEST_PREFIX)
+        || line.starts_with(SIG_ALG_PREFIX)
+        || line.starts_with(SIG_SIG_PREFIX)
+}
+
+/// Extract the trailing signature lines from a feed, if present. Two
+/// trailer grammars are understood:
+/// - legacy integrity checksum: `sig-key=` + `sig-digest=<u64 hex>`
+/// - Ed25519 signature: `sig-alg=ed25519` + `sig-key=` + `sig-sig=<128 hex>`
 pub fn parse_feed_signature(feed: &str) -> Option<FeedSignature> {
     let mut key_id = FixedText::<KEY_ID_MAX>::empty();
     let mut digest: Option<u64> = None;
+    let mut ed_sig: Option<[u8; 64]> = None;
+    let mut alg_ed25519 = false;
     for line in feed.lines().map(str::trim).filter(|line| !line.is_empty()) {
         if let Some(value) = line.strip_prefix(SIG_KEY_PREFIX) {
             let _ = key_id.set(value.trim());
         } else if let Some(value) = line.strip_prefix(SIG_DIGEST_PREFIX) {
             digest = parse_hex_u64(value.trim());
+        } else if let Some(value) = line.strip_prefix(SIG_ALG_PREFIX) {
+            alg_ed25519 |= value.trim() == ALG_ED25519;
+        } else if let Some(value) = line.strip_prefix(SIG_SIG_PREFIX) {
+            ed_sig = decode_hex_bytes::<64>(value.trim());
         }
     }
-    if key_id.is_empty() || digest.is_none() {
-        return None;
+    if alg_ed25519
+        && !key_id.is_empty()
+        && let Some(sig) = ed_sig
+    {
+        return Some(FeedSignature {
+            key_id,
+            kind: SigKind::Ed25519,
+            digest: 0,
+            sig,
+        });
     }
-    Some(FeedSignature {
-        key_id,
-        digest: digest.unwrap_or(0),
-    })
+    if !alg_ed25519 && ed_sig.is_none() && !key_id.is_empty() {
+        if let Some(digest) = digest {
+            return Some(FeedSignature {
+                key_id,
+                kind: SigKind::FnvDigest,
+                digest,
+                sig: [0u8; 64],
+            });
+        }
+    }
+    None
 }
 
 /// Canonical feed content: every non-signature line, trimmed, empties
@@ -431,6 +547,53 @@ pub enum FeedVerdict {
     RejectedStaleSignature,
 }
 
+/// Rebuild the canonical content byte stream (sorted lines, each followed
+/// by '\n') that an Ed25519 signature covers. Returns `None` when the
+/// stream would exceed `ED25519_MSG_MAX`.
+pub fn canonical_message(
+    feed: &str,
+    message: &mut [u8; ED25519_MSG_MAX],
+) -> Option<usize> {
+    let mut lines = [""; MAX_CANON_LINES];
+    let count = canonical_lines(feed, &mut lines);
+    let mut len = 0usize;
+    for line in lines[..count].iter() {
+        let bytes = line.as_bytes();
+        if len + bytes.len() + 1 > message.len() {
+            return None;
+        }
+        message[len..len + bytes.len()].copy_from_slice(bytes);
+        len += bytes.len();
+        message[len] = b'\n';
+        len += 1;
+    }
+    Some(len)
+}
+
+/// Produce an Ed25519-signed feed: the seed signs the canonical stream and
+/// `sig-alg=`/`sig-key=`/`sig-sig=` trailers are appended. Host-side only;
+/// requires the seed rather than the public key.
+#[allow(dead_code)]
+pub fn sign_feed_text_ed25519(
+    feed: &str,
+    key_id: &str,
+    seed: &[u8; 32],
+    append: &mut dyn core::fmt::Write,
+) -> Option<[u8; 32]> {
+    let public = serviceos_crypto::ed25519::public_key(seed);
+    let mut message = [0u8; ED25519_MSG_MAX];
+    let len = canonical_message(feed, &mut message)?;
+    let signature = serviceos_crypto::ed25519::sign(seed, &message[..len]);
+    write!(append, "{}{}\n", feed.trim_end(), "\n").ok()?;
+    write!(append, "{}{}\n", SIG_ALG_PREFIX, ALG_ED25519).ok()?;
+    write!(append, "{}{}\n", SIG_KEY_PREFIX, key_id).ok()?;
+    for byte in signature.iter() {
+        write!(append, "{:02x}", byte).ok()?;
+    }
+    writeln!(append).ok()?;
+    Some(public)
+}
+
 /// Verify a feed against the keys pinned for its source (`None` when the
 /// keystore holds no entry for the source).
 pub fn verify_signed_feed(feed: &str, entry: Option<&SourceKeys>, now: u64) -> FeedVerdict {
@@ -451,9 +614,36 @@ pub fn verify_signed_feed(feed: &str, entry: Option<&SourceKeys>, now: u64) -> F
     if !accepted {
         return FeedVerdict::RejectedStaleSignature;
     }
-    let mut lines = [""; MAX_CANON_LINES];
-    let count = canonical_lines(feed, &mut lines);
-    if compute_feed_digest(key.key_hex.as_str(), &lines, count) == signature.digest {
+    let verified = match signature.kind {
+        SigKind::FnvDigest => {
+            let alg_ok = key.alg == KeyAlg::Fnv;
+            let mut lines = [""; MAX_CANON_LINES];
+            let count = canonical_lines(feed, &mut lines);
+            alg_ok
+                && compute_feed_digest(key.key_hex.as_str(), &lines, count) == signature.digest
+        }
+        SigKind::Ed25519 => {
+            if key.alg != KeyAlg::Ed25519 {
+                false
+            } else {
+                match (decode_pubkey_hex(key.key_hex.as_str()), () ) {
+                    (Some(public), ()) => {
+                        let mut message = [0u8; ED25519_MSG_MAX];
+                        match canonical_message(feed, &mut message) {
+                            Some(len) => serviceos_crypto::ed25519::verify(
+                                &public,
+                                &message[..len],
+                                &signature.sig,
+                            ),
+                            None => false,
+                        }
+                    }
+                    _ => false,
+                }
+            }
+        }
+    };
+    if verified {
         if key.state == KeyState::Active {
             FeedVerdict::Accepted
         } else {
@@ -613,13 +803,23 @@ pub fn serialize_keystore(keystore: &Keystore, append: &mut dyn core::fmt::Write
             if key.key_id.is_empty() {
                 continue;
             }
-            let _ = core::writeln!(
-                append,
-                "key {} {} {}",
-                key.key_id.as_str(),
-                key.key_hex.as_str(),
-                key_state_word(key.state, key.retired_tick)
-            );
+            if key.alg == KeyAlg::Ed25519 {
+                let _ = core::writeln!(
+                    append,
+                    "ekey {} {} {}",
+                    key.key_id.as_str(),
+                    key.key_hex.as_str(),
+                    key_state_word(key.state, key.retired_tick)
+                );
+            } else {
+                let _ = core::writeln!(
+                    append,
+                    "key {} {} {}",
+                    key.key_id.as_str(),
+                    key.key_hex.as_str(),
+                    key_state_word(key.state, key.retired_tick)
+                );
+            }
         }
     }
 }
@@ -675,7 +875,11 @@ pub fn parse_keystore(text: &str) -> Keystore {
             }
             continue;
         }
-        let Some(payload) = line.strip_prefix("key ") else {
+        let (line_kind, payload) = if let Some(payload) = line.strip_prefix("ekey ") {
+            ("ekey", payload)
+        } else if let Some(payload) = line.strip_prefix("key ") {
+            ("key", payload)
+        } else {
             continue;
         };
         let mut parts = payload.split(' ');
@@ -688,9 +892,18 @@ pub fn parse_keystore(text: &str) -> Keystore {
         };
         let Some(index) = current else { continue };
         let entry = &mut keystore.sources[index];
-        if decode_key_hex(key_hex).is_none() {
-            continue;
-        }
+        let alg = match line_kind {
+            "ekey" => match decode_pubkey_hex(key_hex) {
+                Some(_) => KeyAlg::Ed25519,
+                None => continue,
+            },
+            _ => {
+                if key_hex.len() > 32 || decode_key_hex(key_hex).is_none() {
+                    continue;
+                }
+                KeyAlg::Fnv
+            }
+        };
         if key_id.is_empty() || key_id.len() > KEY_ID_MAX || entry.key_count == MAX_KEYS_PER_SOURCE
         {
             continue;
@@ -698,6 +911,7 @@ pub fn parse_keystore(text: &str) -> Keystore {
         let slot = &mut entry.keys[entry.key_count];
         slot.key_id.set(key_id);
         slot.key_hex.set(key_hex);
+        slot.alg = alg;
         let (state, retired_tick) = key_state_from_word(state_word);
         slot.state = state;
         slot.retired_tick = retired_tick;
@@ -712,7 +926,11 @@ mod tests {
     // tests build against std for String/format! convenience.
     extern crate std;
     use super::*;
-    use std::{format, string::String};
+    use std::{
+        format,
+        string::{String, ToString},
+        vec::Vec,
+    };
 
     const KEY_A: &str = "00112233445566778899aabbccddeeff";
     const KEY_B: &str = "ffeeddccbbaa99887766554433221100";
@@ -737,6 +955,122 @@ mod tests {
         }
         entry.accept_retired_ticks = accept_retired_ticks;
         entry
+    }
+
+    fn ed_source_with(key_id: &str, pubkey_hex: &str, accept_retired_ticks: u64) -> SourceKeys {
+        let mut entry = SourceKeys::empty();
+        entry.source.set("extra");
+        let _ = entry.enroll_ed25519(key_id, pubkey_hex);
+        entry.accept_retired_ticks = accept_retired_ticks;
+        entry
+    }
+
+    const ED_SEED_HEX: &str =
+        "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60";
+
+    fn ed_seed() -> [u8; 32] {
+        decode_pubkey_hex(ED_SEED_HEX).unwrap().into()
+    }
+
+    fn ed_feed() -> String {
+        let pair = serviceos_crypto::host::KeyPair::from_seed(ed_seed());
+        serviceos_crypto::host::sign_feed_fixture(&pair, "ed1", &[
+            "version=1",
+            "entry=alpha|storage-service|1.2.0|serviceos.bootstore.v1|m/alpha.manifest|tool|Alpha package",
+            "entry=beta|network-service|0.9.1|serviceos.bootstore.v1|m/beta.manifest|net|Beta package",
+        ])
+        .expect("fixture")
+    }
+
+    #[test]
+    fn ed25519_signature_roundtrip_verifies_and_rejects_tamper() {
+        let feed = ed_feed();
+        assert_eq!(parse_feed_signature(&feed).map(|s| s.kind), Some(SigKind::Ed25519));
+        let pk_hex = hex_of(&serviceos_crypto::host::KeyPair::from_seed(ed_seed()).public);
+        let entry = ed_source_with("ed1", &pk_hex, 0);
+        assert_eq!(verify_signed_feed(&feed, Some(&entry), 0), FeedVerdict::Accepted);
+
+        // Content tamper must invalidate the signature even if order matches.
+        let mut tampered = feed.clone();
+        tampered = tampered.replace("1.2.0", "9.9.9");
+        assert_eq!(
+            verify_signed_feed(&tampered, Some(&entry), 0),
+            FeedVerdict::RejectedTampered
+        );
+
+        // Line reordering is canonicalized away and still verifies.
+        let reordered = {
+            let mut lines: Vec<String> = feed
+                .lines()
+                .filter(|line| !line.starts_with("sig-"))
+                .map(|line| line.to_string())
+                .collect();
+            lines.reverse();
+            let joined = lines.join("\n");
+            format!("{}\n", joined.trim_end())
+                + "\nsig-alg=ed25519\nsig-key=ed1\n"
+                + &feed.rsplit_once("sig-sig=").map(|(_, rest)| format!("sig-sig={}", rest)).expect("trailer")
+        };
+        assert_eq!(verify_signed_feed(&reordered, Some(&entry), 0), FeedVerdict::Accepted);
+    }
+
+    fn hex_of(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{:02x}", b)).collect()
+    }
+
+    #[test]
+    fn ed25519_unknown_key_and_alg_mismatch_paths() {
+        let feed = ed_feed();
+        // Different pinned Ed25519 identity under the same key id: lookup
+        // succeeds, signature check fails -> tamper verdict.
+        let other_pair = serviceos_crypto::host::KeyPair::from_seed({
+            let mut seed = [7u8; 32];
+            seed[0] = 42;
+            seed
+        });
+        let entry = ed_source_with("ed1", &hex_of(&other_pair.public), 0);
+        assert_eq!(verify_signed_feed(&feed, Some(&entry), 0), FeedVerdict::RejectedTampered);
+
+        // Same key id but pinned through the FNV path -> alg mismatch is Tampered.
+        let mut legacy = source_with(&[("ed1", KEY_A)], 0);
+        let _ = &mut legacy;
+        assert_eq!(verify_signed_feed(&feed, Some(&legacy), 0), FeedVerdict::RejectedTampered);
+    }
+
+    #[test]
+    fn keystore_roundtrips_ed25519_key_entries() {
+        let pair = serviceos_crypto::host::KeyPair::from_seed(ed_seed());
+        let pk_hex = hex_of(&pair.public);
+        let mut entry = SourceKeys::empty();
+        entry.source.set("extra");
+        let _ = entry.enroll_ed25519("ed1", &pk_hex);
+        let _ = entry.enroll("k-fnv", KEY_A);
+
+        let mut text = String::new();
+        serialize_keystore(
+            &{
+                let mut ks = Keystore::empty();
+                let _ = ks.ensure_source("extra");
+                ks.sources[0] = entry;
+                ks.source_count = 1;
+                ks
+            },
+            &mut text,
+        );
+        assert!(text.contains("ekey ed1 "));
+        assert!(text.contains("key k-fnv "));
+
+        let parsed = parse_keystore(&text);
+        let back = &parsed.sources[0];
+        assert_eq!(back.key_count, 2);
+        assert_eq!(back.keys[0].alg, KeyAlg::Ed25519);
+        assert_eq!(back.keys[0].key_hex.as_str(), pk_hex.as_str());
+        assert_eq!(back.keys[0].state, KeyState::Active);
+        assert_eq!(back.keys[1].alg, KeyAlg::Fnv);
+
+        // The reparsed Ed25519 entry verifies a freshly signed fixture too.
+        let feed = ed_feed();
+        assert_eq!(verify_signed_feed(&feed, Some(back), 0), FeedVerdict::Accepted);
     }
 
     #[test]

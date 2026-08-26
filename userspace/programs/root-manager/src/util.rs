@@ -521,6 +521,7 @@ pub(crate) fn event_name(event: LogEvent) -> &'static str {
         LogEvent::RuntimeApprovalPending => "runtime-approval-pending",
         LogEvent::RuntimeApprovalChanged => "runtime-approval-changed",
         LogEvent::KernelTrap => "kernel-trap",
+        LogEvent::KernelPressureChanged => "kernel-pressure-changed",
     }
 }
 

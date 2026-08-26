@@ -152,11 +152,7 @@ fn run_qemu_riscv_virt(artifacts: &BuildArtifacts) -> Result<(), Box<dyn Error>>
         .as_ref()
         .ok_or_else(|| "riscv64-virt requires a kernel ELF".to_string())?;
     if !kernel_elf.exists() {
-        return Err(format!(
-            "riscv64-virt kernel ELF missing: {}",
-            kernel_elf.display()
-        )
-        .into());
+        return Err(format!("riscv64-virt kernel ELF missing: {}", kernel_elf.display()).into());
     }
     let qemu_binary = find_qemu_riscv64_binary().ok_or_else(|| {
         "qemu-system-riscv64 not found; install QEMU or set QEMU_SYSTEM_RISCV64 to an absolute path"

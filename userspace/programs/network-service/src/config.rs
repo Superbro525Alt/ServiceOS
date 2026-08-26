@@ -21,6 +21,10 @@ pub(crate) struct NetFileOptions {
     /// Shared RX ring negotiation (S7 zero-copy path). On by default; the
     /// `rx-ring=off` hosts-file line forces the legacy copied-frame path.
     pub(crate) rx_ring_enabled: bool,
+    /// Shared TX ring negotiation (S7 TX zero-copy path). On by default;
+    /// the `tx-ring=off` hosts-file line forces the legacy copied-transmit
+    /// path.
+    pub(crate) tx_ring_enabled: bool,
 }
 
 impl NetFileOptions {
@@ -35,6 +39,7 @@ impl NetFileOptions {
             mdns_enabled: true,
             discovery_enabled: true,
             rx_ring_enabled: true,
+            tx_ring_enabled: true,
         }
     }
 }
@@ -144,6 +149,10 @@ pub(crate) fn load_hosts(
             }
             "rx-ring" => {
                 options.rx_ring_enabled = value != "off" && value != "0";
+                continue;
+            }
+            "tx-ring" => {
+                options.tx_ring_enabled = value != "off" && value != "0";
                 continue;
             }
             _ => {}

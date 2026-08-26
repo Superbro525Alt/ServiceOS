@@ -811,6 +811,7 @@ pub(crate) fn handle_public_request(
             }
             let reply_handle = request.handles[0];
             let snapshot = crate::device::rx_ring_snapshot();
+            let tx_snapshot = crate::device::tx_ring_snapshot();
             let mut reply = RawMessage::empty(ZERO_COPY_STATS_REPLY as u32);
             reply.words[0] = NetworkStatus::Ok as u32 as u64;
             // words[1..=4] mirror the rx-ring stats log line; all zero when
@@ -832,7 +833,26 @@ pub(crate) fn handle_public_request(
                 0
             };
             reply.words[4] = if snapshot.active { snapshot.dropped } else { 0 };
-            reply.word_count = 5;
+            // words[5..=7] mirror the tx-ring stats log line (frames pushed,
+            // tx-copies-avoided, bytes saved); all zero when the legacy
+            // copied-transmit path is active. Additive tail: older clients
+            // reading only words[1..=4] are unaffected.
+            reply.words[5] = if tx_snapshot.active {
+                tx_snapshot.frames_pushed
+            } else {
+                0
+            };
+            reply.words[6] = if tx_snapshot.active {
+                tx_snapshot.copies_avoided
+            } else {
+                0
+            };
+            reply.words[7] = if tx_snapshot.active {
+                tx_snapshot.bytes_saved
+            } else {
+                0
+            };
+            reply.word_count = 8;
             let _ = rt::channel_send(reply_handle, &reply);
             let _ = rt::handle_close(reply_handle);
         }

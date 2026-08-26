@@ -138,6 +138,7 @@ pub(crate) fn event_from_word(value: u64) -> LogEvent {
         x if x == LogEvent::RuntimeApprovalPending as u32 => LogEvent::RuntimeApprovalPending,
         x if x == LogEvent::RuntimeApprovalChanged as u32 => LogEvent::RuntimeApprovalChanged,
         x if x == LogEvent::KernelTrap as u32 => LogEvent::KernelTrap,
+        x if x == LogEvent::KernelPressureChanged as u32 => LogEvent::KernelPressureChanged,
         _ => LogEvent::LookupGranted,
     }
 }

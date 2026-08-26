@@ -1,8 +1,8 @@
 use alloc::sync::Arc;
-use spin::Mutex;
 use serviceos_abi::PacketInterfaceInfo;
+use spin::Mutex;
 
-use crate::network::ring::{self, PageFrameStorage};
+use crate::network::ring::{self, PageFrameStorage, RingStorage};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PacketInterfaceError {
@@ -58,9 +58,8 @@ impl SharedRxRing {
             match published {
                 None => Ok(None),
                 Some(_) => {
-                    let length = unsafe {
-                        ring::frame_len_at(storage, self.slot_count, head_before)
-                    };
+                    let length =
+                        unsafe { ring::frame_len_at(storage, self.slot_count, head_before) };
                     Ok(Some(length.unwrap_or(0)))
                 }
             }
@@ -82,9 +81,111 @@ impl SharedRxRing {
     }
 }
 
+/// Kernel side of the negotiated shared TX ring — the TX mirror of
+/// [`SharedRxRing`]. The network-service is the single producer: it writes
+/// outbound frames into memory-object-backed slots through its own mapping,
+/// publishes them by advancing the ring head, and rings the doorbell
+/// (`PacketInterfaceTxRingFlush`, syscall 54). The kernel is the single
+/// consumer: it drains pending slots into the backend transmit path.
+///
+/// Copy strategy: the kernel COPIES each slot payload into the driver-owned
+/// transmit buffer (`VirtIONet::send` requires a driver-allocated TxBuffer,
+/// so mapping a userspace page directly into a virtio descriptor is not
+/// possible with the current virtio-drivers API). The eliminated copy is the
+/// per-frame IPC/syscall copy, exactly mirroring the RX-side win; slot
+/// lifecycle keeps every frame IN USE until its transmit completes — the
+/// tail counter advances only after `backend.transmit` succeeds.
+pub(crate) struct SharedTxRing {
+    storage: Mutex<PageFrameStorage>,
+    slot_count: usize,
+}
+
+// SAFETY: cross-context access coordinates through the ring's head/tail
+// protocol; page pointers are dereferenced only inside RingStorage impls.
+unsafe impl Send for SharedTxRing {}
+unsafe impl Sync for SharedTxRing {}
+
+impl SharedTxRing {
+    /// Drain every pending published frame into the backend. Returns the
+    /// number of frames transmitted. A frame whose slot cannot be read or
+    /// whose length is invalid is discarded (tail advanced without zero-copy
+    /// credit); `Busy` from the backend stops the drain with the remaining
+    /// frames still pending for the next doorbell.
+    fn flush(&self, backend: &dyn PacketBackend) -> usize {
+        let mut scratch = [0u8; ring::RING_SLOT_DATA_BYTES];
+        let mut transmitted = 0usize;
+        loop {
+            let next = {
+                // SAFETY: single-consumer access over this object's own
+                // pages; the kernel-side lock serializes kernel consumers
+                // only (the userspace producer coordinates via head/tail).
+                let mut guard = self.storage.lock();
+                let storage = &mut *guard;
+                // SAFETY: see the consumer-exclusivity note above.
+                let head = unsafe { ring::load_head(storage) };
+                // SAFETY: see the consumer-exclusivity note above.
+                let tail = unsafe { ring::load_tail(storage) };
+                if tail >= head {
+                    break;
+                }
+                match unsafe { ring::frame_len_at(storage, self.slot_count, tail) } {
+                    Some(length) => {
+                        let index = ring::slot_of(tail, self.slot_count);
+                        // SAFETY: bounded copy of one published slot payload.
+                        unsafe {
+                            storage.copy_out(ring::slot_data_offset(index), &mut scratch[..length])
+                        };
+                        Some((tail, length))
+                    }
+                    // Unusable slot: retire it so one corrupt length field
+                    // can never wedge the ring (no zero-copy credit for a
+                    // frame that never parsed).
+                    None => {
+                        unsafe { ring::commit_consumed(storage, tail, 0) };
+                        continue;
+                    }
+                }
+            };
+            let Some((sequence, length)) = next else {
+                break;
+            };
+            match backend.transmit(&scratch[..length]) {
+                Ok(()) => {
+                    // Slot stays in use until completion: only now does the
+                    // consumer cursor advance past it, banking the zero-copy
+                    // credit (tx-copies-avoided / bytes saved).
+                    // SAFETY: single-consumer commit over the header page.
+                    unsafe { self.commit(sequence, length) };
+                    transmitted += 1;
+                }
+                Err(PacketInterfaceError::BufferTooSmall) => {
+                    // Malformed frame for this backend: drop it rather than
+                    // retrying forever.
+                    // SAFETY: single-consumer commit over the header page.
+                    unsafe { self.commit(sequence, 0) };
+                }
+                Err(_) => break,
+            }
+        }
+        transmitted
+    }
+
+    /// Commit consumption of `sequence` after its transmit completed. The
+    /// lock scope is explicit so no page access races the drain loop.
+    ///
+    /// # Safety
+    /// Single-consumer per ring; storage must cover the header page.
+    unsafe fn commit(&self, sequence: u64, length: usize) {
+        let mut guard = self.storage.lock();
+        // SAFETY: caller guarantees single-consumer access.
+        unsafe { ring::commit_consumed(&mut *guard, sequence, length) };
+    }
+}
+
 pub struct PacketInterfaceObject {
     backend: Arc<dyn PacketBackend>,
     shared_ring: Mutex<Option<Arc<SharedRxRing>>>,
+    shared_tx_ring: Mutex<Option<Arc<SharedTxRing>>>,
 }
 
 impl PacketInterfaceObject {
@@ -92,6 +193,7 @@ impl PacketInterfaceObject {
         Self {
             backend,
             shared_ring: Mutex::new(None),
+            shared_tx_ring: Mutex::new(None),
         }
     }
 
@@ -99,8 +201,45 @@ impl PacketInterfaceObject {
         self.backend.info()
     }
 
+    /// Legacy copied TX path. With a shared TX ring attached this first
+    /// opportunistically drains any backlog (so a producer that stopped
+    /// doorbelling cannot wedge queued frames behind new traffic), then
+    /// hands `frame` to the backend exactly as before.
     pub fn transmit(&self, frame: &[u8]) -> Result<(), PacketInterfaceError> {
+        self.flush_transmits();
         self.backend.transmit(frame)
+    }
+
+    /// Attach the kernel side of a negotiated shared TX ring. Idempotent:
+    /// repeat negotiation returns the existing ring.
+    pub(crate) fn attach_shared_tx_ring(
+        &self,
+        storage: PageFrameStorage,
+        slot_count: usize,
+    ) -> Arc<SharedTxRing> {
+        let mut guard = self.shared_tx_ring.lock();
+        if let Some(existing) = guard.as_ref() {
+            return Arc::clone(existing);
+        }
+        let created = Arc::new(SharedTxRing {
+            storage: Mutex::new(storage),
+            slot_count,
+        });
+        *guard = Some(Arc::clone(&created));
+        created
+    }
+
+    pub(crate) fn has_shared_tx_ring(&self) -> bool {
+        self.shared_tx_ring.lock().is_some()
+    }
+
+    /// Doorbell drain: transmit every frame the service has published into
+    /// the shared TX ring. No-op on interfaces that never negotiated one.
+    pub fn flush_transmits(&self) -> usize {
+        match self.shared_tx_ring.lock().as_ref() {
+            Some(ring) => ring.flush(self.backend.as_ref()),
+            None => 0,
+        }
     }
 
     /// Attach the kernel side of a negotiated shared RX ring. Idempotent:
@@ -173,13 +312,11 @@ impl PacketInterfaceObject {
 #[cfg(test)]
 mod shared_ring_tests {
     use super::*;
-    use crate::memory::{PhysicalAddress, PAGE_SIZE_BYTES};
-    use crate::network::ring::{self, PageFrameStorage};
+    use crate::memory::{PAGE_SIZE_BYTES, PhysicalAddress};
+    use crate::network::ring::{self, PageFrameStorage, RingStorage};
     use alloc::{vec, vec::Vec};
     use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    use serviceos_abi::{
-        PacketInterfaceBackend, PacketInterfaceInfo, PacketInterfaceLinkState,
-    };
+    use serviceos_abi::{PacketInterfaceBackend, PacketInterfaceInfo, PacketInterfaceLinkState};
 
     /// Backend whose receive queue starts empty; a poll arms exactly one
     /// canned frame delivery. Mirrors the virtio device holding completed RX
@@ -281,5 +418,193 @@ mod shared_ring_tests {
             object.receive(&mut buffer),
             Err(PacketInterfaceError::QueueEmpty)
         ));
+    }
+
+    /// TX-side backend: records every accepted frame and can be armed to
+    /// reject the next N transmits with `Busy` (the virtio queue-full shape).
+    struct TxRecordingBackend {
+        sent: Mutex<Vec<(u8, usize)>>,
+        busy_remaining: AtomicUsize,
+    }
+
+    impl TxRecordingBackend {
+        fn new() -> Self {
+            Self {
+                sent: Mutex::new(Vec::new()),
+                busy_remaining: AtomicUsize::new(0),
+            }
+        }
+
+        fn arm_busy(&self, count: usize) {
+            self.busy_remaining.store(count, Ordering::SeqCst);
+        }
+    }
+
+    impl PacketBackend for TxRecordingBackend {
+        fn info(&self) -> PacketInterfaceInfo {
+            PacketInterfaceInfo {
+                backend: PacketInterfaceBackend::Unknown as u32,
+                link_state: PacketInterfaceLinkState::Up as u32,
+                mtu: 1500,
+                rx_ready: 0,
+                mac: [0; 6],
+                reserved: [0; 2],
+                rx_packets: 0,
+                tx_packets: 0,
+                dropped_packets: 0,
+            }
+        }
+
+        fn transmit(&self, frame: &[u8]) -> Result<(), PacketInterfaceError> {
+            // Consume an armed Busy slot without going negative.
+            loop {
+                let current = self.busy_remaining.load(Ordering::SeqCst);
+                if current == 0 {
+                    break;
+                }
+                if self
+                    .busy_remaining
+                    .compare_exchange(current, current - 1, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
+                {
+                    return Err(PacketInterfaceError::Busy);
+                }
+            }
+            self.sent.lock().push((frame[0], frame.len()));
+            Ok(())
+        }
+
+        fn receive(&self, _buffer: &mut [u8]) -> Result<usize, PacketInterfaceError> {
+            Err(PacketInterfaceError::QueueEmpty)
+        }
+
+        fn poll(&self) -> bool {
+            false
+        }
+    }
+
+    fn tx_marker(marker: u8, len: usize) -> Vec<u8> {
+        let mut frame = Vec::with_capacity(len);
+        for _ in 0..len {
+            frame.push(marker);
+        }
+        frame
+    }
+
+    #[test]
+    fn tx_ring_flush_drains_fifo_across_wraparound_with_zero_copy_credit() {
+        let slot_count = 3;
+        let storage = ring_storage(slot_count);
+        // Producer and observer views over the same physical pages (the
+        // service's mapping in production): free-running sequences wrap
+        // past slot_count.
+        let mut producer = PageFrameStorage {
+            frames: storage.frames.clone(),
+        };
+        let reader = PageFrameStorage {
+            frames: storage.frames.clone(),
+        };
+        let backend = Arc::new(TxRecordingBackend::new());
+        let object = PacketInterfaceObject::new(Arc::clone(&backend) as Arc<dyn PacketBackend>);
+        assert!(!object.has_shared_tx_ring());
+        object.attach_shared_tx_ring(storage, slot_count);
+        assert!(object.has_shared_tx_ring());
+
+        const FRAME_LEN: usize = 24;
+        // Burst phase: fill the ring to exact capacity (the service only
+        // ever publishes while `head - tail < slot_count`, so this is the
+        // deepest legal backlog) and drain it with ONE doorbell.
+        for marker in 0u8..3u8 {
+            // SAFETY(test): single-producer access over the whole image.
+            let _ = unsafe { ring::push(&mut producer, slot_count, &tx_marker(marker, FRAME_LEN)) };
+        }
+        assert_eq!(object.flush_transmits(), 3, "one doorbell drains the burst");
+
+        // Steady phase: publish + doorbell per frame so sequences free-run
+        // past slot_count — the TX wraparound shape (7 total through 3
+        // slots, nothing dropped because the consumer keeps pace).
+        for marker in 3u8..7u8 {
+            // SAFETY(test): single-producer access over the whole image.
+            let _ = unsafe { ring::push(&mut producer, slot_count, &tx_marker(marker, FRAME_LEN)) };
+            assert_eq!(object.flush_transmits(), 1);
+        }
+
+        let sent = backend.sent.lock();
+        assert_eq!(
+            sent.iter().map(|(marker, _)| *marker).collect::<Vec<_>>(),
+            vec![0, 1, 2, 3, 4, 5, 6],
+            "FIFO order survives slot wraparound"
+        );
+        assert!(sent.iter().all(|(_, len)| *len == FRAME_LEN));
+        drop(sent);
+
+        // Ring is fully consumed: tail caught up to head, zero-copy stats
+        // banked once per completed transmit (tx-copies-avoided).
+        // SAFETY(test): reads over the leaked test image backing frames.
+        let word = |offset: usize| unsafe { reader.load_u64(offset) };
+        assert_eq!(word(ring::OFF_HEAD), 7);
+        assert_eq!(word(ring::OFF_TAIL), 7);
+        assert_eq!(word(ring::OFF_COPIES_AVOIDED), 7);
+        assert_eq!(word(ring::OFF_BYTES_SAVED), 7 * FRAME_LEN as u64);
+
+        // Legacy copied path keeps working alongside the ring.
+        assert!(object.transmit(&tx_marker(9, FRAME_LEN)).is_ok());
+        assert_eq!(backend_sent_len(&backend), 8);
+    }
+
+    #[test]
+    fn tx_ring_slot_stays_in_use_until_transmit_completes() {
+        let slot_count = 2;
+        let storage = ring_storage(slot_count);
+        let mut producer = PageFrameStorage {
+            frames: storage.frames.clone(),
+        };
+        let reader = PageFrameStorage {
+            frames: storage.frames.clone(),
+        };
+        let backend = Arc::new(TxRecordingBackend::new());
+        backend.arm_busy(1);
+        let object = PacketInterfaceObject::new(Arc::clone(&backend) as Arc<dyn PacketBackend>);
+        object.attach_shared_tx_ring(storage, slot_count);
+
+        // SAFETY(test): single-producer access over the whole image.
+        let _ = unsafe { ring::push(&mut producer, slot_count, &tx_marker(5, 16)) };
+
+        // First doorbell hits the Busy device: NOTHING may be consumed —
+        // the published slot stays in use (head advanced, tail untouched,
+        // no zero-copy credit banked).
+        assert_eq!(object.flush_transmits(), 0);
+        assert_eq!(backend_sent_len(&backend), 0);
+        // SAFETY(test): reads over the leaked test image backing frames.
+        let word = |offset: usize| unsafe { reader.load_u64(offset) };
+        assert_eq!(word(ring::OFF_HEAD), 1, "producer published");
+        assert_eq!(word(ring::OFF_TAIL), 0, "slot in use until completion");
+        assert_eq!(word(ring::OFF_COPIES_AVOIDED), 0, "no credit yet");
+
+        // Retry doorbell once the device accepts: same sequence completes,
+        // exactly one copy lands, credit banks once.
+        assert_eq!(object.flush_transmits(), 1);
+        assert_eq!(backend_sent_len(&backend), 1);
+        assert_eq!(backend.sent.lock()[0].0, 5);
+        assert_eq!(word(ring::OFF_TAIL), 1);
+        assert_eq!(word(ring::OFF_COPIES_AVOIDED), 1);
+        assert_eq!(word(ring::OFF_BYTES_SAVED), 16);
+
+        // Draining an empty ring is a clean no-op.
+        assert_eq!(object.flush_transmits(), 0);
+    }
+
+    #[test]
+    fn tx_without_ring_keeps_legacy_copied_path_only() {
+        let backend = Arc::new(TxRecordingBackend::new());
+        let object = PacketInterfaceObject::new(Arc::clone(&backend) as Arc<dyn PacketBackend>);
+        assert!(!object.has_shared_tx_ring());
+        assert_eq!(object.flush_transmits(), 0, "no ring: doorbell is a no-op");
+        assert!(object.transmit(&tx_marker(1, 8)).is_ok());
+        assert_eq!(backend_sent_len(&backend), 1, "copied TX fallback intact");
+    }
+
+    fn backend_sent_len(backend: &TxRecordingBackend) -> usize {
+        backend.sent.lock().len()
     }
 }

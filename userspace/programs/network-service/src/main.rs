@@ -129,6 +129,26 @@ pub(crate) fn run() -> u64 {
             format_args!("rx-ring disabled by config; legacy copied-frame path active"),
         );
     }
+    if net_options.tx_ring_enabled {
+        if device::enable_shared_tx(packet_handle) {
+            let _ = rt::write_logf(
+                "network",
+                format_args!(
+                    "tx-ring enabled slots=16 zero-copy tx path active (tx-ring=off reverts to copied transmits)"
+                ),
+            );
+        } else {
+            let _ = rt::write_logf(
+                "network",
+                format_args!("tx-ring negotiation failed; legacy copied-transmit path active"),
+            );
+        }
+    } else {
+        let _ = rt::write_logf(
+            "network",
+            format_args!("tx-ring disabled by config; legacy copied-transmit path active"),
+        );
+    }
     let now = now_instant();
     let mac = EthernetAddress(device.info.mac);
     let mut iface = Interface::new(
@@ -303,6 +323,7 @@ pub(crate) fn run() -> u64 {
 
     let mut loop_ticks: u64 = 0;
     let mut rx_ring_first_frame_logged = false;
+    let mut tx_ring_first_flush_logged = false;
     let mut registry = discover::Registry::new();
     let mut peer_table = discover::PeerTable::new();
     let mut next_announce_loop = 0u64;
@@ -371,6 +392,25 @@ pub(crate) fn run() -> u64 {
                 );
             }
         }
+        // First-flush evidence: as soon as any outbound frame has drained
+        // through the shared TX ring (the DHCP discover is typically first),
+        // log the kernel-banked tx-copies-avoided counter once so boot logs
+        // prove the shared TX path works end to end.
+        if !tx_ring_first_flush_logged {
+            let snapshot = device::tx_ring_snapshot();
+            if snapshot.active && snapshot.copies_avoided > 0 {
+                tx_ring_first_flush_logged = true;
+                let _ = rt::write_logf(
+                    "network",
+                    format_args!(
+                        "tx-ring first flush via shared path tx-copies-avoided={} tx-bytes-saved={} tx-frames-pushed={}",
+                        snapshot.copies_avoided,
+                        snapshot.bytes_saved,
+                        snapshot.frames_pushed
+                    ),
+                );
+            }
+        }
         if config.dynamic_ipv4
             && drive_dynamic_ipv4(
                 &config,
@@ -425,6 +465,16 @@ pub(crate) fn run() -> u64 {
                         snapshot.copies_avoided,
                         snapshot.bytes_saved,
                         snapshot.dropped
+                    ),
+                );
+            }
+            let tx = device::tx_ring_snapshot();
+            if tx.active {
+                let _ = rt::write_logf(
+                    "network",
+                    format_args!(
+                        "tx-ring stats tx-frames-pushed={} tx-copies-avoided={} tx-bytes-saved={}",
+                        tx.frames_pushed, tx.copies_avoided, tx.bytes_saved
                     ),
                 );
             }

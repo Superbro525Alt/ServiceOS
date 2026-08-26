@@ -36,7 +36,7 @@
 
 use alloc::sync::Arc;
 
-use crate::memory::{PhysicalAddress, PAGE_SIZE_BYTES};
+use crate::memory::{PAGE_SIZE_BYTES, PhysicalAddress};
 
 pub const RING_MAGIC: u32 = 0x534f_5258;
 pub const RING_VERSION: u32 = 1;
@@ -138,9 +138,7 @@ impl RingStorage for SliceStorage<'_> {
 
     unsafe fn store_u64(&mut self, offset: usize, value: u64) {
         // SAFETY: caller upheld bounds.
-        unsafe {
-            core::ptr::write_unaligned(self.0.as_mut_ptr().add(offset) as *mut u64, value)
-        }
+        unsafe { core::ptr::write_unaligned(self.0.as_mut_ptr().add(offset) as *mut u64, value) }
     }
 
     unsafe fn slot_payload(&mut self, slot_index: usize) -> &mut [u8] {
@@ -304,11 +302,7 @@ pub unsafe fn frame_len_at<S: RingStorage>(
 ///
 /// # Safety
 /// Single consumer per ring; storage must cover the header page.
-pub unsafe fn commit_consumed<S: RingStorage>(
-    storage: &mut S,
-    sequence: u64,
-    length: usize,
-) {
+pub unsafe fn commit_consumed<S: RingStorage>(storage: &mut S, sequence: u64, length: usize) {
     debug_assert!(length <= RING_SLOT_DATA_BYTES);
     // SAFETY: consumer owns the tail counter; stat accumulation is
     // single-consumer.
@@ -416,9 +410,7 @@ mod tests {
 
         fn commit(&mut self, sequence: u64, length: usize) {
             // SAFETY: test-only single-consumer access over the whole image.
-            unsafe {
-                commit_consumed(&mut SliceStorage(&mut self.bytes), sequence, length)
-            }
+            unsafe { commit_consumed(&mut SliceStorage(&mut self.bytes), sequence, length) }
         }
 
         fn counter(&self, offset: usize) -> u64 {
@@ -438,8 +430,7 @@ mod tests {
                 return None;
             }
             let base = slot_len_offset(slot_of(sequence, self.slots));
-            let len =
-                u64::from_le_bytes(self.bytes[base..base + 8].try_into().unwrap()) as usize;
+            let len = u64::from_le_bytes(self.bytes[base..base + 8].try_into().unwrap()) as usize;
             (len > 0 && len <= RING_SLOT_DATA_BYTES).then_some(len)
         }
 
@@ -451,8 +442,7 @@ mod tests {
                 return None;
             }
             let base = slot_len_offset(index);
-            let len =
-                u64::from_le_bytes(self.bytes[base..base + 8].try_into().unwrap()) as usize;
+            let len = u64::from_le_bytes(self.bytes[base..base + 8].try_into().unwrap()) as usize;
             if len == 0 || len > RING_SLOT_DATA_BYTES {
                 return None;
             }
@@ -469,9 +459,14 @@ mod tests {
         );
         // Every slot owns one whole page: length field at the page start.
         for index in 0..RING_DEFAULT_SLOTS {
-            assert_eq!(slot_len_offset(index), (index + 1) * PAGE_SIZE_BYTES as usize);
-            assert!(slot_data_offset(index) + RING_SLOT_DATA_BYTES
-                <= (index + 2) * PAGE_SIZE_BYTES as usize);
+            assert_eq!(
+                slot_len_offset(index),
+                (index + 1) * PAGE_SIZE_BYTES as usize
+            );
+            assert!(
+                slot_data_offset(index) + RING_SLOT_DATA_BYTES
+                    <= (index + 2) * PAGE_SIZE_BYTES as usize
+            );
         }
     }
 
@@ -582,12 +577,24 @@ mod tests {
         assert_eq!(mapped_len, golden.len());
         let mapped = &ring.bytes[base + 8..base + 8 + mapped_len];
 
-        assert_eq!(u16::from_be_bytes([mapped[12], mapped[13]]), 0x0800, "ethertype");
+        assert_eq!(
+            u16::from_be_bytes([mapped[12], mapped[13]]),
+            0x0800,
+            "ethertype"
+        );
         assert_eq!(&mapped[26..30], &[10, 0, 2, 15], "ipv4 src");
         assert_eq!(&mapped[30..34], &[10, 0, 2, 2], "ipv4 dst");
         assert_eq!(mapped[23], 17, "protocol udp");
-        assert_eq!(u16::from_be_bytes([mapped[34], mapped[35]]), 5353, "src port");
-        assert_eq!(u16::from_be_bytes([mapped[36], mapped[37]]), 41453, "dst port");
+        assert_eq!(
+            u16::from_be_bytes([mapped[34], mapped[35]]),
+            5353,
+            "src port"
+        );
+        assert_eq!(
+            u16::from_be_bytes([mapped[36], mapped[37]]),
+            41453,
+            "dst port"
+        );
         assert_eq!(&mapped[42..], b"zero-copy");
 
         ring.commit(sequence, mapped_len);

@@ -16,12 +16,7 @@ use serviceos_kernel_arch_x86_64::{
     paging::ActivePageTable,
     smp, user,
 };
-use serviceos_kernel_core::{
-    Kernel,
-    syscall,
-    task as kernel_task,
-    user as kernel_user,
-};
+use serviceos_kernel_core::{Kernel, syscall, task as kernel_task, user as kernel_user};
 use serviceos_platform_qemu_virtio::{audio, block, boot, display, input, network, serial, sound};
 use spin::Once;
 use uefi::{Status, entry};
@@ -55,9 +50,10 @@ fn kernel_main() -> Status {
     // reported. On single-core machines this stays at 1 and the scheduler's
     // steal/balance passes remain disabled, keeping boot output identical.
     // The periodic stats line is debug-gated (debug builds only).
-    let detected_cpus = serviceos_kernel_arch_x86_64::acpi::enabled_lapic_ids(boot_info.rsdp_address)
-        .map(|ids| ids.len())
-        .unwrap_or(1);
+    let detected_cpus =
+        serviceos_kernel_arch_x86_64::acpi::enabled_lapic_ids(boot_info.rsdp_address)
+            .map(|ids| ids.len())
+            .unwrap_or(1);
     kernel_task::register_balancing_cpu_count(detected_cpus);
     if cfg!(debug_assertions) {
         kernel_task::register_steal_stats_emitter(emit_steal_stats);

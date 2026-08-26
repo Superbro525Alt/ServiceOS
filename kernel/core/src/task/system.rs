@@ -193,7 +193,11 @@ fn oom_reclaim_victim(candidate: VictimCandidate) {
     let Some(tasks) = system() else {
         return;
     };
-    let Some(object) = tasks.objects().registry().lookup(ObjectId(candidate.task.0)) else {
+    let Some(object) = tasks
+        .objects()
+        .registry()
+        .lookup(ObjectId(candidate.task.0))
+    else {
         return;
     };
     let Some(task) = object.task() else {

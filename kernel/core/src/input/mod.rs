@@ -226,9 +226,7 @@ mod tests {
 
     // --- Multi-host enumeration, event tagging, stale-source handling ---
 
-    use serviceos_abi::{
-        InputDeviceInfo, InputEventKind, input_device_class, input_role_flag,
-    };
+    use serviceos_abi::{InputDeviceInfo, InputEventKind, input_device_class, input_role_flag};
 
     struct MultiHostBackend {
         devices: Mutex<Vec<InputDeviceInfo>>,
@@ -249,12 +247,12 @@ mod tests {
             Self {
                 devices: Mutex::new(vec![
                     instance(1, input_device_class::KEYBOARD, 0),
-                    instance(2, input_device_class::TABLET, input_role_flag::POSITIONAL_AUTHORITY),
                     instance(
-                        3,
-                        input_device_class::POINTER,
-                        input_role_flag::SCROLL_ONLY,
+                        2,
+                        input_device_class::TABLET,
+                        input_role_flag::POSITIONAL_AUTHORITY,
                     ),
+                    instance(3, input_device_class::POINTER, input_role_flag::SCROLL_ONLY),
                 ]),
                 events: Mutex::new(vec![
                     InputEventInfo {
@@ -330,10 +328,7 @@ mod tests {
         assert_eq!(ids, vec![1, 2, 3], "instances must be distinct");
         assert_eq!(devices[0].class, input_device_class::KEYBOARD);
         assert_eq!(devices[1].class, input_device_class::TABLET);
-        assert_eq!(
-            devices[1].role_flags,
-            input_role_flag::POSITIONAL_AUTHORITY
-        );
+        assert_eq!(devices[1].role_flags, input_role_flag::POSITIONAL_AUTHORITY);
         assert_eq!(devices[2].class, input_device_class::POINTER);
         assert_eq!(devices[2].role_flags, input_role_flag::SCROLL_ONLY);
         assert!(devices.iter().all(|d| d.present == 1));
@@ -350,7 +345,9 @@ mod tests {
             .expect("first host event");
         assert_eq!(first.source_id, 1);
         assert_eq!(first.kind, 3);
-        let second = source.try_receive_with_fallback().expect("second host event");
+        let second = source
+            .try_receive_with_fallback()
+            .expect("second host event");
         assert_eq!(second.source_id, 3, "secondary host tag must survive");
         assert_eq!(second.kind, InputEventKind::PointerButton as u32);
     }

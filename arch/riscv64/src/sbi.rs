@@ -4,7 +4,6 @@
 //! every mainstream firmware including OpenSBI provides. Timer scheduling
 //! uses the modern TIME extension (EID 0x54494D45, FID 0).
 
-
 pub const SBI_EXT_LEGACY_CONSOLE_PUTCHAR: usize = 0x01;
 pub const SBI_EXT_TIME: usize = 0x54494D45;
 pub const SBI_EXT_TIME_SET_TIMER: usize = 0x0;

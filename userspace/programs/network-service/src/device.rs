@@ -187,6 +187,155 @@ pub(crate) fn rx_ring_snapshot() -> RxRingSnapshot {
     })
 }
 
+/// Producer-side mirror of the shared TX ring header layout (see
+/// `kernel/core/src/network/ring.rs`): identical image shape to the RX ring,
+/// but this service is the PRODUCER (owns the free-running head counter and
+/// fills slots with outbound frames) while the kernel is the consumer
+/// (drains slots through the virtio backend on doorbell and owns tail).
+struct MappedTxRing {
+    mem: MappedMemory,
+    slot_count: usize,
+    head: u64,
+    /// Consecutive doorbells that failed to drain our published frames.
+    stalled_doorbells: u32,
+    /// Set once the kernel side stops draining: every transmit then takes
+    /// the legacy copied path for the rest of the session (correctness over
+    /// zero-copy).
+    disabled: bool,
+}
+
+/// Doorbells with zero drain progress tolerated before the producer
+/// permanently reverts to the legacy copied-transmit path.
+const TX_STALL_DOORBELL_LIMIT: u32 = 8;
+
+const RING_PAGE_BYTES: usize = 4096;
+
+impl MappedTxRing {
+    /// Consumer cursor view (kernel-owned; read-only for this side).
+    fn kernel_tail(&self) -> u64 {
+        load_u64(self.image(), OFF_TAIL)
+    }
+
+    fn image(&self) -> &[u8] {
+        self.mem.as_slice()
+    }
+
+    /// Room check mirroring production discipline: only publish while
+    /// `head - tail < slot_count`, so a slow kernel can never make this
+    /// producer overwrite an in-flight frame.
+    fn has_room(&self) -> bool {
+        self.head.wrapping_sub(self.kernel_tail()) < self.slot_count as u64
+    }
+
+    /// Mutable borrow of one slot's full frame-data region.
+    ///
+    /// # Safety
+    /// `sequence % slot_count` must index a live slot; single-threaded
+    /// service and the mapping lives for the process lifetime.
+    unsafe fn slot_mut(&mut self, sequence: u64) -> &mut [u8] {
+        let index = (sequence % self.slot_count as u64) as usize;
+        let data_offset = (index + 1) * RING_PAGE_BYTES + 8;
+        // SAFETY: slot data region lies inside the live mapping by layout.
+        unsafe { core::slice::from_raw_parts_mut(self.mem.as_ptr().add(data_offset), MAX_FRAME_BYTES) }
+    }
+
+    /// Publish a filled slot: write its length, advance head past
+    /// `sequence`, count the push. The frame becomes visible to the kernel
+    /// consumer exactly here.
+    fn publish(&mut self, sequence: u64, length: usize) {
+        let index = (sequence % self.slot_count as u64) as usize;
+        let len_offset = (index + 1) * RING_PAGE_BYTES;
+        // SAFETY: length field at the slot page start inside the mapping.
+        unsafe {
+            core::ptr::write_unaligned(
+                self.mem.as_ptr().add(len_offset) as *mut u64,
+                length as u64,
+            );
+            let base = self.mem.as_ptr();
+            let pushed = core::ptr::read_unaligned(base.add(OFF_FRAMES_PUSHED) as *const u64);
+            core::ptr::write_unaligned(
+                base.add(OFF_FRAMES_PUSHED) as *mut u64,
+                pushed.wrapping_add(1),
+            );
+        }
+        self.head = sequence.wrapping_add(1);
+    }
+}
+
+static TX_RING: SyncCell<Option<MappedTxRing>> = SyncCell(UnsafeCell::new(None));
+
+fn with_tx_ring<R>(f: impl FnOnce(&mut Option<MappedTxRing>) -> R) -> R {
+    // SAFETY: single-threaded service, main-loop-only access.
+    let cell = unsafe { &mut *TX_RING.0.get() };
+    f(cell)
+}
+
+/// Negotiate the shared TX ring with the kernel and map it into this
+/// service. Any failure leaves the legacy copied-transmit path in place.
+/// Returns true when the shared path became active.
+pub(crate) fn enable_shared_tx(packet_handle: rt::Handle) -> bool {
+    if with_tx_ring(|ring| ring.is_some()) {
+        return true;
+    }
+    let mut layout = PacketRingLayout {
+        magic: 0,
+        version: 0,
+        slot_count: 0,
+        slot_data_bytes: 0,
+        slot_stride_bytes: 0,
+        total_bytes: 0,
+    };
+    let memory_handle = match rt::packet_interface_tx_ring_setup(packet_handle, &mut layout) {
+        Ok(handle) => handle,
+        Err(_) => return false,
+    };
+    if layout.magic != RING_MAGIC || layout.version != RING_VERSION || layout.slot_count == 0 {
+        return false;
+    }
+    let total_bytes = layout.total_bytes as usize;
+    let mapped = match MappedMemory::map(memory_handle, total_bytes, true) {
+        Ok(mapped) => mapped,
+        Err(_) => return false,
+    };
+    let _ = rt::handle_close(memory_handle);
+    let slots = layout.slot_count as usize;
+    with_tx_ring(move |ring| {
+        *ring = Some(MappedTxRing {
+            mem: mapped,
+            slot_count: slots,
+            head: 0,
+            stalled_doorbells: 0,
+            disabled: false,
+        });
+    });
+    true
+}
+
+/// Zero-copy statistics from the shared TX ring header (the kernel banks
+/// tx-copies-avoided per completed transmit).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct TxRingSnapshot {
+    pub(crate) active: bool,
+    pub(crate) frames_pushed: u64,
+    pub(crate) copies_avoided: u64,
+    pub(crate) bytes_saved: u64,
+}
+
+pub(crate) fn tx_ring_snapshot() -> TxRingSnapshot {
+    with_tx_ring(|ring| {
+        let Some(ring) = ring.as_ref() else {
+            return TxRingSnapshot::default();
+        };
+        let image = ring.image();
+        TxRingSnapshot {
+            active: true,
+            frames_pushed: load_u64(image, OFF_FRAMES_PUSHED),
+            copies_avoided: load_u64(image, OFF_COPIES_AVOIDED),
+            bytes_saved: load_u64(image, OFF_BYTES_SAVED),
+        }
+    })
+}
+
 /// Frames emitted by the stack that are destined for the guest itself are
 /// routed through this ring instead of the virtio queue so guest-internal
 /// loopback (127.0.0.1) works under slirp NAT, which would otherwise never
@@ -564,7 +713,54 @@ impl TxToken for KernelTxToken<'_> {
             unsafe {
                 (*LB_STATS.0.get()).1 += 1;
             }
-            let _ = rt::packet_interface_transmit(self.handle, frame);
+            // Shared TX ring path: copy the emitted frame straight into the
+            // next mapped slot (replacing the per-frame IPC copy through the
+            // transmit syscall) and ring the kernel doorbell to drain it.
+            // Any miss — ring not negotiated, disabled by a stalled kernel
+            // side, backlog full, oversize frame — falls back to the legacy
+            // copied transmit below.
+            let mut revert_to_copied = false;
+            let via_ring = with_tx_ring(|ring| {
+                let Some(ring) = ring.as_mut() else {
+                    return false;
+                };
+                if ring.disabled || frame.len() > MAX_FRAME_BYTES || !ring.has_room() {
+                    return false;
+                }
+                let sequence = ring.head;
+                // SAFETY: sequence indexes a live slot; mapping outlives use.
+                let slot = unsafe { ring.slot_mut(sequence) };
+                slot[..frame.len()].copy_from_slice(frame);
+                ring.publish(sequence, frame.len());
+                true
+            });
+            if via_ring {
+                let _ = rt::packet_interface_tx_ring_flush(self.handle);
+                with_tx_ring(|ring| {
+                    let Some(ring) = ring.as_mut() else {
+                        return;
+                    };
+                    if ring.kernel_tail() >= ring.head {
+                        ring.stalled_doorbells = 0;
+                    } else {
+                        ring.stalled_doorbells += 1;
+                        if ring.stalled_doorbells >= TX_STALL_DOORBELL_LIMIT {
+                            ring.disabled = true;
+                            revert_to_copied = true;
+                        }
+                    }
+                });
+                if revert_to_copied {
+                    let _ = rt::write_logf(
+                        "network",
+                        format_args!(
+                            "tx-ring kernel side not draining; reverted to copied-transmit path"
+                        ),
+                    );
+                }
+            } else {
+                let _ = rt::packet_interface_transmit(self.handle, frame);
+            }
         }
         result
     }

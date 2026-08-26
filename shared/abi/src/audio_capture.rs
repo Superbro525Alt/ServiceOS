@@ -10,7 +10,7 @@
 //! in front of real device frames.
 
 use crate::audio::AudioSampleFormat;
-use crate::audio_pcm::{pcm_pack_words, CHECKSUM_SEED};
+use crate::audio_pcm::{CHECKSUM_SEED, pcm_pack_words};
 
 /// Kernel monotonic tick rate (see the timer source brought up by the
 /// kernel): 100 ticks per second.
@@ -28,8 +28,7 @@ pub fn capture_frames_due(
     if now_tick <= start_tick || rate_hz == 0 {
         return 0;
     }
-    let target =
-        (now_tick - start_tick) as u128 * rate_hz as u128 / CAPTURE_TICK_HZ as u128;
+    let target = (now_tick - start_tick) as u128 * rate_hz as u128 / CAPTURE_TICK_HZ as u128;
     target.saturating_sub(frames_produced as u128) as u64
 }
 

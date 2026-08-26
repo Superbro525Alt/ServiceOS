@@ -1,14 +1,9 @@
 #![no_main]
 #![no_std]
 
-use core::{
-    fmt::Write,
-    panic::PanicInfo,
-};
+use core::{fmt::Write, panic::PanicInfo};
 
-use serviceos_kernel_arch_riscv64::{
-    console::SbiConsole, cpu, layout, timer, traps,
-};
+use serviceos_kernel_arch_riscv64::{console::SbiConsole, cpu, layout, timer, traps};
 use serviceos_platform_riscv64_virt::machine;
 
 #[unsafe(no_mangle)]
@@ -43,11 +38,16 @@ extern "C" fn rust_main(hart_id: usize, dtb_pointer: usize) -> ! {
     let _ = writeln!(
         console,
         "serviceos: riscv64 virt stub alive (hart {}, dtb {:#x}, kernel at {:#x})",
-        hart_id, dtb_pointer, layout::KERNEL_LOAD_BASE
+        hart_id,
+        dtb_pointer,
+        layout::KERNEL_LOAD_BASE
     );
 
     traps::init();
-    let _ = writeln!(console, "serviceos: stvec armed with all-traps hang handler");
+    let _ = writeln!(
+        console,
+        "serviceos: stvec armed with all-traps hang handler"
+    );
 
     match timer::arm_oneshot_tick(timer::TIMER_TICK_HZ) {
         Ok(interval) => {

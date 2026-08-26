@@ -40,10 +40,9 @@ impl MemoryManager {
     pub fn pressure_reading(&self) -> PressureReading {
         let total_frames = self.stats.usable_bytes / PAGE_SIZE_BYTES;
         let free_frames = self.frame_allocator().lock().usable_headroom_frames();
-        let (heap_total, heap_free) =
-            super::heap::kernel_heap_usage()
-                .map(|usage| (usage.total_bytes, usage.free_bytes))
-                .unwrap_or((0, 0));
+        let (heap_total, heap_free) = super::heap::kernel_heap_usage()
+            .map(|usage| (usage.total_bytes, usage.free_bytes))
+            .unwrap_or((0, 0));
 
         PressureReading {
             frames_headroom_permille: pressure::headroom_permille(free_frames, total_frames),

@@ -900,7 +900,10 @@ impl SchedulerState {
             self.queued_idle_ticks.remove(&thread_id);
             return Some(thread_id);
         }
-        let stolen = self.runnable_queues.iter_mut().find_map(VecDeque::pop_front);
+        let stolen = self
+            .runnable_queues
+            .iter_mut()
+            .find_map(VecDeque::pop_front);
         if let Some(thread_id) = stolen {
             self.queued_idle_ticks.remove(&thread_id);
             self.stolen_per_cpu[cpu] = self.stolen_per_cpu[cpu].saturating_add(1);
@@ -945,7 +948,11 @@ fn steal_idle_runnables_locked(state: &mut SchedulerState, cpu: usize) -> usize 
             if candidates.len() >= STEAL_BATCH_MAX {
                 break;
             }
-            let idle = state.queued_idle_ticks.get(&thread_id).copied().unwrap_or(0);
+            let idle = state
+                .queued_idle_ticks
+                .get(&thread_id)
+                .copied()
+                .unwrap_or(0);
             if idle >= STEAL_MIN_IDLE_TICKS && thread_stealable(thread_id) {
                 candidates.push((victim, thread_id));
             }
@@ -983,15 +990,17 @@ fn thread_stealable(_thread_id: ThreadId) -> bool {
 /// over-commit ratio times the average depth across all queues, move its
 /// longest-idle threads to the emptiest queue. Returns the number moved.
 fn push_balance_locked(state: &mut SchedulerState, _cpu: usize) -> usize {
-    let depths: [usize; RUNNABLE_QUEUE_CPUS] = core::array::from_fn(|slot| {
-        state.runnable_queues[slot].len()
-    });
+    let depths: [usize; RUNNABLE_QUEUE_CPUS] =
+        core::array::from_fn(|slot| state.runnable_queues[slot].len());
     let Some((busiest, emptiest, moves)) = rebalance_plan(&depths) else {
         return 0;
     };
 
-    let candidates =
-        select_rebalance_candidates(&state.runnable_queues[busiest], &state.queued_idle_ticks, moves);
+    let candidates = select_rebalance_candidates(
+        &state.runnable_queues[busiest],
+        &state.queued_idle_ticks,
+        moves,
+    );
     let mut moved = 0usize;
     for thread_id in candidates {
         if let Some(position) = state.runnable_queues[busiest]
@@ -1059,7 +1068,10 @@ fn select_rebalance_candidates(
         .collect();
     ranked.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
     ranked.truncate(count);
-    ranked.into_iter().map(|(_, _, thread_id)| thread_id).collect()
+    ranked
+        .into_iter()
+        .map(|(_, _, thread_id)| thread_id)
+        .collect()
 }
 
 fn build_stats_line(state: &SchedulerState) -> StealStatsLine {
@@ -1185,7 +1197,9 @@ mod steal_tests {
         }
     }
 
-    fn make_scheduler(worker_count: usize) -> (ObjectRegistry, Scheduler, alloc::vec::Vec<ThreadId>) {
+    fn make_scheduler(
+        worker_count: usize,
+    ) -> (ObjectRegistry, Scheduler, alloc::vec::Vec<ThreadId>) {
         let registry = ObjectRegistry::new();
         let task = registry.create_bootstrap_root_task();
         let bootstrap = registry.create_thread(&task, descriptor());
@@ -1328,8 +1342,7 @@ mod steal_tests {
         let stats = bal_scheduler.steal_stats_line();
         assert_eq!(stats.queue_depths[0], 2, "busiest queue shrinks to limit");
         assert_eq!(
-            stats.queue_depths[1],
-            4,
+            stats.queue_depths[1], 4,
             "emptiest queue receives the excess"
         );
         assert_eq!(stats.rebalance_moves, 4);

@@ -70,7 +70,10 @@ pub fn build_for_platform(
 
 /// Skeleton platforms (userspace_catalog = false) skip the userspace graph
 /// entirely; their staged bundles contain no bootstore.bin.
-fn build_userspace_catalog_if_needed(spec: PlatformSpec, release: bool) -> Result<(), Box<dyn Error>> {
+fn build_userspace_catalog_if_needed(
+    spec: PlatformSpec,
+    release: bool,
+) -> Result<(), Box<dyn Error>> {
     if !spec.userspace_catalog {
         println!(
             "Platform '{}' is a skeleton target; skipping userspace catalog build",

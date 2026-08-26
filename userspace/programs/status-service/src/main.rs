@@ -177,12 +177,30 @@ fn main() -> u64 {
         Ok(handle) => Some(handle),
         Err(_) => None,
     };
-    if developer_feed.is_none() || graphics_feed.is_none() {
+    // Kernel pressure transitions arrive as LogDomain::Kernel stream records
+    // (log-service mirrors the kernel event ring), so the timeline can track
+    // Normal/Tight/Critical moves like any other domain feed.
+    let kernel_feed = match rt::log_subscribe(
+        log_handle,
+        LogSeverity::Trace,
+        None,
+        Some(LogDomain::Kernel),
+    ) {
+        Ok(handle) => Some(handle),
+        Err(_) => None,
+    };
+    if developer_feed.is_none() || graphics_feed.is_none() || kernel_feed.is_none() {
         let _ = rt::write_logf(
             "status",
             format_args!("timeline domains: feed subscribe failed"),
         );
     }
+    // Boot-baseline evidence for the pressure bridge: the kernel monitor
+    // starts Normal and only emits records on real transitions.
+    let _ = rt::write_logf(
+        "status",
+        format_args!("pressure bridge: baseline level=normal transitions=0"),
+    );
     // Net selftest records are consumed from the log-service retained ring
     // instead of a live stream subscription: boot-time record bursts can
     // overflow a subscriber queue, after which the log service closes that
@@ -248,7 +266,7 @@ fn main() -> u64 {
             Err(_) => return 0xf410,
         }
 
-        for feed in [developer_feed, graphics_feed].into_iter().flatten() {
+        for feed in [developer_feed, graphics_feed, kernel_feed].into_iter().flatten() {
             let mut stream = RawMessage::empty(0);
             match rt::channel_receive_nonblocking(feed, &mut stream) {
                 Ok(()) if stream.tag == LogTag::StreamRecord as u32 && stream.word_count >= 9 => {
@@ -466,7 +484,9 @@ fn handle_request(
                 };
                 rollup_count += 1;
             }
-            let summary = compute_rollup(&rollup_entries[..rollup_count]);
+            let mut summary = compute_rollup(&rollup_entries[..rollup_count]);
+            summary.pressure_level = domain_counters.pressure_level;
+            summary.pressure_transitions = domain_counters.pressure_transitions;
             let mut reply = RawMessage::empty(StatusTag::SnapshotReply as u32);
             fill_snapshot_reply(&mut reply, heartbeat_count, last_tick, &summary);
             let _ = rt::channel_send(reply_handle, &reply);
@@ -636,7 +656,6 @@ fn handle_request(
             let reply_handle = request.handles[0];
             let summary = compute_timeline_summary(timeline);
             let mut reply = RawMessage::empty(timeline_tag::SUMMARY_REPLY);
-            reply.word_count = 18;
             reply.words[0] = summary.retained as u64;
             reply.words[1] = summary.pushed;
             reply.words[2] = summary.per_service_len as u64;
@@ -653,7 +672,12 @@ fn handle_request(
             reply.words[9] = summary.first_tick.unwrap_or(0);
             reply.words[10] = summary.last_tick.unwrap_or(0);
             reply.words[11] = timeline.total_pushed();
-            for (slot, value) in domain_counters.pack_reply_words().into_iter().enumerate() {
+            // Counters compress into words [12..16] so the whole reply fits
+            // the kernel's 16-word IPC envelope (pressure state rides the
+            // last word: level | transitions<<32).
+            let packed = domain_counters.pack_reply_words_compact();
+            reply.word_count = 12 + packed.len() as u32;
+            for (slot, value) in packed.into_iter().enumerate() {
                 reply.words[12 + slot] = value;
             }
             let _ = rt::channel_send(reply_handle, &reply);

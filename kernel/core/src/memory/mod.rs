@@ -1,8 +1,8 @@
 mod address_space;
 mod heap;
 mod layout;
-pub mod oom;
 mod manager;
+pub mod oom;
 mod phys;
 pub mod pressure;
 mod types;

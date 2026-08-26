@@ -275,10 +275,7 @@ impl DeviceRole {
             ),
             // Demoted relative pointer: no positional stream, but buttons and
             // wheel keep routing so secondary hosts stay usable.
-            DeviceRole::ScrollOnly => (
-                input_device_class::POINTER,
-                input_role_flag::SCROLL_ONLY,
-            ),
+            DeviceRole::ScrollOnly => (input_device_class::POINTER, input_role_flag::SCROLL_ONLY),
         }
     }
 }
@@ -341,11 +338,7 @@ impl InputBackend for VirtioInputBackend {
         InputSourceInfo {
             backend: InputSourceBackend::VirtioPci as u32,
             capabilities: state.capabilities,
-            device_count: state
-                .devices
-                .iter()
-                .filter(|device| device.present)
-                .count() as u32,
+            device_count: state.devices.iter().filter(|device| device.present).count() as u32,
             pending_events: state.queue_len as u32,
         }
     }

@@ -201,6 +201,13 @@ impl PacketBackend for VirtioPacketBackend {
         }
     }
 
+    /// Copy strategy (documented per the shared TX ring design): this
+    /// backend COPIES each frame into a driver-owned TxBuffer before
+    /// handing it to the virtio queue. Mapping a userspace slot page
+    /// directly into a virtio descriptor is not possible with the current
+    /// virtio-drivers API (`VirtIONet::send` accepts only buffers it
+    /// allocated via `new_tx_buffer`), so the shared TX ring eliminates the
+    /// per-frame IPC/syscall copy while this one slot→desc copy remains.
     fn transmit(&self, frame: &[u8]) -> Result<(), PacketInterfaceError> {
         if frame.is_empty() || frame.len() > NETWORK_BUFFER_BYTES {
             return Err(PacketInterfaceError::BufferTooSmall);

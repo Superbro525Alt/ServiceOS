@@ -3,7 +3,6 @@
 //! Skeleton scope: read the running counter and schedule one-shot compares
 //! via SBI `set_timer`. Periodic-tick integration into a scheduler is open.
 
-
 /// QEMU `virt` ships a 10 MHz `timebase-frequency`; real boards must parse
 /// this from the device tree once DTB support lands.
 pub const QEMU_VIRT_TIMEBASE_HZ: u64 = 10_000_000;

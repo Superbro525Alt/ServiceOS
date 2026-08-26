@@ -17,10 +17,11 @@ use super::{
     handle_memory_map_range, handle_memory_protect, handle_memory_query, handle_memory_read,
     handle_memory_unmap, handle_memory_write, handle_monotonic_now, handle_object_info,
     handle_object_wait, handle_packet_interface_info, handle_packet_interface_receive,
-    handle_packet_interface_transmit, handle_packet_interface_ring_setup, handle_pipe_create,
-    handle_pipe_read, handle_pipe_write,
-    handle_service_spawn, handle_task_loaded_libraries, handle_task_spawn_image,
-    handle_task_status, handle_thread_exit, handle_yield_current,
+    handle_packet_interface_ring_setup, handle_packet_interface_transmit,
+    handle_packet_interface_tx_ring_flush, handle_packet_interface_tx_ring_setup,
+    handle_pipe_create, handle_pipe_read, handle_pipe_write, handle_service_spawn,
+    handle_task_loaded_libraries, handle_task_spawn_image, handle_task_status, handle_thread_exit,
+    handle_yield_current,
 };
 
 type Handler = fn(&SyscallContext) -> SyscallReturn;
@@ -125,6 +126,8 @@ pub fn initialize() -> &'static DispatchTable {
         entries[50] = Some(handle_pipe_read);
         entries[51] = Some(handle_pipe_write);
         entries[52] = Some(handle_packet_interface_ring_setup);
+        entries[53] = Some(handle_packet_interface_tx_ring_setup);
+        entries[54] = Some(handle_packet_interface_tx_ring_flush);
         DispatchTable::new(entries)
     })
 }

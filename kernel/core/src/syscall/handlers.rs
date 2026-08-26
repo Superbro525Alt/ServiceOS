@@ -17,6 +17,7 @@ pub(crate) use devices::{
     handle_display_output_present_damage, handle_input_source_info, handle_input_source_receive,
     handle_packet_interface_info, handle_packet_interface_receive,
     handle_packet_interface_ring_setup, handle_packet_interface_transmit,
+    handle_packet_interface_tx_ring_flush, handle_packet_interface_tx_ring_setup,
 };
 pub(crate) use ipc::{
     handle_channel_create, handle_channel_receive, handle_channel_send, handle_handle_close,

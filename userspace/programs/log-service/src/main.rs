@@ -468,46 +468,104 @@ fn drain_kernel_events(
             break;
         };
         *next_kernel_sequence = next_kernel_sequence.saturating_add(1);
-        if event.kind != KernelEventKind::Trap || (LogSeverity::Error as u64) < minimum_severity {
-            continue;
-        }
-        let record = StoredRecord {
-            sequence: 0,
-            tick: event.tick,
-            source: ServiceId::RootManager,
-            severity: LogSeverity::Error,
-            domain: LogDomain::Kernel,
-            event: LogEvent::KernelTrap,
-            arg0: event.detail0 | (event.detail1 << 32) | ((event.detail4 & 0xffff_ffff) << 16),
-            arg1: event.detail2,
-            arg2: event.detail3,
-        };
-        append_record(
-            console_handle,
-            records,
-            record_count,
-            next_slot,
-            sequence,
-            subscribers,
-            record,
-            persist_dirty,
-            persist_pending_records,
-        )?;
-        if CrashRecord::is_crash(record.severity as u32, record.event as u32) {
-            crashes.record(CrashRecord {
-                log_sequence: 0,
-                tick: record.tick,
-                source: ServiceId::RootManager as u32,
-                severity: record.severity as u32,
-                domain: record.domain as u32,
-                event: record.event as u32,
-                arg0: record.arg0,
-                arg1: record.arg1,
-                arg2: record.arg2,
-            });
+        match event.kind {
+            KernelEventKind::Trap => {
+                if (LogSeverity::Error as u64) < minimum_severity {
+                    continue;
+                }
+                let record = StoredRecord {
+                    sequence: 0,
+                    tick: event.tick,
+                    source: ServiceId::RootManager,
+                    severity: LogSeverity::Error,
+                    domain: LogDomain::Kernel,
+                    event: LogEvent::KernelTrap,
+                    arg0: event.detail0 | (event.detail1 << 32) | ((event.detail4 & 0xffff_ffff) << 16),
+                    arg1: event.detail2,
+                    arg2: event.detail3,
+                };
+                append_record(
+                    console_handle,
+                    records,
+                    record_count,
+                    next_slot,
+                    sequence,
+                    subscribers,
+                    record,
+                    persist_dirty,
+                    persist_pending_records,
+                )?;
+                if CrashRecord::is_crash(record.severity as u32, record.event as u32) {
+                    crashes.record(CrashRecord {
+                        log_sequence: 0,
+                        tick: record.tick,
+                        source: ServiceId::RootManager as u32,
+                        severity: record.severity as u32,
+                        domain: record.domain as u32,
+                        event: record.event as u32,
+                        arg0: record.arg0,
+                        arg1: record.arg1,
+                        arg2: record.arg2,
+                    });
+                }
+            }
+            KernelEventKind::Pressure => {
+                let Some(record) = pressure_record_from_kernel_event(&event) else {
+                    continue;
+                };
+                if (record.severity as u64) < minimum_severity {
+                    continue;
+                }
+                append_record(
+                    console_handle,
+                    records,
+                    record_count,
+                    next_slot,
+                    sequence,
+                    subscribers,
+                    record,
+                    persist_dirty,
+                    persist_pending_records,
+                )?;
+            }
         }
     }
     Ok(())
+}
+
+/// Maps a kernel `Pressure` event into a structured log-stream record the way
+/// developer/graphics/net feeds publish their domain events: `LogDomain::
+/// Kernel` + `KernelPressureChanged`, with `arg0`/`arg1` carrying from/to
+/// level discriminants (0 normal, 1 tight, 2 critical). Severity tracks the
+/// destination level so operator severity filters behave honestly; Critical
+/// records land in the crash feed like every other Error-severity kernel
+/// event. Unknown level pairs are rejected rather than guessed.
+pub(crate) fn pressure_record_from_kernel_event(
+    event: &rt::KernelEventRecord,
+) -> Option<StoredRecord> {
+    if !matches!(event.kind, KernelEventKind::Pressure) {
+        return None;
+    }
+    let severity = match (event.detail0, event.detail1) {
+        (_, 0) => LogSeverity::Info,
+        (_, 1) => LogSeverity::Warn,
+        (_, 2) => LogSeverity::Error,
+        _ => return None,
+    };
+    if event.detail0 > 2 || event.detail1 > 2 {
+        return None;
+    }
+    Some(StoredRecord {
+        sequence: 0,
+        tick: event.tick,
+        source: ServiceId::RootManager,
+        severity,
+        domain: LogDomain::Kernel,
+        event: LogEvent::KernelPressureChanged,
+        arg0: event.detail0,
+        arg1: event.detail1,
+        arg2: 0,
+    })
 }
 
 fn poll_lifecycle(bootstrap: rt::Handle) -> rt::Result<bool> {
@@ -790,6 +848,7 @@ fn event_from_word(value: u64) -> LogEvent {
         x if x == LogEvent::RuntimeApprovalPending as u32 => LogEvent::RuntimeApprovalPending,
         x if x == LogEvent::RuntimeApprovalChanged as u32 => LogEvent::RuntimeApprovalChanged,
         x if x == LogEvent::KernelTrap as u32 => LogEvent::KernelTrap,
+        x if x == LogEvent::KernelPressureChanged as u32 => LogEvent::KernelPressureChanged,
         _ => LogEvent::LookupGranted,
     }
 }
@@ -801,5 +860,62 @@ fn lifecycle_event_from_word(value: u64) -> LifecycleEvent {
         x if x == LifecycleEvent::Failed as u32 => LifecycleEvent::Failed,
         x if x == LifecycleEvent::Stopped as u32 => LifecycleEvent::Stopped,
         _ => LifecycleEvent::Restarting,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serviceos_abi::KernelEventRecord;
+
+    fn pressure_event(from: u64, to: u64) -> KernelEventRecord {
+        KernelEventRecord {
+            sequence: 7,
+            kind: KernelEventKind::Pressure,
+            reserved: 0,
+            tick: 42,
+            detail0: from,
+            detail1: to,
+            detail2: 0,
+            detail3: 0,
+            detail4: 0,
+        }
+    }
+
+    #[test]
+    fn pressure_events_map_to_severity_graded_kernel_records() {
+        let record =
+            pressure_record_from_kernel_event(&pressure_event(0, 1)).expect("tight maps");
+        assert_eq!(record.domain, LogDomain::Kernel);
+        assert_eq!(record.event, LogEvent::KernelPressureChanged);
+        assert_eq!(record.severity, LogSeverity::Warn);
+        assert_eq!(record.source, ServiceId::RootManager);
+        assert_eq!(record.tick, 42);
+        assert_eq!(record.arg0, 0);
+        assert_eq!(record.arg1, 1);
+
+        let critical = pressure_record_from_kernel_event(&pressure_event(1, 2))
+            .expect("critical maps");
+        assert_eq!(critical.severity, LogSeverity::Error);
+
+        let recovered = pressure_record_from_kernel_event(&pressure_event(2, 0))
+            .expect("recovery maps");
+        assert_eq!(recovered.severity, LogSeverity::Info);
+
+        // Critical records ride the crash feed like every Error kernel event.
+        assert!(CrashRecord::is_crash(
+            critical.severity as u32,
+            critical.event as u32
+        ));
+    }
+
+    #[test]
+    fn pressure_mapping_rejects_unknown_levels_and_kinds() {
+        assert!(pressure_record_from_kernel_event(&pressure_event(0, 3)).is_none());
+        assert!(pressure_record_from_kernel_event(&pressure_event(5, 0)).is_none());
+
+        let mut trap = pressure_event(0, 1);
+        trap.kind = KernelEventKind::Trap;
+        assert!(pressure_record_from_kernel_event(&trap).is_none());
     }
 }

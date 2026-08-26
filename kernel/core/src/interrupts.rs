@@ -254,7 +254,7 @@ impl KernelEventBuffer {
     }
 }
 
-fn note_kernel_event(record: KernelEventRecord) {
+pub(crate) fn note_kernel_event(record: KernelEventRecord) {
     if let Some(buffer) = KERNEL_EVENTS.get() {
         buffer.lock().push(record);
     }

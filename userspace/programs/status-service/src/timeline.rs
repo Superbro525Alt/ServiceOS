@@ -26,6 +26,16 @@ pub(crate) mod event_kind {
     pub const JOB_PHASE: u32 = 5;
     pub const FRAME_PACING: u32 = 6;
     pub const NET_SELFTEST: u32 = 7;
+    pub const PRESSURE: u32 = 8;
+}
+
+/// Memory-pressure level discriminants carried in pressure domain-event
+/// `from`/`to` fields; mirrors the kernel `PressureLevel` ordering in
+/// `kernel/core/src/memory/pressure.rs`.
+pub(crate) mod pressure_level {
+    pub const NORMAL: u32 = 0;
+    pub const TIGHT: u32 = 1;
+    pub const CRITICAL: u32 = 2;
 }
 
 /// Network selftest phase codes carried in domain-event `to` fields; mirrors
@@ -118,6 +128,10 @@ pub(crate) struct DomainCounters {
     pub(crate) long_frames: u64,
     pub(crate) net_selftests_passed: u64,
     pub(crate) net_selftests_failed: u64,
+    /// Latest memory-pressure level seen in a transition (0 normal,
+    /// 1 tight, 2 critical); starts Normal before any transition arrives.
+    pub(crate) pressure_level: u32,
+    pub(crate) pressure_transitions: u64,
 }
 
 impl DomainCounters {
@@ -129,13 +143,17 @@ impl DomainCounters {
             long_frames: 0,
             net_selftests_passed: 0,
             net_selftests_failed: 0,
+            pressure_level: pressure_level::NORMAL,
+            pressure_transitions: 0,
         }
     }
 
-    /// Packs into the extended SUMMARY_REPLY layout words `[12..18]`
-    /// (legacy summary occupies `[0..12]`; net counters append additively at
-    /// `[16]`/`[17]`).
-    pub(crate) fn pack_reply_words(&self) -> [u64; 6] {
+    /// Packs into the extended SUMMARY_REPLY layout words `[12..16]`. The
+    /// kernel IPC envelope hard-caps messages at `IPC_MAX_WORDS` (16), so the
+    /// eight counters compress into four words of u32 halves (saturating):
+    /// `[12]` jobs started|succeeded, `[13]` jobs failed|long frames,
+    /// `[14]` net passed|failed, `[15]` pressure level|transitions.
+    pub(crate) fn pack_reply_words(&self) -> [u64; 8] {
         [
             self.jobs_started,
             self.jobs_succeeded,
@@ -143,6 +161,20 @@ impl DomainCounters {
             self.long_frames,
             self.net_selftests_passed,
             self.net_selftests_failed,
+            self.pressure_level as u64,
+            self.pressure_transitions,
+        ]
+    }
+
+    /// Wire form of [`Self::pack_reply_words`] that fits the 16-word IPC
+    /// envelope: pairs of counters squeezed into u32 halves, oldest first.
+    pub(crate) fn pack_reply_words_compact(&self) -> [u64; 4] {
+        let half = |value: u64| value.min(u32::MAX as u64);
+        [
+            half(self.jobs_started) | (half(self.jobs_succeeded) << 32),
+            half(self.jobs_failed) | (half(self.long_frames) << 32),
+            half(self.net_selftests_passed) | (half(self.net_selftests_failed) << 32),
+            self.pressure_level as u64 | (half(self.pressure_transitions) << 32),
         ]
     }
 }
@@ -189,6 +221,10 @@ pub(crate) fn ingest_domain_event(
             }
             _ => {}
         },
+        event_kind::PRESSURE => {
+            counters.pressure_level = to;
+            counters.pressure_transitions = counters.pressure_transitions.saturating_add(1);
+        }
         _ => {}
     }
 }
@@ -223,6 +259,24 @@ pub(crate) fn classify_net_selftest_record(arg0: u64, arg1: u64) -> Option<(u32,
         other => other.min(u32::MAX as u64) as u32,
     };
     Some((event_kind::NET_SELFTEST, 0, to))
+}
+
+/// Maps a kernel pressure record (`arg0` = from-level, `arg1` = to-level
+/// discriminants) onto the PRESSURE timeline kind, or `None` for unknown
+/// level encodings so malformed records never enter the ring.
+pub(crate) fn classify_pressure_record(arg0: u64, arg1: u64) -> Option<(u32, u32, u32)> {
+    let from = level_from_word(arg0)?;
+    let to = level_from_word(arg1)?;
+    Some((event_kind::PRESSURE, from, to))
+}
+
+fn level_from_word(word: u64) -> Option<u32> {
+    match word {
+        0 => Some(pressure_level::NORMAL),
+        1 => Some(pressure_level::TIGHT),
+        2 => Some(pressure_level::CRITICAL),
+        _ => None,
+    }
 }
 
 impl DomainSampler {
@@ -268,6 +322,9 @@ impl DomainSampler {
             }
             (LogDomain::Network, LogEvent::NetworkProbeCompleted) => {
                 classify_net_selftest_record(arg0, arg1)
+            }
+            (LogDomain::Kernel, LogEvent::KernelPressureChanged) => {
+                classify_pressure_record(arg0, arg1)
             }
             (LogDomain::Graphics, LogEvent::CompositorPresented) => {
                 let previous_tick = self.last_present_tick.replace(tick);
@@ -406,6 +463,7 @@ mod tests {
 
     const SID_A: u32 = 3;
     const SID_B: u32 = 5;
+    const KERNEL_SID: u32 = 2;
 
     fn ev(service_id: u32, kind: u32, tick: u64) -> TimelineEvent {
         TimelineEvent {
@@ -598,7 +656,9 @@ mod tests {
                 jobs_failed: 0,
                 long_frames: 2,
                 net_selftests_passed: 0,
-                net_selftests_failed: 0
+                net_selftests_failed: 0,
+                pressure_level: pressure_level::NORMAL,
+                pressure_transitions: 0
             }
         );
     }
@@ -638,9 +698,17 @@ mod tests {
             long_frames: 7,
             net_selftests_passed: 11,
             net_selftests_failed: 13,
+            pressure_level: pressure_level::TIGHT,
+            pressure_transitions: 4,
         };
-        assert_eq!(counters.pack_reply_words(), [3, 2, 1, 7, 11, 13]);
-        assert_eq!(DomainCounters::empty().pack_reply_words(), [0, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            counters.pack_reply_words(),
+            [3, 2, 1, 7, 11, 13, pressure_level::TIGHT as u64, 4]
+        );
+        assert_eq!(
+            DomainCounters::empty().pack_reply_words(),
+            [0, 0, 0, 0, 0, 0, pressure_level::NORMAL as u64, 0]
+        );
     }
 
     #[test]
@@ -712,8 +780,8 @@ mod tests {
         let mut counters = DomainCounters::empty();
         // Tagged records decode identically on both delivery paths.
         for (tick, arg1) in [(5u64, net_selftest::BEGIN), (9, net_selftest::PASSED)] {
-            let classified = classify_net_selftest_record(net_selftest::ARG0_TAG, arg1)
-                .and_then(|(kind, from, to)| {
+            let classified = classify_net_selftest_record(net_selftest::ARG0_TAG, arg1).and_then(
+                |(kind, from, to)| {
                     sampler
                         .classify(
                             LogDomain::Network,
@@ -724,7 +792,8 @@ mod tests {
                             tick,
                         )
                         .map(|stream| assert_eq!(stream, (kind, from, to)))
-                });
+                },
+            );
             assert!(classified.is_some());
             let (kind, from, to) =
                 classify_net_selftest_record(net_selftest::ARG0_TAG, arg1).unwrap();
@@ -752,10 +821,42 @@ mod tests {
     fn net_selftest_counters_tally_passed_and_failed() {
         let mut timeline = Timeline::new();
         let mut counters = DomainCounters::empty();
-        ingest_domain_event(&mut timeline, &mut counters, 12, event_kind::NET_SELFTEST, 5, 0, net_selftest::BEGIN as u32);
-        ingest_domain_event(&mut timeline, &mut counters, 12, event_kind::NET_SELFTEST, 9, 0, net_selftest::PASSED as u32);
-        ingest_domain_event(&mut timeline, &mut counters, 12, event_kind::NET_SELFTEST, 15, 0, net_selftest::FAILED as u32);
-        ingest_domain_event(&mut timeline, &mut counters, 12, event_kind::NET_SELFTEST, 21, 0, net_selftest::PASSED as u32);
+        ingest_domain_event(
+            &mut timeline,
+            &mut counters,
+            12,
+            event_kind::NET_SELFTEST,
+            5,
+            0,
+            net_selftest::BEGIN as u32,
+        );
+        ingest_domain_event(
+            &mut timeline,
+            &mut counters,
+            12,
+            event_kind::NET_SELFTEST,
+            9,
+            0,
+            net_selftest::PASSED as u32,
+        );
+        ingest_domain_event(
+            &mut timeline,
+            &mut counters,
+            12,
+            event_kind::NET_SELFTEST,
+            15,
+            0,
+            net_selftest::FAILED as u32,
+        );
+        ingest_domain_event(
+            &mut timeline,
+            &mut counters,
+            12,
+            event_kind::NET_SELFTEST,
+            21,
+            0,
+            net_selftest::PASSED as u32,
+        );
 
         assert_eq!(counters.net_selftests_passed, 2);
         assert_eq!(counters.net_selftests_failed, 1);
@@ -764,8 +865,150 @@ mod tests {
         assert_eq!(timeline.query_since(0, &mut out), 4);
         assert_eq!(out[0].kind, event_kind::NET_SELFTEST);
         assert_eq!(out[0].to, net_selftest::BEGIN as u32);
-        assert_eq!(counters.pack_reply_words()[4], 2, "passed rides reply word 16");
-        assert_eq!(counters.pack_reply_words()[5], 1, "failed rides reply word 17");
+        assert_eq!(
+            counters.pack_reply_words()[4],
+            2,
+            "passed rides reply word 16"
+        );
+        assert_eq!(
+            counters.pack_reply_words()[5],
+            1,
+            "failed rides reply word 17"
+        );
+    }
+
+    #[test]
+    fn pressure_records_classify_to_level_pairs_and_reject_unknowns() {
+        let mut sampler = DomainSampler::new();
+        // Normal -> Tight -> Critical -> Normal round trip.
+        assert_eq!(
+            classify(
+                &mut sampler,
+                LogDomain::Kernel,
+                LogEvent::KernelPressureChanged,
+                LogSeverity::Warn,
+                pressure_level::NORMAL as u64,
+                pressure_level::TIGHT as u64,
+                10
+            ),
+            Some((
+                event_kind::PRESSURE,
+                pressure_level::NORMAL,
+                pressure_level::TIGHT
+            ))
+        );
+        assert_eq!(
+            classify(
+                &mut sampler,
+                LogDomain::Kernel,
+                LogEvent::KernelPressureChanged,
+                LogSeverity::Error,
+                pressure_level::TIGHT as u64,
+                pressure_level::CRITICAL as u64,
+                20
+            ),
+            Some((
+                event_kind::PRESSURE,
+                pressure_level::TIGHT,
+                pressure_level::CRITICAL
+            ))
+        );
+        assert_eq!(
+            classify(
+                &mut sampler,
+                LogDomain::Kernel,
+                LogEvent::KernelPressureChanged,
+                LogSeverity::Info,
+                pressure_level::CRITICAL as u64,
+                pressure_level::NORMAL as u64,
+                30
+            ),
+            Some((
+                event_kind::PRESSURE,
+                pressure_level::CRITICAL,
+                pressure_level::NORMAL
+            ))
+        );
+        // Unknown level encodings never enter the ring.
+        assert_eq!(
+            classify(
+                &mut sampler,
+                LogDomain::Kernel,
+                LogEvent::KernelPressureChanged,
+                LogSeverity::Error,
+                0,
+                3,
+                40
+            ),
+            None
+        );
+        assert_eq!(
+            classify(
+                &mut sampler,
+                LogDomain::Kernel,
+                LogEvent::KernelPressureChanged,
+                LogSeverity::Error,
+                9,
+                0,
+                50
+            ),
+            None
+        );
+        // KernelTrap records on the same domain stay unclassified here.
+        assert_eq!(
+            classify(
+                &mut sampler,
+                LogDomain::Kernel,
+                LogEvent::KernelTrap,
+                LogSeverity::Error,
+                0,
+                1,
+                60
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn pressure_ingest_updates_rollup_state_and_reply_words() {
+        let mut timeline = Timeline::new();
+        let mut counters = DomainCounters::empty();
+        assert_eq!(counters.pressure_level, pressure_level::NORMAL);
+
+        ingest_domain_event(
+            &mut timeline,
+            &mut counters,
+            KERNEL_SID,
+            event_kind::PRESSURE,
+            10,
+            pressure_level::NORMAL,
+            pressure_level::TIGHT,
+        );
+        ingest_domain_event(
+            &mut timeline,
+            &mut counters,
+            KERNEL_SID,
+            event_kind::PRESSURE,
+            20,
+            pressure_level::TIGHT,
+            pressure_level::CRITICAL,
+        );
+
+        assert_eq!(counters.pressure_level, pressure_level::CRITICAL);
+        assert_eq!(counters.pressure_transitions, 2);
+        let mut out = [TimelineEvent::zeroed(); TIMELINE_CAP];
+        assert_eq!(timeline.query_since(0, &mut out), 2);
+        assert_eq!(out[0].kind, event_kind::PRESSURE);
+        assert_eq!(out[0].from, pressure_level::NORMAL);
+        assert_eq!(out[0].to, pressure_level::TIGHT);
+        assert_eq!(out[1].tick, 20);
+        let packed = counters.pack_reply_words();
+        assert_eq!(
+            packed[6],
+            pressure_level::CRITICAL as u64,
+            "level rides reply word 18"
+        );
+        assert_eq!(packed[7], 2, "transitions ride reply word 19");
     }
 
     fn classify(

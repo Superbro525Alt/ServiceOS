@@ -1,4 +1,5 @@
 use alloc::vec::Vec;
+use serviceos_abi::{KernelEventKind, KernelEventRecord};
 use spin::{Mutex, Once};
 
 /// Memory-pressure classification thresholds, expressed as permille (‰) of
@@ -89,6 +90,26 @@ fn monitor() -> Option<&'static Mutex<PressureMonitor>> {
 
 pub fn initialize() {
     let _ = MONITOR.call_once(|| Mutex::new(PressureMonitor::new()));
+    register_listener(emit_kernel_event);
+}
+
+/// Userspace bridge: every level transition is mirrored into the kernel event
+/// ring as a structured `Pressure` record (detail0 = from-level discriminant,
+/// detail1 = to-level discriminant) so log-service can drain it into the
+/// shared log stream exactly like developer/graphics/net domain feeds. The
+/// ring is a no-op before `interrupts::initialize`, so host tests stay quiet.
+fn emit_kernel_event(transition: &PressureTransition) {
+    crate::interrupts::note_kernel_event(KernelEventRecord {
+        sequence: 0,
+        kind: KernelEventKind::Pressure,
+        reserved: 0,
+        tick: transition.tick,
+        detail0: transition.from as u64,
+        detail1: transition.to as u64,
+        detail2: 0,
+        detail3: 0,
+        detail4: 0,
+    });
 }
 
 #[cfg(test)]
@@ -187,6 +208,9 @@ mod tests {
         // --- monitor: transitions, listeners, ring ---------------------------
         LISTENER_CALLS.store(0, Ordering::SeqCst);
         register_listener(listener_seen);
+        // Bring the kernel event ring up before the first transition so the
+        // userspace bridge has somewhere to mirror into.
+        let _ = crate::interrupts::initialize();
 
         assert_eq!(current_level(), Some(PressureLevel::Normal));
         assert_eq!(
@@ -226,6 +250,26 @@ mod tests {
         assert_eq!(transitions.len(), 3);
         assert_eq!(transitions[0].to, PressureLevel::Tight);
         assert_eq!(transitions[2].from, PressureLevel::Critical);
+
+        // --- userspace bridge --------------------------------------------------
+        // Every transition must have mirrored into the kernel event ring as a
+        // structured Pressure record carrying the from/to level discriminants,
+        // so log-service can drain it into the shared log stream.
+        let (oldest, next) = crate::interrupts::kernel_event_info();
+        let mut mirrored = Vec::new();
+        for sequence in oldest..next {
+            if let Some(record) = crate::interrupts::kernel_event_query(sequence) {
+                if record.kind == KernelEventKind::Pressure {
+                    mirrored.push(record);
+                }
+            }
+        }
+        assert_eq!(mirrored.len(), 3);
+        assert_eq!(mirrored[0].detail0, PressureLevel::Normal as u64);
+        assert_eq!(mirrored[0].detail1, PressureLevel::Tight as u64);
+        assert_eq!(mirrored[0].tick, 20);
+        assert_eq!(mirrored[2].detail0, PressureLevel::Critical as u64);
+        assert_eq!(mirrored[2].detail1, PressureLevel::Normal as u64);
 
         // --- ring bound -------------------------------------------------------
         for index in 0..(MAX_RECORDED_TRANSITIONS as u64 + 8) {

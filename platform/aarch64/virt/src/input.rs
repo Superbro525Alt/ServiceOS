@@ -221,11 +221,7 @@ impl InputBackend for VirtioInputBackend {
         InputSourceInfo {
             backend: InputSourceBackend::VirtioPci as u32,
             capabilities: state.capabilities,
-            device_count: state
-                .devices
-                .iter()
-                .filter(|device| device.present)
-                .count() as u32,
+            device_count: state.devices.iter().filter(|device| device.present).count() as u32,
             pending_events: state.queue_len as u32,
         }
     }
@@ -314,10 +310,7 @@ impl InputBackend for VirtioInputBackend {
 }
 
 /// Semantic class/role-flag pair reported by per-instance enumeration.
-fn instance_signature(
-    pointer: Option<&PointerSource>,
-    _has_keys: bool,
-) -> (u32, u32) {
+fn instance_signature(pointer: Option<&PointerSource>, _has_keys: bool) -> (u32, u32) {
     match pointer {
         Some(PointerSource::Absolute(_)) => (
             input_device_class::TABLET,

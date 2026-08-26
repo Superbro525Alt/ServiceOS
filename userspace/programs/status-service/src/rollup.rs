@@ -22,6 +22,10 @@ pub(crate) struct RollupSummary {
     pub restarting_ids: [u32; ROLLUP_LIST_CAP],
     pub restarting_len: usize,
     pub offenders: [(u32, u64); ROLLUP_OFFENDERS],
+    /// Memory-pressure level discriminant (0 normal / 1 tight / 2 critical)
+    /// and lifetime transition count, mirrored from the kernel pressure feed.
+    pub pressure_level: u32,
+    pub pressure_transitions: u64,
 }
 
 impl RollupSummary {
@@ -35,6 +39,8 @@ impl RollupSummary {
             restarting_ids: [0; ROLLUP_LIST_CAP],
             restarting_len: 0,
             offenders: [(0, 0); ROLLUP_OFFENDERS],
+            pressure_level: 0,
+            pressure_transitions: 0,
         }
     }
 }

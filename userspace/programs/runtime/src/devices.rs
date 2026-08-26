@@ -114,6 +114,30 @@ pub fn packet_interface_ring_setup(
     Ok(object as Handle)
 }
 
+/// Negotiate the shared TX packet ring for this interface (TX mirror of
+/// packet_interface_ring_setup): the caller becomes the producer, writing
+/// outbound frames into mapped slots and publishing them by advancing the
+/// ring head instead of copying each frame through
+/// packet_interface_transmit.
+pub fn packet_interface_tx_ring_setup(
+    handle: Handle,
+    layout: &mut PacketRingLayout,
+) -> Result<Handle> {
+    let object = syscall2(
+        SyscallNumber::PacketInterfaceTxRingSetup,
+        handle as u64,
+        layout as *mut PacketRingLayout as u64,
+    )?;
+    Ok(object as Handle)
+}
+
+/// Doorbell: ask the kernel to drain every published TX-ring slot through
+/// the backend transmit path. Returns the number of frames transmitted;
+/// frames the device could not accept stay pending for the next doorbell.
+pub fn packet_interface_tx_ring_flush(handle: Handle) -> Result<usize> {
+    syscall1(SyscallNumber::PacketInterfaceTxRingFlush, handle as u64).map(|v| v as usize)
+}
+
 pub fn display_output_info(handle: Handle) -> Result<DisplayOutputInfo> {
     let mut info = DisplayOutputInfo {
         backend: DisplayOutputBackend::Unknown as u32,

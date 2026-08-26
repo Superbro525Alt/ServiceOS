@@ -93,6 +93,8 @@ pub enum SyscallNumber {
     PipeRead = 50,
     PipeWrite = 51,
     PacketInterfaceRingSetup = 52,
+    PacketInterfaceTxRingSetup = 53,
+    PacketInterfaceTxRingFlush = 54,
 }
 
 #[repr(u32)]
@@ -253,6 +255,7 @@ pub struct ObjectInfo {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum KernelEventKind {
     Trap = 1,
+    Pressure = 2,
 }
 
 #[repr(C)]

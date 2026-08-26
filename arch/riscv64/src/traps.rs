@@ -5,8 +5,6 @@
 //! serial instead of silently spinning. No trap dispatch, no userspace
 //! trapframes, no nested/interrupt policy yet.
 
-
-
 #[cfg(target_arch = "riscv64")]
 #[repr(C)]
 pub struct TrapFrame {

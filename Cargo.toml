@@ -6,6 +6,7 @@ members = [
     "kernel/core",
     "arch/x86_64",
     "arch/aarch64",
+    "arch/riscv64",
     "platform/x86_64/qemu_virtio",
     "platform/aarch64/raspi5",
     "platform/x86_64/qemu_virtio/image",
@@ -14,6 +15,8 @@ members = [
     "platform/x86_64/qemu_isa/image",
     "platform/aarch64/virt",
     "platform/aarch64/virt/image",
+    "platform/riscv64/virt",
+    "platform/riscv64/virt/image",
     "support/xtask",
     "userspace/catalog",
 ]

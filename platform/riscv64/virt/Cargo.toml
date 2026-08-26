@@ -1,0 +1,15 @@
+[package]
+name = "serviceos-platform-riscv64-virt"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[lib]
+path = "src/lib.rs"
+test = false
+bench = false
+
+[dependencies]
+serviceos-kernel-arch-riscv64 = { path = "../../../arch/riscv64" }

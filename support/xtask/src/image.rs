@@ -19,7 +19,42 @@ pub fn create_platform_image(artifacts: &BuildArtifacts) -> Result<PathBuf, Box<
         ImageKind::RaspberryPiBundle => create_raspi_bundle(artifacts, &layout),
         ImageKind::QemuKernel => create_virt_kernel_bundle(artifacts, &layout),
         ImageKind::MultibootElf => create_isa_kernel_bundle(artifacts, &layout),
+        ImageKind::KernelElf => create_kernel_elf_bundle(artifacts, &layout),
     }
+}
+
+/// Bundle for platforms QEMU boots directly from an ELF (`-kernel`), such as
+/// the riscv64-virt skeleton: stage the ELF and an honest README. No
+/// objcopy conversion — QEMU's ELF loader honors the program headers.
+fn create_kernel_elf_bundle(
+    artifacts: &BuildArtifacts,
+    layout: &crate::bundle::StagedPlatformLayout,
+) -> Result<PathBuf, Box<dyn Error>> {
+    let boot_dir = &layout.boot_dir;
+    fs::create_dir_all(boot_dir)?;
+    let release_mode = if artifacts.release {
+        "release"
+    } else {
+        "debug"
+    };
+    let kernel_elf = artifacts
+        .kernel_binary
+        .as_ref()
+        .ok_or_else(|| "kernel-elf platforms require a kernel ELF binary".to_string())?;
+    if !kernel_elf.exists() {
+        return Err(format!("kernel ELF is missing: {}", kernel_elf.display()).into());
+    }
+    fs::write(
+        boot_dir.join("README.txt"),
+        format!(
+            "ServiceOS riscv64 virt kernel bundle (skeleton)\n\nProfile: {release_mode}\nPlatform: riscv64-virt\n\nStaged files:\n- serviceos/serviceos-kernel.elf\n\nRun:\ncargo xtask run --platform riscv64-virt\nOr directly: qemu-system-riscv64 -machine virt -bios default -nographic -kernel <image_root>/serviceos/serviceos-kernel.elf\n\nCurrent state:\n- OpenSBI (-bios default) loads the payload at 0x80200000 and hands off in S-mode with a0=hart id, a1=DTB pointer\n- SBI legacy console_putchar drives serial; stvec points at an all-traps hang handler\n- timer reads via rdtime and schedules one-shots through the SBI TIME extension (interrupts stay masked)\n- bare-metal identity map only: MMU off, no DTB parsing, no device drivers, no userspace\n"
+        ),
+    )?;
+    println!(
+        "Created riscv64-virt kernel ELF bundle at: {}",
+        boot_dir.display()
+    );
+    Ok(boot_dir.to_path_buf())
 }
 
 fn ensure_isa_kernel_elf(artifacts: &BuildArtifacts) -> Result<PathBuf, Box<dyn Error>> {

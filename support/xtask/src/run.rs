@@ -16,6 +16,7 @@ pub fn run_platform(artifacts: &BuildArtifacts, image: &Path) -> Result<(), Box<
         RunKind::QemuVirtio => run_qemu(image),
         RunKind::QemuArmVirt => run_qemu_virt(artifacts),
         RunKind::QemuIsa => run_qemu_isa(artifacts),
+        RunKind::QemuRiscvVirt => run_qemu_riscv_virt(artifacts),
         RunKind::ManualDeploy => {
             println!(
                 "Platform '{}' does not have emulator run support yet.",
@@ -145,6 +146,49 @@ fn run_qemu_isa(artifacts: &BuildArtifacts) -> Result<(), Box<dyn Error>> {
     ensure_success(status, "QEMU isa run failed")
 }
 
+fn run_qemu_riscv_virt(artifacts: &BuildArtifacts) -> Result<(), Box<dyn Error>> {
+    let kernel_elf = artifacts
+        .kernel_binary
+        .as_ref()
+        .ok_or_else(|| "riscv64-virt requires a kernel ELF".to_string())?;
+    if !kernel_elf.exists() {
+        return Err(format!(
+            "riscv64-virt kernel ELF missing: {}",
+            kernel_elf.display()
+        )
+        .into());
+    }
+    let qemu_binary = find_qemu_riscv64_binary().ok_or_else(|| {
+        "qemu-system-riscv64 not found; install QEMU or set QEMU_SYSTEM_RISCV64 to an absolute path"
+    })?;
+    println!("Launching QEMU with:");
+    println!("  binary: {}", qemu_binary.display());
+    println!("  machine: virt (-bios default: OpenSBI hands off at 0x80200000)");
+    println!("  kernel: {}", kernel_elf.display());
+
+    let mut command = Command::new(&qemu_binary);
+    command.args(["-machine", "virt"]);
+    command.args(["-bios", "default"]);
+    command.args(["-m", "128M"]);
+    command.args(["-smp", "2"]);
+    command.args(["-nographic"]);
+    command.args(["-kernel", &kernel_elf.to_string_lossy()]);
+    if let Some(extra_args) = env::var_os("QEMU_EXTRA_ARGS") {
+        for arg in extra_args.to_string_lossy().split_whitespace() {
+            command.arg(arg);
+        }
+    }
+
+    let status = command.status().map_err(|error| {
+        format!(
+            "failed to launch QEMU riscv64 with kernel {}: {}",
+            kernel_elf.display(),
+            error
+        )
+    })?;
+    ensure_success(status, "QEMU riscv64-virt run failed")
+}
+
 fn ensure_virt_data_image(data_image: &Path) -> Result<(), Box<dyn Error>> {
     if data_image.exists() {
         return Ok(());
@@ -155,6 +199,28 @@ fn ensure_virt_data_image(data_image: &Path) -> Result<(), Box<dyn Error>> {
     let file = std::fs::File::create(data_image)?;
     file.set_len(64 * 1024 * 1024)?;
     Ok(())
+}
+
+pub(crate) fn find_qemu_riscv64_binary() -> Option<PathBuf> {
+    env::var_os("QEMU_SYSTEM_RISCV64")
+        .map(PathBuf::from)
+        .filter(|path| path.exists())
+        .or_else(|| {
+            env::var_os("PATH").and_then(|path| {
+                env::split_paths(&path)
+                    .map(|dir| dir.join("qemu-system-riscv64"))
+                    .find(|candidate| candidate.exists())
+            })
+        })
+        .or_else(|| {
+            [
+                "/usr/bin/qemu-system-riscv64",
+                "/usr/sbin/qemu-system-riscv64",
+            ]
+            .into_iter()
+            .map(PathBuf::from)
+            .find(|path| path.exists())
+        })
 }
 
 pub(crate) fn find_qemu_aarch64_binary() -> Option<PathBuf> {

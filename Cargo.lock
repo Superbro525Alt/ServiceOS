@@ -137,6 +137,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "serviceos-kernel-arch-riscv64"
+version = "0.1.0"
+
+[[package]]
 name = "serviceos-kernel-arch-x86_64"
 version = "0.1.0"
 dependencies = [
@@ -178,6 +182,14 @@ dependencies = [
  "serviceos-platform-raspi5",
  "serviceos-userspace-catalog",
  "spin",
+]
+
+[[package]]
+name = "serviceos-kernel-riscv64-virt"
+version = "0.1.0"
+dependencies = [
+ "serviceos-kernel-arch-riscv64",
+ "serviceos-platform-riscv64-virt",
 ]
 
 [[package]]
@@ -233,6 +245,13 @@ dependencies = [
  "fdt",
  "serviceos-kernel-arch-aarch64",
  "serviceos-kernel-core",
+]
+
+[[package]]
+name = "serviceos-platform-riscv64-virt"
+version = "0.1.0"
+dependencies = [
+ "serviceos-kernel-arch-riscv64",
 ]
 
 [[package]]

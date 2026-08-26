@@ -4,6 +4,7 @@ use std::{error::Error, fmt, path::PathBuf};
 pub enum Arch {
     X86_64,
     Aarch64,
+    Riscv64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -12,6 +13,7 @@ pub enum BootKind {
     RaspberryPiFirmware,
     QemuKernel,
     MultibootElf,
+    QemuDirectElf,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -20,6 +22,7 @@ pub enum ImageKind {
     RaspberryPiBundle,
     QemuKernel,
     MultibootElf,
+    KernelElf,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -28,6 +31,7 @@ pub enum RunKind {
     QemuArmVirt,
     ManualDeploy,
     QemuIsa,
+    QemuRiscvVirt,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -41,14 +45,16 @@ pub struct PlatformSpec {
     pub image_kind: ImageKind,
     pub boot_kind: BootKind,
     pub run_kind: RunKind,
+    pub userspace_catalog: bool,
 }
 
 impl PlatformSpec {
-    const ALL: [Self; 4] = [
+    const ALL: [Self; 5] = [
         Self::qemu_virtio(),
         Self::raspi5(),
         Self::virt(),
         Self::qemu_isa(),
+        Self::riscv64_virt(),
     ];
 
     pub const fn all() -> &'static [Self] {
@@ -61,6 +67,7 @@ impl PlatformSpec {
             "raspi5" => Ok(Self::raspi5()),
             "virt" => Ok(Self::virt()),
             "qemu-isa" => Ok(Self::qemu_isa()),
+            "riscv64-virt" => Ok(Self::riscv64_virt()),
             _ => Err(Box::new(UnknownPlatform(name.to_owned()))),
         }
     }
@@ -76,6 +83,7 @@ impl PlatformSpec {
             image_kind: ImageKind::RawDisk,
             boot_kind: BootKind::Uefi,
             run_kind: RunKind::QemuVirtio,
+            userspace_catalog: true,
         }
     }
 
@@ -90,6 +98,7 @@ impl PlatformSpec {
             image_kind: ImageKind::RaspberryPiBundle,
             boot_kind: BootKind::RaspberryPiFirmware,
             run_kind: RunKind::ManualDeploy,
+            userspace_catalog: true,
         }
     }
 
@@ -104,6 +113,7 @@ impl PlatformSpec {
             image_kind: ImageKind::QemuKernel,
             boot_kind: BootKind::QemuKernel,
             run_kind: RunKind::QemuArmVirt,
+            userspace_catalog: true,
         }
     }
 
@@ -118,6 +128,22 @@ impl PlatformSpec {
             image_kind: ImageKind::MultibootElf,
             boot_kind: BootKind::MultibootElf,
             run_kind: RunKind::QemuIsa,
+            userspace_catalog: true,
+        }
+    }
+
+    pub const fn riscv64_virt() -> Self {
+        Self {
+            name: "riscv64-virt",
+            arch: Arch::Riscv64,
+            rust_target: Some("riscv64imac-unknown-none-elf"),
+            kernel_package: Some("serviceos-kernel-riscv64-virt"),
+            arch_package: "serviceos-kernel-arch-riscv64",
+            platform_package: "serviceos-platform-riscv64-virt",
+            image_kind: ImageKind::KernelElf,
+            boot_kind: BootKind::QemuDirectElf,
+            run_kind: RunKind::QemuRiscvVirt,
+            userspace_catalog: false,
         }
     }
 
@@ -133,6 +159,7 @@ impl PlatformSpec {
         match self.arch {
             Arch::X86_64 => "x86_64-unknown-none",
             Arch::Aarch64 => "aarch64-unknown-none-softfloat",
+            Arch::Riscv64 => "riscv64imac-unknown-none-elf",
         }
     }
 
@@ -145,9 +172,10 @@ impl PlatformSpec {
         let target = self.rust_target?;
         let file_name = match self.boot_kind {
             BootKind::Uefi => format!("{package}.efi"),
-            BootKind::RaspberryPiFirmware | BootKind::QemuKernel | BootKind::MultibootElf => {
-                package.to_owned()
-            }
+            BootKind::RaspberryPiFirmware
+            | BootKind::QemuKernel
+            | BootKind::MultibootElf
+            | BootKind::QemuDirectElf => package.to_owned(),
         };
 
         Some(

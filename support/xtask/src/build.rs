@@ -55,7 +55,7 @@ pub fn build_for_platform(
             &[("SERVICEOS_USER_TARGET", userspace_target)],
         )?;
     }
-    build_userspace_catalog(spec, release)?;
+    build_userspace_catalog_if_needed(spec, release)?;
 
     let kernel_binary = spec.kernel_binary_path(&workspace_root, profile);
 
@@ -66,6 +66,19 @@ pub fn build_for_platform(
         kernel_binary,
         image_root: spec.image_root(&workspace_root, profile),
     })
+}
+
+/// Skeleton platforms (userspace_catalog = false) skip the userspace graph
+/// entirely; their staged bundles contain no bootstore.bin.
+fn build_userspace_catalog_if_needed(spec: PlatformSpec, release: bool) -> Result<(), Box<dyn Error>> {
+    if !spec.userspace_catalog {
+        println!(
+            "Platform '{}' is a skeleton target; skipping userspace catalog build",
+            spec.name
+        );
+        return Ok(());
+    }
+    build_userspace_catalog(spec, release)
 }
 
 /// Build the userspace catalog (which drives the nested userspace program

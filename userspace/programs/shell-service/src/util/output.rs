@@ -27,6 +27,13 @@ pub const HELP_TEXT: &str = "\
 help: show this command list\r\n\
 sessions: list operator sessions hosted by this shell\r\n\
 history [count]: show this session's command history (oldest first)\r\n\
+jobs: list background jobs (id, state, pending output bytes)\r\n\
+fg <job-id>: stream a background job's retained output here and report its exit status\r\n\
+cmdA | cmdB: shell-mediated pipeline; stage A's output lines feed stage B's input\r\n\
+filter <text>: pipeline stage passing input lines containing text\r\n\
+count: pipeline stage printing the number of piped input lines\r\n\
+cat: with no path and piped input, echo those input lines\r\n\
+command &: queue a command as a background job; output is retained for jobs/fg\r\n\
 login <name> <secret>: bind an account identity to this operator session\r\n\
 whoami: show the owning identity and session binding of this session\r\n\
 logout: unbind this session's account identity\r\n\

@@ -17,6 +17,8 @@ mod security;
 
 use serviceos_userspace_runtime as rt;
 
+use crate::jobs;
+use crate::pipeline;
 use crate::util::{
     HELP_TEXT, ShellOutput, parse_service_name, shell_output_write, write_output_linef,
 };
@@ -129,7 +131,7 @@ pub(crate) fn execute_command(
         },
         "cat" => match parts.next() {
             Some(path) => core::cmd_cat(bootstrap, output, path),
-            None => write_output_linef(output, format_args!("usage: cat <path>")),
+            None => operator::cmd_cat_input(output),
         },
         "status" => match parts.next() {
             None => core::cmd_status_snapshot(bootstrap, output),
@@ -185,6 +187,19 @@ pub(crate) fn execute_command(
             let count = parts.next().and_then(|value| value.parse::<usize>().ok());
             operator::cmd_history(output, count)
         }
+        "jobs" => operator::cmd_jobs(output),
+        "fg" => match parts.next().and_then(|value| value.parse::<u32>().ok()) {
+            Some(job_id) => operator::cmd_fg(output, job_id),
+            None => write_output_linef(output, format_args!("usage: fg <job-id>")),
+        },
+        "filter" => match parts.next() {
+            Some(pattern) => operator::cmd_filter(output, pattern),
+            None => write_output_linef(
+                output,
+                format_args!("usage: filter <text> (pipeline stage)"),
+            ),
+        },
+        "count" => operator::cmd_count(output),
         "login" => match (parts.next(), parts.next()) {
             (name, secret) => operator::cmd_login(bootstrap, output, name, secret),
         },
@@ -197,4 +212,120 @@ pub(crate) fn execute_command(
         "console" => console::cmd_console(bootstrap, output, parts.next()),
         _ => write_output_linef(output, format_args!("unknown command: {command}")),
     }
+}
+
+/// Full line entry point: background detection first, then pipelines, then
+/// the plain single-command dispatcher.
+pub(crate) fn execute_line(
+    bootstrap: rt::Handle,
+    output: ShellOutput,
+    line: &str,
+) -> rt::Result<()> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return Ok(());
+    }
+    if let Some(background) = strip_background(trimmed) {
+        return match jobs::spawn_job(background) {
+            Ok(job_id) => write_output_linef(
+                output,
+                format_args!("[{job_id}] background: {background}"),
+            ),
+            Err(_) => write_output_linef(
+                output,
+                format_args!("job table full; use jobs/fg to reclaim slots"),
+            ),
+        };
+    }
+    run_sync(bootstrap, output, trimmed)
+}
+
+/// A single trailing `&` backgrounds the rest of the line (`&&` chains are
+/// intentionally unsupported and stay foreground).
+fn strip_background(line: &str) -> Option<&str> {
+    let body = line.strip_suffix('&')?.trim_end();
+    if body.is_empty() {
+        None
+    } else {
+        Some(body)
+    }
+}
+
+/// Synchronous execution with shell-mediated pipeline support.
+pub(crate) fn run_sync(
+    bootstrap: rt::Handle,
+    output: ShellOutput,
+    line: &str,
+) -> rt::Result<()> {
+    pipeline::clear_input();
+    let plan = match pipeline::split_pipeline(line) {
+        Ok(plan) => plan,
+        Err(pipeline::SplitError::EmptyStage) => {
+            return write_output_linef(
+                output,
+                format_args!("pipeline: empty stage between '|'"),
+            );
+        }
+        Err(pipeline::SplitError::TooManyStages) => {
+            return write_output_linef(
+                output,
+                format_args!(
+                    "pipeline: too many stages (max {})",
+                    pipeline::MAX_PIPELINE_STAGES
+                ),
+            );
+        }
+        Err(pipeline::SplitError::EmptyLine) => return Ok(()),
+    };
+    if plan.count == 1 {
+        return execute_command(bootstrap, output, plan.stage(0).unwrap_or(""));
+    }
+    for index in 0..plan.count - 1 {
+        let Some(stage) = plan.stage(index) else {
+            break;
+        };
+        pipeline::capture_begin_scratch();
+        let result = execute_command(bootstrap, pipeline::capturing_output(), stage);
+        let captured = pipeline::capture_finish_scratch();
+        result?;
+        pipeline::feed_captured(&captured);
+        if captured.truncated {
+            write_output_linef(
+                output,
+                format_args!(
+                    "pipeline: stage {} output truncated at {} bytes",
+                    index + 1,
+                    pipeline::MAX_CAPTURE_BYTES
+                ),
+            )?;
+        }
+    }
+    match plan.stage(plan.count - 1) {
+        Some(last) => execute_command(bootstrap, output, last),
+        None => Ok(()),
+    }
+}
+
+/// Event-loop poller: executes at most one queued background job per call,
+/// capturing its output into the job row instead of any terminal.
+pub fn poll_jobs(bootstrap: rt::Handle) {
+    let Some(job_id) = jobs::next_running_job_id() else {
+        return;
+    };
+    let mut cmd = [0u8; jobs::JOB_CMD_BYTES];
+    let Some(cmd_len) = jobs::job_cmd_copy(job_id, &mut cmd) else {
+        jobs::job_mark_done_err(job_id, "InvalidArgument");
+        return;
+    };
+    let Ok(line) = ::core::str::from_utf8(&cmd[..cmd_len]) else {
+        jobs::job_mark_done_err(job_id, "InvalidArgument");
+        return;
+    };
+    pipeline::capture_begin_job(job_id);
+    let result = run_sync(bootstrap, pipeline::capturing_output(), line);
+    pipeline::capture_end();
+    match result {
+        Ok(()) => jobs::job_mark_done_ok(job_id),
+        Err(error) => jobs::job_mark_done_err(job_id, crate::util::error_name(error)),
+    };
 }

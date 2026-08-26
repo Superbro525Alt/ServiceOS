@@ -3,7 +3,7 @@
 
 use rt::{ConsoleTag, Handle, LogEvent, LogSeverity, RawMessage, ServiceId};
 use serviceos_shell_service::{
-    SHELL_PROMPT, SHELL_READY_TEXT, ShellOutput, execute_command, sessions, shell_tag,
+    SHELL_PROMPT, SHELL_READY_TEXT, ShellOutput, execute_command, jobs, sessions, shell_tag,
     write_output_linef,
 };
 use serviceos_userspace_runtime as rt;
@@ -71,6 +71,7 @@ fn main() -> u64 {
     loop {
         drain_public_channel(public.first);
         drain_client_sessions(bootstrap);
+        serviceos_shell_service::poll_background_jobs(bootstrap);
 
         // Serial readline completion?
         if let Some(rx_end) = armed_read {
@@ -167,6 +168,9 @@ fn execute_as_session(
     output: ShellOutput,
     line: &str,
 ) {
+    // Completed background jobs announce their exit status here so the
+    // operator sees them with the next prompt interaction.
+    let _ = jobs::flush_done_reports(output);
     sessions::set_active_key(key.encode());
     sessions::record_history(key, line);
     if let Err(error) = execute_command(bootstrap, output, line) {

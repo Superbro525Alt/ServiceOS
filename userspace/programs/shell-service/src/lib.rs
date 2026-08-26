@@ -1,6 +1,8 @@
 #![cfg_attr(not(test), no_std)]
 
 pub mod commands;
+pub mod jobs;
+pub mod pipeline;
 pub mod sessions;
 pub mod util;
 
@@ -45,9 +47,15 @@ pub fn execute_command_with_source(
         line.len() as u64,
         0,
     );
-    commands::execute_command(bootstrap, output, line)
+    commands::execute_line(bootstrap, output, line)
 }
 
 pub fn execute_command(bootstrap: rt::Handle, output: ShellOutput, line: &str) -> rt::Result<()> {
     execute_command_with_source(bootstrap, ServiceId::Shell, output, line)
+}
+
+/// Event-loop hook: executes at most one queued background job per call so
+/// the prompt stays responsive between ticks.
+pub fn poll_background_jobs(bootstrap: rt::Handle) {
+    commands::poll_jobs(bootstrap);
 }

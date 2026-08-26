@@ -57,12 +57,24 @@ pub(crate) enum ImageParseError {
     Truncated,
     UnknownFormat,
     UnsupportedVariant,
+    /// DOS/PE image detected and classified by the Windows-runtime
+    /// groundwork (`crate::pe`) — refused as unsupported because no WinAPI
+    /// ABI layer exists yet.
+    WindowsPe,
 }
 
 /// Classify a guest image exactly as the kernel loader would.
 pub(crate) fn classify_image(image: &[u8]) -> Result<ImageFormat, ImageParseError> {
     if starts_with_flat_magic(image) {
         return classify_flat_image(image);
+    }
+    if crate::pe::looks_like_pe(image) {
+        // Detection only: any parseable PE is honestly refused; a corrupt
+        // MZ blob stays UnknownFormat.
+        return match crate::pe::parse(image) {
+            Ok(_) => Err(ImageParseError::WindowsPe),
+            Err(_) => Err(ImageParseError::UnknownFormat),
+        };
     }
     if starts_with(&image, &ELF_MAGIC) {
         return classify_elf64_image(image);
@@ -267,6 +279,20 @@ mod tests {
             rt::RuntimeWorkloadKind::Cat as u32,
         ];
         assert!(!known.contains(&EXEC_GUEST_WORKLOAD));
+    }
+
+    #[test]
+    fn classify_detects_and_refuses_windows_pe() {
+        let fixture = crate::pe::golden_pe32plus_fixture();
+        assert_eq!(classify_image(&fixture), Err(ImageParseError::WindowsPe));
+
+        // A corrupt MZ blob is not claimed as a PE.
+        let mut corrupt = fixture.clone();
+        corrupt[0x80..0x84].copy_from_slice(&[0u8; 4]);
+        assert_eq!(
+            classify_image(&corrupt),
+            Err(ImageParseError::UnknownFormat)
+        );
     }
 
     fn golden_static_elf64() -> Vec<u8> {

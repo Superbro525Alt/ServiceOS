@@ -4,6 +4,7 @@
 mod abi_image;
 mod consts;
 mod linux_abi;
+mod pe;
 mod protocol;
 mod sandbox;
 mod service;

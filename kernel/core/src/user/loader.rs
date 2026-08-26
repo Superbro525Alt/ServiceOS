@@ -27,6 +27,9 @@ const ELF_PROGRAM_HEADER_LEN: usize = 56;
 const ELF_SEGMENT_LOAD: u32 = 1;
 /// `PT_DYNAMIC`: locates the dynamic section used to find `.rela.dyn`.
 const ELF_SEGMENT_DYNAMIC: u32 = 2;
+/// `PT_INTERP`: requests an external program interpreter (a dynamic linker
+/// such as `ld.so`). ServiceOS has none; see [`BUILTIN_INTERP_MARKER`].
+const ELF_SEGMENT_INTERP: u32 = 3;
 /// `PT_GNU_STACK`: presence records the stack execute policy for the image.
 const ELF_SEGMENT_GNU_STACK: u32 = 0x6474_e551;
 const ELF_FLAG_EXECUTE: u32 = 1;
@@ -36,6 +39,9 @@ const ELF_FLAG_WRITE: u32 = 2;
 const DYNAMIC_TAG_NULL: u64 = 0;
 /// `DT_PLTRELSZ`: byte size of the `.rela.plt` table.
 const DYNAMIC_TAG_PLTRELSZ: u64 = 2;
+/// `DT_PLTGOT`: base vaddr of `.got.plt`, present in images declaring the
+/// canonical lazy-capable PLT layout.
+const DYNAMIC_TAG_PLTGOT: u64 = 3;
 /// `DT_HASH`: SysV symbol-hash table. The minimum (and currently only) hash
 /// format the loader supports; it supplies `nchain`, bounding dynsym reads.
 const DYNAMIC_TAG_HASH: u64 = 4;
@@ -47,6 +53,9 @@ const DYNAMIC_TAG_RELASZ: u64 = 8;
 const DYNAMIC_TAG_STRSZ: u64 = 10;
 /// `DT_JMPREL`: address of the `.rela.plt` (JUMP_SLOT) relocation table.
 const DYNAMIC_TAG_JMPREL: u64 = 23;
+/// `DT_PLTREL`: entry format declared for `.rela.plt`; x86-64 uses RELA (7).
+const DYNAMIC_TAG_PLTREL: u64 = 20;
+const DT_PLTREL_RELA: u64 = 7;
 const DYNAMIC_ENTRY_LEN: usize = 16;
 /// `R_X86_64_GLOB_DAT`: GOT slot filled with a resolved symbol address.
 const ELF_RELOC_GLOB_DAT: u64 = 6;
@@ -66,6 +75,40 @@ const SHN_UNDEF: u16 = 0;
 /// Upper bound on PT_LOAD segments tracked while mapping an image and
 /// resolving relocation targets back to physical frames.
 const MAX_ELF_LOAD_SEGMENTS: usize = 16;
+
+/// The only `PT_INTERP` path this loader accepts. No external `ld.so`
+/// exists: an image naming any other interpreter is rejected with
+/// [`LoadError::InterpreterUnsupported`], while an image carrying this
+/// marker opts into exactly the built-in link semantics the loader already
+/// provides (RELATIVE/GLOB_DAT/JUMP_SLOT binding against the load-wide
+/// symbol namespace). External dynamic linkers remain out of scope.
+const BUILTIN_INTERP_MARKER: &[u8] = b"serviceos-ld";
+
+/// Canonical x86-64 lazy-PLT geometry the eager bind stays compatible with:
+/// `.got.plt` reserves three slots ahead of one slot per `.rela.plt` entry
+/// ([0] back-pointer to `PT_DYNAMIC`, [1]/[2] link-map and resolver
+/// bookkeeping), and each 16-byte PLT stub does
+/// `jmp *GOT[n+3]; push $n; jmp PLT0`, with PLT0 itself one 16-byte slot.
+/// A real lazy runtime services that sequence at first call. ServiceOS binds
+/// every JUMP_SLOT during load instead — the stubs are never entered, and a
+/// binary shaped this way runs unmodified off the eagerly-patched GOT. The
+/// constants are exercised by host tests so the contract stays pinned.
+const LAZY_PLT_GOT_RESERVED_SLOTS: u64 = 3;
+const LAZY_PLT_STUB_STRIDE_BYTES: u64 = 16;
+
+/// GOT.PLT slot address backing `.rela.plt` entry `index` under the
+/// canonical lazy layout documented above.
+#[cfg_attr(not(test), allow(dead_code))]
+fn lazy_plt_got_slot_address(plt_got_vaddr: u64, index: u64) -> u64 {
+    plt_got_vaddr.wrapping_add((LAZY_PLT_GOT_RESERVED_SLOTS + index) * 8)
+}
+
+/// Byte offset of PLT stub `index` from the PLT base; index 0 is the PLT0
+/// resolver trampoline every first-call stub tail-jumps through.
+#[cfg_attr(not(test), allow(dead_code))]
+fn lazy_plt_stub_offset(index: u64) -> u64 {
+    index * LAZY_PLT_STUB_STRIDE_BYTES
+}
 
 /// Every userspace image must map entirely inside this window. The image
 /// builder places images at the window start with stacks just below
@@ -495,6 +538,81 @@ fn choose_pie_load_base(highest_image_end: u64, stack_bottom: u64) -> Result<u64
     Ok(base)
 }
 
+/// Enforce the `PT_INTERP` policy: absent is fine; present must name
+/// [`BUILTIN_INTERP_MARKER`] exactly, otherwise the image depends on an
+/// external dynamic linker this kernel does not provide.
+fn check_interpreter_policy(
+    image: &[u8],
+    interp_range: Option<(usize, usize)>,
+) -> Result<(), LoadError> {
+    let Some((offset, size)) = interp_range else {
+        return Ok(());
+    };
+    let bytes = image
+        .get(offset..)
+        .and_then(|tail| tail.get(..size))
+        .ok_or(LoadError::Truncated)?;
+    // The segment holds one NUL-terminated interpreter path.
+    let path_len = bytes
+        .iter()
+        .position(|&byte| byte == 0)
+        .unwrap_or(bytes.len());
+    if &bytes[..path_len] != BUILTIN_INTERP_MARKER {
+        return Err(LoadError::InterpreterUnsupported);
+    }
+    Ok(())
+}
+
+/// One eagerly-bound JUMP_SLOT GOT slot, recorded while `.rela.plt` is
+/// applied. This is the eager-with-latch hybrid's compatibility record: the
+/// `(slot, value)` pair here is exactly the mutation a call-time lazy
+/// resolver would perform on first use, so host tests can replay lazy
+/// binding against it and prove both paths converge on identical GOT state.
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PltLatchEntry {
+    /// Absolute address of the patched GOT slot (`load_base + r_offset`).
+    got_address: u64,
+    /// Resolved symbol address stored into the slot at bind time.
+    resolved_value: u64,
+    /// Index into the consuming module's own dynsym identifying the import.
+    symbol_index: usize,
+}
+
+/// Recompute the word a call-time lazy resolver would patch into a latched
+/// slot: the same decision tree the eager binder ran (module-local bias,
+/// namespace lookup, weak-undefined zero), re-executed against the final
+/// namespace. Returns the value a trampoline handler would store before
+/// tail-jumping to the symbol.
+#[cfg_attr(not(test), allow(dead_code))]
+fn simulate_lazy_patch(
+    latch: &PltLatchEntry,
+    load_base: u64,
+    consumer: &ElfSymbolTable,
+    namespace: &SymbolNamespace,
+) -> Result<u64, LoadError> {
+    if latch.symbol_index >= consumer.symbol_count {
+        return Err(LoadError::UnsupportedRelocation);
+    }
+    let symbol = read_symbol_entry(consumer.symbols, latch.symbol_index)?;
+    let name = symbol_name_bytes(consumer.strings, symbol.name_offset)?;
+    if symbol.shndx != SHN_UNDEF {
+        Ok(load_base.wrapping_add(symbol.value))
+    } else if let Some(address) = namespace.lookup(name) {
+        Ok(address)
+    } else if symbol.binding == STB_WEAK {
+        Ok(0)
+    } else {
+        let mut resolved = [0u8; 32];
+        let len = name.len().min(resolved.len());
+        resolved[..len].copy_from_slice(&name[..len]);
+        Err(LoadError::UnresolvedSymbol {
+            name: resolved,
+            len: len as u8,
+        })
+    }
+}
+
 /// Write one relocated word through the physical frame that backs `target`.
 /// The target must land fully inside a mapped PT_LOAD; anything else is
 /// rejected rather than written.
@@ -527,6 +645,10 @@ fn write_mapped_word(
 struct ElfDynamicInfo {
     rela: Option<(u64, u64)>,
     jmprel: Option<(u64, u64)>,
+    /// `DT_PLTGOT`: `.got.plt` base in images declaring a lazy-capable PLT.
+    plt_got: Option<u64>,
+    /// `DT_PLTREL`: declared `.rela.plt` entry format; only RELA is legal.
+    pltrel: Option<u64>,
     symtab_vaddr: Option<u64>,
     strtab_vaddr: Option<u64>,
     strtab_size: Option<u64>,
@@ -563,6 +685,8 @@ fn parse_dynamic_info(dynamic: &[u8]) -> Result<ElfDynamicInfo, LoadError> {
             DYNAMIC_TAG_STRTAB => info.strtab_vaddr = Some(value),
             DYNAMIC_TAG_STRSZ => info.strtab_size = Some(value),
             DYNAMIC_TAG_HASH => info.hash_vaddr = Some(value),
+            DYNAMIC_TAG_PLTGOT => info.plt_got = Some(value),
+            DYNAMIC_TAG_PLTREL => info.pltrel = Some(value),
             _ => {}
         }
     }
@@ -572,6 +696,13 @@ fn parse_dynamic_info(dynamic: &[u8]) -> Result<ElfDynamicInfo, LoadError> {
             if address == 0 || size == 0 || size % ELF_RELA_ENTRY_LEN as u64 != 0 {
                 return Err(LoadError::UnsupportedHeader);
             }
+        }
+    }
+    // x86-64 PLT relocations are always RELA-form; a lazy-layout image
+    // declaring anything else has no meaning here.
+    if let Some(format) = info.pltrel {
+        if format != DT_PLTREL_RELA {
+            return Err(LoadError::UnsupportedHeader);
         }
     }
     Ok(info)
@@ -855,6 +986,7 @@ fn apply_dynamic_relocations(
     load_base: u64,
     consumer: Option<&ElfSymbolTable>,
     namespace: &SymbolNamespace,
+    plt_latch: &mut Vec<PltLatchEntry>,
     mut write_word: impl FnMut(u64, u64) -> Result<(), LoadError>,
 ) -> Result<usize, LoadError> {
     if rela_table.len() % ELF_RELA_ENTRY_LEN != 0 {
@@ -899,7 +1031,15 @@ fn apply_dynamic_relocations(
                         len: len as u8,
                     });
                 };
-                write_word(r_offset.wrapping_add(load_base), value)?;
+                let got_address = r_offset.wrapping_add(load_base);
+                write_word(got_address, value)?;
+                // Latch the bind exactly as a lazy resolver would have
+                // recorded it before patching and tail-jumping.
+                plt_latch.push(PltLatchEntry {
+                    got_address,
+                    resolved_value: value,
+                    symbol_index,
+                });
             }
             _ => return Err(LoadError::UnsupportedRelocation),
         }
@@ -925,7 +1065,11 @@ fn plan_elf_dependency(
     expected_machine: ElfMachine,
 ) -> Result<ElfDependencyPlan, LoadError> {
     plan_elf_dependency_inner(bytes, expected_machine).map_err(|error| match error {
-        error @ (LoadError::FrameExhausted | LoadError::Mapping(_)) => error,
+        error @ (LoadError::FrameExhausted
+        | LoadError::Mapping(_)
+        // A companion naming an external dynamic linker is reported
+        // distinctly rather than flattened into DependencyInvalid.
+        | LoadError::InterpreterUnsupported) => error,
         _ => LoadError::DependencyInvalid,
     })
 }
@@ -964,6 +1108,7 @@ fn plan_elf_dependency_inner(
     }; MAX_ELF_LOAD_SEGMENTS];
     let mut load_count = 0usize;
     let mut dynamic_range: Option<(usize, usize)> = None;
+    let mut interp_range: Option<(usize, usize)> = None;
     for index in 0..phnum {
         let header = phoff
             .checked_add(index * phentsize)
@@ -972,6 +1117,18 @@ fn plan_elf_dependency_inner(
             .get(header..header + phentsize)
             .ok_or(LoadError::Truncated)?;
         match read_u32_le(program, 0)? {
+            ELF_SEGMENT_INTERP => {
+                if interp_range.is_some() {
+                    return Err(LoadError::UnsupportedHeader);
+                }
+                let offset = read_u64_le(program, 8)? as usize;
+                let size = read_u64_le(program, 32)? as usize;
+                bytes
+                    .get(offset..)
+                    .and_then(|tail| tail.get(..size))
+                    .ok_or(LoadError::Truncated)?;
+                interp_range = Some((offset, size));
+            }
             ELF_SEGMENT_DYNAMIC => {
                 if dynamic_range.is_some() {
                     return Err(LoadError::UnsupportedHeader);
@@ -1004,6 +1161,9 @@ fn plan_elf_dependency_inner(
             _ => {}
         }
     }
+    // Same interpreter policy as main images: a shared object demanding an
+    // external dynamic linker cannot be a ServiceOS companion.
+    check_interpreter_policy(bytes, interp_range)?;
     if load_count == 0 {
         return Err(LoadError::UnsupportedHeader);
     }
@@ -1048,6 +1208,7 @@ struct PendingElfModule {
 
 impl PendingElfModule {
     fn apply_relocations(&self, namespace: &SymbolNamespace) -> Result<(), LoadError> {
+        let mut plt_latch = Vec::new();
         for relocation_table in [self.info.rela, self.info.jmprel].into_iter().flatten() {
             let (table_vaddr, table_size) = relocation_table;
             let bytes = locate_file_range(
@@ -1062,6 +1223,7 @@ impl PendingElfModule {
                 self.load_base,
                 self.tables.as_ref(),
                 namespace,
+                &mut plt_latch,
                 |target, value| write_mapped_word(&self.mapped, self.mapped_count, target, value),
             )?;
         }
@@ -1208,6 +1370,7 @@ fn load_elf64_image(
     }; MAX_ELF_LOAD_SEGMENTS];
     let mut load_count = 0usize;
     let mut dynamic_range: Option<(usize, usize)> = None;
+    let mut interp_range: Option<(usize, usize)> = None;
     let mut gnu_stack_executable = false;
 
     for index in 0..phnum {
@@ -1219,6 +1382,18 @@ fn load_elf64_image(
             .ok_or(LoadError::Truncated)?;
         let segment_type = read_u32_le(program, 0)?;
         match segment_type {
+            ELF_SEGMENT_INTERP => {
+                if interp_range.is_some() {
+                    return Err(LoadError::UnsupportedHeader);
+                }
+                let offset = read_u64_le(program, 8)? as usize;
+                let size = read_u64_le(program, 32)? as usize;
+                image
+                    .get(offset..)
+                    .and_then(|tail| tail.get(..size))
+                    .ok_or(LoadError::Truncated)?;
+                interp_range = Some((offset, size));
+            }
             ELF_SEGMENT_GNU_STACK => {
                 gnu_stack_executable = read_u32_le(program, 4)? & ELF_FLAG_EXECUTE != 0;
             }
@@ -1254,6 +1429,10 @@ fn load_elf64_image(
             _ => {}
         }
     }
+
+    // Interpreter policy before any mapping work: images naming an external
+    // dynamic linker are refused outright; only the built-in marker proceeds.
+    check_interpreter_policy(image, interp_range)?;
 
     if load_count == 0 {
         return Err(LoadError::UnsupportedHeader);
@@ -1374,11 +1553,13 @@ fn load_elf64_image(
                 table_size as usize,
             )
             .ok_or(LoadError::UnsupportedRelocation)?;
+            let mut plt_latch = Vec::new();
             apply_dynamic_relocations(
                 bytes,
                 load_base,
                 tables.as_ref(),
                 &namespace,
+                &mut plt_latch,
                 |target, value| write_mapped_word(&mapped_segments, load_count, target, value),
             )?;
         }
@@ -1933,6 +2114,7 @@ mod pie_tests {
             load_base,
             None,
             &SymbolNamespace::EMPTY,
+            &mut Vec::new(),
             |target, value| write_into(&mut memory, load_base, target, value),
         )
         .expect("all relocations apply");
@@ -1961,6 +2143,7 @@ mod pie_tests {
             TEST_BASE,
             None,
             &SymbolNamespace::EMPTY,
+            &mut Vec::new(),
             |_target, _value| {
                 writes += 1;
                 Ok(())
@@ -1983,6 +2166,7 @@ mod pie_tests {
             TEST_BASE,
             None,
             &SymbolNamespace::EMPTY,
+            &mut Vec::new(),
             |target, value| write_into(&mut memory, TEST_BASE, target, value),
         );
         assert_eq!(result, Err(LoadError::UnsupportedRelocation));
@@ -2048,18 +2232,28 @@ mod pie_tests {
     fn rela_tables_must_be_entry_aligned() {
         let mut table = vec![0u8; 23];
         assert_eq!(
-            apply_dynamic_relocations(&table, TEST_BASE, None, &SymbolNamespace::EMPTY, |_, _| Ok(
-                ()
-            )),
+            apply_dynamic_relocations(
+                &table,
+                TEST_BASE,
+                None,
+                &SymbolNamespace::EMPTY,
+                &mut Vec::new(),
+                |_, _| Ok(())
+            ),
             Err(LoadError::UnsupportedHeader)
         );
         table.resize(24, 0);
         // Single RELATIVE entry with zero offset/addend applies cleanly.
         table[8] = 8; // r_info: R_X86_64_RELATIVE
         assert_eq!(
-            apply_dynamic_relocations(&table, TEST_BASE, None, &SymbolNamespace::EMPTY, |_, _| Ok(
-                ()
-            )),
+            apply_dynamic_relocations(
+                &table,
+                TEST_BASE,
+                None,
+                &SymbolNamespace::EMPTY,
+                &mut Vec::new(),
+                |_, _| Ok(())
+            ),
             Ok(1)
         );
     }
@@ -2175,6 +2369,7 @@ mod pie_tests {
                 consumer_base,
                 Some(&consumer_table),
                 &namespace,
+                &mut Vec::new(),
                 |target, value| write_into(&mut memory, consumer_base, target, value),
             )
             .expect("consumer relocations resolve");
@@ -2235,6 +2430,7 @@ mod pie_tests {
             TEST_BASE + 0x40_0000,
             Some(&consumer_table),
             &namespace,
+            &mut Vec::new(),
             |target, value| write_into(&mut memory, TEST_BASE + 0x40_0000, target, value),
         )
         .expect_err("strong undefined symbol must fail the load");
@@ -2252,10 +2448,284 @@ mod pie_tests {
         push_u64(&mut table, 0x30);
         push_u64(&mut table, ELF_RELOC_GLOB_DAT | (1u64 << 32));
         push_u64(&mut table, 0);
-        let result =
-            apply_dynamic_relocations(&table, TEST_BASE, None, &SymbolNamespace::EMPTY, |_, _| {
-                Ok(())
-            });
+        let result = apply_dynamic_relocations(
+            &table,
+            TEST_BASE,
+            None,
+            &SymbolNamespace::EMPTY,
+            &mut Vec::new(),
+            |_, _| Ok(()),
+        );
         assert_eq!(result, Err(LoadError::UnsupportedRelocation));
+    }
+
+    /// Minimal ET_DYN shared-object skeleton: one executable PT_LOAD plus an
+    /// optional PT_INTERP naming an interpreter path. Enough for the planner
+    /// and interpreter policy; carries no dynamic section.
+    fn et_dyn_with_interp(interp_path: Option<&[u8]>) -> Vec<u8> {
+        const TEXT_FILE_OFFSET: u64 = 0x1000;
+        const INTERP_FILE_OFFSET: u64 = 0x1008;
+
+        let mut header_count: u16 = 1;
+        let mut headers = program_header(
+            ELF_SEGMENT_LOAD,
+            ELF_FLAG_EXECUTE,
+            TEXT_FILE_OFFSET,
+            TEXT_FILE_OFFSET,
+            8,
+            0x2000,
+        );
+        if let Some(path) = interp_path {
+            header_count += 1;
+            headers.extend(program_header(
+                ELF_SEGMENT_INTERP,
+                4, // PF_R: interpreter paths are read-only data.
+                INTERP_FILE_OFFSET,
+                INTERP_FILE_OFFSET,
+                path.len() as u64 + 1,
+                path.len() as u64 + 1,
+            ));
+        }
+
+        let mut image = Vec::new();
+        image.extend_from_slice(&ELF_MAGIC);
+        image.push(ELF_CLASS_64);
+        image.push(ELF_DATA_LSB);
+        image.push(ELF_VERSION_CURRENT);
+        image.extend_from_slice(&[0; 9]);
+        push_u16(&mut image, ELF_TYPE_DYN);
+        push_u16(&mut image, ELF_MACHINE_X86_64);
+        push_u32(&mut image, 1); // e_version
+        push_u64(&mut image, 0x1000); // e_entry
+        push_u64(&mut image, 64); // e_phoff
+        push_u64(&mut image, 0); // e_shoff
+        push_u32(&mut image, 0); // e_flags
+        push_u16(&mut image, 64); // e_ehsize
+        push_u16(&mut image, ELF_PROGRAM_HEADER_LEN as u16);
+        push_u16(&mut image, header_count);
+        push_u16(&mut image, 0);
+        push_u16(&mut image, 0);
+        push_u16(&mut image, 0);
+        image.extend(headers);
+        while image.len() < TEXT_FILE_OFFSET as usize {
+            image.push(0);
+        }
+        image.extend_from_slice(&[0x90; 8]); // nop slide stands in for text
+        if let Some(path) = interp_path {
+            image.extend_from_slice(path);
+            image.push(0);
+        }
+        image
+    }
+
+    #[test]
+    fn interp_policy_rejects_foreign_and_accepts_builtin_marker() {
+        // No PT_INTERP: trivially acceptable.
+        assert_eq!(check_interpreter_policy(&[], None), Ok(()));
+
+        // A real glibc interpreter path must be refused outright.
+        let mut foreign = Vec::new();
+        foreign.extend_from_slice(b"/lib64/ld-linux-x86-64.so.2\0pad");
+        assert_eq!(
+            check_interpreter_policy(&foreign, Some((0, 28))),
+            Err(LoadError::InterpreterUnsupported)
+        );
+
+        // The built-in marker opts into built-in linking and proceeds;
+        // strict prefixes of it remain external interpreters.
+        let mut builtin = BUILTIN_INTERP_MARKER.to_vec();
+        builtin.push(0);
+        assert_eq!(
+            check_interpreter_policy(&builtin, Some((0, builtin.len()))),
+            Ok(())
+        );
+        assert_eq!(
+            check_interpreter_policy(&builtin, Some((0, builtin.len() - 3))),
+            Err(LoadError::InterpreterUnsupported)
+        );
+
+        // A declared segment extending past the file is truncation, not a
+        // policy verdict.
+        assert_eq!(
+            check_interpreter_policy(&builtin, Some((0, 99))),
+            Err(LoadError::Truncated)
+        );
+    }
+
+    #[test]
+    fn dependency_interp_policy_foreign_rejected_builtin_accepted() {
+        let foreign = et_dyn_with_interp(Some(b"/lib64/ld-linux-x86-64.so.2"));
+        assert_eq!(
+            plan_elf_dependency(&foreign, ElfMachine::X86_64).map(|_| ()),
+            Err(LoadError::InterpreterUnsupported)
+        );
+
+        let builtin = et_dyn_with_interp(Some(BUILTIN_INTERP_MARKER));
+        plan_elf_dependency(&builtin, ElfMachine::X86_64).expect("built-in marker plans");
+
+        let plain = et_dyn_with_interp(None);
+        plan_elf_dependency(&plain, ElfMachine::X86_64).expect("interp-free companion plans");
+    }
+
+    #[test]
+    fn jump_slot_latch_matches_lazy_resolve_simulation() {
+        let provider_base = TEST_BASE;
+        let consumer_base = TEST_BASE + 0x40_0000;
+
+        let provider = build_shared_object(SharedSpec {
+            locals: &[],
+            exports: &[(b"shared_value", false, 0x1234)],
+            imports: &[],
+            rela_dyn: &[],
+            rela_plt: &[],
+            hash_buckets: 1,
+        });
+        let (_, provider_tables) = fixture_tables(&provider);
+        let mut namespace = SymbolNamespace::EMPTY;
+        register_module_exports(
+            provider_tables.as_ref().expect("provider exports"),
+            provider_base,
+            &mut namespace,
+        )
+        .expect("provider exports register");
+
+        let consumer = build_shared_object(SharedSpec {
+            locals: &[],
+            exports: &[],
+            imports: &[(b"shared_value", false)],
+            rela_dyn: &[],
+            rela_plt: &[(0x48, ELF_RELOC_JUMP_SLOT, 1)],
+            hash_buckets: 1,
+        });
+        let (info, consumer_tables) = fixture_tables(&consumer);
+        let consumer_table = consumer_tables.expect("consumer dynsym present");
+        let mut memory = module_memory(PAGE_SIZE_BYTES as usize);
+
+        // Eager bind while latching every JUMP_SLOT mutation.
+        let mut plt_latch: Vec<PltLatchEntry> = Vec::new();
+        let (vaddr, size) = info.jmprel.expect("jmprel present");
+        let leaked: &'static [u8] = Box::leak(consumer.image.clone().into_boxed_slice());
+        let table_bytes = locate_file_range(leaked, &consumer.loads[..], vaddr, size as usize)
+            .expect("plt locates");
+        apply_dynamic_relocations(
+            table_bytes,
+            consumer_base,
+            Some(&consumer_table),
+            &namespace,
+            &mut plt_latch,
+            |target, value| write_into(&mut memory, consumer_base, target, value),
+        )
+        .expect("consumer relocations resolve");
+
+        // Exactly one latched slot carrying the eager mutation verbatim.
+        assert_eq!(plt_latch.len(), 1);
+        let latch = plt_latch[0];
+        assert_eq!(latch.got_address, consumer_base + 0x48);
+        assert_eq!(latch.resolved_value, provider_base + 0x1234);
+        assert_eq!(latch.symbol_index, 1);
+        assert_eq!(
+            read_word(&memory, consumer_base, latch.got_address),
+            latch.resolved_value
+        );
+
+        // Replay lazy semantics: rewind the slot to the PLT0 trampoline
+        // address a lazily-bound GOT would start with, then patch through
+        // the resolver-side simulation.
+        let trampoline = lazy_plt_stub_offset(0);
+        assert_eq!(trampoline, 0);
+        let sentinel = lazy_plt_got_slot_address(info.plt_got.unwrap_or(0x8000), 0);
+        write_into(&mut memory, consumer_base, latch.got_address, sentinel)
+            .expect("sentinel write fits");
+        assert_eq!(
+            read_word(&memory, consumer_base, latch.got_address),
+            sentinel
+        );
+        let patched = simulate_lazy_patch(&latch, consumer_base, &consumer_table, &namespace)
+            .expect("lazy resolve succeeds");
+        assert_eq!(patched, latch.resolved_value);
+        write_into(&mut memory, consumer_base, latch.got_address, patched)
+            .expect("simulated patch fits");
+
+        // Eager and lazy paths converge on identical final GOT state.
+        assert_eq!(
+            read_word(&memory, consumer_base, latch.got_address),
+            provider_base + 0x1234
+        );
+    }
+
+    #[test]
+    fn lazy_latch_records_weak_absent_import_as_zero() {
+        let consumer = build_shared_object(SharedSpec {
+            locals: &[],
+            exports: &[],
+            imports: &[(b"absent_weak", true)],
+            rela_dyn: &[],
+            rela_plt: &[(0x50, ELF_RELOC_JUMP_SLOT, 1)],
+            hash_buckets: 1,
+        });
+        let (info, consumer_tables) = fixture_tables(&consumer);
+        let consumer_table = consumer_tables.expect("consumer dynsym present");
+        let mut memory = module_memory(PAGE_SIZE_BYTES as usize);
+        let mut plt_latch: Vec<PltLatchEntry> = Vec::new();
+        let (vaddr, size) = info.jmprel.expect("jmprel present");
+        let leaked: &'static [u8] = Box::leak(consumer.image.clone().into_boxed_slice());
+        let table_bytes = locate_file_range(leaked, &consumer.loads[..], vaddr, size as usize)
+            .expect("plt locates");
+        apply_dynamic_relocations(
+            table_bytes,
+            TEST_BASE,
+            Some(&consumer_table),
+            &SymbolNamespace::EMPTY,
+            &mut plt_latch,
+            |target, value| write_into(&mut memory, TEST_BASE, target, value),
+        )
+        .expect("weak import binds to zero");
+        assert_eq!(plt_latch.len(), 1);
+        assert_eq!(plt_latch[0].resolved_value, 0);
+        assert_eq!(
+            simulate_lazy_patch(
+                &plt_latch[0],
+                TEST_BASE,
+                &consumer_table,
+                &SymbolNamespace::EMPTY
+            ),
+            Ok(0)
+        );
+    }
+
+    #[test]
+    fn dynamic_parser_tracks_pltgot_and_pltrel_and_pins_lazy_geometry() {
+        let mut block = Vec::new();
+        push_u64(&mut block, DYNAMIC_TAG_JMPREL);
+        push_u64(&mut block, 0x4000);
+        push_u64(&mut block, DYNAMIC_TAG_PLTRELSZ);
+        push_u64(&mut block, 24);
+        push_u64(&mut block, DYNAMIC_TAG_PLTGOT);
+        push_u64(&mut block, 0x5000);
+        push_u64(&mut block, DYNAMIC_TAG_PLTREL);
+        push_u64(&mut block, DT_PLTREL_RELA);
+        push_u64(&mut block, DYNAMIC_TAG_NULL);
+        push_u64(&mut block, 0);
+        let info = parse_dynamic_info(&block).expect("dynamic block parses");
+        assert_eq!(info.jmprel, Some((0x4000, 24)));
+        assert_eq!(info.plt_got, Some(0x5000));
+        assert_eq!(info.pltrel, Some(DT_PLTREL_RELA));
+
+        // x86-64 PLTs are RELA-only; any other declared format is malformed.
+        // The DT_PLTREL value's low byte sits 24 bytes from the block end.
+        let pltrel_value_byte = block.len() - 24;
+        block[pltrel_value_byte] = 6;
+        assert_eq!(
+            parse_dynamic_info(&block),
+            Err(LoadError::UnsupportedHeader)
+        );
+
+        // Canonical lazy geometry stays pinned: three reserved GOT.PLT slots
+        // precede one slot per .rela.plt entry, and stubs stride 16 bytes
+        // from PLT0.
+        assert_eq!(lazy_plt_got_slot_address(0x5000, 0), 0x5018);
+        assert_eq!(lazy_plt_got_slot_address(0x5000, 3), 0x5030);
+        assert_eq!(lazy_plt_stub_offset(0), 0);
+        assert_eq!(lazy_plt_stub_offset(5), 80);
     }
 }

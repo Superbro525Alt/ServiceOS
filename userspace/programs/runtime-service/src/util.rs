@@ -47,6 +47,13 @@ fn parse_profile(text: &str) -> rt::Result<Profile> {
             "kind" => {
                 profile.kind = match value.trim() {
                     "posix" => RuntimeKind::Posix,
+                    // Accepted so Windows-targeting environments can be
+                    // declared ahead of the runtime, but HONESTLY
+                    // UNEXECUTABLE: every guest image exec classifies
+                    // through `crate::abi_image`, and PE images (the only
+                    // thing a windows env could run) are refused with
+                    // `Unsupported` until a WinAPI ABI layer exists. There
+                    // is no Windows loader behind this kind today.
                     "windows" => RuntimeKind::Windows,
                     _ => return Err(rt::Error::InvalidArgument),
                 };
@@ -319,6 +326,17 @@ mod tests {
         assert!(parse_profile("kind=posix\nrequests=input\n").is_err());
         assert!(parse_profile("kind=posix\nrequests=file-read\n").is_err());
         assert!(parse_profile("kind=posix\nrequests=bogus\n").is_err());
+    }
+
+    #[test]
+    fn windows_kind_is_accepted_but_documented_unexecutable() {
+        // The profile grammar accepts a Windows environment so operators can
+        // declare one ahead of the runtime, but nothing can execute inside
+        // it: guest-image classification refuses PE images with
+        // `Unsupported` until the WinAPI ABI layer exists.
+        let profile = parse_profile("kind = windows\ncaps=file-read\n").expect("windows");
+        assert_eq!(profile.kind, RuntimeKind::Windows);
+        assert!(parse_profile("kind=plan9\n").is_err());
     }
 
     #[test]

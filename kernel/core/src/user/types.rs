@@ -271,6 +271,10 @@ pub enum LoadError {
     /// The load's shared symbol namespace ran out of entries while
     /// registering dependency exports.
     SymbolSpaceExhausted,
+    /// The image carries a `PT_INTERP` entry naming an external program
+    /// interpreter. No external `ld.so` exists; only the built-in marker
+    /// path is accepted.
+    InterpreterUnsupported,
     Mapping(MappingError),
 }
 

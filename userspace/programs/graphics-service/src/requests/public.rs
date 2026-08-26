@@ -3,18 +3,18 @@ use serviceos_userspace_runtime as rt;
 
 use crate::{
     fence::{
-        FenceWaiter, FenceWaiters, FENCE_WAIT_REPLY_TAG, FENCE_WAIT_REQUEST_TAG,
-        MAX_FENCE_WAITERS, ReapedWait, WaitDecision, decide_fence_wait,
+        FENCE_WAIT_REPLY_TAG, FENCE_WAIT_REQUEST_TAG, FenceWaiter, FenceWaiters, MAX_FENCE_WAITERS,
+        ReapedWait, WaitDecision, decide_fence_wait,
     },
     logging::emit_log,
     outputs::{
-        OUTPUT_CREATE_REPLY_TAG, OUTPUT_CREATE_REQUEST_TAG, MAX_OUTPUTS, OutputCreateError,
-        OutputRegistry,
+        ExtendSide, MAX_OUTPUTS, OUTPUT_CREATE_REPLY_TAG, OUTPUT_CREATE_REQUEST_TAG,
+        OUTPUT_EXTEND_REPLY_TAG, OUTPUT_EXTEND_REQUEST_TAG, OutputCreateError, OutputRegistry,
     },
     types::{
-        DirtyState, MAX_PUBLIC_REQUESTS_PER_TURN, MAX_SURFACE_LABELS, MAX_SURFACE_RECTS,
-        Surfaces, active_buffer, active_surface_count, attached_buffer_count,
-        close_pending_count, find_surface, surface_bounds,
+        DirtyState, MAX_PUBLIC_REQUESTS_PER_TURN, MAX_SURFACE_LABELS, MAX_SURFACE_RECTS, Surfaces,
+        active_buffer, active_surface_count, attached_buffer_count, close_pending_count,
+        find_surface, surface_bounds,
     },
 };
 
@@ -131,9 +131,7 @@ pub(crate) fn handle_public_request(
                     Ok(id) => {
                         reply.words[0] = GraphicsStatus::Ok as u32 as u64;
                         reply.words[1] = id as u64;
-                        *dirty = DirtyState::Full {
-                            immediate: true,
-                        };
+                        *dirty = DirtyState::Full { immediate: true };
                         let _ = rt::write_logf(
                             "graphics",
                             format_args!(
@@ -147,7 +145,11 @@ pub(crate) fn handle_public_request(
                         reply.word_count = 1;
                         reply.words[0] = GraphicsStatus::CapacityExceeded as u32 as u64;
                     }
-                    Err(OutputCreateError::GeometryUnsupported) => {
+                    Err(
+                        OutputCreateError::GeometryUnsupported
+                        | OutputCreateError::NotFound
+                        | OutputCreateError::ModeUnsupported,
+                    ) => {
                         reply.word_count = 1;
                         reply.words[0] = GraphicsStatus::Denied as u32 as u64;
                     }
@@ -155,6 +157,67 @@ pub(crate) fn handle_public_request(
                 None => {
                     reply.word_count = 1;
                     reply.words[0] = GraphicsStatus::NotFound as u32 as u64;
+                }
+            }
+            let _ = rt::channel_send(reply_handle, &reply);
+            let _ = rt::handle_close(reply_handle);
+        }
+        x if x == OUTPUT_EXTEND_REQUEST_TAG as u32 => {
+            if request.word_count < 3 || request.handle_count < 1 {
+                return Ok(());
+            }
+            let reply_handle = request.handles[0];
+            let output_id = request.words[1] as u32;
+            let mut reply = RawMessage::empty(OUTPUT_EXTEND_REPLY_TAG as u32);
+            reply.word_count = 7;
+            let side = match ExtendSide::from_word(request.words[2]) {
+                Some(side) => side,
+                None => {
+                    reply.word_count = 1;
+                    reply.words[0] = GraphicsStatus::Denied as u32 as u64;
+                    let _ = rt::channel_send(reply_handle, &reply);
+                    let _ = rt::handle_close(reply_handle);
+                    return Ok(());
+                }
+            };
+            match registry.configure_extend(output_id, side) {
+                Ok((origin_x, origin_y)) => {
+                    if let Some(bounds) = registry.desktop_bounds() {
+                        reply.words[3] = bounds.x as i64 as u64;
+                        reply.words[4] = bounds.y as i64 as u64;
+                        reply.words[5] = bounds.width as u64;
+                        reply.words[6] = bounds.height as u64;
+                    }
+                    reply.words[0] = GraphicsStatus::Ok as u32 as u64;
+                    reply.words[1] = origin_x as i64 as u64;
+                    reply.words[2] = origin_y as i64 as u64;
+                    *dirty = DirtyState::Full { immediate: true };
+                    let _ = rt::write_logf(
+                        "graphics",
+                        format_args!(
+                            "multi-output: output id={} EXTEND {} primary at ({},{}) desktop {}x{}+({},{})",
+                            output_id,
+                            if side == ExtendSide::RightOfPrimary {
+                                "right-of"
+                            } else {
+                                "left-of"
+                            },
+                            origin_x,
+                            origin_y,
+                            reply.words[5],
+                            reply.words[6],
+                            reply.words[3] as i64,
+                            reply.words[4] as i64
+                        ),
+                    );
+                }
+                Err(OutputCreateError::NotFound | OutputCreateError::ModeUnsupported) => {
+                    reply.word_count = 1;
+                    reply.words[0] = GraphicsStatus::Denied as u32 as u64;
+                }
+                Err(_) => {
+                    reply.word_count = 1;
+                    reply.words[0] = GraphicsStatus::CapacityExceeded as u32 as u64;
                 }
             }
             let _ = rt::channel_send(reply_handle, &reply);

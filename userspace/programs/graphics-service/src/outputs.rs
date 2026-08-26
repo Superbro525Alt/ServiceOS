@@ -18,6 +18,83 @@ pub(crate) const OUTPUT_BACKEND_VIRTUAL: u32 = 2;
 pub(crate) const OUTPUT_CREATE_REQUEST_TAG: u32 = 0x910;
 pub(crate) const OUTPUT_CREATE_REPLY_TAG: u32 = 0x911;
 
+/// Service-local control-op tags for EXTEND-mode configuration. Same
+/// additive policy as the 0x910 pair: unallocated graphics tag space,
+/// shared ABI untouched. Request words: [1]=output id, [2]=side (1 =
+/// right-of-primary, 2 = left-of-primary). Reply words: [0]=status,
+/// [1..2]=render origin x/y, [3..6]=combined desktop bounds rect.
+pub(crate) const OUTPUT_EXTEND_REQUEST_TAG: u32 = 0x914;
+pub(crate) const OUTPUT_EXTEND_REPLY_TAG: u32 = 0x915;
+
+/// Presentation relationship of a virtual output to the primary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OutputMode {
+    /// Nearest-neighbour mirror of the primary's presented frame
+    /// (legacy behavior).
+    Mirror,
+    /// Own desktop-space rectangle beside the primary; not refreshed from
+    /// the primary (independent content is future work — the surface is
+    /// reserved by placement today).
+    Extend,
+}
+
+/// Side of the primary an EXTEND-mode output is placed on.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ExtendSide {
+    RightOfPrimary = 1,
+    LeftOfPrimary = 2,
+}
+
+impl ExtendSide {
+    pub(crate) fn from_word(word: u64) -> Option<Self> {
+        match word {
+            1 => Some(Self::RightOfPrimary),
+            2 => Some(Self::LeftOfPrimary),
+            _ => None,
+        }
+    }
+}
+
+/// Axis-aligned desktop-space rectangle (origin top-left, y down).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct DesktopRect {
+    pub(crate) x: i32,
+    pub(crate) y: i32,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+}
+
+impl DesktopRect {
+    fn right(&self) -> i32 {
+        self.x.saturating_add(self.width as i32)
+    }
+
+    fn bottom(&self) -> i32 {
+        self.y.saturating_add(self.height as i32)
+    }
+
+    /// Bounding box of two rects. When outputs have differing heights the
+    /// union is non-rectangular; v0 pointer math clamps to the bounding box
+    /// and per-output hit-testing arrives with real input routing.
+    fn bounding_union(self, other: Self) -> Self {
+        let x = self.x.min(other.x);
+        let y = self.y.min(other.y);
+        Self {
+            x,
+            y,
+            width: self.right().max(other.right()).saturating_sub(x) as u32,
+            height: self.bottom().max(other.bottom()).saturating_sub(y) as u32,
+        }
+    }
+
+    fn clamp_point(&self, x: i32, y: i32) -> (i32, i32) {
+        (
+            x.clamp(self.x, self.right().saturating_sub(1)),
+            y.clamp(self.y, self.bottom().saturating_sub(1)),
+        )
+    }
+}
+
 const VIRTUAL_BYTES_PER_PIXEL: u32 = 4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -31,6 +108,11 @@ pub(crate) struct OutputSlot {
     pub(crate) id: u32,
     pub(crate) occupied: bool,
     pub(crate) kind: OutputKind,
+    /// Presentation mode (mirror vs extend); primaries are always
+    /// effectively mirror-at-origin.
+    pub(crate) mode: OutputMode,
+    /// Desktop-space origin used when `mode == Extend`.
+    pub(crate) desktop_origin: (i32, i32),
     pub(crate) handle: rt::Handle,
     pub(crate) info: rt::DisplayOutputInfo,
     pub(crate) present_count: u64,
@@ -45,6 +127,8 @@ impl OutputSlot {
             id: 0,
             occupied: false,
             kind: OutputKind::Primary,
+            mode: OutputMode::Mirror,
+            desktop_origin: (0, 0),
             handle: rt::INVALID_HANDLE,
             info: rt::DisplayOutputInfo {
                 backend: 0,
@@ -69,9 +153,7 @@ impl OutputSlot {
         self.present_count = self.present_count.saturating_add(1);
         if outcome.skipped {
             self.noop_skips = self.noop_skips.saturating_add(1);
-            self.noop_saved_bytes = self
-                .noop_saved_bytes
-                .saturating_add(outcome.saved_bytes);
+            self.noop_saved_bytes = self.noop_saved_bytes.saturating_add(outcome.saved_bytes);
         }
         self.band_saved_bytes = self
             .band_saved_bytes
@@ -83,6 +165,11 @@ impl OutputSlot {
 pub(crate) enum OutputCreateError {
     CapacityExceeded,
     GeometryUnsupported,
+    /// No occupied output with the requested id.
+    NotFound,
+    /// The output exists but cannot take the requested mode (e.g. placing
+    /// the primary in EXTEND mode).
+    ModeUnsupported,
 }
 
 #[derive(Clone, Copy)]
@@ -109,6 +196,8 @@ impl OutputRegistry {
         self.next_output_id = self.next_output_id.saturating_add(1);
         slot.occupied = true;
         slot.kind = OutputKind::Primary;
+        slot.mode = OutputMode::Mirror;
+        slot.desktop_origin = (0, 0);
         slot.handle = handle;
         slot.info = info;
         Some(slot.id)
@@ -145,6 +234,8 @@ impl OutputRegistry {
         self.next_output_id = self.next_output_id.saturating_add(1);
         slot.occupied = true;
         slot.kind = OutputKind::VirtualMirror;
+        slot.mode = OutputMode::Mirror;
+        slot.desktop_origin = (0, 0);
         slot.handle = rt::INVALID_HANDLE;
         slot.info = rt::DisplayOutputInfo {
             backend: OUTPUT_BACKEND_VIRTUAL,
@@ -179,10 +270,114 @@ impl OutputRegistry {
             .find(|slot| slot.occupied && slot.kind == OutputKind::VirtualMirror)
     }
 
-    pub(crate) fn has_virtual_mirror(&self) -> bool {
+    /// The mirror-mode virtual output the refresh path blits into.
+    fn active_mirror_mut(&mut self) -> Option<&mut OutputSlot> {
+        self.slots.iter_mut().find(|slot| {
+            slot.occupied
+                && slot.kind == OutputKind::VirtualMirror
+                && slot.mode == OutputMode::Mirror
+        })
+    }
+
+    fn by_id(&self, id: u32) -> Option<&OutputSlot> {
         self.slots
             .iter()
-            .any(|slot| slot.occupied && slot.kind == OutputKind::VirtualMirror)
+            .find(|slot| slot.occupied && slot.id == id)
+    }
+
+    fn by_id_mut(&mut self, id: u32) -> Option<&mut OutputSlot> {
+        self.slots
+            .iter_mut()
+            .find(|slot| slot.occupied && slot.id == id)
+    }
+
+    /// Place a virtual output in EXTEND mode on `side` of the primary,
+    /// top-aligned with zero gap. Returns its desktop-space render origin.
+    /// Only virtual outputs can be placed; the primary stays at (0, 0).
+    pub(crate) fn configure_extend(
+        &mut self,
+        output_id: u32,
+        side: ExtendSide,
+    ) -> Result<(i32, i32), OutputCreateError> {
+        let Some(target) = self.by_id(output_id) else {
+            return Err(OutputCreateError::NotFound);
+        };
+        if target.kind != OutputKind::VirtualMirror {
+            // The primary anchors desktop space; it cannot be re-placed.
+            return Err(OutputCreateError::ModeUnsupported);
+        }
+        let target_size = (target.info.width as i32, target.info.height as i32);
+        let Some(primary) = self.primary() else {
+            return Err(OutputCreateError::NotFound);
+        };
+        let origin = match side {
+            ExtendSide::RightOfPrimary => (primary.info.width as i32, 0),
+            ExtendSide::LeftOfPrimary => (-(target_size.0), 0),
+        };
+        if let Some(slot) = self.by_id_mut(output_id) {
+            slot.mode = OutputMode::Extend;
+            slot.desktop_origin = origin;
+        }
+        Ok(origin)
+    }
+
+    /// Return an output to mirror mode; clears its desktop placement.
+    pub(crate) fn revert_to_mirror(&mut self, output_id: u32) -> bool {
+        let Some(slot) = self.by_id_mut(output_id) else {
+            return false;
+        };
+        if slot.mode == OutputMode::Mirror {
+            return false;
+        }
+        slot.mode = OutputMode::Mirror;
+        slot.desktop_origin = (0, 0);
+        true
+    }
+
+    /// Combined desktop bounds: primary rect unioned with every EXTEND-mode
+    /// output's placed rect (bounding box when heights differ). Mirror-mode
+    /// outputs share the primary's rect and add nothing.
+    pub(crate) fn desktop_bounds(&self) -> Option<DesktopRect> {
+        let primary = self.primary()?;
+        let mut bounds = DesktopRect {
+            x: 0,
+            y: 0,
+            width: primary.info.width,
+            height: primary.info.height,
+        };
+        for slot in self
+            .slots
+            .iter()
+            .filter(|slot| slot.occupied && slot.mode == OutputMode::Extend)
+        {
+            bounds = bounds.bounding_union(DesktopRect {
+                x: slot.desktop_origin.0,
+                y: slot.desktop_origin.1,
+                width: slot.info.width,
+                height: slot.info.height,
+            });
+        }
+        Some(bounds)
+    }
+
+    /// Clamp a pointer position into the combined desktop bounds so the
+    /// cursor cannot leave the desktop when moving across outputs.
+    pub(crate) fn clamp_pointer(&self, x: i32, y: i32) -> Option<(i32, i32)> {
+        self.desktop_bounds().map(|bounds| bounds.clamp_point(x, y))
+    }
+
+    /// Desktop-space origin each output renders at: the primary and any
+    /// mirror sit at (0, 0); EXTEND outputs carry their placement.
+    pub(crate) fn render_origin(&self, output_id: u32) -> Option<(i32, i32)> {
+        self.by_id(output_id).map(|slot| slot.desktop_origin)
+    }
+
+    pub(crate) fn has_virtual_mirror(&self) -> bool {
+        self.slots.iter().any(|slot| {
+            slot.occupied
+                && slot.kind == OutputKind::VirtualMirror
+                && slot.mode == OutputMode::Mirror
+        })
     }
 
     pub(crate) fn active_count(&self) -> usize {
@@ -222,10 +417,7 @@ fn virtual_frame_slice(len: usize) -> &'static mut [u8] {
 
 fn virtual_presented_slice(len: usize) -> &'static mut [u8] {
     unsafe {
-        slice::from_raw_parts_mut(
-            ptr::addr_of_mut!(VIRTUAL_PRESENTED_BYTES).cast::<u8>(),
-            len,
-        )
+        slice::from_raw_parts_mut(ptr::addr_of_mut!(VIRTUAL_PRESENTED_BYTES).cast::<u8>(), len)
     }
 }
 
@@ -242,7 +434,8 @@ pub(crate) fn mirror_damage_rect(
     }
     let src_x0 = damage.x.clamp(0, primary.width as i32) as u64;
     let src_y0 = damage.y.clamp(0, primary.height as i32) as u64;
-    let src_x1 = (damage.x.saturating_add(damage.width as i32)).clamp(0, primary.width as i32) as u64;
+    let src_x1 =
+        (damage.x.saturating_add(damage.width as i32)).clamp(0, primary.width as i32) as u64;
     let src_y1 =
         (damage.y.saturating_add(damage.height as i32)).clamp(0, primary.height as i32) as u64;
     if src_x0 >= src_x1 || src_y0 >= src_y1 {
@@ -345,10 +538,7 @@ impl MirrorSpan {
     }
 }
 
-fn mirror_span(
-    output: &rt::DisplayOutputInfo,
-    damage: DamageRect,
-) -> Option<MirrorSpan> {
+fn mirror_span(output: &rt::DisplayOutputInfo, damage: DamageRect) -> Option<MirrorSpan> {
     let start_x = damage.x.max(0) as usize;
     let start_y = damage.y.max(0) as usize;
     let end_x =
@@ -395,8 +585,10 @@ pub(crate) fn mirror_present_into(
             dst_presented.len() == dst_frame.len(),
         ) {
             if span.rows_identical(dst_presented, dst_frame) {
-                return PresentOutcome::noop(span.col_start.abs_diff(span.col_end) as u64
-                    * (span.row_end - span.row_start) as u64);
+                return PresentOutcome::noop(
+                    span.col_start.abs_diff(span.col_end) as u64
+                        * (span.row_end - span.row_start) as u64,
+                );
             }
             span.update_rows(dst_presented, dst_frame);
             return PresentOutcome::presented();
@@ -425,7 +617,7 @@ pub(crate) fn refresh_virtual_mirrors(
     let Some(primary_info) = registry.primary().map(|slot| slot.info) else {
         return;
     };
-    let (secondary_info, allow_skip) = match registry.virtual_mirror_mut() {
+    let (secondary_info, allow_skip) = match registry.active_mirror_mut() {
         Some(slot) => (slot.info, slot.present_count > 0),
         None => return,
     };
@@ -451,7 +643,7 @@ pub(crate) fn refresh_virtual_mirrors(
             allow_skip,
         )
     };
-    if let Some(slot) = registry.virtual_mirror_mut() {
+    if let Some(slot) = registry.active_mirror_mut() {
         slot.record_outcome(&outcome);
     }
 }
@@ -540,6 +732,156 @@ mod tests {
         assert_eq!(registry.active_count(), 2);
     }
 
+    fn extend_registry() -> (OutputRegistry, u32) {
+        let mut registry = OutputRegistry::new();
+        registry
+            .register_primary(7, info(1024, 768, 1024, 4, OUTPUT_BACKEND_BOOT_FB))
+            .unwrap();
+        let template = registry.primary().unwrap().info;
+        let id = registry.create_virtual_mirror(&template, 800, 600).unwrap();
+        (registry, id)
+    }
+
+    #[test]
+    fn extend_places_right_of_primary_with_own_geometry() {
+        let (mut registry, id) = extend_registry();
+        let origin = registry
+            .configure_extend(id, ExtendSide::RightOfPrimary)
+            .expect("virtual output accepts EXTEND");
+        // Own geometry: placed at the primary's right edge, top-aligned.
+        assert_eq!(origin, (1024, 0));
+        assert_eq!(
+            registry.render_origin(id),
+            Some((1024, 0)),
+            "render offset math exposes the placement"
+        );
+        // Primary anchors desktop space at the origin.
+        assert_eq!(registry.render_origin(1), Some((0, 0)));
+    }
+
+    #[test]
+    fn extend_places_left_of_primary_at_negative_x() {
+        let (mut registry, id) = extend_registry();
+        let origin = registry
+            .configure_extend(id, ExtendSide::LeftOfPrimary)
+            .expect("left-of placement");
+        assert_eq!(origin, (-800, 0));
+    }
+
+    #[test]
+    fn extend_rejects_unknown_and_primary_targets() {
+        let (mut registry, _id) = extend_registry();
+        assert_eq!(
+            registry.configure_extend(999, ExtendSide::RightOfPrimary),
+            Err(OutputCreateError::NotFound)
+        );
+        // The primary cannot be re-placed; it defines desktop origin.
+        let primary_id = registry.primary().unwrap().id;
+        assert_eq!(
+            registry.configure_extend(primary_id, ExtendSide::RightOfPrimary),
+            Err(OutputCreateError::ModeUnsupported)
+        );
+        assert_eq!(
+            ExtendSide::from_word(3),
+            None,
+            "wire words outside the table are rejected"
+        );
+    }
+
+    #[test]
+    fn revert_to_mirror_clears_placement() {
+        let (mut registry, id) = extend_registry();
+        registry
+            .configure_extend(id, ExtendSide::RightOfPrimary)
+            .unwrap();
+        assert!(registry.revert_to_mirror(id));
+        assert_eq!(registry.render_origin(id), Some((0, 0)));
+        // Already-mirror outputs report false (nothing to clear).
+        assert!(!registry.revert_to_mirror(id));
+        assert!(!registry.revert_to_mirror(999));
+    }
+
+    #[test]
+    fn combined_desktop_bounds_union_primary_and_extended_outputs() {
+        let (mut registry, id) = extend_registry();
+        // Mirror-only desktop is exactly the primary rect.
+        let base = registry.desktop_bounds().unwrap();
+        assert_eq!(
+            base,
+            DesktopRect {
+                x: 0,
+                y: 0,
+                width: 1024,
+                height: 768
+            }
+        );
+        registry
+            .configure_extend(id, ExtendSide::RightOfPrimary)
+            .unwrap();
+        let bounds = registry.desktop_bounds().unwrap();
+        // Secondary has its own geometry (800x600): bounding box keeps the
+        // taller primary height.
+        assert_eq!(
+            bounds,
+            DesktopRect {
+                x: 0,
+                y: 0,
+                width: 1824,
+                height: 768
+            }
+        );
+    }
+
+    #[test]
+    fn combined_bounds_span_negative_left_placement() {
+        let (mut registry, id) = extend_registry();
+        registry
+            .configure_extend(id, ExtendSide::LeftOfPrimary)
+            .unwrap();
+        let bounds = registry.desktop_bounds().unwrap();
+        assert_eq!(
+            bounds,
+            DesktopRect {
+                x: -800,
+                y: 0,
+                width: 1824,
+                height: 768
+            }
+        );
+    }
+
+    #[test]
+    fn pointer_clamps_to_combined_desktop_bounds() {
+        let mut registry = OutputRegistry::new();
+        registry
+            .register_primary(7, info(1024, 768, 1024, 4, OUTPUT_BACKEND_BOOT_FB))
+            .unwrap();
+        // No secondary yet: clamping stays inside the primary.
+        assert_eq!(
+            registry.clamp_pointer(-5, -1),
+            Some((0, 0)),
+            "negative positions clamp to the top-left corner"
+        );
+        assert_eq!(registry.clamp_pointer(5000, 90), Some((1023, 90)));
+
+        let template = registry.primary().unwrap().info;
+        let id = registry.create_virtual_mirror(&template, 800, 600).unwrap();
+        registry
+            .configure_extend(id, ExtendSide::RightOfPrimary)
+            .unwrap();
+        // Combined bounds now reach x=1823.
+        assert_eq!(registry.clamp_pointer(1500, 400), Some((1500, 400)));
+        assert_eq!(
+            registry.clamp_pointer(9999, 9999),
+            Some((1823, 767)),
+            "far-out positions clamp to the bottom-right of the union"
+        );
+        assert_eq!(registry.clamp_pointer(-100, 10), Some((0, 10)));
+        // A degenerate desktop without a primary has no bounds at all.
+        let empty = OutputRegistry::new();
+        assert_eq!(empty.clamp_pointer(0, 0), None);
+    }
+
     #[test]
     fn registry_per_output_stats_are_isolated() {
         let mut registry = OutputRegistry::new();
@@ -547,11 +889,12 @@ mod tests {
             .register_primary(7, info(640, 480, 640, 4, OUTPUT_BACKEND_BOOT_FB))
             .unwrap();
         let template = registry.primary().unwrap().info;
-        registry
-            .create_virtual_mirror(&template, 320, 240)
-            .unwrap();
+        registry.create_virtual_mirror(&template, 320, 240).unwrap();
 
-        registry.primary_mut().unwrap().record_outcome(&PresentOutcome::presented());
+        registry
+            .primary_mut()
+            .unwrap()
+            .record_outcome(&PresentOutcome::presented());
         registry
             .virtual_mirror_mut()
             .unwrap()

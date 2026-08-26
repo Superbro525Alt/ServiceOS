@@ -16,6 +16,17 @@ pub const JOURNAL_INSTALL: u32 = 1;
 pub const JOURNAL_UPDATE: u32 = 2;
 pub const JOURNAL_REMOVE: u32 = 3;
 pub const JOURNAL_ROLLBACK: u32 = 4;
+/// Whole-system update transaction: one journal entry covering an ordered
+/// set of package updates with a persisted per-step cursor and commit
+/// marker (see `sysupdate_model`).
+pub const JOURNAL_SYSUPDATE: u32 = 5;
+
+/// Maintenance action word extending `PackageMaintenanceAction` for
+/// whole-system update flows (service + shell agree on these values).
+pub const MAINTENANCE_ACTION_SYSUPDATE_PLAN: u64 = 6;
+pub const MAINTENANCE_ACTION_SYSUPDATE_APPLY: u64 = 7;
+pub const MAINTENANCE_ACTION_SYSUPDATE_ROLLBACK: u64 = 8;
+pub const MAINTENANCE_ACTION_SYSUPDATE_HISTORY: u64 = 9;
 
 /// Maintenance action word extending `PackageMaintenanceAction` for the
 /// interrupted-update recovery flow (service + shell agree on this value).
@@ -52,6 +63,7 @@ pub fn journal_action_name(action: u32) -> &'static str {
         JOURNAL_UPDATE => "update",
         JOURNAL_REMOVE => "remove",
         JOURNAL_ROLLBACK => "rollback",
+        JOURNAL_SYSUPDATE => "sysupdate",
         _ => "none",
     }
 }
@@ -203,12 +215,16 @@ mod tests {
         assert!(journal_is_stale(JOURNAL_UPDATE));
         assert!(journal_is_stale(JOURNAL_REMOVE));
         assert!(journal_is_stale(JOURNAL_ROLLBACK));
+        // A whole-system update transaction participates in the same
+        // stale-journal recovery classification.
+        assert!(journal_is_stale(JOURNAL_SYSUPDATE));
     }
 
     #[test]
     fn journal_action_names_match_codes() {
         assert_eq!(journal_action_name(JOURNAL_NONE), "none");
         assert_eq!(journal_action_name(JOURNAL_UPDATE), "update");
+        assert_eq!(journal_action_name(JOURNAL_SYSUPDATE), "sysupdate");
         assert_eq!(journal_action_name(99), "none");
     }
 

@@ -106,7 +106,7 @@ fn mutation_request(
     Ok(request)
 }
 
-fn simple_request(request_tag: u32, word0: u64) -> rt::RawMessage {
+pub(in crate::commands) fn simple_request(request_tag: u32, word0: u64) -> rt::RawMessage {
     let mut request = rt::RawMessage::empty(request_tag);
     request.word_count = 1;
     request.words[0] = word0;
@@ -133,7 +133,7 @@ fn progress_percent(phase: u32, step: u32, total: u32) -> u32 {
     phase * per_phase + step.min(total) * per_phase / total
 }
 
-fn status_from_word(word: u64) -> PackageStatus {
+pub(in crate::commands) fn status_from_word(word: u64) -> PackageStatus {
     match word as u32 {
         0 => PackageStatus::Ok,
         1 => PackageStatus::NotFound,
@@ -152,7 +152,7 @@ fn status_from_word(word: u64) -> PackageStatus {
     }
 }
 
-fn package_status_name(status: PackageStatus) -> &'static str {
+pub(in crate::commands) fn package_status_name(status: PackageStatus) -> &'static str {
     match status {
         PackageStatus::Ok => "ok",
         PackageStatus::NotFound => "not-found",

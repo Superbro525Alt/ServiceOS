@@ -5,5 +5,7 @@
 
 pub mod ops_model;
 pub mod signing;
+pub mod sysupdate_model;
 
 pub use ops_model::*;
+pub use sysupdate_model::*;

@@ -9,6 +9,9 @@ mod requests;
 mod signing;
 mod state;
 mod storage;
+#[allow(dead_code)]
+mod sysupdate_model;
+mod sysupdate_ops;
 mod util;
 
 pub(crate) use state::*;

@@ -16,7 +16,7 @@ const MAX_CATALOG_SNAPSHOT: usize = 32;
 
 /// Snapshot of the catalog's newest version per service, used to decide the
 /// per-row update flag without a second round trip per row.
-struct CatalogSnapshot {
+pub(in crate::commands) struct CatalogSnapshot {
     service_ids: [ServiceId; MAX_CATALOG_SNAPSHOT],
     latest: [[u8; MAX_VERSION_BYTES]; MAX_CATALOG_SNAPSHOT],
     latest_lens: [usize; MAX_CATALOG_SNAPSHOT],
@@ -24,7 +24,7 @@ struct CatalogSnapshot {
 }
 
 impl CatalogSnapshot {
-    fn capture(package_handle: rt::Handle) -> Self {
+    pub(in crate::commands) fn capture(package_handle: rt::Handle) -> Self {
         let mut snapshot = Self {
             service_ids: [ServiceId::RootManager; MAX_CATALOG_SNAPSHOT],
             latest: [[0; MAX_VERSION_BYTES]; MAX_CATALOG_SNAPSHOT],
@@ -54,7 +54,7 @@ impl CatalogSnapshot {
     }
 
     /// Most recent event tick for a service from the log ring, if any.
-    fn latest_text(&self, service_id: ServiceId) -> Option<&str> {
+    pub(in crate::commands) fn latest_text(&self, service_id: ServiceId) -> Option<&str> {
         for index in 0..self.count {
             if self.service_ids[index] == service_id {
                 return core::str::from_utf8(&self.latest[index][..self.latest_lens[index]]).ok();

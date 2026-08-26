@@ -149,6 +149,10 @@ pkg ring <name> <production|preview|testing>: set staged rollout ring\r\n\
  pkg repair: repair interrupted or broken package state\r\n\
  pkg recover: resume or discard an interrupted install/update/rollback\r\n\
 pkg gc: garbage-collect old package artifacts\r\n\
+sysupdate plan: dry-run the whole-system update (affected packages, versions)\r\n\
+sysupdate apply [--yes]: execute every pending update as one transaction with a commit marker\r\n\
+sysupdate rollback [--yes]: restore all packages of the last committed update in reverse order\r\n\
+sysupdate history: show recent system-update transactions\r\n\
 run sysinfo: launch a transient tool\r\n\
 run pkg <name>: launch an installed package through the manager launch path\r\n\
 run image <path>: launch a flat image resource through the manager loader path\r\n";

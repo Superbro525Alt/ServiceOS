@@ -14,6 +14,7 @@ mod package;
 mod peripheral;
 mod runtime;
 mod security;
+mod sysupdate;
 
 use serviceos_userspace_runtime as rt;
 
@@ -163,6 +164,7 @@ pub(crate) fn execute_command(
         "desktop" => desktop::cmd_desktop(bootstrap, output, parts),
         "dev" => developer::cmd_dev(bootstrap, output, parts),
         "pkg" => package::cmd_pkg(bootstrap, output, parts),
+        "sysupdate" => sysupdate::cmd_sysupdate(bootstrap, output, parts),
         "runtime" => runtime::cmd_runtime(bootstrap, output, parts),
         "security" => security::cmd_security(bootstrap, output, parts),
         "run" => match parts.next() {

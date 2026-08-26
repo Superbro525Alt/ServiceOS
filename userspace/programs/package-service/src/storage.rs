@@ -441,6 +441,114 @@ pub(crate) fn load_journal_state(
 pub(crate) const FEED_KEYS_PATH: &str = "state/packages/feed-keys.cfg";
 pub(crate) const REJECT_JOURNAL_PATH: &str = "state/packages/feed-journal.cfg";
 
+pub(crate) const SYSUPDATE_TXN_PATH: &str = "state/packages/sysupdate-txn.cfg";
+pub(crate) const SYSUPDATE_HISTORY_PATH: &str = "state/packages/sysupdate-history.cfg";
+
+/// Persist the whole-system update transaction file (state machine marker,
+/// step cursor, ordered package ids). An empty write clears it.
+pub(crate) fn persist_sysupdate_txn(
+    storage_handle: rt::Handle,
+    txn: &sysupdate_model::ParsedTxn,
+) -> rt::Result<()> {
+    let mut text = crate::sysupdate_model::ModelTextBuffer::<512>::new();
+    if txn.count > 0 || txn.state != crate::sysupdate_model::TXN_STATE_PLANNING {
+        crate::sysupdate_model::encode_txn_file(txn.state, txn.done, &txn.ids, txn.count, &mut text);
+    } else {
+        let _ = write!(&mut text, "version=1\n");
+    }
+    write_storage_file(storage_handle, SYSUPDATE_TXN_PATH, text.as_bytes())
+}
+
+pub(crate) fn clear_sysupdate_txn(storage_handle: rt::Handle) -> rt::Result<()> {
+    persist_sysupdate_txn(
+        storage_handle,
+        &crate::sysupdate_model::ParsedTxn::empty(),
+    )
+}
+
+pub(crate) fn load_sysupdate_txn(
+    storage_handle: rt::Handle,
+) -> rt::Result<Option<crate::sysupdate_model::ParsedTxn>> {
+    let (blob, len) = match rt::storage_open(storage_handle, SYSUPDATE_TXN_PATH) {
+        Ok(value) => value,
+        Err(rt::Error::NotFound) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let mut bytes = [0u8; 512];
+    let requested = len.min(bytes.len());
+    let loaded = rt::storage_read_all(blob, &mut bytes, requested)?;
+    let _ = rt::storage_blob_close(blob);
+    let text = core::str::from_utf8(&bytes[..loaded]).map_err(|_| rt::Error::InvalidArgument)?;
+    Ok(crate::sysupdate_model::parse_txn_file(text))
+}
+
+/// Append one history row by rewriting the bounded ring file.
+pub(crate) fn append_sysupdate_history(
+    storage_handle: rt::Handle,
+    seq: u64,
+    tick: u64,
+    applied: u64,
+    rolled_back: bool,
+) -> rt::Result<()> {
+    let loaded = load_sysupdate_history(storage_handle)
+        .unwrap_or_else(|_| crate::sysupdate_model::parse_history_rows(""));
+    let mut ring = loaded;
+    crate::sysupdate_model::push_history_row(
+        &mut ring,
+        crate::sysupdate_model::HistoryRow {
+            seq,
+            tick,
+            applied,
+            rolled_back,
+        },
+    );
+    persist_sysupdate_history(storage_handle, &ring)
+}
+
+fn persist_sysupdate_history(
+    storage_handle: rt::Handle,
+    ring: &(
+        [crate::sysupdate_model::HistoryRow; crate::sysupdate_model::SYSUPDATE_HISTORY_CAP],
+        usize,
+    ),
+) -> rt::Result<()> {
+    let (rows, count) = ring;
+    let mut body = crate::sysupdate_model::ModelTextBuffer::<1024>::new();
+    let _ = write!(&mut body, "version=1\n");
+    let kept = (*count).min(crate::sysupdate_model::SYSUPDATE_HISTORY_CAP);
+    for row in rows[..kept].iter() {
+        let mut line = crate::sysupdate_model::ModelTextBuffer::<128>::new();
+        crate::sysupdate_model::encode_history_line(
+            row.seq,
+            row.tick,
+            row.applied,
+            row.rolled_back,
+            &mut line,
+        );
+        let _ = body.write_str(core::str::from_utf8(line.as_bytes()).unwrap_or(""));
+    }
+    write_storage_file(storage_handle, SYSUPDATE_HISTORY_PATH, body.as_bytes())
+}
+
+pub(crate) fn load_sysupdate_history(
+    storage_handle: rt::Handle,
+) -> rt::Result<(
+    [crate::sysupdate_model::HistoryRow; crate::sysupdate_model::SYSUPDATE_HISTORY_CAP],
+    usize,
+)> {
+    let (blob, len) = match rt::storage_open(storage_handle, SYSUPDATE_HISTORY_PATH) {
+        Ok(value) => value,
+        Err(rt::Error::NotFound) => return Ok(crate::sysupdate_model::parse_history_rows("")),
+        Err(error) => return Err(error),
+    };
+    let mut bytes = [0u8; 1024];
+    let requested = len.min(bytes.len());
+    let loaded = rt::storage_read_all(blob, &mut bytes, requested)?;
+    let _ = rt::storage_blob_close(blob);
+    let text = core::str::from_utf8(&bytes[..loaded]).map_err(|_| rt::Error::InvalidArgument)?;
+    Ok(crate::sysupdate_model::parse_history_rows(text))
+}
+
 pub(crate) fn persist_feed_keystore(storage_handle: rt::Handle) -> rt::Result<()> {
     let mut text = rt::FixedLogBuffer::<MAX_STATE_BYTES>::new();
     crate::signing::serialize_keystore(unsafe { &*core::ptr::addr_of!(FEED_KEYSTORE) }, &mut text);

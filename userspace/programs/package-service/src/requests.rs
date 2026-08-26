@@ -526,8 +526,7 @@ fn handle_maintenance_request(
         ops_model::RECOVERY_OUTCOME_NONE,
     );
     let mut handled = false;
-    if raw_action == ops_model::MAINTENANCE_ACTION_RECOVER {
-        handled = true;
+    if raw_action == ops_model::MAINTENANCE_ACTION_RECOVER {        handled = true;
         let (recover_status, recover_outcome) = recover_interrupted_operation(
             bootstrap,
             storage_handle,
@@ -548,6 +547,27 @@ fn handle_maintenance_request(
         status = rotate_feed_key(storage_handle, log_handle, repos, message);
         repaired = u32::from(status == PackageStatus::Ok);
     }
+    if matches!(
+        raw_action,
+        ops_model::MAINTENANCE_ACTION_SYSUPDATE_PLAN
+            | ops_model::MAINTENANCE_ACTION_SYSUPDATE_APPLY
+            | ops_model::MAINTENANCE_ACTION_SYSUPDATE_ROLLBACK
+            | ops_model::MAINTENANCE_ACTION_SYSUPDATE_HISTORY
+    ) {
+        return crate::sysupdate_ops::handle_sysupdate_request(
+            bootstrap,
+            storage_handle,
+            network_handle,
+            log_handle,
+            repos,
+            repo_count,
+            packages,
+            package_count,
+            journal,
+            message,
+            raw_action,
+        );
+    }
 
     if !handled {
         let action = maintenance_action_from_word(raw_action);
@@ -567,6 +587,11 @@ fn handle_maintenance_request(
                     package_count,
                 )?;
                 if journal.pending_action != JOURNAL_NONE {
+                    // A discarded sysupdate transaction must also drop its
+                    // persisted cursor file so the next apply starts clean.
+                    if journal.pending_action == JOURNAL_SYSUPDATE {
+                        let _ = crate::storage::clear_sysupdate_txn(storage_handle);
+                    }
                     *journal = JournalState::empty();
                     crate::storage::persist_journal_state(storage_handle, *journal)?;
                     repaired = repaired.saturating_add(1);
@@ -652,6 +677,21 @@ fn recover_interrupted_operation(
         return (PackageStatus::NoChange, ops_model::RECOVERY_OUTCOME_NONE);
     }
     let action = journal.pending_action;
+    // Whole-system update transactions carry their own resumable cursor in
+    // the persisted transaction file and are handled end-to-end there.
+    if action == JOURNAL_SYSUPDATE {
+        return crate::sysupdate_ops::recover_interrupted_sysupdate(
+            bootstrap,
+            storage_handle,
+            network_handle,
+            log_handle,
+            repos,
+            repo_count,
+            packages,
+            package_count,
+            journal,
+        );
+    }
     let resumable = matches!(action, JOURNAL_INSTALL | JOURNAL_UPDATE | JOURNAL_ROLLBACK);
     let completion_event = match action {
         JOURNAL_INSTALL => LogEvent::PackageInstalled,

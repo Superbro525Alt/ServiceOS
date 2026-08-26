@@ -1,7 +1,7 @@
-mod mutate;
+pub(in crate::commands) mod mutate;
 mod onboard;
-mod parse;
-mod query;
+pub(in crate::commands) mod parse;
+pub(in crate::commands) mod query;
 mod repos;
 
 use serviceos_userspace_runtime as rt;

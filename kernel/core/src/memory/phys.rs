@@ -230,6 +230,19 @@ impl EarlyFrameAllocator {
             .sum()
     }
 
+    /// Frames sitting in the reclaimed pool awaiting reallocation.
+    pub fn reclaimable_frames(&self) -> u64 {
+        self.reclaimed[..self.reclaimed_count]
+            .iter()
+            .map(|region| region.end_frame_exclusive - region.next_frame)
+            .sum()
+    }
+
+    /// Total allocatable headroom: fresh regions plus the reclaimed pool.
+    pub fn usable_headroom_frames(&self) -> u64 {
+        self.remaining_frames() + self.reclaimable_frames()
+    }
+
     pub fn stats(&self) -> FrameAllocatorStats {
         FrameAllocatorStats {
             allocatable_regions: self.region_count,
@@ -279,6 +292,34 @@ mod tests {
             framebuffer: None,
             boot_store: None,
         }
+    }
+
+    #[test]
+    fn reclaimed_pool_frames_count_toward_usable_headroom() {
+        let mut allocator =
+            EarlyFrameAllocator::from_boot_context(&boot_context(&[BootMemoryRegion {
+                start: PhysicalAddress::new(0x1000),
+                end: PhysicalAddress::new(0x4000),
+                kind: BootMemoryRegionKind::Usable,
+            }]))
+            .expect("allocator");
+
+        assert_eq!(allocator.usable_headroom_frames(), 3);
+        let first = allocator.allocate_4kib().expect("frame").base;
+        let second = allocator.allocate_4kib().expect("frame").base;
+        let third = allocator.allocate_4kib().expect("frame").base;
+        assert_eq!(allocator.remaining_frames(), 0);
+        assert_eq!(allocator.reclaimable_frames(), 0);
+        assert_eq!(allocator.usable_headroom_frames(), 0);
+
+        assert!(allocator.free_4kib(first));
+        assert!(allocator.free_4kib(second));
+        assert!(allocator.free_4kib(third));
+        // remaining_frames() keeps its fresh-region-only meaning; the
+        // reclaimed pool is counted by reclaimable/usable-headroom.
+        assert_eq!(allocator.remaining_frames(), 0);
+        assert_eq!(allocator.reclaimable_frames(), 3);
+        assert_eq!(allocator.usable_headroom_frames(), 3);
     }
 
     #[test]

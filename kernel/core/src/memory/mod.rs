@@ -1,12 +1,17 @@
 mod address_space;
 mod heap;
 mod layout;
+pub mod oom;
 mod manager;
 mod phys;
+pub mod pressure;
 mod types;
 
+pub use heap::{HeapInfo, HeapUsage, kernel_heap_usage};
+pub use oom::{OOM_EXIT_CODE, OomError, VictimCandidate};
+pub use pressure::{PressureLevel, PressureReading, PressureTransition};
+
 pub use address_space::{AddressSpaceRoot, FutureUserAddressSpaceLayout, KernelAddressSpace};
-pub use heap::HeapInfo;
 pub use layout::{KernelVirtualLayout, USER_SPACE_END};
 pub use manager::{InitializationError, MemoryManager, MemoryStats, initialize, manager};
 pub use phys::{EarlyFrameAllocator, FrameAllocatorStats};

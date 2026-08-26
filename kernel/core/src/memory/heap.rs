@@ -52,6 +52,17 @@ pub fn initialize_kernel_heap(
     Ok(HeapInfo { range: heap_range })
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HeapUsage {
+    pub total_bytes: u64,
+    pub free_bytes: u64,
+}
+
+/// Current kernel heap usage, or `None` before heap initialization.
+pub fn kernel_heap_usage() -> Option<HeapUsage> {
+    KERNEL_ALLOCATOR.usage_if_initialized()
+}
+
 struct KernelAllocator {
     inner: Mutex<FreeListAllocator>,
 }
@@ -66,6 +77,14 @@ impl KernelAllocator {
     unsafe fn initialize(&self, start: usize, size: usize) -> Result<(), ()> {
         let mut allocator = self.inner.lock();
         allocator.initialize(start, size)
+    }
+
+    fn usage_if_initialized(&self) -> Option<HeapUsage> {
+        let allocator = self.inner.lock();
+        if !allocator.initialized {
+            return None;
+        }
+        Some(allocator.usage())
     }
 }
 
@@ -84,6 +103,11 @@ struct FreeListAllocator {
     regions: [FreeRegion; MAX_FREE_REGIONS],
     len: usize,
     initialized: bool,
+    /// Heap capacity recorded at initialization.
+    capacity_bytes: u64,
+    /// Bytes currently free across the tracked region table. Bytes the
+    /// table could not track on free are excluded permanently.
+    free_bytes: u64,
     /// Bytes given up because the region table was full at free time.
     dropped_free_bytes: u64,
     /// Number of frees that could not be tracked (table full after
@@ -115,6 +139,8 @@ impl FreeListAllocator {
             regions: [FreeRegion::empty(); MAX_FREE_REGIONS],
             len: 0,
             initialized: false,
+            capacity_bytes: 0,
+            free_bytes: 0,
             dropped_free_bytes: 0,
             dropped_free_events: 0,
         }
@@ -128,6 +154,8 @@ impl FreeListAllocator {
         self.regions[0] = FreeRegion { start, size };
         self.len = 1;
         self.initialized = true;
+        self.capacity_bytes = size as u64;
+        self.free_bytes = size as u64;
         Ok(())
     }
 
@@ -177,12 +205,12 @@ impl FreeListAllocator {
                 }
             }
 
+            self.free_bytes = self.free_bytes.saturating_sub(size as u64);
             return start as *mut u8;
         }
 
         null_mut()
     }
-
     fn deallocate(&mut self, ptr: *mut u8, layout: Layout) {
         if !self.initialized {
             return;
@@ -218,6 +246,9 @@ impl FreeListAllocator {
         if region.size == 0 {
             return;
         }
+        // Capture before coalescing: merges fold neighbouring free space
+        // into `region`, and only the newly freed bytes may be credited.
+        let freed_bytes = region.size as u64;
 
         let mut index = 0usize;
         while index < self.len && self.regions[index].start < region.start {
@@ -257,7 +288,16 @@ impl FreeListAllocator {
             self.dropped_free_events = self.dropped_free_events.saturating_add(1);
             return;
         }
+        self.free_bytes = self.free_bytes.saturating_add(freed_bytes);
         self.insert_region(index, region);
+    }
+
+    /// Current free-byte accounting against the recorded heap capacity.
+    fn usage(&self) -> HeapUsage {
+        HeapUsage {
+            total_bytes: self.capacity_bytes,
+            free_bytes: self.free_bytes,
+        }
     }
 
     /// (events, bytes) of frees that the fixed region table could not track.
@@ -281,6 +321,50 @@ mod tests {
 
     fn layout(size: usize, align: usize) -> Layout {
         Layout::from_size_align(size, align).unwrap()
+    }
+
+    #[test]
+    fn heap_usage_tracks_free_bytes_across_alloc_free_cycles() {
+        // The global allocator is process-shared in host tests; exercise the
+        // accounting math through a standalone FreeListAllocator instead.
+        let mut allocator = FreeListAllocator::empty();
+        assert_eq!(
+            allocator.usage(),
+            HeapUsage {
+                total_bytes: 0,
+                free_bytes: 0
+            }
+        );
+
+        allocator.initialize(0x1000, 0x4000).unwrap();
+        assert_eq!(
+            allocator.usage(),
+            HeapUsage {
+                total_bytes: 0x4000,
+                free_bytes: 0x4000,
+            }
+        );
+
+        let block = allocator.allocate(layout(1024, 8));
+        assert!(!block.is_null());
+        assert_eq!(allocator.usage().free_bytes, 0x4000 - 1024);
+
+        allocator.deallocate(block, layout(1024, 8));
+        assert_eq!(allocator.usage().free_bytes, 0x4000);
+
+        // Bytes the region table could not track are never credited to the
+        // free total: usage must not silently count them.
+        for index in 0..MAX_FREE_REGIONS {
+            allocator.regions[index] = FreeRegion {
+                start: 0x8000_0000_0000 + index * 0x10_0000,
+                size: if index == 0 { 0x1000 } else { 16 },
+            };
+        }
+        allocator.len = MAX_FREE_REGIONS;
+        let before = allocator.usage().free_bytes;
+        allocator.deallocate(0x9000_0000 as *mut u8, layout(64, 64));
+        assert_eq!(allocator.usage().free_bytes, before);
+        assert_eq!(allocator.drop_stats(), (1, 64));
     }
 
     #[test]

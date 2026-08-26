@@ -175,9 +175,8 @@ mod tests {
 
     #[test]
     fn silence_packing_matches_format_widths() {
-        let mut words = [0u64; 16];
         // S16 stereo: two samples per frame, four samples per word.
-        words = [0u64; 16];
+        let mut words = [0u64; 16];
         assert_eq!(
             capture_pack_silence(AudioSampleFormat::S16Le, 2, 26, &mut words),
             13

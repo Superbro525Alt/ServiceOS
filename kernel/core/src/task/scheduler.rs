@@ -773,6 +773,20 @@ impl Scheduler {
         self.state.lock().current
     }
 
+    /// Distinct owner task ids across every tracked thread. The OOM policy
+    /// scans these to build its reclaim-candidate list.
+    pub fn tracked_thread_owners(&self) -> alloc::vec::Vec<crate::task::TaskId> {
+        let state = self.state.lock();
+        let mut owners: alloc::vec::Vec<_> = state
+            .threads
+            .values()
+            .filter_map(|record| record.object.thread().map(|thread| thread.snapshot().owner))
+            .collect();
+        owners.sort_unstable();
+        owners.dedup();
+        owners
+    }
+
     pub fn kernel_context_switch_info(
         &self,
     ) -> Option<(ThreadId, Option<KernelContext>, Option<KernelContext>)> {

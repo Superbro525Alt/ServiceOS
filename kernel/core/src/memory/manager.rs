@@ -3,8 +3,10 @@ use spin::{Mutex, Once};
 use crate::bootstrap::{BootContext, BootMemoryRegionKind};
 
 use super::{
-    AddressSpaceRoot, EarlyFrameAllocator, HeapInfo, KernelAddressSpace, KernelVirtualLayout,
-    MappingError, PAGE_SIZE_BYTES, PageMapper,
+    AddressSpaceRoot, EarlyFrameAllocator, Frame, HeapInfo, KernelAddressSpace,
+    KernelVirtualLayout, MappingError, PAGE_SIZE_BYTES, PageMapper,
+    oom::{self, OomError},
+    pressure::{self, PressureLevel, PressureReading, PressureTransition},
 };
 
 static MEMORY_MANAGER: Once<MemoryManager> = Once::new();
@@ -31,6 +33,54 @@ impl MemoryManager {
 
     pub fn heap(&self) -> HeapInfo {
         self.heap
+    }
+
+    /// Live pressure reading across the two tracked domains: usable-frame
+    /// headroom and kernel-heap headroom.
+    pub fn pressure_reading(&self) -> PressureReading {
+        let total_frames = self.stats.usable_bytes / PAGE_SIZE_BYTES;
+        let free_frames = self.frame_allocator().lock().usable_headroom_frames();
+        let (heap_total, heap_free) =
+            super::heap::kernel_heap_usage()
+                .map(|usage| (usage.total_bytes, usage.free_bytes))
+                .unwrap_or((0, 0));
+
+        PressureReading {
+            frames_headroom_permille: pressure::headroom_permille(free_frames, total_frames),
+            heap_headroom_permille: pressure::headroom_permille(heap_free, heap_total),
+        }
+    }
+
+    /// Current classified pressure level, once pressure tracking started.
+    pub fn current_pressure_level(&self) -> Option<PressureLevel> {
+        pressure::current_level()
+    }
+
+    /// Reclassify from live headroom; returns the transition when the level
+    /// changed (listeners notified by the pressure monitor itself).
+    pub fn refresh_pressure(&self) -> Option<PressureTransition> {
+        let tick = crate::time::manager().map_or(0, |manager| manager.now().0);
+        pressure::observe(self.pressure_reading(), tick)
+    }
+
+    /// Frame allocation with the OOM policy applied on failure: reclaim one
+    /// victim task's frames, then retry exactly once. Terminal exhaustion
+    /// panics with an explicit message per the kernel OOM contract.
+    pub fn allocate_frame_with_oom_policy(&self) -> Frame {
+        if let Some(frame) = self.frame_allocator().lock().allocate_4kib() {
+            return frame;
+        }
+
+        self.refresh_pressure();
+        match oom::recover_with_retry(|| self.frame_allocator().lock().allocate_4kib()) {
+            Ok(frame) => frame,
+            Err(OomError::NoRecoveryAvailable) => panic!(
+                "memory: OOM: frame allocation failed and no OOM recovery hooks are installed"
+            ),
+            Err(OomError::ProtectedSetExhausted) => panic!(
+                "memory: OOM: frame allocation failed and no reclaimable victim was available (protected set exhausted)"
+            ),
+        }
     }
 }
 
@@ -129,12 +179,19 @@ pub fn initialize(
         reclaimed_boot_services_bytes,
     );
 
-    Ok(MEMORY_MANAGER.call_once(|| MemoryManager {
+    let memory_manager = MEMORY_MANAGER.call_once(|| MemoryManager {
         frame_allocator: Mutex::new(frame_allocator),
         stats,
         kernel_address_space,
         heap,
-    }))
+    });
+
+    // Pressure tracking starts with a real reading so level transitions are
+    // always measured against the boot baseline.
+    pressure::initialize();
+    memory_manager.refresh_pressure();
+
+    Ok(memory_manager)
 }
 
 pub fn manager() -> Option<&'static MemoryManager> {

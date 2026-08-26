@@ -1,7 +1,12 @@
 use alloc::vec::Vec;
 use spin::Mutex;
 
-use crate::{capability::CapabilitySpace, object::ObjectId, user::TaskExitStatus};
+use crate::{
+    capability::CapabilitySpace,
+    memory::{PhysicalAddress, oom::OOM_EXIT_CODE},
+    object::ObjectId,
+    user::TaskExitStatus,
+};
 
 use super::{
     AddressSpaceId, ExecutionState, KernelContext, SchedulingContext, TaskDescriptor, TaskId,
@@ -20,6 +25,11 @@ struct TaskState {
     address_space: Option<AddressSpaceId>,
     threads: Vec<ObjectId>,
     exit_status: TaskExitStatus,
+    /// Whether the OOM policy may select this task as a reclaim victim.
+    /// Bootstrap-root tasks are never reclaimable.
+    reclaimable: bool,
+    /// Frames charged to this task for OOM accounting and reclamation.
+    charged_frames: Vec<PhysicalAddress>,
 }
 
 impl TaskObject {
@@ -32,6 +42,8 @@ impl TaskObject {
                 address_space: descriptor.address_space,
                 threads: Vec::new(),
                 exit_status: TaskExitStatus::Running,
+                reclaimable: !matches!(descriptor.role, TaskRole::BootstrapRoot),
+                charged_frames: Vec::new(),
             }),
         }
     }
@@ -77,6 +89,43 @@ impl TaskObject {
             thread_count: state.threads.len(),
             exit_status: state.exit_status,
         }
+    }
+
+    /// Whether the OOM policy may reclaim this task.
+    pub fn is_reclaimable(&self) -> bool {
+        self.state.lock().reclaimable
+    }
+
+    pub fn set_reclaimable(&self, reclaimable: bool) {
+        self.state.lock().reclaimable = reclaimable;
+    }
+
+    /// Charge frames to this task's OOM footprint; returns the new total.
+    pub fn charge_frames(&self, frames: &[PhysicalAddress]) -> u64 {
+        let mut state = self.state.lock();
+        state.charged_frames.extend_from_slice(frames);
+        state.charged_frames.len() as u64
+    }
+
+    /// Frames currently charged to this task.
+    pub fn footprint_frames(&self) -> u64 {
+        self.state.lock().charged_frames.len() as u64
+    }
+
+    pub fn thread_ids(&self) -> Vec<ObjectId> {
+        self.state.lock().threads.clone()
+    }
+
+    /// Fault-style OOM termination: record the distinct OOM exit reason,
+    /// clear the reclaimable mark, and hand back the charged frames for
+    /// reclamation. Returns the drained frame list.
+    pub fn mark_oom_terminated(&self) -> Vec<PhysicalAddress> {
+        let mut state = self.state.lock();
+        state.exit_status = TaskExitStatus::Faulted {
+            code: OOM_EXIT_CODE,
+        };
+        state.reclaimable = false;
+        core::mem::take(&mut state.charged_frames)
     }
 }
 

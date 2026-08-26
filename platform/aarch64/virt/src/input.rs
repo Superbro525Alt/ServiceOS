@@ -316,7 +316,7 @@ impl InputBackend for VirtioInputBackend {
 /// Semantic class/role-flag pair reported by per-instance enumeration.
 fn instance_signature(
     pointer: Option<&PointerSource>,
-    has_keys: bool,
+    _has_keys: bool,
 ) -> (u32, u32) {
     match pointer {
         Some(PointerSource::Absolute(_)) => (

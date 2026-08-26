@@ -1,15 +1,20 @@
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use spin::Once;
 
 use crate::{
     capability::CapabilityRights,
+    memory::{
+        self,
+        oom::{OomHooks, VictimCandidate},
+    },
     object::{KernelObjectModel, KernelObjectRef, ObjectId},
     time::WakeEvent,
 };
 
 use super::{
-    ScheduleDecision, Scheduler, SchedulingContext, TaskId, TaskSystemSnapshot, ThreadDescriptor,
-    ThreadId, ThreadMode,
+    ExecutionState, ScheduleDecision, Scheduler, SchedulingContext, TaskId, TaskSystemSnapshot,
+    ThreadDescriptor, ThreadId, ThreadMode,
 };
 
 pub struct TaskSystem {
@@ -46,6 +51,13 @@ impl TaskSystem {
                 Some(1),
             )
             .expect("bootstrap thread install must not exhaust the capability space");
+
+        // OOM recovery hooks: the kernel frame allocator consults these when
+        // an allocation fails, so victims are found among live tasks.
+        memory::oom::register_oom_hooks(OomHooks {
+            candidates: oom_candidate_scan,
+            reclaim: oom_reclaim_victim,
+        });
 
         Self {
             objects,
@@ -147,4 +159,63 @@ pub fn notify_input_ready(source: ObjectId) -> Option<ScheduleDecision> {
 
 pub fn notify_object_ready(object: ObjectId) -> Option<ScheduleDecision> {
     system().and_then(|tasks| tasks.notify_object_ready(object))
+}
+
+/// OOM candidate scan: one entry per task owning at least one tracked
+/// thread, carrying its reclaimable mark and charged frame footprint.
+fn oom_candidate_scan() -> Vec<VictimCandidate> {
+    let Some(tasks) = system() else {
+        return Vec::new();
+    };
+
+    let mut candidates = Vec::new();
+    for owner in tasks.scheduler().tracked_thread_owners() {
+        let Some(object) = tasks.objects().registry().lookup(ObjectId(owner.0)) else {
+            continue;
+        };
+        let Some(task) = object.task() else {
+            continue;
+        };
+        candidates.push(VictimCandidate {
+            task: owner,
+            name: None,
+            footprint_frames: task.footprint_frames(),
+            reclaimable: task.is_reclaimable(),
+        });
+    }
+    candidates
+}
+
+/// OOM victim reclamation: fault-style termination with the distinct OOM
+/// exit reason, deschedule the victim's threads, and hand its charged frames
+/// back to the frame allocator before the retry allocation.
+fn oom_reclaim_victim(candidate: VictimCandidate) {
+    let Some(tasks) = system() else {
+        return;
+    };
+    let Some(object) = tasks.objects().registry().lookup(ObjectId(candidate.task.0)) else {
+        return;
+    };
+    let Some(task) = object.task() else {
+        return;
+    };
+
+    let frames = task.mark_oom_terminated();
+    for thread_id in task.thread_ids() {
+        if let Some(thread_object) = tasks.objects().registry().lookup(thread_id) {
+            if let Some(thread) = thread_object.thread() {
+                thread.transition_to(ExecutionState::Dying, None, None);
+            }
+        }
+    }
+
+    if frames.is_empty() {
+        return;
+    }
+    if let Some(memory_manager) = memory::manager() {
+        let mut allocator = memory_manager.frame_allocator().lock();
+        for base in frames {
+            allocator.free_4kib(base);
+        }
+    }
 }

@@ -5,6 +5,7 @@ mod assoc;
 mod bridge;
 mod control;
 mod navigation;
+mod ops;
 mod persist;
 mod recent;
 mod render;
@@ -65,6 +66,11 @@ fn main() -> u64 {
         assoc: AssocTable::empty(),
         recent: RecentRing::empty(),
         persist_dir: rt::INVALID_HANDLE,
+        dialog: None,
+        prompt_input: [0; ops::NAME_MAX],
+        prompt_len: 0,
+        menu: None,
+        await_context: None,
     };
 
     let mut buffers = match ui::SurfaceBuffers::<SURFACE_BUFFER_SLOTS>::new(

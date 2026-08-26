@@ -5,19 +5,39 @@ use serviceos_userspace_runtime as rt;
 use crate::assoc;
 use crate::bridge::send_content_intent;
 use crate::navigation::{
-    clamp_view, ensure_selected_visible, navigate_parent, open_path_in_explorer, open_selected,
-    reload_directory, reopen_directory, scroll_down, scroll_up, visible_row_count,
+    clamp_view, ensure_selected_visible, entry_name_bytes, navigate_parent, open_path_in_explorer,
+    open_selected, reload_directory, reopen_directory, scroll_down, scroll_up, visible_row_count,
+};
+use crate::ops::{
+    self, CopyProgress, OpError,
 };
 use crate::persist;
 use crate::render::render;
 use crate::state::{
-    DRAG_THRESHOLD_PX, ExplorerState, KEY_BACKSPACE, KEY_D, KEY_DOWN, KEY_ENTER, KEY_ESC, KEY_LEFT,
-    KEY_O, KEY_PAGE_DOWN, KEY_PAGE_UP, KEY_R, KEY_RIGHT, KEY_UP, MOD_SHIFT, Press,
+    menu_hit, Dialog, DRAG_THRESHOLD_PX, EntryKind, ExplorerState, KEY_BACKSPACE,
+    KEY_D, KEY_DELETE, KEY_DOWN, KEY_ENTER, KEY_ESC, KEY_F2, KEY_LEFT, KEY_N, KEY_O, KEY_PAGE_DOWN,
+    KEY_PAGE_UP, KEY_R, KEY_RIGHT, KEY_UP, MenuAction, MOD_CTRL, MOD_SHIFT, Press,
     SURFACE_BUFFER_SLOTS, ViewMode,
 };
 
 /// Candidate slot ceiling for open-with cycling.
 const PICK_SLOTS: usize = 6;
+/// Render cadence during chunked copies (one present per N chunks).
+const PROGRESS_RENDER_EVERY: usize = 4;
+
+/// Render plumbing threaded through long-running ops so progress can be
+/// presented mid-operation.
+struct UiOut<'a> {
+    buffers: &'a mut ui::SurfaceBuffers<SURFACE_BUFFER_SLOTS>,
+    presenter: &'a mut ui::FirstPresentSurface,
+}
+
+impl<'a> UiOut<'a> {
+    fn render(&mut self, state: &ExplorerState) -> rt::Result<()> {
+        let (slot, buffer) = self.buffers.advance();
+        render(self.presenter, slot, buffer, state)
+    }
+}
 
 pub(crate) enum ControlFlow {
     Idle,
@@ -60,13 +80,21 @@ pub(crate) fn poll_control(
                 let detail = message.words[4] as i64 as i32;
                 match action {
                     Some(AppPointerAction::Down) => {
-                        changed |= handle_pointer_down(state, storage_handle, x, y)?;
+                        if state.menu.is_some() {
+                            changed |= handle_menu_pointer(state, x, y);
+                        } else if let Some(Dialog::Error { .. }) = state.dialog {
+                            // Click dismisses the failure note.
+                            state.dialog = None;
+                            changed = true;
+                        } else {
+                            changed |= handle_pointer_down(state, storage_handle, x, y)?;
+                        }
                     }
                     Some(AppPointerAction::Move) => {
                         changed |= handle_pointer_move(state, x, y);
                     }
                     Some(AppPointerAction::Up) => {
-                        changed |= end_press(state);
+                        changed |= handle_pointer_up(state, storage_handle)?;
                     }
                     Some(AppPointerAction::Scroll) => {
                         if detail > 0 {
@@ -86,12 +114,17 @@ pub(crate) fn poll_control(
                     ui::decode_app_key_action(message.words[0]),
                     Some(AppKeyAction::Down)
                 ) {
+                    let mut ui_out = UiOut {
+                        buffers,
+                        presenter,
+                    };
                     changed |= handle_key_down(
                         state,
                         storage_handle,
                         desktop_handle,
                         message.words[1] as u32,
                         message.words.get(2).copied().unwrap_or(0) as u32,
+                        Some(&mut ui_out),
                     )?;
                 }
             }
@@ -154,20 +187,23 @@ fn handle_pointer_down(
         return Ok(false);
     }
 
-    state.selected_index = index;
-    ensure_selected_visible(state);
     let pressed_entry = state.entries[index];
-    if matches!(
-        pressed_entry.kind,
-        crate::state::EntryKind::Parent | crate::state::EntryKind::Directory
-    ) {
+    if pressed_entry.kind == EntryKind::Parent {
+        // The `..` row keeps its instant-navigate shortcut.
+        state.selected_index = index;
+        ensure_selected_visible(state);
         if open_selected(state, storage_handle).is_err() {
             state.load_failed = true;
         }
-    } else {
-        // Press on a file row may become a drag once the pointer travels.
-        state.press = Some(Press { index, x, y });
+        return Ok(true);
     }
+
+    // Files and directories arm a press: quick release clicks, pointer
+    // travel on files becomes a drag, and a second click on the same row
+    // opens its context menu.
+    state.selected_index = index;
+    ensure_selected_visible(state);
+    state.press = Some(Press { index, x, y });
     Ok(true)
 }
 
@@ -206,13 +242,72 @@ fn end_press(state: &mut ExplorerState) -> bool {
     was_dragging
 }
 
+/// Pointer-up resolves a press into a click: navigation for directories,
+/// selection for files, and a context menu when the click lands on the
+/// row that was already awaiting a second click.
+fn handle_pointer_up(
+    state: &mut ExplorerState,
+    storage_handle: rt::Handle,
+) -> rt::Result<bool> {
+    let Some(press) = state.press.take() else {
+        return Ok(false);
+    };
+    if state.dragging {
+        state.dragging = false;
+        state.await_context = None;
+        return Ok(false);
+    }
+    if press.index >= state.entry_count {
+        state.await_context = None;
+        return Ok(false);
+    }
+
+    let kind = state.entries[press.index].kind;
+    let second_click = state.await_context == Some(press.index);
+    state.await_context = None;
+    if second_click && kind != EntryKind::Parent {
+        state.menu = Some((press.index, 0));
+        return Ok(true);
+    }
+
+    match kind {
+        EntryKind::Parent => Ok(false),
+        EntryKind::Directory => {
+            state.await_context = Some(press.index);
+            if open_selected(state, storage_handle).is_err() {
+                state.load_failed = true;
+            }
+            Ok(true)
+        }
+        EntryKind::File => {
+            state.await_context = Some(press.index);
+            Ok(true)
+        }
+    }
+}
+
 fn handle_key_down(
     state: &mut ExplorerState,
     storage_handle: rt::Handle,
     desktop_handle: rt::Handle,
     key_code: u32,
     modifiers: u32,
+    mut progress_ui: Option<&mut UiOut>,
 ) -> rt::Result<bool> {
+    // Modal layers swallow input before list handling.
+    if let Some(consumed) =
+        handle_dialog_key(state, storage_handle, key_code, modifiers, progress_ui.as_deref_mut())?
+    {
+        return Ok(consumed);
+    }
+    if state.menu.is_some() {
+        return Ok(handle_menu_key(
+            state,
+            storage_handle,
+            key_code,
+            progress_ui.as_deref_mut(),
+        ));
+    }
     if key_code == KEY_R {
         state.open_with_pick = None;
         state.view_mode = match state.view_mode {
@@ -280,9 +375,32 @@ fn handle_key_down(
         }
         KEY_O => cycle_open_with_pick(state),
         KEY_D => commit_open_with_default(state),
+        KEY_DELETE => {
+            if let Some(index) = deletable_selection(state) {
+                state.dialog = Some(Dialog::ConfirmDelete { index });
+                state.await_context = None;
+                return Ok(true);
+            }
+        }
+        KEY_F2 => {
+            if let Some(index) = deletable_selection(state) {
+                begin_rename_prompt(state, index);
+                return Ok(true);
+            }
+        }
+        KEY_N if modifiers & MOD_CTRL != 0 => {
+            let purpose = if modifiers & MOD_SHIFT != 0 {
+                crate::state::PromptPurpose::NewFile
+            } else {
+                crate::state::PromptPurpose::NewFolder
+            };
+            begin_new_entry_prompt(state, purpose);
+            return Ok(true);
+        }
         KEY_ESC => {
             let had_pick = state.open_with_pick.take().is_some();
             let was_dragging = end_press(state);
+            state.await_context = None;
             if had_pick || was_dragging {
                 return Ok(true);
             }
@@ -290,6 +408,467 @@ fn handle_key_down(
         _ => {}
     }
     Ok(false)
+}
+
+/// Index of the selected entry when an op may target it (never the
+/// `..` parent row, never an empty list).
+fn deletable_selection(state: &ExplorerState) -> Option<usize> {
+    if state.entry_count == 0 {
+        return None;
+    }
+    let index = state.selected_index.min(state.entry_count - 1);
+    (state.entries[index].kind != EntryKind::Parent).then_some(index)
+}
+
+/// Fills the prompt with the first unused "New Folder"/"new.txt" variant
+/// derived from the current listing.
+fn begin_new_entry_prompt(state: &mut ExplorerState, purpose: crate::state::PromptPurpose) {
+    let base: &[u8] = match purpose {
+        crate::state::PromptPurpose::NewFile => b"new.txt",
+        _ => b"New Folder",
+    };
+    let taken = listing_taken_names(state);
+    let variant = ops::next_available_name(base, taken).unwrap_or(0);
+    state.prompt_len = ops::variant_name(base, variant, &mut state.prompt_input).unwrap_or(0);
+    state.menu = None;
+    state.await_context = None;
+    state.dialog = Some(Dialog::Prompt {
+        purpose,
+        index: usize::MAX,
+    });
+}
+
+// ---------------------------------------------------------------------
+// Modal dialog + context menu handling
+// ---------------------------------------------------------------------
+
+/// Routes a key into the active modal. Returns `Some(consumed)` when a
+/// dialog was open (consumed = whether the frame changed).
+fn handle_dialog_key(
+    state: &mut ExplorerState,
+    storage_handle: rt::Handle,
+    key_code: u32,
+    modifiers: u32,
+    progress_ui: Option<&mut UiOut>,
+) -> rt::Result<Option<bool>> {
+    let Some(dialog) = state.dialog else {
+        return Ok(None);
+    };
+    match dialog {
+        Dialog::Error { .. } => {
+            // Any key dismisses the failure note.
+            state.dialog = None;
+            Ok(Some(true))
+        }
+        Dialog::Progress { .. } => Ok(Some(true)),
+        Dialog::ConfirmDelete { index } => {
+            match key_code {
+                KEY_ENTER => {
+                    run_delete(state, storage_handle, index);
+                }
+                KEY_ESC => state.dialog = None,
+                _ => {}
+            }
+            Ok(Some(true))
+        }
+        Dialog::Prompt { purpose, index } => {
+            match key_code {
+                KEY_ESC => {
+                    state.dialog = None;
+                    state.prompt_len = 0;
+                }
+                KEY_ENTER => {
+                    commit_prompt(state, storage_handle, purpose, index, progress_ui)?;
+                }
+                KEY_BACKSPACE => {
+                    state.prompt_len = state.prompt_len.saturating_sub(1);
+                    state.prompt_input[state.prompt_len] = 0;
+                }
+                _ => {
+                    if let Some(character) = ops::scancode_to_char(key_code, modifiers) {
+                        if let Some(len) =
+                            ops::prompt_push(&mut state.prompt_input, state.prompt_len, character)
+                        {
+                            state.prompt_len = len;
+                        }
+                    }
+                }
+            }
+            Ok(Some(true))
+        }
+    }
+}
+
+/// Deletes the confirmed entry and reloads; failures become friendly
+/// error dialogs instead of crashes.
+fn run_delete(state: &mut ExplorerState, storage_handle: rt::Handle, index: usize) {
+    if index >= state.entry_count {
+        state.dialog = None;
+        return;
+    }
+    let entry = state.entries[index];
+    let mut name = [0u8; ops::NAME_MAX];
+    let raw = entry_name_bytes(&entry);
+    let len = raw.len().min(name.len());
+    name[..len].copy_from_slice(&raw[..len]);
+
+    match ops::delete_entry(
+        storage_handle,
+        &state.current_path[..state.current_path_len],
+        &name[..len],
+    ) {
+        Ok(()) => {
+            state.dialog = None;
+            if reopen_directory(state, storage_handle).and_then(|_| reload_directory(state)).is_err() {
+                state.load_failed = true;
+            }
+        }
+        Err(error) => {
+            state.dialog = Some(Dialog::Error {
+                message: ops::friendly_error(error),
+            });
+        }
+    }
+}
+
+/// Commits a prompt per its purpose; all failures surface as dialogs.
+fn commit_prompt(
+    state: &mut ExplorerState,
+    storage_handle: rt::Handle,
+    purpose: crate::state::PromptPurpose,
+    index: usize,
+    progress_ui: Option<&mut UiOut>,
+) -> rt::Result<()> {
+    let name_len = state.prompt_len;
+    let mut name = [0u8; ops::NAME_MAX];
+    name[..name_len].copy_from_slice(&state.prompt_input[..name_len]);
+    let name = &name[..name_len];
+
+    let parent_len = state.current_path_len;
+    let mut parent = [0u8; crate::state::MAX_STORAGE_PATH];
+    parent[..parent_len].copy_from_slice(&state.current_path[..parent_len]);
+    let parent = &parent[..parent_len];
+
+    if let Err(error) = ops::validate_entry_name(name) {
+        state.dialog = Some(Dialog::Error {
+            message: ops::friendly_error(error),
+        });
+        return Ok(());
+    }
+
+    match purpose {
+        crate::state::PromptPurpose::NewFolder | crate::state::PromptPurpose::NewFile => {
+            let kind = match purpose {
+                crate::state::PromptPurpose::NewFolder => EntryKind::Directory,
+                _ => EntryKind::File,
+            };
+            if listing_taken_names(state)(name) {
+                state.dialog = Some(Dialog::Error {
+                    message: ops::friendly_error(OpError::Exists),
+                });
+                return Ok(());
+            }
+            finish_simple_op(state, ops::create_entry(storage_handle, parent, name, kind));
+        }
+        crate::state::PromptPurpose::Rename => {
+            if index >= state.entry_count {
+                state.dialog = None;
+                return Ok(());
+            }
+            let source = state.entries[index];
+            let kind = source.kind;
+            let mut src_path = [0u8; crate::state::MAX_STORAGE_PATH];
+            let src_len = source.path_len.min(src_path.len());
+            src_path[..src_len].copy_from_slice(&source.path[..src_len]);
+            run_chunked_op(state, storage_handle, progress_ui, |progress| {
+                ops::move_entry(storage_handle, kind, &src_path, parent, name, progress)
+            });
+        }
+        crate::state::PromptPurpose::MoveTo => {
+            if index >= state.entry_count {
+                state.dialog = None;
+                return Ok(());
+            }
+            let source = state.entries[index];
+            let kind = source.kind;
+            let mut src_path = [0u8; crate::state::MAX_STORAGE_PATH];
+            let src_len = source.path_len.min(src_path.len());
+            src_path[..src_len].copy_from_slice(&source.path[..src_len]);
+            let segments = match ops::split_segments(&src_path) {
+                Ok(segments) => segments,
+                Err(error) => {
+                    state.dialog = Some(Dialog::Error {
+                        message: ops::friendly_error(error),
+                    });
+                    return Ok(());
+                }
+            };
+            // Destination dir text from the prompt (root allowed as "").
+            let mut dst_parent = [0u8; crate::state::MAX_STORAGE_PATH];
+            dst_parent[..name_len].copy_from_slice(name);
+            let dst_len = if name_len > 0 && dst_parent[name_len - 1] != b'/' && name_len < dst_parent.len()
+            {
+                dst_parent[name_len] = b'/';
+                name_len + 1
+            } else {
+                name_len
+            };
+            run_chunked_op(state, storage_handle, progress_ui, |progress| {
+                ops::move_entry(
+                    storage_handle,
+                    kind,
+                    &src_path,
+                    &dst_parent[..dst_len],
+                    &segments.name[..segments.name_len],
+                    progress,
+                )
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Creates/reloads wrapper for non-copy operations.
+fn finish_simple_op(state: &mut ExplorerState, result: Result<(), OpError>) {
+    match result {
+        Ok(()) => {
+            state.dialog = None;
+            state.prompt_len = 0;
+        }
+        Err(error) => {
+            state.dialog = Some(Dialog::Error {
+                message: ops::friendly_error(error),
+            });
+        }
+    }
+}
+
+/// Runs a copy/move with live progress feedback (bounded render cadence)
+/// and maps the outcome onto dialog state plus a directory reload.
+fn run_chunked_op(
+    state: &mut ExplorerState,
+    storage_handle: rt::Handle,
+    progress_ui: Option<&mut UiOut>,
+    run: impl FnOnce(&mut dyn FnMut(CopyProgress)) -> Result<(), OpError>,
+) {
+    let mut ui_cell = progress_ui;
+    let mut ticks_without_render = 0usize;
+    {
+        let mut progress = |tick: CopyProgress| {
+            state.dialog = Some(Dialog::Progress {
+                done: tick.chunks_done,
+                total: tick.total_chunks,
+            });
+            ticks_without_render += 1;
+            if ticks_without_render >= PROGRESS_RENDER_EVERY {
+                ticks_without_render = 0;
+                if let Some(out) = ui_cell.as_deref_mut() {
+                    let _ = out.render(state);
+                }
+            }
+        };
+        let outcome = run(&mut progress);
+        match outcome {
+            Ok(()) => {
+                state.dialog = None;
+                state.menu = None;
+                state.await_context = None;
+                state.prompt_len = 0;
+            }
+            Err(error) => {
+                state.dialog = Some(Dialog::Error {
+                    message: ops::friendly_error(error),
+                });
+                return;
+            }
+        }
+    }
+    if reopen_directory(state, storage_handle).is_ok() {
+        let _ = reload_directory(state);
+    }
+}
+
+/// Keyboard navigation inside the open context menu.
+fn handle_menu_key(
+    state: &mut ExplorerState,
+    storage_handle: rt::Handle,
+    key_code: u32,
+    progress_ui: Option<&mut UiOut>,
+) -> bool {
+    let Some((index, cursor)) = state.menu else {
+        return false;
+    };
+    let count = crate::state::MENU_ACTION_COUNT;
+    match key_code {
+        KEY_UP => {
+            state.menu = Some((index, (cursor + count - 1) % count));
+            true
+        }
+        KEY_DOWN => {
+            state.menu = Some((index, (cursor + 1) % count));
+            true
+        }
+        KEY_ESC => {
+            state.menu = None;
+            true
+        }
+        KEY_ENTER => {
+            let action = MenuAction::ALL[cursor.min(count - 1)];
+            execute_menu_action(state, storage_handle, index, action, progress_ui);
+            true
+        }
+        _ => true,
+    }
+}
+
+/// Pointer equivalent of menu Enter: clicking a drawn action row.
+fn handle_menu_pointer(state: &mut ExplorerState, x: i32, y: i32) -> bool {
+    let Some((index, _)) = state.menu else {
+        return false;
+    };
+    match menu_hit(x, y) {
+        Some(row) => {
+            let action = MenuAction::ALL[row.min(crate::state::MENU_ACTION_COUNT - 1)];
+            execute_menu_action(state, rt::INVALID_HANDLE, index, action, None);
+            true
+        }
+        None => {
+            // Click outside the box closes it.
+            state.menu = None;
+            true
+        }
+    }
+}
+
+fn execute_menu_action(
+    state: &mut ExplorerState,
+    storage_handle: rt::Handle,
+    index: usize,
+    action: MenuAction,
+    progress_ui: Option<&mut UiOut>,
+) {
+    match action {
+        MenuAction::Delete => {
+            state.menu = None;
+            state.dialog = Some(Dialog::ConfirmDelete { index });
+        }
+        MenuAction::Rename => begin_rename_prompt(state, index),
+        MenuAction::Duplicate => {
+            state.menu = None;
+            duplicate_entry(state, storage_handle, index, progress_ui);
+        }
+        MenuAction::MoveTo => begin_move_prompt(state, index),
+    }
+}
+
+/// Opens the move prompt prefilled with the entry's parent directory so
+/// renaming the directory segment relocates the entry.
+fn begin_move_prompt(state: &mut ExplorerState, index: usize) {
+    if index >= state.entry_count {
+        return;
+    }
+    state.prompt_len = 0;
+    state.menu = None;
+    state.await_context = None;
+    state.dialog = Some(Dialog::Prompt {
+        purpose: crate::state::PromptPurpose::MoveTo,
+        index,
+    });
+}
+
+/// Copies an entry next to itself under the first unused name variant.
+fn duplicate_entry(
+    state: &mut ExplorerState,
+    storage_handle: rt::Handle,
+    index: usize,
+    progress_ui: Option<&mut UiOut>,
+) {
+    if index >= state.entry_count {
+        return;
+    }
+    let source = state.entries[index];
+    let kind = source.kind;
+    let mut src_path = [0u8; crate::state::MAX_STORAGE_PATH];
+    let src_len = source.path_len.min(src_path.len());
+    src_path[..src_len].copy_from_slice(&source.path[..src_len]);
+
+    let base_name = entry_name_bytes(&source);
+    let mut base = [0u8; ops::NAME_MAX];
+    let base_len = base_name.len().min(base.len());
+    base[..base_len].copy_from_slice(&base_name[..base_len]);
+    let taken = listing_taken_names(state);
+    let variant = match ops::next_available_name(&base[..base_len], taken) {
+        Ok(variant) => variant,
+        Err(error) => {
+            state.dialog = Some(Dialog::Error {
+                message: ops::friendly_error(error),
+            });
+            return;
+        }
+    };
+    let mut target = [0u8; ops::NAME_MAX];
+    let target_len =
+        match ops::variant_name(&base[..base_len], variant, &mut target) {
+            Ok(len) => len,
+            Err(error) => {
+                state.dialog = Some(Dialog::Error {
+                    message: ops::friendly_error(error),
+                });
+                return;
+            }
+        };
+
+    let parent_len = state.current_path_len;
+    let mut parent = [0u8; crate::state::MAX_STORAGE_PATH];
+    parent[..parent_len].copy_from_slice(&state.current_path[..parent_len]);
+
+    run_chunked_op(state, storage_handle, progress_ui, |progress| {
+        if kind == EntryKind::Directory {
+            ops::copy_tree(
+                storage_handle,
+                &src_path,
+                &parent[..parent_len],
+                &target[..target_len],
+                0,
+                progress,
+            )
+        } else {
+            ops::copy_file(
+                storage_handle,
+                &src_path,
+                &parent[..parent_len],
+                &target[..target_len],
+                progress,
+            )
+            .map(|_| ())
+        }
+    });
+}
+
+/// Closure over the current listing matching any existing entry name.
+fn listing_taken_names(
+    state: &ExplorerState,
+) -> impl FnMut(&[u8]) -> bool + '_ {
+    move |candidate: &[u8]| {
+        (0..state.entry_count).any(|index| {
+            let entry = state.entries[index];
+            entry.kind != EntryKind::Parent && entry_name_bytes(&entry) == candidate
+        })
+    }
+}
+
+/// Opens the rename prompt prefilled with the entry's current name.
+fn begin_rename_prompt(state: &mut ExplorerState, index: usize) {
+    let name = entry_name_bytes(&state.entries[index]);
+    let len = name.len().min(crate::ops::NAME_MAX);
+    state.prompt_input[..len].copy_from_slice(&name[..len]);
+    state.prompt_len = len;
+    state.menu = None;
+    state.await_context = None;
+    state.dialog = Some(Dialog::Prompt {
+        purpose: crate::state::PromptPurpose::Rename,
+        index,
+    });
 }
 
 fn handle_key_recent(
@@ -474,6 +1053,11 @@ mod tests {
             assoc: AssocTable::empty(),
             recent: crate::recent::RecentRing::empty(),
             persist_dir: rt::INVALID_HANDLE,
+            dialog: None,
+            prompt_input: [0u8; crate::ops::NAME_MAX],
+            prompt_len: 0,
+            menu: None,
+            await_context: None,
         };
         state.entries[0].kind = EntryKind::File;
         state.entries[0].path_len = path.len();
@@ -513,8 +1097,9 @@ mod tests {
         let mut state = file_state(b"home/docs/");
         state.entries[0].kind = EntryKind::Directory;
         assert!(handle_pointer_down(&mut state, rt::INVALID_HANDLE, 40, 70).unwrap());
-        assert!(state.press.is_none(), "directory rows are not draggable");
-        assert!(!handle_pointer_move(&mut state, 90, 90));
+        assert!(state.press.is_some(), "directories arm presses for clicks");
+        assert!(!handle_pointer_move(&mut state, 90, 90), "but never drag");
+        assert!(!state.dragging);
     }
 
     #[test]
@@ -527,7 +1112,8 @@ mod tests {
                 rt::INVALID_HANDLE,
                 rt::INVALID_HANDLE,
                 KEY_ESC,
-                0
+                0,
+                None
             )
             .unwrap()
         );
@@ -572,7 +1158,7 @@ mod tests {
     fn recent_toggle_and_escape_return_to_directory_view() {
         let mut state = file_state(b"home/notes.txt");
         assert!(
-            handle_key_down(&mut state, rt::INVALID_HANDLE, rt::INVALID_HANDLE, KEY_R, 0).unwrap()
+            handle_key_down(&mut state, rt::INVALID_HANDLE, rt::INVALID_HANDLE, KEY_R, 0, None).unwrap()
         );
         assert_eq!(state.view_mode, ViewMode::Recent);
         assert!(
@@ -581,10 +1167,115 @@ mod tests {
                 rt::INVALID_HANDLE,
                 rt::INVALID_HANDLE,
                 KEY_ESC,
-                0
+                0,
+                None
             )
             .unwrap()
         );
         assert_eq!(state.view_mode, ViewMode::Directory);
+    }
+
+    fn key(state: &mut ExplorerState, code: u32, modifiers: u32) -> bool {
+        handle_key_down(state, rt::INVALID_HANDLE, rt::INVALID_HANDLE, code, modifiers, None).unwrap()
+    }
+
+    #[test]
+    fn delete_key_arms_confirm_esc_cancels_without_touching_storage() {
+        let mut state = file_state(b"home/notes.txt");
+        assert!(key(&mut state, KEY_DELETE, 0));
+        assert_eq!(
+            state.dialog,
+            Some(crate::state::Dialog::ConfirmDelete { index: 0 })
+        );
+        assert!(key(&mut state, KEY_ESC, 0));
+        assert_eq!(state.dialog, None);
+    }
+
+    #[test]
+    fn confirm_delete_enter_surfaces_storage_failure_as_friendly_dialog() {
+        let mut state = file_state(b"home/notes.txt");
+        key(&mut state, KEY_DELETE, 0);
+        assert!(key(&mut state, KEY_ENTER, 0));
+        match state.dialog {
+            Some(crate::state::Dialog::Error { message }) => {
+                assert!(!message.is_empty());
+            }
+            other => panic!("expected error dialog, got {other:?}"),
+        }
+        // Any key dismisses the error.
+        assert!(key(&mut state, KEY_ENTER, 0));
+        assert_eq!(state.dialog, None);
+    }
+
+    #[test]
+    fn ctrl_n_prefills_unique_folder_prompt_and_esc_cancels() {
+        let mut state = file_state(b"home/docs/");
+        state.entries[0].kind = EntryKind::Directory;
+        assert!(key(&mut state, KEY_N, crate::state::MOD_CTRL));
+        assert_eq!(
+            state.dialog,
+            Some(crate::state::Dialog::Prompt {
+                purpose: crate::state::PromptPurpose::NewFolder,
+                index: usize::MAX,
+            }
+            )
+        );
+        assert_eq!(&state.prompt_input[..state.prompt_len], b"New Folder");
+        assert!(key(&mut state, KEY_ESC, 0));
+        assert_eq!(state.dialog, None);
+    }
+
+    #[test]
+    fn f2_prefills_rename_prompt_with_selected_entry_name() {
+        let mut state = file_state(b"home/notes.txt");
+        assert!(key(&mut state, KEY_F2, 0));
+        assert_eq!(
+            state.dialog,
+            Some(crate::state::Dialog::Prompt {
+                purpose: crate::state::PromptPurpose::Rename,
+                index: 0,
+            })
+        );
+        assert_eq!(&state.prompt_input[..state.prompt_len], b"notes.txt");
+    }
+
+    #[test]
+    fn typed_characters_append_to_active_prompt() {
+        let mut state = file_state(b"home/notes.txt");
+        key(&mut state, KEY_F2, 0);
+        let before = state.prompt_len;
+        assert!(key(&mut state, 33, 0)); // KEY_F -> 'f'
+        assert_eq!(state.prompt_len, before + 1);
+        assert_eq!(state.prompt_input[state.prompt_len - 1], b'f');
+        // Backspace pops it again.
+        assert!(key(&mut state, KEY_BACKSPACE, 0));
+        assert_eq!(state.prompt_len, before);
+    }
+
+    #[test]
+    fn second_click_on_same_row_opens_menu_and_first_click_does_not() {
+        let mut state = file_state(b"home/notes.txt");
+        assert!(handle_pointer_down(&mut state, rt::INVALID_HANDLE, 40, 70).unwrap());
+        assert!(state.menu.is_none());
+        assert!(handle_pointer_up(&mut state, rt::INVALID_HANDLE).unwrap());
+        assert_eq!(state.await_context, Some(0));
+        // Second press+up on the same row opens the context menu.
+        assert!(handle_pointer_down(&mut state, rt::INVALID_HANDLE, 40, 70).unwrap());
+        handle_pointer_up(&mut state, rt::INVALID_HANDLE).unwrap();
+        assert_eq!(state.menu, Some((0, 0)));
+        assert!(key(&mut state, KEY_ESC, 0));
+        assert_eq!(state.menu, None);
+    }
+
+    #[test]
+    fn menu_enter_on_delete_row_routes_into_confirm_dialog() {
+        let mut state = file_state(b"home/notes.txt");
+        state.menu = Some((0, 0)); // cursor on DELETE
+        assert!(key(&mut state, KEY_ENTER, 0));
+        assert_eq!(state.menu, None);
+        assert_eq!(
+            state.dialog,
+            Some(crate::state::Dialog::ConfirmDelete { index: 0 })
+        );
     }
 }

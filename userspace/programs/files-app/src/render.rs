@@ -40,6 +40,12 @@ pub(crate) fn render(
         ViewMode::Recent => draw_recent(bytes, state),
     }
     draw_footer(bytes, state);
+    if let Some((index, cursor)) = state.menu {
+        draw_menu(bytes, state, index, cursor);
+    }
+    if let Some(dialog) = state.dialog {
+        draw_dialog(bytes, state, dialog);
+    }
 
     presenter.present(
         buffer_slot,
@@ -339,8 +345,137 @@ fn selected_ext(state: &ExplorerState) -> Option<(usize, [u8; 16])> {
     Some((raw.len(), ext))
 }
 
-fn draw_entry_label(bytes: &mut [u8], entry: ExplorerEntry, x: i32, y: i32, color: u32) {
-    let mut label = FixedLogBuffer::<96>::new();
+/// Context menu overlay: header plus one row per action, cursor marked
+/// with '>'. Geometry mirrors state::menu_hit exactly.
+fn draw_menu(bytes: &mut [u8], state: &ExplorerState, index: usize, cursor: usize) {
+    let width = state.width.min(BUFFER_WIDTH) as usize;
+    let height = state.height.min(BUFFER_HEIGHT) as usize;
+    let box_w = crate::state::MENU_WIDTH as usize + 12;
+    let rows = crate::state::MENU_ACTION_COUNT as usize;
+    let box_h = crate::state::MENU_HEADER_H as usize + 4 + rows * ROW_HEIGHT + 6;
+    let x = crate::state::MENU_X.max(0) as usize;
+    let y = crate::state::MENU_Y.max(0) as usize;
+    ui::fill_rgba8888_rect(
+        bytes,
+        PIXEL_STRIDE,
+        width,
+        height,
+        x,
+        y,
+        box_w,
+        box_h,
+        ui::BG_WINDOW,
+    );
+    // Header strip.
+    ui::fill_rgba8888_rect(
+        bytes,
+        PIXEL_STRIDE,
+        width,
+        height,
+        x,
+        y,
+        box_w,
+        crate::state::MENU_HEADER_H as usize,
+        ui::BG_WINDOW_ALT,
+    );
+    text_at(bytes, x + 4, y + 3, "ACTIONS", ui::TEXT_PRIMARY);
+    for (row, action) in crate::state::MenuAction::ALL.iter().enumerate() {
+        let row_y = y + crate::state::MENU_HEADER_H as usize + 2 + row * ROW_HEIGHT;
+        let color = if row == cursor.min(rows - 1) {
+            ui::TEXT_PRIMARY
+        } else {
+            ui::TEXT_MUTED
+        };
+        let mut line = FixedLogBuffer::<40>::new();
+        let _ = if row == cursor.min(rows - 1) {
+            write!(line, "> {}", action.label())
+        } else {
+            write!(line, "  {}", action.label())
+        };
+        text_at(
+            bytes,
+            x + 6,
+            row_y,
+            str::from_utf8(line.as_bytes()).unwrap_or("?"),
+            color,
+        );
+    }
+    let _ = index;
+}
+
+/// Modal dialog overlay for confirm/prompt/error/progress states.
+fn draw_dialog(bytes: &mut [u8], state: &ExplorerState, dialog: crate::state::Dialog) {
+    let width = state.width.min(BUFFER_WIDTH) as usize;
+    let height = state.height.min(BUFFER_HEIGHT) as usize;
+    let box_w = 380usize;
+    let box_h = 16 * 3 + 18;
+    let x = width.saturating_sub(box_w) / 2;
+    let y = height.saturating_sub(box_h) / 2;
+    ui::fill_rgba8888_rect(bytes, PIXEL_STRIDE, width, height, x, y, box_w, box_h, ui::BG_WINDOW);
+    ui::fill_rgba8888_rect(bytes, PIXEL_STRIDE, width, height, x, y, box_w, 14, ui::BG_WINDOW_ALT);
+    text_at(bytes, x + 6, y + 3, dialog_title(dialog), ui::TEXT_PRIMARY);
+
+    let mut body = FixedLogBuffer::<96>::new();
+    let mut body2 = FixedLogBuffer::<96>::new();
+    let (line1, line2): (&str, &str) = match dialog {
+        crate::state::Dialog::ConfirmDelete { index } => {
+            let name = state
+                .entries
+                .get(index)
+                .map(entry_name_bytes)
+                .and_then(|name| core::str::from_utf8(name).ok())
+                .unwrap_or("?");
+            let _ = write!(body, "DELETE {name}? ENTER=YES ESC=NO");
+            ("", str::from_utf8(body.as_bytes()).unwrap_or("DELETE?"))
+        }
+        crate::state::Dialog::Prompt { purpose, .. } => {
+            let typed_len = state.prompt_len.min(state.prompt_input.len());
+            let _ = write!(
+                body2,
+                "{} {}_",
+                purpose.title(),
+                core::str::from_utf8(&state.prompt_input[..typed_len]).unwrap_or("")
+            );
+            ("ENTER=OK ESC=CANCEL", str::from_utf8(body2.as_bytes()).unwrap_or("INPUT"))
+        }
+        crate::state::Dialog::Error { message } => (message, "PRESS ANY KEY"),
+        crate::state::Dialog::Progress { done, total } => {
+            let percent = crate::ops::progress_percent(done, total);
+            let filled = (percent as usize * 20 / 100).min(20);
+            let _ = write!(body, "{}% ", percent);
+            for index in 0..20 {
+                let _ = write!(body, "{}", if index < filled { '#' } else { '-' });
+            }
+            ("WORKING", str::from_utf8(body.as_bytes()).unwrap_or("0%"))
+        }
+    };
+    text_at(bytes, x + 8, y + 22, line1, ui::TEXT_PRIMARY);
+    if !line2.is_empty() {
+        text_at(bytes, x + 8, y + 36, line2, ui::TEXT_PRIMARY);
+    }
+}
+
+fn dialog_title(dialog: crate::state::Dialog) -> &'static str {
+    match dialog {
+        crate::state::Dialog::ConfirmDelete { .. } => "CONFIRM",
+        crate::state::Dialog::Prompt { .. } => "INPUT",
+        crate::state::Dialog::Error { .. } => "PROBLEM",
+        crate::state::Dialog::Progress { .. } => "PROGRESS",
+    }
+}
+
+fn text_at(bytes: &mut [u8], x: usize, y: usize, text: &str, color: u32) {
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        x as i32,
+        y as i32,
+        color,
+        text,
+    );
+}
+
+fn draw_entry_label(bytes: &mut [u8], entry: ExplorerEntry, x: i32, y: i32, color: u32) {    let mut label = FixedLogBuffer::<96>::new();
     if entry.kind == EntryKind::Parent {
         let _ = write!(label, "UP   ..");
     } else {

@@ -48,5 +48,8 @@ pub(crate) use lifecycle::{
 };
 #[cfg(test)]
 pub(crate) use notifications::mru_promote;
-pub(crate) use notifications::{dismiss_all_notifications, post_notification, push_recent_focus};
+pub(crate) use notifications::{
+    dismiss_all_notifications, dismiss_selected_notification, post_notification,
+    push_recent_focus,
+};
 pub(crate) use shadow::sync_focus_shadow;

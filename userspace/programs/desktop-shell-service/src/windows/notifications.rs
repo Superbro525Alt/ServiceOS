@@ -35,10 +35,32 @@ pub(crate) fn dismiss_all_notifications(state: &mut DesktopState) {
     state.overlay_selection = 0;
 }
 
+/// Removes the notification at `overlay_selection` from the history ring,
+/// closing the gap so ordering is preserved. Returns true when an entry was
+/// removed.
+pub(crate) fn dismiss_selected_notification(state: &mut DesktopState) -> bool {
+    let limit = state.notification_history_len.min(NOTIFICATION_HISTORY_MAX);
+    let index = state.overlay_selection.min(limit.saturating_sub(1));
+    if limit == 0 || !state.notification_history[index].occupied {
+        return false;
+    }
+    for slot in index..limit - 1 {
+        state.notification_history[slot] = state.notification_history[slot + 1];
+    }
+    state.notification_history[limit - 1] = NotificationEntry::empty();
+    state.notification_history_len = limit - 1;
+    state.overlay_selection = state
+        .overlay_selection
+        .min(state.notification_history_len.saturating_sub(1));
+    true
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn post_notification(
     state: &mut DesktopState,
     source_app: Option<DesktopAppId>,
     actionable: bool,
+    reopenable: bool,
     text: &[u8],
 ) -> rt::Result<()> {
     let live_len = text.len().min(MAX_NOTIFICATION_BYTES);
@@ -58,6 +80,7 @@ pub(crate) fn post_notification(
     state.notification_history[0].sequence = state.next_notification_sequence;
     state.notification_history[0].source_app = source_app;
     state.notification_history[0].actionable = actionable;
+    state.notification_history[0].reopenable = reopenable;
     state.notification_history[0].text_len = history_len;
     state.notification_history[0].text[..history_len].copy_from_slice(&text[..history_len]);
     state.next_notification_sequence = state.next_notification_sequence.saturating_add(1);

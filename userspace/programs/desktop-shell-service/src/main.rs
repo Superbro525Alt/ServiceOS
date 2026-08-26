@@ -4,6 +4,7 @@
 mod access;
 mod actions;
 mod chrome;
+mod crash;
 mod input;
 mod logging;
 mod media;

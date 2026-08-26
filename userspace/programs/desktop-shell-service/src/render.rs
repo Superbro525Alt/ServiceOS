@@ -703,7 +703,18 @@ fn render_notification_overlay(state: &DesktopState) -> rt::Result<()> {
         let _ = write!(&mut lines[0], "NO NOTIFICATIONS");
         count = 1;
     }
-    let _ = write!(&mut lines[count], "[A] DISMISS ALL   [F] FOCUS SOURCE");
+    let selected_reopenable = state
+        .notification_history
+        .get(state.overlay_selection.min(crate::NOTIFICATION_HISTORY_MAX - 1))
+        .is_some_and(|entry| {
+            entry.occupied && entry.reopenable && state.notification_history_len != 0
+        });
+    let footer = if selected_reopenable {
+        "[R] REOPEN  [D] DISMISS  [A] DISMISS ALL"
+    } else {
+        "[A] DISMISS ALL   [F] FOCUS SOURCE"
+    };
+    let _ = write!(&mut lines[count], "{footer}");
     render_overlay_panel(
         state,
         state.chrome.notifications_handle,

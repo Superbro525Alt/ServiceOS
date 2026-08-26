@@ -449,7 +449,7 @@ enum ContentOutcome {
 
 fn handle_content_intent_or_notify(state: &mut DesktopState, text: &[u8]) -> ContentOutcome {
     let Some(intent) = parse_content_intent(text) else {
-        if post_notification(state, None, false, text).is_err() {
+        if post_notification(state, None, false, false, text).is_err() {
             return ContentOutcome::Rejected;
         }
         return ContentOutcome::Notified;

@@ -59,6 +59,8 @@ pub(crate) const KEY_SPACE: u32 = 57;
 pub(crate) const KEY_V: u32 = 47;
 pub(crate) const KEY_A: u32 = 30;
 pub(crate) const KEY_F: u32 = 33;
+pub(crate) const KEY_R: u32 = 19;
+pub(crate) const KEY_D: u32 = 32;
 pub(crate) const KEY_N: u32 = 49;
 pub(crate) const KEY_M: u32 = 50;
 pub(crate) const KEY_UP: u32 = 103;
@@ -194,6 +196,7 @@ pub(crate) struct NotificationEntry {
     pub(crate) sequence: u32,
     pub(crate) source_app: Option<DesktopAppId>,
     pub(crate) actionable: bool,
+    pub(crate) reopenable: bool,
     pub(crate) text_len: usize,
     pub(crate) text: [u8; NOTIFICATION_HISTORY_TEXT_MAX],
 }
@@ -205,6 +208,7 @@ impl NotificationEntry {
             sequence: 0,
             source_app: None,
             actionable: false,
+            reopenable: false,
             text_len: 0,
             text: [0; NOTIFICATION_HISTORY_TEXT_MAX],
         }

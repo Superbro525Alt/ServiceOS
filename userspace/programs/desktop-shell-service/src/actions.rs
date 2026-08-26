@@ -479,7 +479,7 @@ fn lock_session_stub(state: &mut crate::DesktopState) -> rt::Result<u32> {
     state.overlay_selection = 0;
     state.switcher_selection = 0;
     state.palette_query_len = 0;
-    crate::windows::post_notification(state, None, false, b"SESSION LOCKED (SHELL STUB)")?;
+    crate::windows::post_notification(state, None, false, false, b"SESSION LOCKED (SHELL STUB)")?;
     Ok(crate::windows::focused_surface_id(state))
 }
 

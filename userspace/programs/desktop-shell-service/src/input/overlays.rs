@@ -51,6 +51,33 @@ pub(crate) fn focus_notification_source(state: &mut DesktopState) -> rt::Result<
     Ok(focused_surface_id(state))
 }
 
+/// Relaunches the crashed app behind the selected crash notification through
+/// the existing launch-or-focus path. Falls back to the focused surface when
+/// the selection is not a crash notice.
+pub(crate) fn reopen_crashed_notification_source(state: &mut DesktopState) -> rt::Result<u32> {
+    if let Some(entry) = selected_notification_entry(state) {
+        if entry.reopenable {
+            if let Some(app_id) = entry.source_app {
+                state.overlay_mode = OverlayMode::None;
+                state.overlay_selection = 0;
+                return launch_or_focus_app(state, app_id);
+            }
+        }
+    }
+    Ok(focused_surface_id(state))
+}
+
+/// Dismisses just the selected notification and refreshes the overlay.
+pub(crate) fn dismiss_selected_notification_now(state: &mut DesktopState) -> rt::Result<u32> {
+    crate::windows::dismiss_selected_notification(state);
+    if state.notification_history_len == 0 {
+        state.overlay_mode = OverlayMode::None;
+        state.overlay_selection = 0;
+    }
+    render_overlays_only(state)?;
+    Ok(focused_surface_id(state))
+}
+
 pub(crate) fn dismiss_all_notifications_now(state: &mut DesktopState) -> rt::Result<()> {
     crate::windows::dismiss_all_notifications(state);
     render_overlays_only(state)
@@ -58,7 +85,7 @@ pub(crate) fn dismiss_all_notifications_now(state: &mut DesktopState) -> rt::Res
 
 pub(crate) fn paste_clipboard_selection(state: &mut DesktopState, row: usize) -> rt::Result<u32> {
     if state.clipboard_service_handle == rt::INVALID_HANDLE {
-        post_notification(state, None, false, b"clipboard service unavailable")?;
+        post_notification(state, None, false, false, b"clipboard service unavailable")?;
         state.overlay_mode = OverlayMode::None;
         state.overlay_selection = 0;
         return Ok(focused_surface_id(state));
@@ -67,7 +94,7 @@ pub(crate) fn paste_clipboard_selection(state: &mut DesktopState, row: usize) ->
     rt::clipboard_activate(state.clipboard_service_handle, index as u32)?;
     state.overlay_mode = OverlayMode::None;
     state.overlay_selection = 0;
-    post_notification(state, None, false, b"clipboard selection activated")?;
+    post_notification(state, None, false, false, b"clipboard selection activated")?;
 
     if let Some(app_id) = state.focused_app {
         if let Some(slot) = app_slot_index(&state.apps, app_id) {
@@ -146,8 +173,13 @@ pub(super) fn handle_notification_overlay_key(
             }
             Ok(focused_surface_id(state))
         }
+        KEY_R => reopen_crashed_notification_source(state),
+        KEY_D => dismiss_selected_notification_now(state),
         KEY_ENTER => {
             if let Some(entry) = selected_notification_entry(state) {
+                if entry.reopenable {
+                    return reopen_crashed_notification_source(state);
+                }
                 if entry.actionable {
                     if let Some(app_id) = entry.source_app {
                         state.overlay_mode = OverlayMode::None;
@@ -200,7 +232,13 @@ pub(super) fn handle_media_overlay_key(state: &mut DesktopState, key_code: u32) 
                     state.master_muted = applied_muted;
                 }
                 Err(_) => {
-                    post_notification(state, None, false, b"audio service rejected volume change")?;
+                    post_notification(
+                        state,
+                        None,
+                        false,
+                        false,
+                        b"audio service rejected volume change",
+                    )?;
                 }
             }
             state.pending_media_refresh.set();
@@ -218,7 +256,13 @@ pub(super) fn handle_media_overlay_key(state: &mut DesktopState, key_code: u32) 
                     state.master_muted = applied_muted;
                 }
                 Err(_) => {
-                    post_notification(state, None, false, b"audio service rejected mute change")?;
+                    post_notification(
+                        state,
+                        None,
+                        false,
+                        false,
+                        b"audio service rejected mute change",
+                    )?;
                 }
             }
             state.pending_media_refresh.set();

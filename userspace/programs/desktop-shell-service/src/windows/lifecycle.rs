@@ -421,7 +421,7 @@ pub(crate) fn close_app(state: &mut DesktopState, app_id: DesktopAppId) -> rt::R
 
 pub(crate) fn refresh_apps(state: &mut DesktopState) -> rt::Result<()> {
     let mut changed = false;
-    let mut pending_fault_notice: Option<(DesktopAppId, FixedLogBuffer<MAX_NOTIFICATION_BYTES>)> =
+    let mut pending_fault_notice: Option<(DesktopAppId, bool, FixedLogBuffer<MAX_NOTIFICATION_BYTES>)> =
         None;
     let mut exited_app_to_clear: Option<DesktopAppId> = None;
     for index in 0..state.apps.len() {
@@ -472,21 +472,33 @@ pub(crate) fn refresh_apps(state: &mut DesktopState) -> rt::Result<()> {
         );
         if faulted {
             let mut message = FixedLogBuffer::<MAX_NOTIFICATION_BYTES>::new();
-            let _ = write!(
-                &mut message,
-                "{} faulted ({:#x})",
-                app_title(exited_app),
-                exit_code
-            );
-            pending_fault_notice = Some((exited_app, message));
+            // Packed user-fault exit words decode into a plain-language
+            // class explanation plus address info; anything else keeps the
+            // raw exit-code line.
+            let reopenable = match crate::crash::decode_user_fault_exit(exit_code) {
+                Some(fault) => {
+                    message = crate::crash::crash_notification_text(app_title(exited_app), &fault);
+                    true
+                }
+                None => {
+                    let _ = write!(
+                        &mut message,
+                        "{} faulted ({:#x})",
+                        app_title(exited_app),
+                        exit_code
+                    );
+                    false
+                }
+            };
+            pending_fault_notice = Some((exited_app, reopenable, message));
         }
         changed = true;
     }
     if let Some(exited_app) = exited_app_to_clear {
         clear_pending_resize(state, exited_app);
     }
-    if let Some((app_id, message)) = pending_fault_notice {
-        post_notification(state, Some(app_id), true, message.as_bytes())?;
+    if let Some((app_id, reopenable, message)) = pending_fault_notice {
+        post_notification(state, Some(app_id), true, reopenable, message.as_bytes())?;
     }
     if changed {
         let _ = crate::input::focus_next_visible_without_cycle(state);

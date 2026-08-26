@@ -1,5 +1,5 @@
 use alloc::collections::{BTreeMap, VecDeque};
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
 
 use crate::{
@@ -16,6 +16,57 @@ use super::{
 /// Number of per-CPU runnable queues. CPUs beyond this cap share the last
 /// queue; steal-on-empty keeps every queue drainable from any CPU.
 const RUNNABLE_QUEUE_CPUS: usize = 8;
+
+/// Work-stealing: an idle CPU may take up to this many threads per scan from
+/// other CPUs' queues.
+const STEAL_BATCH_MAX: usize = 2;
+
+/// A queued thread becomes stealable once it has sat runnable for at least
+/// this many consecutive scheduler ticks (~30 ms at the 100 Hz tick).
+const STEAL_MIN_IDLE_TICKS: u32 = 3;
+
+/// Push balancing runs every this many ticks (per-CPU tick accounting).
+const BALANCE_PERIOD_TICKS: u32 = 64;
+
+/// A queue is over-committed when its depth exceeds this ratio times the
+/// average depth across all queues; the excess is pushed to the emptiest.
+const BALANCE_OVERCOMMIT_RATIO: usize = 2;
+
+/// Number of participating CPUs for proactive load balancing. Defaults to 1,
+/// which disables the steal/balance passes entirely and keeps single-core
+/// scheduling byte-identical; the platform registers the real CPU count at
+/// SMP bring-up.
+static BALANCING_CPU_COUNT: AtomicUsize = AtomicUsize::new(1);
+
+/// Optional sink receiving periodic steal-statistics lines. Registration is
+/// the debug gate: without a sink nothing is formatted or emitted.
+static STEAL_STATS_EMITTER: Mutex<Option<fn(&StealStatsLine)>> = Mutex::new(None);
+
+/// Interval (in ticks) between steal-statistics emissions once a sink is
+/// registered.
+const STEAL_STATS_PERIOD_TICKS: u32 = 512;
+
+/// Snapshot of the work-stealing counters for one emission point.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StealStatsLine {
+    pub tick: u32,
+    pub steal_attempts: u64,
+    pub stolen_threads_total: u64,
+    pub stolen_per_cpu: [u64; RUNNABLE_QUEUE_CPUS],
+    pub rebalance_moves: u64,
+    pub queue_depths: [usize; RUNNABLE_QUEUE_CPUS],
+}
+
+/// Register the number of CPUs participating in proactive load balancing.
+/// Values below 2 disable the steal/balance passes (single-core default).
+pub fn register_balancing_cpu_count(count: usize) {
+    BALANCING_CPU_COUNT.store(count.clamp(1, RUNNABLE_QUEUE_CPUS), Ordering::SeqCst);
+}
+
+/// Register the debug sink that receives periodic steal statistics.
+pub fn register_steal_stats_emitter(emitter: fn(&StealStatsLine)) {
+    *STEAL_STATS_EMITTER.lock() = Some(emitter);
+}
 
 /// Optional hook supplying the calling CPU's index (wired from the arch
 /// layer's GS-based per-CPU data). Defaults to CPU 0, which keeps scheduler
@@ -40,6 +91,16 @@ struct ThreadRecord {
 struct SchedulerState {
     current: Option<ThreadId>,
     runnable_queues: [VecDeque<ThreadId>; RUNNABLE_QUEUE_CPUS],
+    /// Consecutive ticks each queued thread has waited without running.
+    /// Keys are exactly the queued threads; entries reset on re-enqueue.
+    queued_idle_ticks: BTreeMap<ThreadId, u32>,
+    /// Threads stolen by each CPU (both threshold steals and steal-on-empty).
+    stolen_per_cpu: [u64; RUNNABLE_QUEUE_CPUS],
+    steal_attempts: u64,
+    rebalance_moves: u64,
+    tick_counter: u32,
+    /// Round-robin scan start position per CPU for the next steal pass.
+    steal_scan_cursor: [usize; RUNNABLE_QUEUE_CPUS],
     threads: BTreeMap<ThreadId, ThreadRecord>,
     waiting_timers: BTreeMap<WakeToken, ThreadId>,
     waiting_receivers: BTreeMap<ObjectId, VecDeque<ThreadId>>,
@@ -80,6 +141,12 @@ impl Scheduler {
             state: Mutex::new(SchedulerState {
                 current: Some(bootstrap_id),
                 runnable_queues: [const { VecDeque::new() }; RUNNABLE_QUEUE_CPUS],
+                queued_idle_ticks: BTreeMap::new(),
+                stolen_per_cpu: [0; RUNNABLE_QUEUE_CPUS],
+                steal_attempts: 0,
+                rebalance_moves: 0,
+                tick_counter: 0,
+                steal_scan_cursor: [0; RUNNABLE_QUEUE_CPUS],
                 threads,
                 waiting_timers: BTreeMap::new(),
                 waiting_receivers: BTreeMap::new(),
@@ -109,7 +176,24 @@ impl Scheduler {
             object_waits: state.waiting_objects.values().map(VecDeque::len).sum(),
             context_switches: state.context_switches,
             preemption_pending: state.preemption_pending,
+            stolen_threads_total: state.stolen_per_cpu.iter().sum(),
+            rebalance_moves_total: state.rebalance_moves,
         }
+    }
+
+    /// Per-CPU steal counters and current queue depths (diagnostics path).
+    pub fn steal_stats_line(&self) -> StealStatsLine {
+        let state = self.state.lock();
+        build_stats_line(&state)
+    }
+
+    /// Run one work-stealing pass for the calling CPU: scan other queues in
+    /// round-robin order and take up to [`STEAL_BATCH_MAX`] threads whose
+    /// consecutive idle ticks exceed the threshold. Returns the count moved.
+    pub fn steal_idle_runnables(&self) -> usize {
+        let mut state = self.state.lock();
+        let cpu = current_cpu_index();
+        steal_idle_runnables_locked(&mut state, cpu)
     }
 
     pub fn register_thread(&self, thread: KernelObjectRef) -> Result<ThreadId, SchedulerError> {
@@ -644,6 +728,29 @@ impl Scheduler {
         if state.ticks_remaining == 0 && state.runnable_len() > 0 {
             state.preemption_pending = true;
         }
+
+        // Work-stealing accounting: age every queued thread one tick, then
+        // run the periodic push-balance pass when more than one CPU is
+        // participating (single-CPU systems skip it entirely, keeping their
+        // scheduling order byte-identical).
+        state.tick_counter = state.tick_counter.wrapping_add(1);
+        for idle in state.queued_idle_ticks.values_mut() {
+            *idle = idle.saturating_add(1);
+        }
+        let tick = state.tick_counter;
+        if BALANCING_CPU_COUNT.load(Ordering::SeqCst) > 1 {
+            if tick % BALANCE_PERIOD_TICKS == 0 {
+                let cpu = current_cpu_index();
+                let _stolen = steal_idle_runnables_locked(&mut state, cpu);
+                push_balance_locked(&mut state, cpu);
+            }
+            if tick % STEAL_STATS_PERIOD_TICKS == 0 {
+                if let Some(emitter) = STEAL_STATS_EMITTER.lock().as_ref() {
+                    let line = build_stats_line(&state);
+                    emitter(&line);
+                }
+            }
+        }
     }
 
     pub fn consume_preemption(&self) -> bool {
@@ -755,6 +862,7 @@ impl SchedulerState {
     fn push_runnable_on_current_cpu(&mut self, thread_id: ThreadId) {
         let cpu = current_cpu_index();
         self.runnable_queues[cpu].push_back(thread_id);
+        self.queued_idle_ticks.insert(thread_id, 0);
     }
 
     fn push_runnable_if_absent(&mut self, thread_id: ThreadId) {
@@ -770,15 +878,20 @@ impl SchedulerState {
     }
 
     /// Pop the next thread from the calling CPU's queue first, stealing
-    /// from the other queues (lowest index first) when it is empty.
+    /// from the other queues (lowest index first) when it is empty. The
+    /// fallback counts as a steal event for the calling CPU.
     fn pop_runnable_next(&mut self) -> Option<ThreadId> {
         let cpu = current_cpu_index();
         if let Some(thread_id) = self.runnable_queues[cpu].pop_front() {
+            self.queued_idle_ticks.remove(&thread_id);
             return Some(thread_id);
         }
-        self.runnable_queues
-            .iter_mut()
-            .find_map(VecDeque::pop_front)
+        let stolen = self.runnable_queues.iter_mut().find_map(VecDeque::pop_front);
+        if let Some(thread_id) = stolen {
+            self.queued_idle_ticks.remove(&thread_id);
+            self.stolen_per_cpu[cpu] = self.stolen_per_cpu[cpu].saturating_add(1);
+        }
+        stolen
     }
 
     fn runnable_front(&self) -> Option<&ThreadId> {
@@ -793,6 +906,160 @@ impl SchedulerState {
         for queue in &mut self.runnable_queues {
             queue.retain(|queued| *queued != thread_id);
         }
+        self.queued_idle_ticks.remove(&thread_id);
+    }
+}
+
+/// Steal up to [`STEAL_BATCH_MAX`] threads whose consecutive idle ticks
+/// exceed the threshold from other CPUs' queues, scanning victims in a
+/// round-robin order that advances per scan. Stolen threads are requeued on
+/// the stealing CPU with a fresh idle clock. Returns the number moved.
+fn steal_idle_runnables_locked(state: &mut SchedulerState, cpu: usize) -> usize {
+    state.steal_attempts = state.steal_attempts.saturating_add(1);
+
+    let mut candidates: alloc::vec::Vec<(usize, ThreadId)> = alloc::vec::Vec::new();
+    let start = state.steal_scan_cursor[cpu];
+    for offset in 1..=RUNNABLE_QUEUE_CPUS {
+        if candidates.len() >= STEAL_BATCH_MAX {
+            break;
+        }
+        let victim = (start + offset) % RUNNABLE_QUEUE_CPUS;
+        if victim == cpu {
+            continue;
+        }
+        for thread_id in state.runnable_queues[victim].iter().copied() {
+            if candidates.len() >= STEAL_BATCH_MAX {
+                break;
+            }
+            let idle = state.queued_idle_ticks.get(&thread_id).copied().unwrap_or(0);
+            if idle >= STEAL_MIN_IDLE_TICKS && thread_stealable(thread_id) {
+                candidates.push((victim, thread_id));
+            }
+        }
+    }
+    // Rotate the starting position so successive passes try a different
+    // victim first and no queue is systematically preferred.
+    state.steal_scan_cursor[cpu] = (start + 1) % RUNNABLE_QUEUE_CPUS;
+
+    let mut stolen = 0usize;
+    for (source, thread_id) in candidates {
+        if let Some(position) = state.runnable_queues[source]
+            .iter()
+            .position(|queued| *queued == thread_id)
+        {
+            state.runnable_queues[source].remove(position);
+            state.runnable_queues[cpu].push_back(thread_id);
+            state.queued_idle_ticks.insert(thread_id, 0);
+            state.stolen_per_cpu[cpu] = state.stolen_per_cpu[cpu].saturating_add(1);
+            stolen += 1;
+        }
+    }
+    stolen
+}
+
+/// Affinity gate for stealing. The kernel does not carry per-thread CPU
+/// affinity hints yet (no cpuset field exists on thread descriptors), so
+/// every queued thread is stealable; when hints land this is the single
+/// place that must consult them before a thread changes queues.
+fn thread_stealable(_thread_id: ThreadId) -> bool {
+    true
+}
+
+/// Push-balance pass: when the busiest queue's depth exceeds the
+/// over-commit ratio times the average depth across all queues, move its
+/// longest-idle threads to the emptiest queue. Returns the number moved.
+fn push_balance_locked(state: &mut SchedulerState, _cpu: usize) -> usize {
+    let depths: [usize; RUNNABLE_QUEUE_CPUS] = core::array::from_fn(|slot| {
+        state.runnable_queues[slot].len()
+    });
+    let Some((busiest, emptiest, moves)) = rebalance_plan(&depths) else {
+        return 0;
+    };
+
+    let candidates =
+        select_rebalance_candidates(&state.runnable_queues[busiest], &state.queued_idle_ticks, moves);
+    let mut moved = 0usize;
+    for thread_id in candidates {
+        if let Some(position) = state.runnable_queues[busiest]
+            .iter()
+            .position(|queued| *queued == thread_id)
+        {
+            state.runnable_queues[busiest].remove(position);
+            state.runnable_queues[emptiest].push_back(thread_id);
+            state.queued_idle_ticks.insert(thread_id, 0);
+            state.rebalance_moves = state.rebalance_moves.saturating_add(1);
+            moved += 1;
+        }
+    }
+    moved
+}
+
+/// Split math for one push-balance pass: `(busiest, emptiest, moves)` where
+/// `moves` shrinks the busiest queue down to the over-commit limit
+/// (`ratio * average`, average taken across every queue slot). `None` when
+/// there is nothing meaningful to spread (fewer than two runnable threads or
+/// no imbalance beyond the limit).
+fn rebalance_plan(depths: &[usize; RUNNABLE_QUEUE_CPUS]) -> Option<(usize, usize, usize)> {
+    let total: usize = depths.iter().sum();
+    if total < 2 {
+        return None;
+    }
+    let average = total / RUNNABLE_QUEUE_CPUS;
+    let limit = BALANCE_OVERCOMMIT_RATIO * average.max(1);
+
+    let mut busiest = 0;
+    let mut emptiest = 0;
+    for (slot, &depth) in depths.iter().enumerate() {
+        if depth > depths[busiest] {
+            busiest = slot;
+        }
+        if depth < depths[emptiest] {
+            emptiest = slot;
+        }
+    }
+    if busiest == emptiest || depths[busiest] <= limit {
+        return None;
+    }
+    let moves = depths[busiest].saturating_sub(limit).min(depths[busiest]);
+    Some((busiest, emptiest, moves))
+}
+
+/// Pick which threads leave a rebalanced queue first: the longest-idle ones
+/// go (front-of-queue position breaks ties toward older entries), preserving
+/// relative FIFO order among equals.
+fn select_rebalance_candidates(
+    queue: &VecDeque<ThreadId>,
+    idle_ticks: &BTreeMap<ThreadId, u32>,
+    count: usize,
+) -> alloc::vec::Vec<ThreadId> {
+    let mut ranked: alloc::vec::Vec<(u32, usize, ThreadId)> = queue
+        .iter()
+        .enumerate()
+        .map(|(position, thread_id)| {
+            (
+                idle_ticks.get(thread_id).copied().unwrap_or(0),
+                usize::MAX - position,
+                *thread_id,
+            )
+        })
+        .collect();
+    ranked.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
+    ranked.truncate(count);
+    ranked.into_iter().map(|(_, _, thread_id)| thread_id).collect()
+}
+
+fn build_stats_line(state: &SchedulerState) -> StealStatsLine {
+    let mut queue_depths = [0usize; RUNNABLE_QUEUE_CPUS];
+    for (slot, queue) in state.runnable_queues.iter().enumerate() {
+        queue_depths[slot] = queue.len();
+    }
+    StealStatsLine {
+        tick: state.tick_counter,
+        steal_attempts: state.steal_attempts,
+        stolen_threads_total: state.stolen_per_cpu.iter().sum(),
+        stolen_per_cpu: state.stolen_per_cpu,
+        rebalance_moves: state.rebalance_moves,
+        queue_depths,
     }
 }
 
@@ -884,5 +1151,192 @@ const fn trigger_to_wake_reason(trigger: ScheduleTrigger) -> ThreadWakeReason {
         ScheduleTrigger::InputWake => ThreadWakeReason::InputReady,
         ScheduleTrigger::ObjectWake => ThreadWakeReason::ObjectReady,
         ScheduleTrigger::Explicit => ThreadWakeReason::Explicit,
+    }
+}
+
+#[cfg(test)]
+mod steal_tests {
+    use super::*;
+    use crate::{
+        object::ObjectRegistry,
+        task::{SchedulingContext, ThreadDescriptor, ThreadMode},
+    };
+
+    fn descriptor() -> ThreadDescriptor {
+        ThreadDescriptor {
+            mode: ThreadMode::Kernel,
+            scheduling_context: SchedulingContext::round_robin_default(),
+            entry_instruction_pointer: None,
+            stack_pointer: None,
+        }
+    }
+
+    fn make_scheduler(worker_count: usize) -> (ObjectRegistry, Scheduler, alloc::vec::Vec<ThreadId>) {
+        let registry = ObjectRegistry::new();
+        let task = registry.create_bootstrap_root_task();
+        let bootstrap = registry.create_thread(&task, descriptor());
+        let scheduler = Scheduler::new(bootstrap);
+        let mut workers = alloc::vec::Vec::new();
+        for _ in 0..worker_count {
+            let thread = registry.create_thread(&task, descriptor());
+            workers.push(scheduler.register_thread(thread).expect("register worker"));
+        }
+        (registry, scheduler, workers)
+    }
+
+    #[cfg(test)]
+    static TEST_CPU_INDEX: AtomicUsize = AtomicUsize::new(0);
+
+    fn test_cpu_hook() -> usize {
+        TEST_CPU_INDEX.load(Ordering::SeqCst)
+    }
+
+    fn set_cpu(cpu: usize) {
+        TEST_CPU_INDEX.store(cpu, Ordering::SeqCst);
+        register_current_cpu_hook(test_cpu_hook);
+    }
+
+    fn make_runnable_on_cpu(scheduler: &Scheduler, cpu: usize, thread_id: ThreadId) {
+        set_cpu(cpu);
+        scheduler
+            .make_runnable(thread_id, ThreadWakeReason::Explicit)
+            .expect("make runnable");
+    }
+
+    /// Consolidated pass: the statics (CPU hook, balancing CPU count) are
+    /// process-global, so every scenario runs sequentially inside one test
+    /// and restores the defaults at the end.
+    #[test]
+    fn work_stealing_threshold_batch_round_robin_and_rebalance() {
+        // --- threshold gating and batch cap --------------------------------
+        let (_registry, scheduler, workers) = make_scheduler(4);
+        for worker in &workers {
+            make_runnable_on_cpu(&scheduler, 0, *worker);
+        }
+        assert_eq!(scheduler.snapshot().runnable_threads, 4);
+        assert_eq!(scheduler.steal_stats_line().queue_depths[0], 4);
+
+        scheduler.handle_tick();
+        scheduler.handle_tick();
+        set_cpu(1);
+        assert_eq!(
+            scheduler.steal_idle_runnables(),
+            0,
+            "threads below the idle threshold must not be stolen"
+        );
+        assert_eq!(scheduler.steal_stats_line().steal_attempts, 1);
+
+        scheduler.handle_tick(); // third consecutive idle tick
+        assert_eq!(
+            scheduler.steal_idle_runnables(),
+            STEAL_BATCH_MAX,
+            "idle CPU takes at most STEAL_BATCH_MAX threads per scan"
+        );
+        let stats = scheduler.steal_stats_line();
+        assert_eq!(stats.queue_depths[0], 2);
+        assert_eq!(stats.queue_depths[1], 2);
+        assert_eq!(stats.stolen_per_cpu[1], STEAL_BATCH_MAX as u64);
+        assert_eq!(stats.stolen_threads_total, STEAL_BATCH_MAX as u64);
+
+        // Freshly stolen threads reset their idle clock, but the threads
+        // still sitting on queue 0 keep aging: the next scan takes them too,
+        // and only then is everything fresh (no third consecutive steal).
+        assert_eq!(scheduler.steal_idle_runnables(), 2);
+        let stats = scheduler.steal_stats_line();
+        assert_eq!(stats.queue_depths[0], 0);
+        assert_eq!(stats.queue_depths[1], 4);
+        assert_eq!(scheduler.steal_idle_runnables(), 0);
+        assert_eq!(scheduler.snapshot().stolen_threads_total, 4);
+
+        // --- round-robin victim rotation -----------------------------------
+        let (_registry, rr_scheduler, rr_workers) = make_scheduler(4);
+        for worker in &rr_workers[0..2] {
+            make_runnable_on_cpu(&rr_scheduler, 0, *worker);
+        }
+        for worker in &rr_workers[2..4] {
+            make_runnable_on_cpu(&rr_scheduler, 1, *worker);
+        }
+        for _ in 0..STEAL_MIN_IDLE_TICKS {
+            rr_scheduler.handle_tick();
+        }
+        set_cpu(7);
+        assert_eq!(rr_scheduler.steal_idle_runnables(), 2);
+        let depths = rr_scheduler.steal_stats_line().queue_depths;
+        assert_eq!(depths[0], 2, "scan starting after CPU 7 hits queue 1 first");
+        assert_eq!(depths[1], 0);
+        assert_eq!(rr_scheduler.steal_idle_runnables(), 2);
+        let depths = rr_scheduler.steal_stats_line().queue_depths;
+        assert_eq!(depths[0], 0, "rotated scan reaches the remaining victim");
+        assert_eq!(rr_scheduler.steal_stats_line().stolen_per_cpu[7], 4);
+
+        // --- rebalance split math ------------------------------------------
+        assert_eq!(rebalance_plan(&[0; RUNNABLE_QUEUE_CPUS]), None);
+        assert_eq!(rebalance_plan(&[1, 1, 0, 0, 0, 0, 0, 0]), None);
+        assert_eq!(
+            rebalance_plan(&[3, 3, 0, 0, 0, 0, 0, 0]),
+            Some((0, 2, 1)),
+            "each queue above the over-commit limit sheds its excess"
+        );
+        assert_eq!(rebalance_plan(&[10, 0, 0, 0, 0, 0, 0, 0]), Some((0, 1, 8)));
+        assert_eq!(rebalance_plan(&[5, 3, 0, 0, 0, 0, 0, 0]), Some((0, 2, 3)));
+
+        // --- candidate ordering: longest-idle first ------------------------
+        let mut queue = VecDeque::new();
+        let a = ThreadId(101);
+        let b = ThreadId(102);
+        let c = ThreadId(103);
+        queue.push_back(a);
+        queue.push_back(b);
+        queue.push_back(c);
+        let mut idle = BTreeMap::new();
+        idle.insert(a, 5u32);
+        idle.insert(b, 9u32);
+        idle.insert(c, 9u32);
+        assert_eq!(
+            select_rebalance_candidates(&queue, &idle, 2),
+            alloc::vec![b, c]
+        );
+        assert_eq!(
+            select_rebalance_candidates(&queue, &idle, 99).len(),
+            3,
+            "count above queue depth moves everything available"
+        );
+
+        // --- periodic push balance through handle_tick ----------------------
+        register_balancing_cpu_count(RUNNABLE_QUEUE_CPUS);
+        let (_registry, bal_scheduler, bal_workers) = make_scheduler(6);
+        for worker in &bal_workers {
+            make_runnable_on_cpu(&bal_scheduler, 0, *worker);
+        }
+        for _ in 0..BALANCE_PERIOD_TICKS {
+            bal_scheduler.handle_tick();
+        }
+        let stats = bal_scheduler.steal_stats_line();
+        assert_eq!(stats.queue_depths[0], 2, "busiest queue shrinks to limit");
+        assert_eq!(
+            stats.queue_depths[1],
+            4,
+            "emptiest queue receives the excess"
+        );
+        assert_eq!(stats.rebalance_moves, 4);
+        assert_eq!(bal_scheduler.snapshot().rebalance_moves_total, 4);
+
+        register_balancing_cpu_count(1);
+        *CURRENT_CPU_HOOK.lock() = None;
+    }
+
+    #[test]
+    fn steal_on_empty_counts_as_steal_for_calling_cpu() {
+        let (_registry, scheduler, workers) = make_scheduler(2);
+        make_runnable_on_cpu(&scheduler, 3, workers[0]);
+        set_cpu(4); // own queue empty -> fallback pops from queue 3
+        let decision = scheduler
+            .block_current_on_receive(ObjectId(77))
+            .expect("block bootstrap");
+        assert_eq!(decision.next, Some(workers[0]));
+        let stats = scheduler.steal_stats_line();
+        assert_eq!(stats.stolen_per_cpu[4], 1);
+        assert_eq!(stats.queue_depths[3], 0);
+        *CURRENT_CPU_HOOK.lock() = None;
     }
 }

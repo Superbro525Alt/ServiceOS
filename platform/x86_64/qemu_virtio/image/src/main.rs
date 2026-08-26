@@ -16,7 +16,12 @@ use serviceos_kernel_arch_x86_64::{
     paging::ActivePageTable,
     smp, user,
 };
-use serviceos_kernel_core::{Kernel, syscall, user as kernel_user};
+use serviceos_kernel_core::{
+    Kernel,
+    syscall,
+    task as kernel_task,
+    user as kernel_user,
+};
 use serviceos_platform_qemu_virtio::{audio, block, boot, display, input, network, serial, sound};
 use spin::Once;
 use uefi::{Status, entry};
@@ -46,6 +51,17 @@ fn kernel_main() -> Status {
     smp::bring_up_application_processors(boot_info.rsdp_address);
     // Second kernel-thread wave for the APs to steal.
     kthread::spawn_pingpong_demo();
+    // Work-stealing load balancing: participate with every CPU the MADT
+    // reported. On single-core machines this stays at 1 and the scheduler's
+    // steal/balance passes remain disabled, keeping boot output identical.
+    // The periodic stats line is debug-gated (debug builds only).
+    let detected_cpus = serviceos_kernel_arch_x86_64::acpi::enabled_lapic_ids(boot_info.rsdp_address)
+        .map(|ids| ids.len())
+        .unwrap_or(1);
+    kernel_task::register_balancing_cpu_count(detected_cpus);
+    if cfg!(debug_assertions) {
+        kernel_task::register_steal_stats_emitter(emit_steal_stats);
+    }
     user::initialize();
     kernel_user::initialize_runtime();
     let _ = BOOT_STORE_IMAGE_SOURCE.call_once(|| boot_store);
@@ -280,6 +296,22 @@ fn kernel_main() -> Status {
     );
 
     cpu::halt_loop()
+}
+
+/// Debug-build sink for the scheduler's periodic steal-statistics line.
+fn emit_steal_stats(line: &kernel_task::StealStatsLine) {
+    log(
+        "sched",
+        format_args!(
+            "steal-stats tick={} attempts={} stolen={:?} total={} moves={} depths={:?}",
+            line.tick,
+            line.steal_attempts,
+            line.stolen_per_cpu,
+            line.stolen_threads_total,
+            line.rebalance_moves,
+            line.queue_depths
+        ),
+    );
 }
 
 #[panic_handler]

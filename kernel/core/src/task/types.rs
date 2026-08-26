@@ -165,6 +165,10 @@ pub struct SchedulerSnapshot {
     pub object_waits: usize,
     pub context_switches: u64,
     pub preemption_pending: bool,
+    /// Total threads moved onto a CPU by work-stealing (all mechanisms).
+    pub stolen_threads_total: u64,
+    /// Total threads relocated by the periodic push-balance pass.
+    pub rebalance_moves_total: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

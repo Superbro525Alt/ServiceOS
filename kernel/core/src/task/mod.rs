@@ -6,7 +6,10 @@ mod types;
 
 pub use kernel_context::{KernelContext, init_kernel_thread_context};
 pub use objects::{TaskObject, ThreadObject};
-pub use scheduler::{Scheduler, register_current_cpu_hook};
+pub use scheduler::{
+    Scheduler, StealStatsLine, register_balancing_cpu_count, register_current_cpu_hook,
+    register_steal_stats_emitter,
+};
 pub use system::{
     TaskSystem, initialize, notify_channel_ready, notify_input_ready, notify_object_ready,
     notify_packet_ready, system,

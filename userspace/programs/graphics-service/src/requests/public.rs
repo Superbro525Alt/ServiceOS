@@ -3,9 +3,13 @@ use serviceos_userspace_runtime as rt;
 
 use crate::{
     logging::emit_log,
+    outputs::{
+        OUTPUT_CREATE_REPLY_TAG, OUTPUT_CREATE_REQUEST_TAG, MAX_OUTPUTS, OutputCreateError,
+        OutputRegistry,
+    },
     types::{
         DirtyState, MAX_PUBLIC_REQUESTS_PER_TURN, MAX_SURFACE_LABELS, MAX_SURFACE_RECTS,
-        PresentStats, Surfaces, active_buffer, active_surface_count, attached_buffer_count,
+        Surfaces, active_buffer, active_surface_count, attached_buffer_count,
         close_pending_count, find_surface, surface_bounds,
     },
 };
@@ -13,10 +17,8 @@ use crate::{
 pub(crate) fn drain_public_requests(
     public_handle: rt::Handle,
     log_handle: rt::Handle,
-    output: rt::DisplayOutputInfo,
-    present_count: u64,
+    registry: &mut OutputRegistry,
     fence_completed: u64,
-    stats: &PresentStats,
     surfaces: &mut Surfaces,
     next_surface_id: &mut u32,
     dirty: &mut DirtyState,
@@ -35,10 +37,8 @@ pub(crate) fn drain_public_requests(
                 handle_public_request(
                     &request,
                     log_handle,
-                    output,
-                    present_count,
+                    registry,
                     fence_completed,
-                    stats,
                     surfaces,
                     next_surface_id,
                     dirty,
@@ -53,10 +53,8 @@ pub(crate) fn drain_public_requests(
 pub(crate) fn handle_public_request(
     request: &RawMessage,
     log_handle: rt::Handle,
-    output: rt::DisplayOutputInfo,
-    present_count: u64,
+    registry: &mut OutputRegistry,
     fence_completed: u64,
-    stats: &PresentStats,
     surfaces: &mut Surfaces,
     next_surface_id: &mut u32,
     dirty: &mut DirtyState,
@@ -67,10 +65,58 @@ pub(crate) fn handle_public_request(
                 return Ok(());
             }
             let reply_handle = request.handles[0];
+            let mut ids = [0u32; MAX_OUTPUTS];
+            let count = registry.enumerate_ids(&mut ids);
             let mut reply = RawMessage::empty(GraphicsTag::OutputListReply as u32);
-            reply.word_count = 2;
+            reply.word_count = (2 + count) as u32;
             reply.words[0] = GraphicsStatus::Ok as u32 as u64;
-            reply.words[1] = 1;
+            reply.words[1] = count as u64;
+            for index in 0..count {
+                reply.words[2 + index] = ids[index] as u64;
+            }
+            let _ = rt::channel_send(reply_handle, &reply);
+            let _ = rt::handle_close(reply_handle);
+        }
+        x if x == OUTPUT_CREATE_REQUEST_TAG as u32 => {
+            if request.word_count < 3 || request.handle_count < 1 {
+                return Ok(());
+            }
+            let reply_handle = request.handles[0];
+            let width = request.words[1] as u32;
+            let height = request.words[2] as u32;
+            let mut reply = RawMessage::empty(OUTPUT_CREATE_REPLY_TAG as u32);
+            reply.word_count = 2;
+            match registry.primary().map(|slot| slot.info) {
+                Some(template) => match registry.create_virtual_mirror(&template, width, height) {
+                    Ok(id) => {
+                        reply.words[0] = GraphicsStatus::Ok as u32 as u64;
+                        reply.words[1] = id as u64;
+                        *dirty = DirtyState::Full {
+                            immediate: true,
+                        };
+                        let _ = rt::write_logf(
+                            "graphics",
+                            format_args!(
+                                "multi-output: virtual mirror output id={} created at {}x{} \
+                                 (memory-backed mirror of primary)",
+                                id, width, height
+                            ),
+                        );
+                    }
+                    Err(OutputCreateError::CapacityExceeded) => {
+                        reply.word_count = 1;
+                        reply.words[0] = GraphicsStatus::CapacityExceeded as u32 as u64;
+                    }
+                    Err(OutputCreateError::GeometryUnsupported) => {
+                        reply.word_count = 1;
+                        reply.words[0] = GraphicsStatus::Denied as u32 as u64;
+                    }
+                },
+                None => {
+                    reply.word_count = 1;
+                    reply.words[0] = GraphicsStatus::NotFound as u32 as u64;
+                }
+            }
             let _ = rt::channel_send(reply_handle, &reply);
             let _ = rt::handle_close(reply_handle);
         }
@@ -81,25 +127,31 @@ pub(crate) fn handle_public_request(
             let reply_handle = request.handles[0];
             let mut reply = RawMessage::empty(GraphicsTag::OutputStatusReply as u32);
             reply.word_count = 16;
-            if request.words[0] != 0 {
-                reply.words[0] = GraphicsStatus::NotFound as u32 as u64;
-            } else {
-                reply.words[0] = GraphicsStatus::Ok as u32 as u64;
-                reply.words[1] = 0;
-                reply.words[2] = output.backend as u64;
-                reply.words[3] = output.state as u64;
-                reply.words[4] = output.pixel_format as u64;
-                reply.words[5] = output.width as u64;
-                reply.words[6] = output.height as u64;
-                reply.words[7] = output.stride as u64;
-                reply.words[8] = output.bytes_per_pixel as u64;
-                reply.words[9] = output.byte_len;
-                reply.words[10] = present_count;
-                reply.words[11] = active_surface_count(surfaces) as u64;
-                reply.words[12] = fence_completed;
-                reply.words[13] = stats.noop_skips;
-                reply.words[14] = stats.noop_saved_bytes;
-                reply.words[15] = close_pending_count(surfaces) as u64;
+            match registry.by_index(request.words[0] as usize) {
+                Some(slot) => {
+                    let info = slot.info;
+                    reply.words[0] = GraphicsStatus::Ok as u32 as u64;
+                    // Word 1 stays the enumeration index (legacy clients see
+                    // 0 for the primary); stable ids ride OutputListReply.
+                    reply.words[1] = request.words[0];
+                    reply.words[2] = info.backend as u64;
+                    reply.words[3] = info.state as u64;
+                    reply.words[4] = info.pixel_format as u64;
+                    reply.words[5] = info.width as u64;
+                    reply.words[6] = info.height as u64;
+                    reply.words[7] = info.stride as u64;
+                    reply.words[8] = info.bytes_per_pixel as u64;
+                    reply.words[9] = info.byte_len;
+                    reply.words[10] = slot.present_count;
+                    reply.words[11] = active_surface_count(surfaces) as u64;
+                    reply.words[12] = fence_completed;
+                    reply.words[13] = slot.noop_skips;
+                    reply.words[14] = slot.noop_saved_bytes;
+                    reply.words[15] = close_pending_count(surfaces) as u64;
+                }
+                None => {
+                    reply.words[0] = GraphicsStatus::NotFound as u32 as u64;
+                }
             }
             let _ = rt::channel_send(reply_handle, &reply);
             let _ = rt::handle_close(reply_handle);

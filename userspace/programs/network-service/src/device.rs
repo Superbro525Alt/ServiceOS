@@ -1,4 +1,5 @@
 use core::cell::UnsafeCell;
+use core::ptr::NonNull;
 
 use smoltcp::{
     phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken},
@@ -6,10 +7,185 @@ use smoltcp::{
     wire::{ArpOperation, ArpPacket, ArpRepr, EthernetAddress, EthernetFrame, Ipv4Address},
 };
 
-use rt::PacketInterfaceInfo;
+use rt::{MappedMemory, PacketInterfaceInfo, PacketRingLayout};
 use serviceos_userspace_runtime as rt;
 
 use crate::consts::{LOOPBACK_ADDRESS, MAX_FRAME_BYTES};
+
+/// Consumer-side mirror of the shared RX ring header layout (see
+/// `kernel/core/src/network/ring.rs`). The image is one header page followed
+/// by one page per slot; each slot page starts with a u64 length then the
+/// frame data.
+const RING_MAGIC: u32 = 0x534f_5258;
+const RING_VERSION: u32 = 1;
+const OFF_MAGIC: usize = 0;
+const OFF_VERSION: usize = 4;
+const OFF_HEAD: usize = 16;
+const OFF_TAIL: usize = 24;
+const OFF_FRAMES_PUSHED: usize = 32;
+const OFF_COPIES_AVOIDED: usize = 40;
+const OFF_BYTES_SAVED: usize = 48;
+const OFF_DROPPED: usize = 56;
+
+fn load_u64(image: &[u8], offset: usize) -> u64 {
+    u64::from_le_bytes(image[offset..offset + 8].try_into().expect("u64 word"))
+}
+
+/// Zero-copy statistics exposed through the public control channel.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct RxRingSnapshot {
+    pub(crate) active: bool,
+    pub(crate) frames_pushed: u64,
+    pub(crate) copies_avoided: u64,
+    pub(crate) bytes_saved: u64,
+    pub(crate) dropped: u64,
+}
+
+struct MappedRxRing {
+    mem: MappedMemory,
+    slot_count: usize,
+    tail: u64,
+}
+
+impl MappedRxRing {
+    fn image(&self) -> &[u8] {
+        self.mem.as_slice()
+    }
+
+    fn head(&self) -> u64 {
+        load_u64(self.image(), OFF_HEAD)
+    }
+
+    fn page_bytes(&self) -> usize {
+        4096
+    }
+
+    fn next_sequence(&self) -> Option<u64> {
+        let head = self.head();
+        if self.tail >= head {
+            return None;
+        }
+        Some(self.tail)
+    }
+
+    /// In-place claim of the frame at `sequence`: returns a pointer into the
+    /// shared mapping plus the frame length. The caller must commit the
+    /// sequence once its hot paths finish parsing the borrowed bytes.
+    ///
+    /// # Safety
+    /// Single-threaded service; the returned pointer stays valid for the
+    /// process lifetime because the mapping is never unmapped.
+    unsafe fn claim(&mut self, sequence: u64) -> Option<(*const u8, usize)> {
+        if sequence >= self.head() {
+            return None;
+        }
+        let index = (sequence % self.slot_count as u64) as usize;
+        let len_offset = (index + 1) * self.page_bytes();
+        let length = load_u64(self.image(), len_offset) as usize;
+        if length == 0 || length > MAX_FRAME_BYTES {
+            return None;
+        }
+        let ptr = unsafe { self.mem.as_ptr().add(len_offset + 8) };
+        Some((ptr, length))
+    }
+
+    fn commit(&mut self, sequence: u64, length: usize) {
+        // SAFETY: single consumer; aligned counter stores into the shared
+        // image, which outlives every use here.
+        unsafe {
+            let base = self.mem.as_ptr();
+            core::ptr::write_unaligned(base.add(OFF_TAIL) as *mut u64, sequence + 1);
+            let avoided = core::ptr::read_unaligned(base.add(OFF_COPIES_AVOIDED) as *const u64);
+            core::ptr::write_unaligned(
+                base.add(OFF_COPIES_AVOIDED) as *mut u64,
+                avoided.wrapping_add(1),
+            );
+            let saved = core::ptr::read_unaligned(base.add(OFF_BYTES_SAVED) as *const u64);
+            core::ptr::write_unaligned(
+                base.add(OFF_BYTES_SAVED) as *mut u64,
+                saved.wrapping_add(length as u64),
+            );
+        }
+        self.tail = sequence + 1;
+    }
+
+    /// Advance past a sequence whose payload cannot be claimed (keeps the
+    /// consumer cursor live without inflating the zero-copy counters).
+    fn discard(&mut self, sequence: u64) {
+        // SAFETY: single consumer; aligned store into the shared image.
+        unsafe {
+            core::ptr::write_unaligned(
+                self.mem.as_ptr().add(OFF_TAIL) as *mut u64,
+                sequence + 1,
+            );
+        }
+        self.tail = sequence + 1;
+    }
+}
+
+static RX_RING: SyncCell<Option<MappedRxRing>> = SyncCell(UnsafeCell::new(None));
+
+fn with_rx_ring<R>(f: impl FnOnce(&mut Option<MappedRxRing>) -> R) -> R {
+    // SAFETY: single-threaded service, main-loop-only access.
+    let cell = unsafe { &mut *RX_RING.0.get() };
+    f(cell)
+}
+
+/// Negotiate the shared RX ring with the kernel and map it into this
+/// service. Any failure leaves the legacy copied-frame path in place.
+/// Returns true when the shared path became active.
+pub(crate) fn enable_shared_rx(packet_handle: rt::Handle) -> bool {
+    if with_rx_ring(|ring| ring.is_some()) {
+        return true;
+    }
+    let mut layout = PacketRingLayout {
+        magic: 0,
+        version: 0,
+        slot_count: 0,
+        slot_data_bytes: 0,
+        slot_stride_bytes: 0,
+        total_bytes: 0,
+    };
+    let memory_handle =
+        match rt::packet_interface_ring_setup(packet_handle, &mut layout) {
+            Ok(handle) => handle,
+            Err(_) => return false,
+        };
+    if layout.magic != RING_MAGIC || layout.version != RING_VERSION || layout.slot_count == 0 {
+        return false;
+    }
+    let total_bytes = layout.total_bytes as usize;
+    let mapped = match MappedMemory::map(memory_handle, total_bytes, true) {
+        Ok(mapped) => mapped,
+        Err(_) => return false,
+    };
+    let _ = rt::handle_close(memory_handle);
+    let slots = layout.slot_count as usize;
+    with_rx_ring(move |ring| {
+        *ring = Some(MappedRxRing {
+            mem: mapped,
+            slot_count: slots,
+            tail: 0,
+        });
+    });
+    true
+}
+
+pub(crate) fn rx_ring_snapshot() -> RxRingSnapshot {
+    with_rx_ring(|ring| {
+        let Some(ring) = ring.as_ref() else {
+            return RxRingSnapshot::default();
+        };
+        let image = ring.image();
+        RxRingSnapshot {
+            active: true,
+            frames_pushed: load_u64(image, OFF_FRAMES_PUSHED),
+            copies_avoided: load_u64(image, OFF_COPIES_AVOIDED),
+            bytes_saved: load_u64(image, OFF_BYTES_SAVED),
+            dropped: load_u64(image, OFF_DROPPED),
+        }
+    })
+}
 
 /// Frames emitted by the stack that are destined for the guest itself are
 /// routed through this ring instead of the virtio queue so guest-internal
@@ -203,7 +379,15 @@ impl KernelPacketDevice {
 }
 
 pub(crate) struct KernelRxToken<'a> {
-    buffer: &'a mut [u8],
+    frame: RxFrame<'a>,
+}
+
+/// Where the received frame's bytes live. `Local` is the legacy copied path
+/// (syscall copy into `rx_buffer`); `Shared` borrows a slot of the mapped
+/// RX ring directly, so every consumer parses the frame in place.
+enum RxFrame<'a> {
+    Local(&'a mut [u8]),
+    Shared { ptr: NonNull<u8>, len: usize, sequence: u64 },
 }
 
 pub(crate) struct KernelTxToken<'a> {
@@ -222,20 +406,89 @@ impl Device for KernelPacketDevice {
         Self: 'a;
 
     fn receive(&mut self, _timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
-        let looped = with_ring(|ring| ring.pop());
-        let length = match looped {
-            Some((frame, length)) => {
-                self.rx_buffer[..length].copy_from_slice(&frame[..length]);
-                length
+        // Guest-internal loopback first (unchanged legacy behavior).
+        if let Some((frame, length)) = with_ring(|ring| ring.pop()) {
+            self.rx_buffer[..length].copy_from_slice(&frame[..length]);
+            snoop_arp_frame(&self.rx_buffer[..length]);
+            return Some((
+                KernelRxToken {
+                    frame: RxFrame::Local(&mut self.rx_buffer[..length]),
+                },
+                KernelTxToken {
+                    handle: self.handle,
+                    buffer: &mut self.tx_buffer,
+                },
+            ));
+        }
+
+        let ring_attached = with_rx_ring(|ring| ring.is_some());
+
+        if ring_attached {
+            // Shared-ring path: claim a published slot in place. When the
+            // ring is locally empty, one doorbell receive asks the kernel to
+            // push the next backend frame into a slot (the returned length
+            // describes the shared frame, NOT bytes in rx_buffer), then we
+            // claim again.
+            for _ in 0..2 {
+                let sequence = with_rx_ring(|ring| {
+                    ring.as_ref().and_then(MappedRxRing::next_sequence)
+                });
+                let Some(sequence) = sequence else {
+                    match rt::packet_interface_receive_nonblocking(
+                        self.handle,
+                        &mut self.rx_buffer,
+                    ) {
+                        Ok(0) => return None,
+                        Ok(_) => continue, // doorbell: frame published, go claim it
+                        Err(_) => return None,
+                    }
+                };
+                let claimed = with_rx_ring(|ring| {
+                    // SAFETY: mapping lives for the process; single-threaded.
+                    unsafe { ring.as_mut().and_then(|r| r.claim(sequence)) }
+                });
+                match claimed {
+                    Some((ptr, len)) => {
+                        let ptr = NonNull::new(ptr as *mut u8)?;
+                        // SAFETY: claimed slot region inside the live mapping.
+                        let frame =
+                            unsafe { core::slice::from_raw_parts(ptr.as_ptr(), len) };
+                        snoop_arp_frame(frame);
+                        return Some((
+                            KernelRxToken {
+                                frame: RxFrame::Shared {
+                                    ptr,
+                                    len,
+                                    sequence,
+                                },
+                            },
+                            KernelTxToken {
+                                handle: self.handle,
+                                buffer: &mut self.tx_buffer,
+                            },
+                        ));
+                    }
+                    None => with_rx_ring(|ring| {
+                        if let Some(ring) = ring.as_mut() {
+                            ring.discard(sequence);
+                        }
+                    }),
+                }
             }
-            None => {
-                rt::packet_interface_receive_nonblocking(self.handle, &mut self.rx_buffer).ok()?
-            }
-        };
+            // Ring stayed empty even after a doorbell poll retry.
+            return None;
+        }
+
+        // Legacy copied-frame path (no ring negotiated).
+        let length =
+            rt::packet_interface_receive_nonblocking(self.handle, &mut self.rx_buffer).ok()?;
+        if length == 0 || length > MAX_FRAME_BYTES {
+            return None;
+        }
         snoop_arp_frame(&self.rx_buffer[..length]);
         Some((
             KernelRxToken {
-                buffer: &mut self.rx_buffer[..length],
+                frame: RxFrame::Local(&mut self.rx_buffer[..length]),
             },
             KernelTxToken {
                 handle: self.handle,
@@ -265,7 +518,21 @@ impl RxToken for KernelRxToken<'_> {
     where
         F: FnOnce(&[u8]) -> R,
     {
-        f(self.buffer)
+        // Parse in place, then commit the ring sequence only after the hot
+        // path is done with the borrowed bytes.
+        match self.frame {
+            RxFrame::Local(buffer) => f(buffer),
+            RxFrame::Shared { ptr, len, sequence } => {
+                // SAFETY: claimed slot region inside the live mapping.
+                let result = f(unsafe { core::slice::from_raw_parts(ptr.as_ptr(), len) });
+                with_rx_ring(|ring| {
+                    if let Some(ring) = ring.as_mut() {
+                        ring.commit(sequence, len);
+                    }
+                });
+                result
+            }
+        }
     }
 }
 

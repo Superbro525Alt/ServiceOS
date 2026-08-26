@@ -180,6 +180,7 @@ pub enum SyscallKind {
     PipeCreate = AbiSyscallNumber::PipeCreate as isize,
     PipeRead = AbiSyscallNumber::PipeRead as isize,
     PipeWrite = AbiSyscallNumber::PipeWrite as isize,
+    PacketInterfaceRingSetup = AbiSyscallNumber::PacketInterfaceRingSetup as isize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

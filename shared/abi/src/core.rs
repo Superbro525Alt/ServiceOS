@@ -92,6 +92,7 @@ pub enum SyscallNumber {
     PipeCreate = 49,
     PipeRead = 50,
     PipeWrite = 51,
+    PacketInterfaceRingSetup = 52,
 }
 
 #[repr(u32)]

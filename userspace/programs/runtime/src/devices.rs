@@ -2,8 +2,8 @@ use crate::{
     AudioEndpointInfo, AudioToneRequest, BlockDeviceBackend, BlockDeviceInfo, DisplayOutputBackend,
     DisplayOutputInfo, DisplayOutputState, DisplayPixelFormat, Handle, INPUT_SOURCE_FLAG_NONBLOCK,
     InputEventInfo, InputSourceBackend, InputSourceInfo, PACKET_INTERFACE_FLAG_NONBLOCK,
-    PacketInterfaceBackend, PacketInterfaceInfo, PacketInterfaceLinkState, Result, SyscallNumber,
-    syscall1, syscall2, syscall3, syscall4, syscall5,
+    PacketInterfaceBackend, PacketInterfaceInfo, PacketInterfaceLinkState, PacketRingLayout,
+    Result, SyscallNumber, syscall1, syscall2, syscall3, syscall4, syscall5,
 };
 
 pub fn block_device_info(handle: Handle) -> Result<BlockDeviceInfo> {
@@ -96,6 +96,22 @@ pub fn packet_interface_transmit(handle: Handle, frame: &[u8]) -> Result<usize> 
         frame.len() as u64,
     )
     .map(|value| value as usize)
+}
+
+/// Negotiate the shared RX packet ring for this interface. On success
+/// returns the memory-object handle to map plus the wire layout; the caller
+/// then reads frames in place from its mapping instead of copying each one
+/// through PacketInterfaceReceive.
+pub fn packet_interface_ring_setup(
+    handle: Handle,
+    layout: &mut PacketRingLayout,
+) -> Result<Handle> {
+    let object = syscall2(
+        SyscallNumber::PacketInterfaceRingSetup,
+        handle as u64,
+        layout as *mut PacketRingLayout as u64,
+    )?;
+    Ok(object as Handle)
 }
 
 pub fn display_output_info(handle: Handle) -> Result<DisplayOutputInfo> {

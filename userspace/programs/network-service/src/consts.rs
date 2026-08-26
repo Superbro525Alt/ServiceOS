@@ -94,6 +94,15 @@ pub(crate) const DISCOVERY_REGISTER_REPLY: u32 = 0x81f;
 pub(crate) const DISCOVERY_PEERS_REQUEST: u32 = 0x820;
 pub(crate) const DISCOVERY_PEERS_REPLY: u32 = 0x821;
 
+// --- Shared RX ring / zero-copy stats (S7 reserved tags) ---
+//
+// Continues the same reserved-tag convention (next free value after 0x821).
+// ZeroCopyStatsReply: words[1] = frames pushed into the shared ring,
+// words[2] = IPC copies avoided, words[3] = bytes saved by consuming frames
+// in place, words[4] = frames dropped by the ring's drop-oldest overflow.
+pub(crate) const ZERO_COPY_STATS_REQUEST: u32 = 0x822;
+pub(crate) const ZERO_COPY_STATS_REPLY: u32 = 0x823;
+
 /// UDP port for the mDNS-LITE responder. Honest subset only: unicast A-record
 /// answers to direct queries for `<hostname>.local`. No multicast group join,
 /// no probing/conflict resolution, no SRV/TXT/PTR, no LLMNR — full mDNS/LLMNR

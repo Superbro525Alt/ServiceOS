@@ -4,6 +4,7 @@
 mod compose;
 mod fence;
 mod logging;
+mod outputs;
 mod requests;
 mod types;
 
@@ -49,6 +50,10 @@ fn main() -> u64 {
     if output.bytes_per_pixel != 4 || output.byte_len as usize > MAX_FRAMEBUFFER_BYTES {
         return 0xfc04;
     }
+    let mut registry = outputs::OutputRegistry::new();
+    if registry.register_primary(output_handle, output).is_none() {
+        return 0xfc04;
+    }
 
     let public = match rt::channel_create() {
         Ok(pair) => pair,
@@ -91,10 +96,8 @@ fn main() -> u64 {
         let had_public_work = match drain_public_requests(
             public.first,
             log_handle,
-            output,
-            present_count,
+            &mut registry,
             fences.completed(),
-            &stats,
             &mut surfaces,
             &mut next_surface_id,
             &mut dirty,
@@ -163,10 +166,18 @@ fn main() -> u64 {
                     ),
                     DirtyState::Clean => Ok(compose::PresentOutcome::presented()),
                 };
+                let primary_damage_hint = match dirty {
+                    DirtyState::CursorOnly(damage) => Some(damage),
+                    DirtyState::Region { damages, .. } => Some(damages.bounding_rect()),
+                    DirtyState::Full { .. } | DirtyState::Clean => None,
+                };
                 match result {
                     Ok(outcome) => {
                         let skips_before = stats.noop_skips;
                         stats.record(&outcome);
+                        if let Some(slot) = registry.primary_mut() {
+                            slot.record_outcome(&outcome);
+                        }
                         fences.complete(fence);
                         if outcome.skipped && skips_before == 0 {
                             let _ = rt::write_logf(
@@ -192,6 +203,7 @@ fn main() -> u64 {
                     Err(_) => return 0xfc0b,
                 }
                 present_count = present_count.saturating_add(1);
+                outputs::refresh_virtual_mirrors(&mut registry, primary_damage_hint);
                 let _ = flush_close_pending_surfaces(&mut surfaces, &mut dirty);
                 let surface_count = active_surface_count(&surfaces);
                 if present_count == 1 || surface_count != last_logged_surface_count {
@@ -223,10 +235,8 @@ fn main() -> u64 {
                 if handle_public_request(
                     &waited,
                     log_handle,
-                    output,
-                    present_count,
+                    &mut registry,
                     fences.completed(),
-                    &stats,
                     &mut surfaces,
                     &mut next_surface_id,
                     &mut dirty,

@@ -109,6 +109,26 @@ pub(crate) fn run() -> u64 {
     let _ = rt::handle_close(public.second);
 
     let mut device = KernelPacketDevice::new(packet_handle, packet_info);
+    if net_options.rx_ring_enabled {
+        if device::enable_shared_rx(packet_handle) {
+            let _ = rt::write_logf(
+                "network",
+                format_args!(
+                    "rx-ring enabled slots=16 zero-copy rx path active (rx-ring=off reverts to copied frames)"
+                ),
+            );
+        } else {
+            let _ = rt::write_logf(
+                "network",
+                format_args!("rx-ring negotiation failed; legacy copied-frame path active"),
+            );
+        }
+    } else {
+        let _ = rt::write_logf(
+            "network",
+            format_args!("rx-ring disabled by config; legacy copied-frame path active"),
+        );
+    }
     let now = now_instant();
     let mac = EthernetAddress(device.info.mac);
     let mut iface = Interface::new(
@@ -282,6 +302,7 @@ pub(crate) fn run() -> u64 {
     }
 
     let mut loop_ticks: u64 = 0;
+    let mut rx_ring_first_frame_logged = false;
     let mut registry = discover::Registry::new();
     let mut peer_table = discover::PeerTable::new();
     let mut next_announce_loop = 0u64;
@@ -332,6 +353,24 @@ pub(crate) fn run() -> u64 {
         }
 
         let _ = iface.poll(now_instant(), &mut device, &mut sockets);
+        // First-frame evidence: as soon as any frame has flowed through the
+        // shared RX ring (e.g. the DHCP offer from slirp), log the live
+        // zero-copy counters once so boot logs prove the shared path works.
+        if !rx_ring_first_frame_logged {
+            let snapshot = device::rx_ring_snapshot();
+            if snapshot.active && snapshot.copies_avoided > 0 {
+                rx_ring_first_frame_logged = true;
+                let _ = rt::write_logf(
+                    "network",
+                    format_args!(
+                        "rx-ring first frame via shared path copies-avoided={} bytes-saved={} frames-pushed={}",
+                        snapshot.copies_avoided,
+                        snapshot.bytes_saved,
+                        snapshot.frames_pushed
+                    ),
+                );
+            }
+        }
         if config.dynamic_ipv4
             && drive_dynamic_ipv4(
                 &config,
@@ -370,7 +409,25 @@ pub(crate) fn run() -> u64 {
             && loop_ticks >= 1024
         {
             selftest_done = true;
-            run_network_selftest(log_handle, &mut iface, &mut device);
+            run_network_selftest(
+                log_handle,
+                &mut iface,
+                &mut device,
+                runtime_state.gateway,
+            );
+            let snapshot = device::rx_ring_snapshot();
+            if snapshot.active {
+                let _ = rt::write_logf(
+                    "network",
+                    format_args!(
+                        "rx-ring stats frames-pushed={} copies-avoided={} bytes-saved={} dropped={}",
+                        snapshot.frames_pushed,
+                        snapshot.copies_avoided,
+                        snapshot.bytes_saved,
+                        snapshot.dropped
+                    ),
+                );
+            }
         }
 
         // mDNS-LITE responder + discovery beacon: served directly from the

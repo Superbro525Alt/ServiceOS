@@ -14,7 +14,7 @@ use crate::{
     cache::ResolverCache,
     consts::{
         BEACON_PEER_DEFAULT_WINDOW_MS, BEACON_UDP_PORT, DIAG_PING_STATS_REPLY,
-        DIAG_PING_STATS_REQUEST, DISCOVERY_PEERS_REPLY, DISCOVERY_PEERS_REQUEST,
+        DIAG_PING_STATS_REQUEST, DISCOVERY_PEERS_REPLY, DISCOVERY_PEERS_REQUEST, ZERO_COPY_STATS_REQUEST, ZERO_COPY_STATS_REPLY,
         DISCOVERY_REGISTER_REPLY, DISCOVERY_REGISTER_REQUEST, FIREWALL_RULES_GET_REQUEST,
         FIREWALL_RULES_REPLY, FIREWALL_RULES_SET_REQUEST, HOSTNAME_GET_REPLY, HOSTNAME_GET_REQUEST,
         HOSTNAME_SET_REPLY, HOSTNAME_SET_REQUEST, LISTEN_PORTS_REPLY, LISTEN_PORTS_REQUEST,
@@ -802,6 +802,37 @@ pub(crate) fn handle_public_request(
             }
             reply.word_count = 2 + written as u32 * 3;
             reply.words[1] = written as u64;
+            let _ = rt::channel_send(reply_handle, &reply);
+            let _ = rt::handle_close(reply_handle);
+        }
+        x if x == ZERO_COPY_STATS_REQUEST as u32 => {
+            if request.handle_count < 1 {
+                return Ok(());
+            }
+            let reply_handle = request.handles[0];
+            let snapshot = crate::device::rx_ring_snapshot();
+            let mut reply = RawMessage::empty(ZERO_COPY_STATS_REPLY as u32);
+            reply.words[0] = NetworkStatus::Ok as u32 as u64;
+            // words[1..=4] mirror the rx-ring stats log line; all zero when
+            // the legacy copied-frame path is active (snapshot.active=false
+            // keeps the counters honest about a non-negotiated ring).
+            reply.words[1] = if snapshot.active {
+                snapshot.frames_pushed
+            } else {
+                0
+            };
+            reply.words[2] = if snapshot.active {
+                snapshot.copies_avoided
+            } else {
+                0
+            };
+            reply.words[3] = if snapshot.active {
+                snapshot.bytes_saved
+            } else {
+                0
+            };
+            reply.words[4] = if snapshot.active { snapshot.dropped } else { 0 };
+            reply.word_count = 5;
             let _ = rt::channel_send(reply_handle, &reply);
             let _ = rt::handle_close(reply_handle);
         }

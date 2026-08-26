@@ -1,5 +1,6 @@
 mod backend;
 mod core;
+pub mod ring;
 
 pub use backend::{PacketBackend, PacketInterfaceError, PacketInterfaceObject};
 pub use core::{NetworkCore, initialize, manager};

@@ -1,5 +1,25 @@
 pub const PACKET_INTERFACE_FLAG_NONBLOCK: u32 = 1 << 0;
 
+/// Wire layout of the shared RX packet ring handed to a packet-interface
+/// consumer through PacketInterfaceRingSetup. The kernel owns the descriptor
+/// head counter; the consumer owns tail. Both sides access the same
+/// memory-object-backed pages, so frames are consumed in place with no
+/// per-frame IPC copy.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PacketRingLayout {
+    pub magic: u32,
+    pub version: u32,
+    pub slot_count: u32,
+    /// Payload bytes per slot (frame data capacity, excluding the length
+    /// field).
+    pub slot_data_bytes: u32,
+    /// Stride between consecutive slots in the shared image; each slot owns
+    /// one whole page so a frame never straddles a page boundary.
+    pub slot_stride_bytes: u32,
+    pub total_bytes: u32,
+}
+
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PacketInterfaceBackend {

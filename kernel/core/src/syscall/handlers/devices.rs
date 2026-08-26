@@ -4,6 +4,7 @@ use serviceos_abi::{
     INPUT_SOURCE_FLAG_NONBLOCK, InputEventInfo as AbiInputEventInfo,
     InputSourceInfo as AbiInputSourceInfo, PACKET_INTERFACE_FLAG_NONBLOCK,
     PacketInterfaceInfo as AbiPacketInterfaceInfo,
+    PacketRingLayout as AbiPacketRingLayout,
 };
 
 use super::super::{
@@ -12,6 +13,7 @@ use super::super::{
     user_mut, user_ref, user_slice, user_slice_mut,
 };
 use crate::capability::CapabilityRights;
+use crate::network::ring::{self, PageFrameStorage};
 
 pub(crate) fn handle_block_device_info(context: &SyscallContext) -> SyscallReturn {
     let Ok(current_task) = current_task() else {
@@ -181,6 +183,79 @@ pub(crate) fn handle_packet_interface_receive(context: &SyscallContext) -> Sysca
             SyscallReturn::error(SyscallError::Unsupported)
         }
     }
+}
+
+/// Negotiate a shared RX packet ring for this packet interface: create the
+/// memory object (header page + one page per slot), initialize its ring
+/// header, attach the kernel-side producer to the interface, and hand back
+/// the consumer handle plus the wire layout. On any failure the interface
+/// keeps its legacy copied-frame path untouched.
+pub(crate) fn handle_packet_interface_ring_setup(
+    context: &SyscallContext,
+) -> SyscallReturn {
+    let Ok(current_task) = current_task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let view = match resolve_object(
+        &current_task,
+        context.arguments[0] as Handle,
+        CapabilityRights::READ,
+    ) {
+        Ok(view) => view,
+        Err(error) => return SyscallReturn::error(error),
+    };
+    let Some(interface) = view.object.packet_interface() else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Ok(layout_out) = (unsafe { user_mut::<AbiPacketRingLayout>(context.arguments[1]) })
+    else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    let Some(objects) = crate::object::model() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+    let Some(task) = current_task.task() else {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    };
+
+    let slot_count = ring::RING_DEFAULT_SLOTS;
+    let total_bytes = ring::ring_total_bytes(slot_count);
+    let memory_object = objects.registry().create_memory_object(total_bytes, true);
+    let Some(memory) = memory_object.memory_object() else {
+        return SyscallReturn::error(SyscallError::Busy);
+    };
+    // Materialize the real backing pages so both sides share physical frames.
+    let Ok(frames) = memory.page_frames() else {
+        return SyscallReturn::error(SyscallError::Busy);
+    };
+
+    let mut storage = PageFrameStorage { frames };
+    ring::init(&mut storage, slot_count);
+
+    if interface.has_shared_ring() {
+        // One negotiation per interface; the legacy path stays available to
+        // any consumer that never asks for a ring.
+        return SyscallReturn::error(SyscallError::Busy);
+    }
+    interface.attach_shared_ring(storage, slot_count);
+
+    let installed = match task
+        .capability_space()
+        .install(memory_object, CapabilityRights::memory_object(), None)
+    {
+        Ok(handle) => handle,
+        Err(error) => return SyscallReturn::error(super::common::map_capability_error(error)),
+    };
+
+    *layout_out = AbiPacketRingLayout {
+        magic: ring::RING_MAGIC,
+        version: ring::RING_VERSION,
+        slot_count: slot_count as u32,
+        slot_data_bytes: ring::RING_SLOT_DATA_BYTES as u32,
+        slot_stride_bytes: crate::memory::PAGE_SIZE_BYTES as u32,
+        total_bytes: total_bytes as u32,
+    };
+    SyscallReturn::success(installed.0 as u64)
 }
 
 pub(crate) fn handle_packet_interface_transmit(context: &SyscallContext) -> SyscallReturn {

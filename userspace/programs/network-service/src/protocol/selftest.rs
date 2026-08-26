@@ -61,7 +61,12 @@ fn emit_phase_record(
 /// through the real stack and device (loopback frames never reach slirp).
 /// Runs once per boot right after the interface address is configured; all
 /// outcomes are logged as greppable `net-selftest` lines.
-pub(crate) fn run(log_handle: rt::Handle, iface: &mut Interface, device: &mut KernelPacketDevice) {
+pub(crate) fn run(
+    log_handle: rt::Handle,
+    iface: &mut Interface,
+    device: &mut KernelPacketDevice,
+    gateway: smoltcp::wire::Ipv4Address,
+) {
     let _ = rt::write_logf(
         "network",
         format_args!(
@@ -129,6 +134,27 @@ pub(crate) fn run(log_handle: rt::Handle, iface: &mut Interface, device: &mut Ke
         ),
     );
 
+    // External probe: send one UDP datagram at the gateway's discard port.
+    // Resolving the gateway forces an ARP exchange and slirp answers with
+    // ICMP port-unreachable, so real inbound frames arrive through the
+    // virtio -> kernel -> shared RX ring path (loopback frames above never
+    // touch the kernel). Informational: environments without a gateway stay
+    // quiet without failing the selftest.
+    let ext_before = crate::device::rx_ring_snapshot().frames_pushed;
+    let ext_pushed = external_probe(iface, device, gateway);
+    let (driver_rx, driver_dropped) = match rt::packet_interface_info(device.handle) {
+        Ok(info) => (info.rx_packets, info.dropped_packets),
+        Err(_) => (u64::MAX, u64::MAX),
+    };
+    let _ = rt::write_logf(
+        "network",
+        format_args!(
+            "net-selftest ext pushed={ext_pushed} total={} drv_rx={driver_rx} drv_drop={driver_dropped}",
+            crate::device::rx_ring_snapshot().frames_pushed,
+        ),
+    );
+    let _ = ext_before;
+
     let _ = rt::write_logf(
         "network",
         format_args!(
@@ -151,6 +177,51 @@ pub(crate) fn run(log_handle: rt::Handle, iface: &mut Interface, device: &mut Ke
         },
         udp_ok as u64 | ((tcp_ok as u64) << 1),
     );
+}
+
+/// One UDP datagram at `<gateway>:9` plus a bounded poll loop; returns how
+/// many new frames the shared RX ring published while waiting.
+fn external_probe(
+    iface: &mut Interface,
+    device: &mut KernelPacketDevice,
+    gateway: smoltcp::wire::Ipv4Address,
+) -> u64 {
+    if gateway.is_unspecified() {
+        return 0;
+    }
+    let target = IpAddress::Ipv4(gateway);
+    let mut meta_r = [udp::PacketMetadata::EMPTY];
+    let mut data_r = [0u8; SELFTEST_BUFFER_BYTES];
+    let mut meta_t = [udp::PacketMetadata::EMPTY];
+    let mut data_t = [0u8; SELFTEST_BUFFER_BYTES];
+    let mut probe_storage = [SocketStorage::EMPTY; 1];
+    let mut probe_sockets = SocketSet::new(&mut probe_storage[..]);
+    let handle = probe_sockets.add(udp::Socket::new(
+        udp::PacketBuffer::new(&mut meta_r[..], &mut data_r[..]),
+        udp::PacketBuffer::new(&mut meta_t[..], &mut data_t[..]),
+    ));
+    if probe_sockets
+        .get_mut::<udp::Socket>(handle)
+        .bind(SELFTEST_UDP_PORT_B)
+        .is_err()
+    {
+        return 0;
+    }
+    let payload = b"zero-copy-probe";
+    let sent = probe_sockets
+        .get_mut::<udp::Socket>(handle)
+        .send_slice(payload, (target, 9))
+        .is_ok();
+    if !sent {
+        return 0;
+    }
+    for _ in 0..600 {
+        pump(iface, device, &mut probe_sockets);
+        if crate::device::rx_ring_snapshot().frames_pushed > 0 {
+            break;
+        }
+    }
+    crate::device::rx_ring_snapshot().frames_pushed
 }
 
 fn pump(iface: &mut Interface, device: &mut KernelPacketDevice, sockets: &mut SocketSet<'_>) {

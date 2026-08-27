@@ -252,10 +252,12 @@ serviceos_aarch64_fatal_vector:
             }
             serviceos_kernel_core::syscall::SyscallAction::BlockCurrentThreadOnReceive {
                 endpoint,
-                deadline_ticks: _,
+                deadline_ticks,
             } => {
                 if let Some(tasks) = system() {
-                    let _ = tasks.scheduler().block_current_on_receive(endpoint);
+                    let _ = tasks
+                        .scheduler()
+                        .block_current_on_receive_until(endpoint, deadline_ticks);
                 }
                 1
             }

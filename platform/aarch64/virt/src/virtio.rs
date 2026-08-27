@@ -47,6 +47,12 @@ pub fn discover(
             continue;
         };
         if Transport::device_type(&transport) != wanted {
+            // Probing must not reset the device: dropping an `MmioTransport`
+            // writes STATUS=0 (a full device reset), which would wipe the
+            // vring and status of devices already initialized by earlier
+            // backends. Probe transports own no resources, so release them
+            // without running the reset.
+            core::mem::forget(transport);
             continue;
         }
         found.push((

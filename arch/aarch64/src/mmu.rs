@@ -227,6 +227,12 @@ mod imp {
         unsafe {
             core::arch::asm!(
                 "msr ttbr0_el1, {value}",
+                // A TTBR0 write does not architecturally invalidate cached
+                // translations, and every user address space shares ASID 0.
+                // Without this flush the next eret can reuse stale VA->PA
+                // entries from the previous address space and execute the
+                // wrong task's code at the shared link address.
+                "tlbi vmalle1",
                 "dsb ish",
                 "isb",
                 value = in(reg) root.as_u64(),

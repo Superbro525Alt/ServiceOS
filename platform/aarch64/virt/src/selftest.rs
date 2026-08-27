@@ -131,7 +131,7 @@ fn build_dhcp_discover(frame: &mut [u8; NET_BUFFER_BYTES], mac: &[u8; 6]) -> usi
     frame[14] = 0x45;
     frame[15] = 0x00;
     frame[16..18].copy_from_slice(&(ip_total as u16).to_be_bytes());
-    frame[18..20].copy_from_slice(&(DHCP_XID & 0xffff).to_be_bytes());
+    frame[18..20].copy_from_slice(&((DHCP_XID & 0xffff) as u16).to_be_bytes());
     frame[20] = 0x00;
     frame[21] = 0x00;
     frame[22] = 64;

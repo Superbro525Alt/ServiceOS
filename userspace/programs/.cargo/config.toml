@@ -8,3 +8,11 @@ rustflags = [
     "link-arg=--gc-sections",
 ]
 
+[target.aarch64-unknown-none-softfloat]
+rustflags = [
+    "-C",
+    "link-arg=-Tlink.ld",
+    "-C",
+    "link-arg=--gc-sections",
+]
+

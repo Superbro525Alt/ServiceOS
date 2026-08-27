@@ -107,6 +107,8 @@ core::arch::global_asm!(
 
 #[cfg(target_arch = "riscv64")]
 pub fn init() {
+    use core::arch::asm;
+
     unsafe {
         asm!(
             "la {vector}, riscv_all_traps",
@@ -120,6 +122,8 @@ pub fn init() {
 #[cfg(target_arch = "riscv64")]
 #[unsafe(no_mangle)]
 extern "C" fn riscv_trap_handler(frame: &TrapFrame) {
+    use crate::{cpu, sbi_println};
+
     sbi_println!(
         "serviceos: trap cause={:#x} sepc={:#x} stval={:#x} (all-traps hang)",
         frame.scause,

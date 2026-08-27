@@ -22,14 +22,14 @@ pub(crate) fn build_program(
     user_target: &str,
     program: &Program,
 ) -> Result<(), Box<dyn Error>> {
-    let link_script = programs_root.join("link.ld");
     let mut command = Command::new("cargo");
     command.current_dir(programs_root);
     command.env("CARGO_TARGET_DIR", target_dir);
     // Nested cargo inherits the OUTER cargo's rustflags env (root config
     // selects kernel code-model for the x86_64-unknown-none kernel image).
-    // Strip it so userspace programs get only the leaf config plus the
-    // explicit per-program flags below.
+    // Strip it so userspace programs get only the leaf config (which supplies
+    // the -Tlink.ld / --gc-sections link arguments for every userspace
+    // target) plus the explicit per-program flags below.
     command.env_remove("CARGO_ENCODED_RUSTFLAGS");
     command.env_remove("RUSTFLAGS");
     command.args([
@@ -50,16 +50,15 @@ pub(crate) fn build_program(
     command.args(["--", "-C", "relocation-model=pic"]);
     if user_target == X86_64_USER_TARGET {
         command.args(["-C", "code-model=large"]);
-        command.args(["-C", "target-feature=-mmx,-sse,-sse2,+soft-float"]);
+        // No userspace program performs floating-point work, and the kernel
+        // does not save FPU/SSE state across user transitions, so keep SSE
+        // codegen off to make accidental auto-vectorization a compile error.
+        // `mmx` and `+soft-float` are not supported spellings for
+        // -Ctarget-feature on x86_64 (rust#116344) and only produce warnings.
+        command.args(["-C", "target-feature=-sse,-sse2"]);
     } else if user_target != AARCH64_USER_TARGET {
         return Err(format!("unsupported userspace target: {user_target}").into());
     }
-    command.args([
-        "-C",
-        &format!("link-arg=-T{}", link_script.display()),
-        "-C",
-        "link-arg=--gc-sections",
-    ]);
     let status = command.status()?;
 
     if status.success() {

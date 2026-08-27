@@ -10,6 +10,8 @@ pub const SBI_EXT_TIME_SET_TIMER: usize = 0x0;
 
 #[cfg(target_arch = "riscv64")]
 fn ecall(extension: usize, function: usize, arg0: usize) -> (usize, usize) {
+    use core::arch::asm;
+
     let error: usize;
     let value: usize;
     unsafe {
@@ -32,6 +34,8 @@ pub fn console_putchar(byte: u8) {
 
 #[cfg(target_arch = "riscv64")]
 pub fn set_timer(stime_value: u64) {
+    use core::arch::asm;
+
     let value = stime_value as usize;
     unsafe {
         asm!(

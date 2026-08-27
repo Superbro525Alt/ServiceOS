@@ -32,6 +32,8 @@ pub fn now() -> u64 {
 
 #[cfg(target_arch = "riscv64")]
 pub fn arm_oneshot_tick(tick_hz: u64) -> Result<u64, TimerArmError> {
+    use crate::sbi;
+
     if tick_hz == 0 || tick_hz > QEMU_VIRT_TIMEBASE_HZ {
         return Err(TimerArmError::ZeroInterval);
     }

@@ -3,7 +3,9 @@
 
 mod crashlog;
 
-use crashlog::{CrashLog, CrashRecord};
+use crashlog::{
+    build_query_reply, CrashLog, CrashRecord, CRASH_QUERY_REPLY_TAG, CRASH_QUERY_REQUEST_TAG,
+};
 use rt::{
     ConfigKey, ControlTag, KernelEventKind, LOG_FILTER_ANY, LifecycleEvent, LogDomain, LogEvent,
     LogQueryStatus, LogSeverity, LogStatus, LogTag, RawMessage, ServiceId, StorageEntryKind,
@@ -350,6 +352,16 @@ fn handle_request(
                 reply.words[0] = LogStatus::Busy as u32 as u64;
                 let _ = rt::handle_close(subscriber_handle);
             }
+            let _ = rt::channel_send(reply_handle, &reply);
+            let _ = rt::handle_close(reply_handle);
+        }
+        x if x == CRASH_QUERY_REQUEST_TAG => {
+            if message.word_count < 1 || message.handle_count < 1 {
+                return Ok(());
+            }
+            let reply_handle = message.handles[0];
+            let mut reply = RawMessage::empty(CRASH_QUERY_REPLY_TAG);
+            build_query_reply(crashes, message.words[0], &mut reply);
             let _ = rt::channel_send(reply_handle, &reply);
             let _ = rt::handle_close(reply_handle);
         }

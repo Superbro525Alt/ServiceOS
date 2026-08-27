@@ -79,14 +79,6 @@ impl CrashLog {
         self.next_slot = (self.next_slot + 1) % MAX_CRASH_RECORDS;
     }
 
-    pub(crate) const fn len(&self) -> usize {
-        self.count
-    }
-
-    pub(crate) const fn total_seen(&self) -> u64 {
-        self.total_seen
-    }
-
     /// Index 0 is the most recent crash; index len()-1 the oldest retained.
     pub(crate) fn recent(&self, index: usize) -> Option<CrashRecord> {
         if index >= self.count {
@@ -96,26 +88,8 @@ impl CrashLog {
         Some(self.records[slot])
     }
 
-    pub(crate) fn rebuild<const N: usize>(&mut self, records: &[CrashRecord; N], count: usize) {
-        self.records = [CrashRecord {
-            log_sequence: 0,
-            tick: 0,
-            source: 0,
-            severity: 0,
-            domain: 0,
-            event: 0,
-            arg0: 0,
-            arg1: 0,
-            arg2: 0,
-        }; MAX_CRASH_RECORDS];
-        self.next_slot = 0;
-        self.count = 0;
-        self.total_seen = 0;
-        for record in records[..count.min(N)].iter().copied() {
-            if CrashRecord::is_crash(record.severity, record.event) {
-                self.record(record);
-            }
-        }
+    pub(crate) const fn total_seen(&self) -> u64 {
+        self.total_seen
     }
 }
 
@@ -170,7 +144,6 @@ mod tests {
         let mut log = CrashLog::new();
         log.record(sample(1, ERROR_SEV, STARTED_EVENT));
         log.record(sample(2, INFO_SEV, TRAP_EVENT));
-        assert_eq!(log.len(), 2);
         assert_eq!(log.recent(0).unwrap().log_sequence, 2);
         assert_eq!(log.recent(1).unwrap().log_sequence, 1);
         assert!(log.recent(2).is_none());
@@ -182,7 +155,6 @@ mod tests {
         for sequence in 0..(MAX_CRASH_RECORDS as u64 + 3) {
             log.record(sample(sequence, ERROR_SEV, STARTED_EVENT));
         }
-        assert_eq!(log.len(), MAX_CRASH_RECORDS);
         assert_eq!(
             log.recent(0).unwrap().log_sequence,
             MAX_CRASH_RECORDS as u64 + 2
@@ -190,32 +162,6 @@ mod tests {
         assert_eq!(log.recent(MAX_CRASH_RECORDS - 1).unwrap().log_sequence, 3);
         assert!(log.recent(MAX_CRASH_RECORDS).is_none());
         assert_eq!(log.total_seen(), MAX_CRASH_RECORDS as u64 + 3);
-    }
-
-    #[test]
-    fn rebuild_keeps_only_crashes_in_order() {
-        let mut ring = [sample(0, INFO_SEV, STARTED_EVENT); 8];
-        ring[0] = sample(10, ERROR_SEV, STARTED_EVENT);
-        ring[2] = sample(12, INFO_SEV, TRAP_EVENT);
-        ring[5] = sample(15, ERROR_SEV, STARTED_EVENT);
-        ring[6] = sample(16, INFO_SEV, STARTED_EVENT);
-
-        let mut log = CrashLog::new();
-        log.rebuild(&ring, 8);
-        assert_eq!(log.len(), 3);
-        assert_eq!(log.recent(0).unwrap().log_sequence, 15);
-        assert_eq!(log.recent(1).unwrap().log_sequence, 12);
-        assert_eq!(log.recent(2).unwrap().log_sequence, 10);
-    }
-
-    #[test]
-    fn rebuild_handles_count_over_length() {
-        let mut ring = [sample(0, INFO_SEV, STARTED_EVENT); 4];
-        ring[1] = sample(9, ERROR_SEV, STARTED_EVENT);
-        let mut log = CrashLog::new();
-        log.rebuild(&ring, 400);
-        assert_eq!(log.len(), 1);
-        assert_eq!(log.recent(0).unwrap().log_sequence, 9);
     }
 
     #[test]

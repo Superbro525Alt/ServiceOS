@@ -1,0 +1,18 @@
+# T4 regression (stale shadow/border outlines after move/close,
+# desktop-shell windows/shadow.rs): witness needs an in-guest hide/move cycle
+# driver plus ghost-dirty rect scan inside desktop-shell window lifecycle.
+# The wiring touches state paths beyond a minimal witness hook (drag/lifecycle
+# triggers), so it ships blocked pending the dedicated shadow-probe design;
+# see tests/README.md fail-to-pass recipe notes.
+[case]
+name = "regress.ghost-outlines"
+tier = 4
+platforms = []
+blocker = "needs desktop-shell ghost-dirty rect probe driving hide/move cycles through lifecycle.rs; not a pure counter export — deferred from this WP per scope note (gfx/input witness hooks only)"
+witnesses = [
+    "E2E shell.ghost-outline cycles=\\d+ remaining=0",
+]
+fail_on = []
+serial_script = ""
+data_fresh = true
+tags = ["regress", "desktop-shell", "t4", "blocked"]

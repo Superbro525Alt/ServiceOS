@@ -1,0 +1,25 @@
+# T3 live input-event witness (plan §3 item 4 / §5 WP3). Built with
+# SERVICEOS_E2E_INPUT=1; the desktop shell counts every dispatched pointer/key
+# action and emits counter milestones. Headless injection rides the muxed HMP
+# monitor (`monitor_mux` + `raw: \x01c`) so sendkey sequences reach the real
+# virtio-keyboard -> kernel -> session-service -> desktop route without a GUI
+# driver (plan §2.4 keeps scripts dumb).
+[case]
+name = "input.events.live"
+tier = 3
+platforms = ["qemu-virtio"]
+timeout_secs = 360
+env_build = ["SERVICEOS_E2E_INPUT=1"]
+witnesses = [
+    # Two distinct counter lines prove events kept flowing past the first
+    # delivery milestone.
+    "E2E input.counters delivered=[1-9]\\d* lost=\\d+",
+    "E2E input.counters delivered=[1-9]\\d* lost=\\d+ [x2]",
+]
+fail_on = [
+    "CRASH LOOP",
+]
+serial_script = "scripts/hmp-keys.txt"
+monitor_mux = true
+data_fresh = true
+tags = ["live", "input", "desktop", "e2e-probe"]

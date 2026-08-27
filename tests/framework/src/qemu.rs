@@ -53,6 +53,28 @@ impl QemuSpec {
         }
         command
     }
+
+    /// Additive WP3 input-injection path: route the HMP monitor through the
+    /// same stdio pair as the serial console (`-serial mon:stdio`) so scripts
+    /// can `raw:`-send `Ctrl-A c` + sendkey sequences to the guest devices.
+    /// Rewrites only the serial transport pair; every other arg stays
+    /// byte-identical (plan §2.3 zero-diff guarantee for default boots).
+    pub fn enable_serial_monitor_mux(&mut self) -> Result<(), String> {
+        let snapshot = self.args.clone();
+        let mut replaced = false;
+        for window in 1..snapshot.len() {
+            if snapshot[window - 1].to_string_lossy() == "-serial"
+                && snapshot[window].to_string_lossy() == "stdio"
+            {
+                self.args[window] = OsString::from("mon:stdio");
+                replaced = true;
+            }
+        }
+        if !replaced {
+            return Err("serial mux failed: no `-serial stdio` pair present".to_owned());
+        }
+        Ok(())
+    }
 }
 
 /// Environment keys the builders read from process-global state; snapshot +

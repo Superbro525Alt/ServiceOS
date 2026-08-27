@@ -1,0 +1,19 @@
+# Byte-compat gate from plan §5 WP2 acceptance, kept green across WP3's new
+# guest probes: a DEFAULT-flagged boot (no SERVICEOS_E2E_* at build time) must
+# show zero `E2E ` prefixed lines on serial. Any future gated probe that leaks
+# into default builds fails here loudly.
+[case]
+name = "smoke.no-probe-defaults"
+tier = 1
+platforms = ["qemu-virtio"]
+witnesses = [
+    "selftest file-written bytes=",
+    "net-selftest end",
+    "selftest mix",
+]
+fail_on = [
+    "E2E ",
+]
+serial_script = ""
+data_fresh = true
+tags = ["smoke", "x86", "byte-compat"]

@@ -2,6 +2,7 @@
 #![cfg_attr(not(test), no_main)]
 
 mod compose;
+mod e2e_probe;
 mod fence;
 mod logging;
 mod outputs;
@@ -94,6 +95,7 @@ fn main() -> u64 {
     let mut stats = PresentStats::default();
     let mut fences = FenceTracker::new();
     let mut waiters = FenceWaiters::new();
+    let mut e2e_probe = e2e_probe::GfxProbe::new();
 
     loop {
         match poll_lifecycle(bootstrap) {
@@ -231,6 +233,7 @@ fn main() -> u64 {
                     Err(_) => return 0xfc0b,
                 }
                 present_count = present_count.saturating_add(1);
+                e2e_probe.note_present(present_count, fences.completed());
                 outputs::refresh_virtual_mirrors(&mut registry, primary_damage_hint);
                 let _ = flush_close_pending_surfaces(&mut surfaces, &mut dirty);
                 let surface_count = active_surface_count(&surfaces);
@@ -282,8 +285,15 @@ fn main() -> u64 {
                     return 0xfc08;
                 }
             }
-            Err(rt::Error::QueueEmpty) => {}
-            Err(_) => return 0xfc0c,
+                Err(rt::Error::QueueEmpty) => {
+                    // E2E gated synthetic cursor-band cycles exercise the
+                    // partial-present planner on idle boots (no monotonic
+                    // clock dependency); inert without SERVICEOS_E2E_GFX=1.
+                    if matches!(dirty, DirtyState::Clean) {
+                        e2e_probe.maybe_synth_cursor_cycle(&surfaces, &mut dirty);
+                    }
+                }
+                Err(_) => return 0xfc0c,
         }
     }
 }

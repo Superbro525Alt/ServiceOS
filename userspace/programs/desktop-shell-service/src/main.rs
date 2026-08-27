@@ -212,6 +212,11 @@ fn main() -> u64 {
                 Ok(()) => {
                     did_work = true;
                     if let Some(move_request) = requests::coalescible_pointer_move(&request) {
+                        // E2E: a fresher pointer sample replacing a pending one
+                        // is the shell-visible "lost" counter (gated).
+                        if pending_pointer_move.is_some() {
+                            crate::input::e2e::note_coalesced_drop();
+                        }
                         pending_pointer_move = Some(move_request);
                         continue;
                     }

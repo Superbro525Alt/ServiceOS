@@ -259,6 +259,10 @@ mod tests {
             tags: Vec::new(),
             mode: crate::case::WitnessMode::Witness,
             graph: String::new(),
+            boot_b_witnesses: Vec::new(),
+            boot_b_fail_on: Vec::new(),
+            monitor_mux: false,
+            blocker: String::new(),
         }
     }
 

@@ -1,0 +1,38 @@
+# T4 regression chain (f71686b): two boots sharing one freshly provisioned
+# data volume. Boot A runs the interactive-less first-boot wizard through its
+# documented silent defaults (headless boots feed empty steps on the step
+# deadline), then asserts the admin marker line. Boot B reuses the SAME staged
+# volume via `boot_b_witnesses` and must see the wizard skip line — proving
+# marker persistence plus clean-exit chain reachability (root-manager graph).
+[case]
+name = "regress.wizard-first-boot-chain"
+tier = 4
+platforms = ["qemu-virtio"]
+timeout_secs = 480
+witnesses = [
+    "first boot detected; starting setup",
+    "setup: admin account created",
+    # Settle anchors: keep boot A alive until well past the wizard teardown
+    # AND the final dual-slot persistence flush so a hard kill cannot roll
+    # back just-written state before boot B reads it.
+    "serviceos shell ready",
+    "rx-ring first frame via shared path copies-avoided=",
+]
+fail_on = [
+    "setup: timezone persist failed",
+    "admin account rejected",
+    "admin account persist failed",
+    "marker persist failed",
+    "CRASH LOOP",
+]
+boot_b_witnesses = [
+    "first-boot already complete; skipping",
+]
+boot_b_fail_on = [
+    "first boot detected",
+    "admin account created",
+    "CRASH LOOP",
+]
+serial_script = ""
+data_fresh = true
+tags = ["regress", "wizard", "firstboot", "t4", "two-boot"]

@@ -1,0 +1,23 @@
+# T4 regression chain (dd7d1f3): synthetic cursor-band damage cycles must
+# leave the cursor surface alive in dirty accounting after partial present.
+# Shares the SERVICEOS_E2E_GFX=1 build tuple with gfx.present.live so both
+# run against the same flagged image without an extra rebuild.
+[case]
+name = "regress.cursor-band-flush"
+tier = 4
+platforms = ["qemu-virtio"]
+timeout_secs = 300
+env_build = ["SERVICEOS_E2E_GFX=1"]
+witnesses = [
+    # At least ten completed synth cycles each asserting visible=1 proves the
+    # invariant survives repeated band flushes, not just the first idle pass.
+    "E2E gfx.cursor-band cycle=\\d+ visible=1",
+    "E2E gfx.cursor-band cycle=\\d+ visible=1 [x10]",
+]
+fail_on = [
+    "E2E gfx.cursor-band FAIL",
+    "CRASH LOOP",
+]
+serial_script = ""
+data_fresh = true
+tags = ["regress", "graphics", "t4", "e2e-probe"]

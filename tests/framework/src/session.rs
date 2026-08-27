@@ -333,6 +333,14 @@ impl SerialSession {
         self.await_progress(deadline)
     }
 
+    /// Block until the next serial evidence event (new bytes, exit, idle
+    /// watchdog) or `deadline`. Unlike [`Self::wait_witness`] this never
+    /// evaluates a needle internally — progress-yielding waiters that
+    /// re-check their own predicates between calls must use this.
+    pub fn await_evidence(&self, deadline: Instant) -> Result<(), WaitOutcome> {
+        self.await_progress(deadline)
+    }
+
     /// Last `n` captured lines joined by '\n' (bounded diagnostics dump).
     pub fn tail(&self, n: usize) -> String {
         self.snapshot().last_lines(n).join("\n")

@@ -1,0 +1,21 @@
+# T3 live graphics counters (plan §3 item 5 / §5 WP3). Built with
+# SERVICEOS_E2E_GFX=1, graphics-service emits the present-counter export on
+# compositor milestones; two matching lines prove the counter advances rather
+# than firing once (`[xN]` occurrence demand, docs/test-plan.md §5).
+[case]
+name = "gfx.present.live"
+tier = 3
+platforms = ["qemu-virtio"]
+timeout_secs = 300
+env_build = ["SERVICEOS_E2E_GFX=1"]
+witnesses = [
+    "E2E gfx.present outputs=1 frames=\\d+ fences=\\d+",
+    "E2E gfx.present outputs=1 frames=\\d+ fences=\\d+ [x2]",
+]
+fail_on = [
+    "E2E gfx.cursor-band FAIL",
+    "CRASH LOOP",
+]
+serial_script = ""
+data_fresh = true
+tags = ["live", "graphics", "e2e-probe"]

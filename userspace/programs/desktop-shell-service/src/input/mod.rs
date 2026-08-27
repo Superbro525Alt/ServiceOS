@@ -2,6 +2,7 @@ mod hit_test;
 mod keyboard;
 pub(crate) mod overlays;
 mod pointer;
+pub(crate) mod e2e;
 
 use rt::{AppKeyAction, AppPointerAction, DesktopAppId, DesktopInputAction};
 use serviceos_desktop_ui as ui;

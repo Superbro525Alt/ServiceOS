@@ -8,5 +8,9 @@ expect: serviceos shell ready
 expect: setup complete
 send: status health
 expect: system health @tick
-send: pkg install developer
-expect: installed developer-service|install failed:
+# quiesce: last rendered status row proves the render finished and the
+# operator readline is re-armed before the next line is typed.
+expect: attention: problems=
+# resend guards against console readline re-arm races that can silently
+# swallow a whole typed line between commands (WP3 additive convention).
+resend: pkg install developer until installed developer-service|install failed:

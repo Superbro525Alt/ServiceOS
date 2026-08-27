@@ -1,0 +1,23 @@
+# T4 regression (473537d "post rx buffers eagerly and deliver inbound
+# frames"): the slirp DHCP offer must arrive through the shared RX ring.
+# Pure host-side witnesses — no guest changes needed:
+#   * "rx-ring first frame via shared path" fires on the first zero-copy
+#     inbound frame (typically the DHCP offer, network-service main.rs).
+#   * The selftests only start once DHCP leaves Pending state, so
+#     net-selftest lines double as address-configured evidence.
+[case]
+name = "regress.dhcp-rx-delivery"
+tier = 4
+platforms = ["qemu-virtio"]
+timeout_secs = 300
+witnesses = [
+    "rx-ring first frame via shared path copies-avoided=",
+    "net-selftest begin udp=",
+    "net-selftest end pass",
+]
+fail_on = [
+    "CRASH LOOP",
+]
+serial_script = ""
+data_fresh = true
+tags = ["regress", "network", "t4"]

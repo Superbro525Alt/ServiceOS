@@ -63,6 +63,19 @@ pub struct CaseDef {
     pub mode: WitnessMode,
     /// Informational graph depth annotation (e.g. isa declares "minimal").
     pub graph: String,
+    /// Additive WP3 (regress.wizard-first-boot-chain §T4): when non-empty the
+    /// runner re-spawns QEMU on the SAME staged disk + data volume after boot
+    /// A's witnesses pass, then demands these patterns before success.
+    pub boot_b_witnesses: Vec<String>,
+    /// fail_on applied only during the second-boot phase.
+    pub boot_b_fail_on: Vec<String>,
+    /// Additive WP3: multiplex the HMP monitor onto the serial stdio pair
+    /// (`-serial mon:stdio`) so scripted cases can `raw:`-inject sendkey
+    /// sequences. Default boots keep the exact historical argv.
+    pub monitor_mux: bool,
+    /// Non-empty marks a declaratively-blocked case: every platform row
+    /// reports SKIPPED with this reason and no guest build/boot occurs.
+    pub blocker: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -331,7 +344,7 @@ fn split_top_level(inner: &str, separator: char) -> Vec<String> {
     parts
 }
 
-const KNOWN_KEYS: [&str; 14] = [
+const KNOWN_KEYS: [&str; 18] = [
     "name",
     "tier",
     "platforms",
@@ -346,6 +359,12 @@ const KNOWN_KEYS: [&str; 14] = [
     "tags",
     "mode",
     "graph",
+    // Additive WP3 keys (docs/test-plan.md §5): second-boot regression chains,
+    // HMP input injection, and declarative blocker skip rows.
+    "boot_b_witnesses",
+    "boot_b_fail_on",
+    "monitor_mux",
+    "blocker",
 ];
 
 impl CaseDef {
@@ -367,6 +386,10 @@ impl CaseDef {
             tags: Vec::new(),
             mode: WitnessMode::Witness,
             graph: String::from("full"),
+            boot_b_witnesses: Vec::new(),
+            boot_b_fail_on: Vec::new(),
+            monitor_mux: false,
+            blocker: String::new(),
         };
 
         for (key, value, line) in parse_document(path, &text)? {
@@ -395,9 +418,9 @@ impl CaseDef {
                         .ok_or_else(|| {
                             err(path, line, "platforms must be an array of platform names")
                         })?;
-                    if strings.is_empty() {
-                        return Err(err(path, line, "platforms must not be empty"));
-                    }
+                    // Empty is tolerated here so a declaratively blocked case
+                    // (`blocker = ...`) can declare no targets at all; the
+                    // post-parse check rejects empty-without-blocker.
                     for platform in &strings {
                         PlatformList::validate(platform)
                             .map_err(|message| err(path, line, message))?;
@@ -536,6 +559,35 @@ impl CaseDef {
                         .ok_or_else(|| err(path, line, "graph must be a string"))?
                         .to_owned();
                 }
+                "boot_b_witnesses" => {
+                    def.boot_b_witnesses = value
+                        .as_strings()
+                        .ok_or_else(|| {
+                            err(path, line, "boot_b_witnesses must be an array of strings")
+                        })?
+                        .into_iter()
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>();
+                }
+                "boot_b_fail_on" => {
+                    def.boot_b_fail_on = value
+                        .as_strings()
+                        .ok_or_else(|| err(path, line, "boot_b_fail_on must be an array of strings"))?
+                        .into_iter()
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>();
+                }
+                "monitor_mux" => {
+                    def.monitor_mux = value
+                        .as_bool()
+                        .ok_or_else(|| err(path, line, "monitor_mux must be a boolean"))?;
+                }
+                "blocker" => {
+                    def.blocker = value
+                        .as_string()
+                        .ok_or_else(|| err(path, line, "blocker must be a string"))?
+                        .to_owned();
+                }
                 unknown => {
                     return Err(err(
                         path,
@@ -566,6 +618,14 @@ impl CaseDef {
                 file: path.to_path_buf(),
                 message: format!("platforms entry invalid: {message}"),
             })?;
+        }
+        // A case that declares no platform and no blocker would silently
+        // vanish from every report row; force authors to pick one.
+        if def.platforms.is_empty() && def.blocker.is_empty() {
+            return Err(Box::new(CaseError {
+                file: path.to_path_buf(),
+                message: "case with empty platforms must declare a blocker reason".to_owned(),
+            }));
         }
         Ok(def)
     }

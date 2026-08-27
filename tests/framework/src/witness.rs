@@ -70,9 +70,32 @@ pub struct Pattern {
     raw: String,
     program: Vec<Inst>,
     literal: Option<String>,
+    /// Additive WP3 extension: when >1 the pattern demands at least this many
+    /// distinct matching lines (`witnesses = ["E2E foo [x3]"]`). The bracket
+    /// suffix is metadata, never part of the compiled regex.
+    min_occurrences: usize,
 }
 
 const META_CHARS: [char; 12] = ['\\', '^', '$', '.', '|', '(', ')', '*', '+', '?', '[', ']'];
+
+/// Split a trailing `[xN]` occurrence demand off a raw witness string
+/// (`docs/test-plan.md §5 WP3` additive convention). `[x1]` and malformed
+/// suffixes are rejected loudly so typos cannot silently weaken a witness.
+fn split_min_occurrences(raw: &str) -> (&str, usize) {
+    let Some(open) = raw.rfind("[x") else {
+        return (raw, 1);
+    };
+    if !raw[open..].ends_with(']') {
+        return (raw, 1);
+    }
+    let inner = &raw[open + 2..raw.len() - 1];
+    match inner.parse::<usize>() {
+        // Only the >=2 multi-line form is meaningful here; "x1"/"x0" stay
+        // invalid so the bracket form always signals a deliberate count.
+        Ok(count) if count >= 2 => (&raw[..open].trim_end(), count),
+        _ => (raw, 1),
+    }
+}
 
 /// Canonical console-prompt matcher (docs/test-plan.md §6.4: parameterize the
 /// glyph in one constant until WP3 inspects the shell draw code).
@@ -338,14 +361,21 @@ impl<'p> Parser<'p> {
 
 impl Pattern {
     pub fn new(raw: &str) -> Result<Self, PatternError> {
-        let literal = if raw.chars().any(|ch| META_CHARS.contains(&ch)) {
+        // Occurrence-count suffix parsing happens before regex compilation so
+        // '[' never reaches the class parser in this form.
+        let (pattern_source, min_occurrences) = split_min_occurrences(raw);
+
+        let literal = if pattern_source
+            .chars()
+            .any(|ch| META_CHARS.contains(&ch))
+        {
             None
         } else {
-            Some(raw.to_owned())
+            Some(pattern_source.to_owned())
         };
 
-        let owned_chars: Vec<char> = raw.chars().collect();
-        let mut parser = Parser::new(raw, &owned_chars);
+        let owned_chars: Vec<char> = pattern_source.chars().collect();
+        let mut parser = Parser::new(pattern_source, &owned_chars);
         let alternatives = parser.alternatives()?;
         if parser.position != owned_chars.len() {
             return Err(parser.error("trailing unparsed input"));
@@ -359,6 +389,7 @@ impl Pattern {
             raw: raw.to_owned(),
             program: compiler.program,
             literal,
+            min_occurrences,
         })
     }
 
@@ -366,8 +397,27 @@ impl Pattern {
         &self.raw
     }
 
+    /// Minimum distinct matching lines demanded (1 unless `[xN]` suffixed).
+    pub fn min_occurrences(&self) -> usize {
+        self.min_occurrences
+    }
+
     pub fn is_literal(&self) -> bool {
         self.literal.is_some()
+    }
+
+    /// WP3 advancement gate: true when the pattern appears on at least
+    /// [`Self::min_occurrences`] distinct lines of the haystack.
+    pub fn satisfied(&self, text: &str) -> bool {
+        if self.min_occurrences <= 1 {
+            return self.matches(text);
+        }
+        self.count_occurrences(text) >= self.min_occurrences
+    }
+
+    /// Number of distinct lines of `text` on which this pattern matches.
+    pub fn count_occurrences(&self, text: &str) -> usize {
+        text.lines().filter(|line| self.matches(line)).count()
     }
 
     /// Haystack search over text possibly containing newlines. Anchors
@@ -471,6 +521,31 @@ mod tests {
     }
 
     #[test]
+    fn occurrence_suffix_demands_distinct_lines() {
+        let pattern = Pattern::new("E2E gfx.present frames=\\d+").expect("parses");
+        assert_eq!(pattern.min_occurrences(), 1, "no suffix");
+        let pattern2 = Pattern::new("E2E gfx.present frames=\\d+ [x2]").expect("parses");
+        assert_eq!(pattern2.min_occurrences(), 2);
+        // Raw stays readable in TAP/diagnostic output.
+        assert_eq!(
+            pattern2.raw(),
+            "E2E gfx.present frames=\\d+ [x2]"
+        );
+
+        let text = "noise\nE2E gfx.present frames=1\ntail";
+        assert!(pattern.satisfied(text));
+        assert_eq!(pattern2.count_occurrences(text), 1);
+        assert!(!pattern2.satisfied(text), "a single matching line cannot satisfy [x2]");
+        let expanded =
+            "E2E gfx.present frames=1\nx\nE2E gfx.present frames=17\ny\nE2E gfx.present frames=33";
+        assert!(pattern2.satisfied(expanded));
+        // The suffix never leaks into the compiled matcher itself.
+        assert_eq!(pattern2.count_occurrences("[x2] alone"), 0);
+        // Malformed / x1 forms are rejected rather than silently weakened.
+        assert_eq!(Pattern::new("frames=\\d+ [x1]").expect("raw").min_occurrences(), 1);
+    }
+
+    #[test]
     fn digit_classes_match_selftest_evidence() {
         assert!(m("bytes=\\d+", "selftest file-written bytes=128 ok"));
         assert!(!m("bytes=\\d+", "bytes=none"));
@@ -558,5 +633,18 @@ mod tests {
         assert!(pattern.match_line("root# "));
         assert!(pattern.match_line("user$ "));
         assert!(!pattern.match_line("random output line"));
+    }
+}
+#[cfg(test)]
+mod probe_tmp {
+    use crate::witness::Pattern;
+    #[test]
+    fn tmp_debug() {
+        let p = Pattern::new("E2E gfx.present frames=\\d+");
+        let pattern = match p { Ok(v)=>v, Err(e)=>panic!("parse err {:?}", e) };
+        let line = "E2E gfx.present frames=1";
+        eprintln!("line-only match: {}", pattern.matches(line));
+        eprintln!("full match: {}", pattern.matches("noise\nE2E gfx.present frames=1\ntail"));
+        eprintln!("count: {}", pattern.count_occurrences("noise\nE2E gfx.present frames=1\ntail"));
     }
 }

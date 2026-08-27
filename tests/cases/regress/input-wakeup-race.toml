@@ -1,0 +1,17 @@
+# T4 regression (scheduler lost-wakeup guard, raced_wakeup latch): needs the
+# in-guest synthetic idle/wake toggle probe living NEXT TO the scheduler
+# internals. That surface is owned by the kernel/platform work in flight; the
+# case is declared with its intended witness shape and a blocker until the
+# kernel-side hook lands. Blocker cases render as SKIPPED rows, not FAILs.
+[case]
+name = "regress.input-wakeup-race"
+tier = 4
+platforms = []
+blocker = "kernel-owned: input/wakeup toggles must live beside scheduler.rs raced_wakeup latch; parked until kernel probe slot opens (plan §3.4 tail)"
+witnesses = [
+    "E2E sched.wakeups delivered=512 lost=0",
+]
+fail_on = []
+serial_script = ""
+data_fresh = true
+tags = ["regress", "kernel", "t4", "blocked"]

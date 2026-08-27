@@ -40,6 +40,7 @@ pub(crate) fn dispatch_input_request(
     detail: i32,
     reply_handle: Option<rt::Handle>,
 ) -> rt::Result<()> {
+    crate::input::e2e::note_delivered();
     let result = handle_input(state, action, x, y, detail);
     if let Some(reply_handle) = reply_handle {
         let mut reply = RawMessage::empty(DesktopTag::InputReply as u32);

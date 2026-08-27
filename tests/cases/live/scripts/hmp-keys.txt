@@ -1,0 +1,9 @@
+# HMP-driven key injection for input.events.live. Once the operator console
+# is up (`serviceos shell ready`), Ctrl-A c flips the stdio multiplexer to the
+# QEMU monitor; sendkey pairs then traverse virtio-keyboard for real. Serial
+# output keeps flowing through the same pair while focused, so witnesses stay
+# observable.
+expect: serviceos shell ready
+raw: \x01c
+expect: \(qemu\)
+raw: sendkey g\nsendkey x\nsendkey k\nsendkey spc\nsendkey x\nsendkey k\n

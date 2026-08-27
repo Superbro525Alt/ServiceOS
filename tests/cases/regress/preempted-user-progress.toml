@@ -1,0 +1,16 @@
+# T4 regression (scheduler.rs:767 interrupted-user preemption): requires a
+# kernel-adjacent probe (background spinner + interactive latency sampling
+# around the preempt path). Kernel/platform is out of this work package's
+# write zone, so the row ships blocked rather than silently absent.
+[case]
+name = "regress.preempted-user-progress"
+tier = 4
+platforms = []
+blocker = "kernel-owned: spinner/latency probe belongs beside scheduler.rs:767 preemption path; parked until kernel probe slot opens"
+witnesses = [
+    "E2E sched.preempt progress=1 latency=0",
+]
+fail_on = []
+serial_script = ""
+data_fresh = true
+tags = ["regress", "kernel", "t4", "blocked"]

@@ -3,5 +3,8 @@
 # marks release of the readline path back to the operator shell.
 expect: serviceos shell ready
 expect: setup complete
+# quiesce: kernel address-space release follows the wizard teardown; typing
+# before it risks landing inside the post-setup console chatter window.
+expect: address-space released root=
 send: sysupdate history
 expect: sysupdate history:

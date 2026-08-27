@@ -193,19 +193,41 @@ fn execute(options: TestE2eOptions, cli_release: bool) -> Result<i32, Box<dyn Er
         );
     }
 
-    if active
-        .iter()
-        .any(|case| !case.env_build.is_empty())
-    {
-        println!("warning: env_build guest-gate plumbing arrives with WP2; flags noted only");
+    // WP3: env_build guest gates now plumb into per-tuple cached builds
+    // (serviceos_e2e::RunCtx::ensure_build); the fingerprint file remains a
+    // cross-invocation audit trail keyed to the selected set.
+    if active.iter().any(|case| !case.env_build.is_empty()) {
         write_build_fingerprint(&active)?;
+    }
+
+    // Group rows by their flag tuple so gated builds are compiled contiguously
+    // instead of ping-ponging rebuilds between default- and flagged-image
+    // tuples across the sequential schedule. Order within a tuple keeps file
+    // order; tuple order follows first appearance.
+    let mut tuple_order: Vec<Vec<(String, String)>> = Vec::new();
+    for case in &active {
+        let mut flags = case.env_build.clone();
+        flags.sort();
+        if !tuple_order.contains(&flags) {
+            tuple_order.push(flags);
+        }
+    }
+    let mut ordered: Vec<&CaseDef> = Vec::with_capacity(active.len());
+    for flags in &tuple_order {
+        for case in active.iter().filter(|case| {
+            let mut own = case.env_build.clone();
+            own.sort();
+            own == *flags
+        }) {
+            ordered.push(case);
+        }
     }
 
     let mut ctx = RunCtx::new(root.clone(), jobs, release);
     ctx.timeout_override = options.timeout_secs;
 
     let mut results: Vec<CaseResult> = Vec::new();
-    for case in &active {
+    for case in &ordered {
         println!("\n=== case {}: T{} targets {:?} ===", case.name, case.tier, case.platforms);
         let row_platforms: Vec<String> = case.platforms.clone();
         for platform in row_platforms {

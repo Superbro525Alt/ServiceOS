@@ -118,7 +118,9 @@ broader compatibility runtimes, or a mature app ecosystem.
 .
 |-- arch/
 |   |-- aarch64/
+|   |-- riscv64/
 |   `-- x86_64/
+|-- tests/            # e2e suite (cases + framework)
 |-- docs/
 |-- kernel/
 |   `-- core/
@@ -240,6 +242,39 @@ Current `virt` (QEMU aarch64) behavior:
   (`bootstrap: bring-up failed: MissingRootThread`) and is under investigation
 - provides no framebuffer, pointer/keyboard, network, or writable storage
   backends
+
+
+## End-To-End Testing
+
+The `tests/` directory hosts the declarative end-to-end suite, which boots
+real OS images under QEMU and asserts on serial output. See `tests/README.md`
+for the case schema and `docs/test-plan.md` for the full spec.
+
+```bash
+# run the whole suite (all tiers, all platforms with cases)
+cargo xtask test-e2e
+
+# target a platform / tier / subset
+cargo xtask test-e2e --platform qemu-virtio --tier 3
+cargo xtask test-e2e --filter regress --tag network
+cargo xtask test-e2e --platform virt --filter smoke
+
+# TAP output + non-zero exit on failure (CI friendly)
+cargo xtask test-e2e --report /tmp/e2e.tap
+```
+
+Behavior notes:
+
+- cases are TOML files under `tests/cases/{smoke,bringup,live,regress}`;
+  each names its platform, witness lines to await, fail-fast strings, and a
+  per-case timeout that kills a wedged QEMU
+- the runner copies images into isolated per-case slots, so runs can be
+  parallelized with `-j N` (respect host RAM)
+- guests emit `E2E <group>.<name> PASS|FAIL` witness lines behind
+  `SERVICEOS_E2E_*` env gates; default boots stay byte-identical
+- adding a test for a new feature = dropping one TOML file (plus, if needed,
+  a gated witness line in the relevant service)
+- exit codes: `0` all pass, `1` failures, `2` harness error
 
 ## What The System Can Do Right Now
 

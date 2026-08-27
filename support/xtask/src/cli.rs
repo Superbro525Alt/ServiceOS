@@ -18,13 +18,19 @@ pub enum CommandKind {
     /// Workspace check + tests + bounded QEMU boots + selftest greps with a
     /// single summary table and exit code.
     Validate,
+    /// End-to-end suite: TOML case files under tests/cases/ executed by the
+    /// serviceos-e2e runner framework (docs/test-plan.md §4).
+    TestE2e,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Options<'a> {
     pub command: CommandKind,
     pub platform: &'a str,
     pub release: bool,
+    /// Raw remainder args for commands that own their flag vocabulary
+    /// (`test-e2e` parses its spec in support/xtask/src/e2e.rs).
+    pub e2e_extra: Vec<String>,
 }
 
 impl<'a> Options<'a> {
@@ -44,12 +50,23 @@ impl<'a> Options<'a> {
             "release" => CommandKind::Release,
             "test-upgrade" => CommandKind::TestUpgrade,
             "validate" => CommandKind::Validate,
+            "test-e2e" => CommandKind::TestE2e,
             "qemu" => {
                 platform = Some("qemu-virtio");
                 CommandKind::Run
             }
             _ => return Err(Box::new(UsageError)),
         };
+
+        // test-e2e owns its own flag grammar; hand the rest through untouched.
+        if command == CommandKind::TestE2e {
+            return Ok(Options {
+                command,
+                platform: platform.unwrap_or("qemu-virtio"),
+                release,
+                e2e_extra: rest.to_vec(),
+            });
+        }
 
         let mut index = 0usize;
         while index < rest.len() {
@@ -82,6 +99,7 @@ impl<'a> Options<'a> {
             command,
             platform,
             release,
+            e2e_extra: Vec::new(),
         })
     }
 }
@@ -104,7 +122,7 @@ impl fmt::Display for UsageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "usage: cargo xtask <build|image|run|recover|qemu|release|test-upgrade|validate|ci-matrix> [--platform <qemu-virtio|raspi5|virt|qemu-isa|riscv64-virt>] [--release]"
+            "usage: cargo xtask <build|image|run|recover|qemu|release|test-upgrade|validate|ci-matrix|test-e2e> [--platform <qemu-virtio|raspi5|virt|qemu-isa|riscv64-virt>] [--release]\n       test-e2e flags: [--platform <p>] [--tier <1..4>] [--filter <substr-or-regex>] [--tag <t>] [-j <n>] [--timeout-secs <s>] [--report <path>] [--list]"
         )
     }
 }

@@ -1,0 +1,14 @@
+# T1 raspi5 build-only image assertion (RunKind::ManualDeploy): running the
+# host-side path requires no emulator; run_case verifies create_platform_image
+# staged config.txt, kernel8.img and serviceos/bootstore.bin. Witnesses are
+# satisfied internally by the staged-file checks below (plan §1 T1 detail).
+[case]
+name = "smoke.raspi5-image"
+tier = 1
+platforms = ["raspi5"]
+graph = "build-only"
+witnesses = ["raspi5-bundle-staged"]
+fail_on = []
+serial_script = ""
+data_fresh = true
+tags = ["smoke", "pi"]

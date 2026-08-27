@@ -18,8 +18,10 @@ members = [
     "platform/aarch64/virt/image",
     "platform/riscv64/virt",
     "platform/riscv64/virt/image",
+    "support/xtask-core",
     "support/xtask",
     "userspace/catalog",
+    "tests/framework",
 ]
 
 [workspace.package]

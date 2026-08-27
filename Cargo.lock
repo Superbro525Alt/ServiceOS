@@ -133,6 +133,13 @@ name = "serviceos-crypto"
 version = "0.1.0"
 
 [[package]]
+name = "serviceos-e2e"
+version = "0.1.0"
+dependencies = [
+ "xtask-core",
+]
+
+[[package]]
 name = "serviceos-kernel-arch-aarch64"
 version = "0.1.0"
 dependencies = [
@@ -423,6 +430,14 @@ dependencies = [
 
 [[package]]
 name = "xtask"
+version = "0.1.0"
+dependencies = [
+ "serviceos-e2e",
+ "xtask-core",
+]
+
+[[package]]
+name = "xtask-core"
 version = "0.1.0"
 
 [[package]]

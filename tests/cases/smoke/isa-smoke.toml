@@ -1,0 +1,17 @@
+# T1 boot smoke, qemu-isa (-machine pc, multiboot ELF via SeaBIOS PVH).
+# Tier declared graph:minimal per plan: kernel-entry + paging bring-up
+# sentinels only; this BIOS path has no PCI block device so the userspace
+# graph runs serial-first without storage/net/audio evidence.
+[case]
+name = "smoke.isa-kernel-entry"
+tier = 1
+platforms = ["qemu-isa"]
+graph = "minimal"
+witnesses = [
+    "entered x86_64 legacy-BIOS \\(SeaBIOS/PVH\\) kernel image",
+    "serviceos: probe: S2",
+]
+fail_on = ["bring-up failed", "panic:", "general protection fault"]
+serial_script = ""
+data_fresh = true
+tags = ["smoke", "x86"]

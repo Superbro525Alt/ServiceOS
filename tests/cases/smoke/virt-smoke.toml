@@ -1,0 +1,17 @@
+# T1 boot smoke, aarch64 virt (TCG multi kernel Image boot over PL011 UART).
+# Same three-marker graph tier as qemu-virtio via bounded_qemu_virt_boot's
+# slirp-backed full bring-up path.
+[case]
+name = "smoke.virt-boot"
+tier = 1
+platforms = ["virt"]
+timeout_secs = 420
+witnesses = [
+    "selftest file-written bytes=",
+    "net-selftest end",
+    "selftest mix",
+]
+fail_on = ["selftest persist FAILED"]
+serial_script = ""
+data_fresh = true
+tags = ["smoke", "arm"]

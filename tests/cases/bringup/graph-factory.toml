@@ -1,0 +1,21 @@
+# T2 service-graph bring-up on factory-fresh qemu-virtio media: all three
+# subsystem selftest markers present (full eager graph ready) with no adverse
+# evidence lines. No guest gating involved; identical to today's validate
+# boot step but owned declaratively so WP2 can extend it (plan §5 WP2).
+[case]
+name = "bringup.graph-factory"
+tier = 2
+platforms = ["qemu-virtio"]
+witnesses = [
+    "selftest file-written bytes=",
+    "net-selftest end",
+    "selftest mix",
+]
+fail_on = [
+    "selftest persist FAILED",
+    "CRASH LOOP",
+    "bring-up failed",
+]
+serial_script = ""
+data_fresh = true
+tags = ["bringup", "factory"]

@@ -1,0 +1,16 @@
+# T1 boot smoke, qemu-virtio (UEFI + virtio full device set).
+# Witness tier per docs/test-plan.md §1: storage/net/audio selftest markers
+# prove the full userspace service graph came up on factory-fresh media.
+[case]
+name = "smoke.virtio-boot"
+tier = 1
+platforms = ["qemu-virtio"]
+witnesses = [
+    "selftest file-written bytes=",   # storage-service boot selftest blob write
+    "net-selftest end",               # network-service udp/tcp selftests done
+    "selftest mix",                   # audio-service mix/capture selftests up
+]
+fail_on = ["selftest persist FAILED"]
+serial_script = ""
+data_fresh = true
+tags = ["smoke", "x86"]

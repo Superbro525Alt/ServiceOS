@@ -1,0 +1,17 @@
+# T1 boot smoke, riscv64-virt skeleton: OpenSBI handoff then kernel stub
+# banner over the SBI legacy console. Build-and-banner depth only; no
+# userspace graph exists on this target yet (plan §6.8 keeps it opt-in when
+# filtered explicitly).
+[case]
+name = "smoke.riscv-banner"
+tier = 1
+platforms = ["riscv64-virt"]
+graph = "build-plus-banner"
+witnesses = [
+    "OpenSBI",
+    "riscv64 virt stub alive",
+]
+fail_on = ["skeleton panic"]
+serial_script = ""
+data_fresh = true
+tags = ["smoke", "riscv"]

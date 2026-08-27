@@ -7,6 +7,7 @@ name = "smoke.riscv-banner"
 tier = 1
 platforms = ["riscv64-virt"]
 graph = "build-plus-banner"
+timeout_secs = 90
 witnesses = [
     "OpenSBI",
     "riscv64 virt stub alive",

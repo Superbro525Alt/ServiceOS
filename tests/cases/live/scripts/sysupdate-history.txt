@@ -1,0 +1,7 @@
+# sysupdate history read-only query, driven over the operator console.
+# Anchor note (pkg-install.txt): wizard owns serial first; `setup complete`
+# marks release of the readline path back to the operator shell.
+expect: serviceos shell ready
+expect: setup complete
+send: sysupdate history
+expect: sysupdate history:

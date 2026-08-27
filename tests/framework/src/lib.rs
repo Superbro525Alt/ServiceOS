@@ -193,6 +193,11 @@ fn execute_row(
             vars_path.display().to_string(),
         ));
     }
+    // Case-declared launch-time env (e.g. the plan §2.5 audio pair) rides
+    // the same guard window so the spec snapshots it; restored on drop.
+    for (key, value) in &case.qemu_env {
+        builder_env.push((key.clone(), value.clone()));
+    }
     let _guard = qemu::EnvGuard::apply(&builder_env);
     let artifacts = &ctx.builds[platform].artifacts;
     let mut spec = qemu::spec_for(platform, artifacts, &paths)?;
@@ -223,6 +228,25 @@ fn execute_row(
             ))
         }
     };
+
+    // Scripted cases (plan §2.4) type through the operator console after
+    // boot; their directives anchor each send on a prior expect so bytes are
+    // never dropped outside an armed readline session. Remaining wall budget
+    // is shared across the script's expects; witnesses still gate the final
+    // verdict afterwards so loose sequencing cannot mask a missing result.
+    if let Some(script_path) = case.serial_script.as_deref() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if let Err(error) = run_script(script_path, &mut session, remaining) {
+            let output = session.kill();
+            return Ok(CaseResult::failed(
+                case,
+                platform,
+                started,
+                format!("serial script failed: {error}"),
+                tail_of(&output),
+            ));
+        }
+    }
 
     let verdict = drive_witnesses(case, &mut session, deadline);
     let output = session.kill();

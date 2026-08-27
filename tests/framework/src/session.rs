@@ -7,7 +7,7 @@
 
 use std::{
     collections::VecDeque,
-    io::{BufRead, BufReader, Read},
+    io::Read,
     process::{Child, Command, Stdio},
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -147,12 +147,39 @@ where
     R: Read + Send + 'static,
 {
     std::thread::spawn(move || {
-        if let Some(pipe) = pipe {
-            let reader = BufReader::new(pipe);
-            for line in reader.lines().map_while(Result::ok) {
-                println!("{line}");
-                shared.push_line(&line);
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if let Some(mut pipe) = pipe {
+                // Byte-level read_until instead of BufRead::lines(): guest
+                // consoles emit escape sequences and firmware glyphs that are
+                // not valid UTF-8, which would silently terminate a
+                // `lines().map_while(ok)` pump mid-boot (observed live: witness
+                // pumps starving while kill()-drain later flushed the full
+                // log). Lossy conversion keeps every byte observable.
+                let mut buffer: Vec<u8> = Vec::new();
+                let mut chunk = [0u8; 4096];
+                loop {
+                    match pipe.read(&mut chunk) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            for byte in &chunk[..n] {
+                                if *byte == b'\n' {
+                                    let text =
+                                        String::from_utf8_lossy(&buffer).into_owned();
+                                    println!("{text}");
+                                    shared.push_line(text.trim_end_matches('\r'));
+                                    buffer.clear();
+                                } else {
+                                    buffer.push(*byte);
+                                }
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
             }
+        }));
+        if outcome.is_err() {
+            eprintln!("e2e session reader panicked");
         }
         shared.note_reader_eof();
     })

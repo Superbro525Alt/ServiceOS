@@ -252,6 +252,7 @@ mod tests {
             witnesses: vec!["marker".to_owned()],
             fail_on: Vec::new(),
             env_build: Vec::new(),
+            qemu_env: Vec::new(),
             probes: Vec::new(),
             serial_script: None,
             data_fresh: true,

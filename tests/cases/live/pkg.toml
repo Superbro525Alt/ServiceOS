@@ -1,0 +1,22 @@
+# T3 live package flow (plan §2.4/§3): real operator-shell interaction over
+# the serial console — `pkg install developer` round-trips the InstallRequest
+# through package-service and reports back on the console surface.
+# Script expects branch-tolerant terminal text; the strict witness below
+# demands the success variant (`installed developer-service (...)`).
+[case]
+name = "pkg.live"
+tier = 3
+platforms = ["qemu-virtio"]
+timeout_secs = 420
+witnesses = [
+    "system health @tick",
+    "installed developer-service",
+]
+fail_on = [
+    "install failed: denied",
+    "blocked: source",
+    "CRASH LOOP",
+]
+serial_script = "scripts/pkg-install.txt"
+data_fresh = true
+tags = ["live", "package", "scripted"]

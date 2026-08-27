@@ -1,0 +1,25 @@
+# T3 live storage suite (plan §3 inventory row 1): persistent-mount,
+# capability-gate, blob-write/persist, unmount/remount-persistence, and
+# mutation probes emitted unconditionally by storage-service's boot
+# selftest (userspace/programs/storage-service/src/selftest.rs).
+[case]
+name = "storage.live"
+tier = 3
+platforms = ["qemu-virtio"]
+witnesses = [
+    "selftest mount-(added ok|present restored=1)",  # fresh or remounted data volume
+    "selftest authority-gate denied-ok=1",
+    "selftest file-written bytes=",                  # blob write inside mounted ns
+    "selftest mutation-probe create=2 rename=1 delete=2 ok=1",
+    "selftest unmount-open refused=true",
+    "selftest unmount-closed ok=true",
+    "selftest remount persists-bytes=",              # persistent backend kept bytes
+]
+fail_on = [
+    "selftest persist FAILED",
+    "selftest mount-added FAILED",
+    "CRASH LOOP",
+]
+serial_script = ""
+data_fresh = true
+tags = ["live", "storage"]

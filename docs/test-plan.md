@@ -381,13 +381,24 @@ Acceptance criteria:
 ### WP2 — Port existing selftests into declared cases + new storage probe
 
 Files:
-- Create: `tests/cases/bringup/graph-factory.toml`, `tests/cases/live/{storage-ops.toml,fsck-repair.toml,net-suite.toml,audio-suite.toml,farm-loopback.toml,remote-loopback.toml,wizard-firstboot.toml}`
-- Modify: `userspace/programs/runtime` (add `e2e.rs` helper per §3.1),
-  `userspace/programs/storage-service/src/{selftest.rs,selftest_e2e.rs}` (gate
-  `SERVICEOS_E2E_STORAGE`), build plumbing so `env_build` flags reach the guest
-  profile env (follow `SERVICEOS_FARM_SELFTEST` handling in
-  `developer-service` Cargo/env wiring; check `build.rs` arrays containing
-  `("SERVICEOS_USER_TARGET", …)` as the pattern site).
+- Create: `tests/cases/bringup/graph-factory.toml`, `tests/cases/live/{storage.toml,network.toml,audio.toml,audio-virtio.toml,fsck.toml,index.toml,pkg.toml,sysupdate-history.toml}`,
+  `tests/cases/live/scripts/{pkg-install.txt,sysupdate-history.txt}`. Case ids
+  use `<subsystem>.live` naming; audio's SERVICEOS_AUDIO=1 virtio variant is
+  its own tagged case (`audio.live.virtio`) per §2.5 gating.
+- Create (harness gaps filled additively by WP2): `serial_script` execution
+  hook in `run_case` (§2.4 semantics: every send anchored on a prior expect,
+  remaining wall budget shared across expects, witnesses still gate success)
+  and the `qemu_env` case key (launch-time env pairs applied under the
+  existing EnvGuard window; needed for the audio variant's
+  SERVICEOS_AUDIO/QEMU_AUDIODEV pair).
+- Deferred to the T4/scenario work package of record: `farm-loopback`,
+  `remote-loopback`, `wizard-firstboot` cases and the gated deep-storage /
+  runtime `e2e.rs` helper probes (§3 items 1–2) — none are required for the
+  always-on inventory rows above.
+- Documented skip: `backup-roundtrip` — backup-service's snapshot/restore
+  engine is reachable only via IPC (`backup-service/src/main.rs handle_restore`);
+  there is no `backup` shell verb (`shell-service/src/commands/mod.rs`), so a
+  serial script cannot drive it today. Revisit when a console path lands.
 
 Acceptance criteria:
 - Each listed case passes against an unmodified-fix tree.
@@ -458,9 +469,11 @@ Dependency order: WP1 → (WP2 ∥ WP3) → WP4. WP2 and WP3 share no files.
    AND stable sentinel ordering (first N well-known lines), making drift loud.
 4. **Serial stdin reliability under slab buffers**: `send_line` before the
    shell prompt exists may drop input into firmware/kernel phases. Script
-   engine always anchors on `prompt` expectation first. Unknown: exact prompt
-   glyph string — inspect `console-service`/shell draw code during WP3;
-   parameterize in one constant.
+   engine always anchors on `prompt` expectation first. Resolved during WP2:
+   the glyph is `serviceos> ` (`SHELL_PROMPT`, `shell-service/src/lib.rs`);
+   console-service additionally drops bytes typed while no readline session is
+   armed (`console-service/src/input.rs handle_input_byte`), so scripts must
+   expect each command's reply before the next send.
 5. **OVMF vars churn**: SERVICEOS_OVMF_VARS overlay exists; confirm template
    copy race-free when j>2 (create_ovmf_vars_copy is not atomic). Wrap copy in
    temp-name+rename inside WP1 isolation layer rather than relying on xtask's

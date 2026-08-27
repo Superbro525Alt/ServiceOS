@@ -1,0 +1,18 @@
+# T3 live index witness (plan §3 inventory row 2 partial): the boot selftest
+# rebuilds the search index, plans a path query for the selftest blob, and
+# streams grep-needsle through it; search-hit=1 + grep-lines>=1 prove query
+# and stream scan agree with the mutable-entry truth on factory media.
+[case]
+name = "index.live"
+tier = 3
+platforms = ["qemu-virtio"]
+witnesses = [
+    "selftest index-probe ",       # entries/dirty/rebuild-tick accounting present
+    "search-hit=1",
+]
+fail_on = [
+    "CRASH LOOP",
+]
+serial_script = ""
+data_fresh = true
+tags = ["live", "storage", "index"]

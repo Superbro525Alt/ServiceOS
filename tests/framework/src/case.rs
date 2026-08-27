@@ -51,6 +51,11 @@ pub struct CaseDef {
     pub fail_on: Vec<String>,
     /// option_env!-style guest build gates (WP2 plumbs them into builds).
     pub env_build: Vec<(String, String)>,
+    /// QEMU-launch-time environment overrides (e.g. the plan §2.5 audio
+    /// gating pair); applied under a restoration guard while capturing the
+    /// spec so builders observe them and nothing else does. Additive WP2
+    /// extension documented in docs/test-plan.md §5.
+    pub qemu_env: Vec<(String, String)>,
     pub probes: Vec<String>,
     pub serial_script: Option<PathBuf>,
     pub data_fresh: bool,
@@ -326,7 +331,7 @@ fn split_top_level(inner: &str, separator: char) -> Vec<String> {
     parts
 }
 
-const KNOWN_KEYS: [&str; 13] = [
+const KNOWN_KEYS: [&str; 14] = [
     "name",
     "tier",
     "platforms",
@@ -334,6 +339,7 @@ const KNOWN_KEYS: [&str; 13] = [
     "witnesses",
     "fail_on",
     "env_build",
+    "qemu_env",
     "probes",
     "serial_script",
     "data_fresh",
@@ -354,6 +360,7 @@ impl CaseDef {
             witnesses: Vec::new(),
             fail_on: Vec::new(),
             env_build: Vec::new(),
+            qemu_env: Vec::new(),
             probes: Vec::new(),
             serial_script: None,
             data_fresh: true,
@@ -449,6 +456,22 @@ impl CaseDef {
                             return Err(err(path, line, "env_build KEY and VALUE required"));
                         }
                         def.env_build.push((key.to_owned(), assigned.to_owned()));
+                    }
+                }
+                "qemu_env" => {
+                    let pairs = value
+                        .as_strings()
+                        .ok_or_else(|| {
+                            err(path, line, "qemu_env must be an array of \"KEY=VALUE\" strings")
+                        })?;
+                    for pair in pairs {
+                        let Some((key, assigned)) = pair.split_once('=') else {
+                            return Err(err(path, line, format!("qemu_env entry {pair:?} lacks '='")));
+                        };
+                        if key.is_empty() || assigned.is_empty() {
+                            return Err(err(path, line, "qemu_env KEY and VALUE required"));
+                        }
+                        def.qemu_env.push((key.to_owned(), assigned.to_owned()));
                     }
                 }
                 "probes" => {

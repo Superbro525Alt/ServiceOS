@@ -1,0 +1,23 @@
+# T3 live network suite (plan §3 inventory rows 3-4): loopback UDP/TCP
+# selftests plus DHCP/slirp address configuration, resolver-cache, firewall,
+# and mdns-lite responder readiness lines from network-service main.rs.
+[case]
+name = "network.live"
+tier = 3
+platforms = ["qemu-virtio"]
+witnesses = [
+    "net-selftest begin udp=",
+    "net-selftest udp ok",
+    "net-selftest tcp ok",
+    "net-selftest end pass",
+    "resolver-cache ready capacity=",
+    "firewall state rules=0 default-inbound=",
+    "mdns-lite responder ready hostname=",
+]
+fail_on = [
+    "net-selftest end fail",
+    "CRASH LOOP",
+]
+serial_script = ""
+data_fresh = true
+tags = ["live", "network"]

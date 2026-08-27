@@ -1,0 +1,12 @@
+# pkg.install developer flow, driven over the operator console.
+# Anchors: console-service drops bytes outside an armed readline, and the
+# setup-wizard owns the stream first on factory-fresh volumes (its own
+# deadline applies defaults after ~3 idle steps). The prompt glyph is only
+# rendered on typing, never flushed standalone, so anchoring uses milestone
+# text instead of PROMPT_PATTERN.
+expect: serviceos shell ready
+expect: setup complete
+send: status health
+expect: system health @tick
+send: pkg install developer
+expect: installed developer-service|install failed:

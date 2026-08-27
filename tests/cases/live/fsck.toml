@@ -1,0 +1,17 @@
+# T3 live fsck witness (plan §3 inventory row 2 partial): the boot selftest's
+# memory-report scan exercises the fsck scan/repair code path over the whole
+# mounted namespace every boot; corruption-seeded repair remains gated behind
+# SERVICEOS_E2E_STORAGE (WP2 deep probe, userspace zone out of scope here).
+[case]
+name = "fsck.live"
+tier = 3
+platforms = ["qemu-virtio"]
+witnesses = [
+    "selftest fsck-report errors=0 ",
+]
+fail_on = [
+    "CRASH LOOP",
+]
+serial_script = ""
+data_fresh = true
+tags = ["live", "storage", "fsck"]

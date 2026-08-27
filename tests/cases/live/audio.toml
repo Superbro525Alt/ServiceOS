@@ -1,0 +1,21 @@
+# T3 live audio suite, base variant (plan §2.5 gating): mix + capture boot
+# selftests on the deterministic null backend; no SERVICEOS_AUDIO knob, no
+# virtio-sound PCI device attached. The virtio variant lives in
+# audio-virtio.toml.
+[case]
+name = "audio.live"
+tier = 3
+platforms = ["qemu-virtio"]
+witnesses = [
+    "selftest mix ok",
+    "selftest capture ok",
+    "sink=null",
+]
+fail_on = [
+    "selftest mix FAILED",
+    "selftest capture FAILED",
+    "CRASH LOOP",
+]
+serial_script = ""
+data_fresh = true
+tags = ["live", "audio"]

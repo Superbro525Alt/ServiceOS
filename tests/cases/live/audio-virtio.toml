@@ -1,0 +1,28 @@
+# T3 live audio suite, virtio variant (plan §2.5: the only case permitted to
+# enable SERVICEOS_AUDIO=1, together with QEMU_AUDIODEV). qemu_env attaches
+# the virtio-sound PCI device at launch time; audio-service detects it at
+# runtime and emits the pcm-emission + endpoint-evidence lines.
+[case]
+name = "audio.live.virtio"
+tier = 3
+platforms = ["qemu-virtio"]
+env_build = []                                   # no compile-time guest gate; runtime keys only
+qemu_env = [
+    "SERVICEOS_AUDIO=1",
+    "QEMU_AUDIODEV=driver=none,id=speaker",
+]
+witnesses = [
+    "selftest mix ok",
+    "selftest capture ok",
+    "selftest virtio ok",
+    "sink=virtio-sound",
+]
+fail_on = [
+    "selftest virtio FAILED",
+    "selftest mix FAILED",
+    "selftest capture FAILED",
+    "CRASH LOOP",
+]
+serial_script = ""
+data_fresh = true
+tags = ["live", "audio", "virtio-audio"]

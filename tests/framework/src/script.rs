@@ -172,4 +172,22 @@ send: help
         let error = SerialScript::parse("expect: x\ntype: y\n").expect_err("rejected");
         assert!(error.contains("line 2"), "{error}");
     }
+
+    #[test]
+    fn accepts_empty_send_and_alternation_anchor_forms() {
+        // Real-script shapes used by tests/cases/live/scripts/*.txt.
+        let text = "expect: prompt\nsend:\nsend: status health\nexpect: system health @tick\nsend: pkg install developer\nexpect: installed developer-service \\(|install failed:\n";
+        let script = SerialScript::parse(text).expect("parse");
+        assert_eq!(script.directives.len(), 6);
+        match &script.directives[1] {
+            Directive::Send { line } => assert!(line.is_empty(), "blank send = bare Enter"),
+            other => panic!("expected Send, got {other:?}"),
+        }
+        match &script.directives[5] {
+            Directive::Expect { raw, .. } => {
+                assert!(raw.contains('|'), "alternation preserved through parsing")
+            }
+            other => panic!("expected Expect, got {other:?}"),
+        }
+    }
 }

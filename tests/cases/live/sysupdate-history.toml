@@ -1,0 +1,18 @@
+# T3 live sysupdate history read path (plan §3 shell cmds row): typed
+# `sysupdate history` over serial proves the shell → root-manager
+# sysupdate_ops query channel answers on factory-fresh media (zero
+# transactions expected).
+[case]
+name = "sysupdate-history.live"
+tier = 3
+platforms = ["qemu-virtio"]
+timeout_secs = 300
+witnesses = [
+    "sysupdate history:",
+]
+fail_on = [
+    "CRASH LOOP",
+]
+serial_script = "scripts/sysupdate-history.txt"
+data_fresh = true
+tags = ["live", "sysupdate", "scripted"]

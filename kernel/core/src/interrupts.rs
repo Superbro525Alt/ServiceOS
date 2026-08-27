@@ -131,6 +131,24 @@ pub fn note_external_interrupt(_vector: InterruptVector) {
     }
 }
 
+/// Platform hook for delivered device interrupts. The arch IRQ handler runs
+/// with interrupts masked and must not touch driver-internal locks (the
+/// interrupted context may hold them), so the hook is expected to be
+/// lock-free — e.g. acking a virtio-mmio device's interrupt registers
+/// directly before the GIC EOI, letting the normal poll-drain path pick up
+/// the completed work.
+static EXTERNAL_IRQ_HOOK: Once<fn(u16)> = Once::new();
+
+pub fn register_external_irq_hook(hook: fn(u16)) {
+    let _ = EXTERNAL_IRQ_HOOK.call_once(|| hook);
+}
+
+pub fn dispatch_external_irq(vector: u16) {
+    if let Some(hook) = EXTERNAL_IRQ_HOOK.get() {
+        hook(vector);
+    }
+}
+
 pub fn note_timer_interrupt(_vector: InterruptVector) -> Option<TickOutcome> {
     let state = state()?;
     state.timer_interrupts.fetch_add(1, Ordering::Relaxed);

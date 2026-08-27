@@ -143,13 +143,13 @@ fn build_dhcp_discover(frame: &mut [u8; NET_BUFFER_BYTES], mac: &[u8; 6]) -> usi
     frame[24..26].copy_from_slice(&checksum.to_be_bytes());
 
     let udp_len = (8 + DHCP_PAYLOAD_BYTES) as u16;
-    frame[34] = 68;
-    frame[35] = 67;
-    frame[36] = 0x00;
-    frame[37] = 0x00;
+    // UDP header: src port 68 and dst port 67 as 16-bit big-endian fields.
+    // Writing the port numbers as raw bytes shifted the header one byte, so
+    // slirp saw dst port 0 and silently dropped every discover.
+    frame[34..36].copy_from_slice(&68u16.to_be_bytes());
+    frame[36..38].copy_from_slice(&67u16.to_be_bytes());
     frame[38..40].copy_from_slice(&udp_len.to_be_bytes());
-    frame[40] = 0x00;
-    frame[41] = 0x00;
+    frame[40..42].copy_from_slice(&[0, 0]);
 
     let p = payload_start;
     frame[p] = 1;

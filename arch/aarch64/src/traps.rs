@@ -163,11 +163,14 @@ serviceos_aarch64_fatal_vector:
         let Some(irq) = gic::acknowledge() else {
             return;
         };
-        if irq.intid == gic::TIMER_PPI_INTID {
+        if irq.intid == gic::timer_ppi_intid() {
             timer::rearm_periodic_tick();
             interrupts::note_timer_interrupt(interrupts::InterruptVector(irq.intid));
         } else {
             interrupts::note_external_interrupt(interrupts::InterruptVector(irq.intid));
+            // Ack the owning device before the EOI so a held level line
+            // deasserts instead of storming; hook is lock-free by contract.
+            interrupts::dispatch_external_irq(irq.intid);
         }
         gic::end_of_interrupt(irq);
     }

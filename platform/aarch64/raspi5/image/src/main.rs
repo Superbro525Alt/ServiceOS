@@ -312,7 +312,7 @@ extern "C" fn serviceos_raspi5_entry(dtb_ptr: usize) -> ! {
                 "interrupts",
                 format_args!(
                     "backend=gic-v3 timer=el1-physical ppi={} tick-hz={} interval-cycles={}",
-                    gic::TIMER_PPI_INTID,
+                    gic::timer_ppi_intid(),
                     TIMER_TICK_HZ,
                     interval_cycles,
                 ),

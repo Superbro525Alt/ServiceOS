@@ -49,6 +49,7 @@ pub struct BootSummary<'boot> {
     pub dtb_size: usize,
     pub uart: Option<UartDescriptor<'boot>>,
     pub interrupt_controller: Option<InterruptControllerRegions>,
+    pub timer_ppi_intid: Option<u16>,
     pub virtio_mmio_devices: [VirtioMmioDevice; MAX_VIRTIO_MMIO_DEVICES],
     pub virtio_mmio_count: usize,
 }
@@ -93,6 +94,7 @@ pub fn capture_boot_info(
             dtb_size: dtb.dtb_size,
             uart: dtb.stdout_uart,
             interrupt_controller: dtb.interrupt_controller,
+            timer_ppi_intid: dtb.timer_ppi_intid,
             virtio_mmio_devices: dtb.virtio_mmio_devices,
             virtio_mmio_count: dtb.virtio_mmio_count,
         },

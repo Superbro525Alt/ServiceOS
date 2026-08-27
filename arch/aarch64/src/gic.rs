@@ -1,8 +1,23 @@
+use core::sync::atomic::{AtomicU16, Ordering};
 use serviceos_kernel_core::memory::PhysicalAddress;
 
-pub const TIMER_PPI_INTID: u16 = 29;
+/// Default INTID for the guest-visible EL1 physical timer. The driver arms
+/// `cntp_cval_el0`, which asserts CNTPNSIRQ = INTID 30 (PPI 14 in the device
+/// tree). The secure physical timer PPI 13 (INTID 29) never fires at
+/// non-secure EL1, so enabling it silently swallowed every timer interrupt.
+pub const DEFAULT_TIMER_PPI_INTID: u16 = 30;
 const SPURIOUS_INTID_MIN: u16 = 1020;
 const INTID_FIELD_MASK: u64 = 0x3ff;
+
+static TIMER_PPI_INTID: AtomicU16 = AtomicU16::new(DEFAULT_TIMER_PPI_INTID);
+
+pub fn set_timer_ppi_intid(intid: u16) {
+    TIMER_PPI_INTID.store(intid, Ordering::Relaxed);
+}
+
+pub fn timer_ppi_intid() -> u16 {
+    TIMER_PPI_INTID.load(Ordering::Relaxed)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GicConfig {
@@ -112,18 +127,19 @@ mod imp {
     }
 
     fn configure_sgi_ppi_frame(base: PhysicalAddress) {
+        let timer_intid = u32::from(super::timer_ppi_intid());
         let sgi_base = PhysicalAddress::new(base.as_u64() + REDISTRIBUTOR_SGI_FRAME_OFFSET);
         write_register(sgi_base, GICD_ICENABLER, u32::MAX);
         write_register(sgi_base, GICD_IGROUPR, u32::MAX);
-        let priority_register_index = TIMER_PPI_INTID / 4;
-        let priority_shift = (TIMER_PPI_INTID % 4) * 8;
+        let priority_register_index = timer_intid / 4;
+        let priority_shift = (timer_intid % 4) * 8;
         let priority_address = GICD_IPRIORITYR + u64::from(priority_register_index) * 4;
         write_register(
             sgi_base,
             priority_address,
             TIMER_PPI_PRIORITY << priority_shift,
         );
-        write_register(sgi_base, GICD_ISENABLER, 1 << (TIMER_PPI_INTID % 32));
+        write_register(sgi_base, GICD_ISENABLER, 1 << (timer_intid % 32));
     }
 
     fn configure_spi_defaults(base: PhysicalAddress) {
@@ -205,6 +221,22 @@ mod imp {
         Some(irq)
     }
 
+    /// Enable one SPI in the distributor so a device interrupt can actually
+    /// reach the redistributor. `configure_spi_defaults` disables every SPI
+    /// during init, so each virtio-mmio device INTID must be enabled here.
+    pub fn enable_spi(intid: u16) {
+        let Some(config) = ACTIVE_GIC.get() else {
+            return;
+        };
+        if intid < 32 {
+            return;
+        }
+        let index = u64::from(intid) / 32;
+        let offset = GICD_ISENABLER + index * 4;
+        let bit = 1u32 << (u64::from(intid) % 32);
+        write_register(config.distributor_base, offset, bit);
+    }
+
     pub fn end_of_interrupt(irq: AcknowledgedIrq) {
         if !ACTIVE_GIC.get().is_some() {
             return;
@@ -235,7 +267,9 @@ mod imp {
         None
     }
 
+    pub fn enable_spi(_intid: u16) {}
+
     pub fn end_of_interrupt(_irq: AcknowledgedIrq) {}
 }
 
-pub use imp::{acknowledge, end_of_interrupt, initialize, is_active};
+pub use imp::{acknowledge, enable_spi, end_of_interrupt, initialize, is_active};

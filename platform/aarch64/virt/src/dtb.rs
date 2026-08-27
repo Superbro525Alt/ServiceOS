@@ -2,6 +2,7 @@ use core::fmt;
 
 use fdt::{
     Fdt,
+    nodes::NodeProperty,
     properties::{Compatible, reg::Reg},
 };
 use serviceos_kernel_core::memory::PhysicalAddress;
@@ -86,6 +87,11 @@ pub struct DeviceTreeBootInfo<'boot> {
     pub memory_map_truncated: bool,
     pub stdout_uart: Option<UartDescriptor<'boot>>,
     pub interrupt_controller: Option<InterruptControllerRegions>,
+    /// INTID of the non-secure physical timer PPI, taken from the
+    /// `arm,armv8-timer` node's second interrupt specifier. The guest arms
+    /// `cntp_cval_el0`, which asserts CNTPNSIRQ (PPI 14 -> INTID 30 on
+    /// QEMU virt); the secure-physical PPI 13 (INTID 29) never fires.
+    pub timer_ppi_intid: Option<u16>,
     pub virtio_mmio_devices: [VirtioMmioDevice; MAX_VIRTIO_MMIO_DEVICES],
     pub virtio_mmio_count: usize,
 }
@@ -221,8 +227,7 @@ pub fn parse(dtb_ptr: *const u8) -> Result<DeviceTreeBootInfo<'static>, DeviceTr
         };
         let irq = node
             .raw_property("interrupts")
-            .and_then(|property| property.value.get(4..8).or_else(|| property.value.get(..4)))
-            .map(parse_be_u32)
+            .and_then(|property| decode_interrupt_intid(&property))
             .unwrap_or(0);
         if virtio_mmio_count == virtio_mmio_devices.len() {
             break;
@@ -272,6 +277,28 @@ pub fn parse(dtb_ptr: *const u8) -> Result<DeviceTreeBootInfo<'static>, DeviceTr
         None
     })();
 
+    // Non-secure physical timer PPI: the `arm,armv8-timer` node lists four
+    // 3-cell specifiers (secure-phys, non-secure-phys, virtual, hyp). The
+    // guest's `cntp_cval_el0` timer is the second one (PPI 14 -> INTID 30).
+    let timer_ppi_intid = (|| {
+        for (_, node) in root.all_nodes() {
+            let Some(compatible) = node.property::<Compatible>() else {
+                continue;
+            };
+            if !compatible.compatible_with("arm,armv8-timer") {
+                continue;
+            }
+            let Some(property) = node.raw_property("interrupts") else {
+                return None;
+            };
+            // Second specifier occupies bytes 12..24; the PPI number is its
+            // second cell (bytes 16..20).
+            let number = property.value.get(16..20).map(parse_be_u32)?;
+            return Some(u16::try_from(16 + number).ok()?);
+        }
+        None
+    })();
+
     Ok(DeviceTreeBootInfo {
         model: root.model(),
         compatible: Some(root.compatible().first()),
@@ -283,9 +310,26 @@ pub fn parse(dtb_ptr: *const u8) -> Result<DeviceTreeBootInfo<'static>, DeviceTr
         memory_map_truncated,
         stdout_uart,
         interrupt_controller,
+        timer_ppi_intid,
         virtio_mmio_devices,
         virtio_mmio_count,
     })
+}
+
+/// Decode a one-interrupt device-tree specifier into a GIC INTID. The first
+/// cell selects the domain: 0 = SPI (INTID = 32 + number), 1 = PPI (INTID =
+/// 16 + number). The previous parser returned the raw number cell, so every
+/// virtio-mmio SPI was recorded 32 too low and the corresponding distributor
+/// enable bit was never set.
+fn decode_interrupt_intid(property: &NodeProperty) -> Option<u32> {
+    let kind = property.value.get(..4).map(parse_be_u32)?;
+    let number = property.value.get(4..8).map(parse_be_u32)?;
+    let intid = match kind {
+        0 => 32u32.checked_add(number)?,
+        1 => 16u32.checked_add(number)?,
+        _ => return None,
+    };
+    u16::try_from(intid).ok().map(u32::from)
 }
 
 fn parse_be_u32(value: &[u8]) -> u32 {

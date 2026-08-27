@@ -1,12 +1,14 @@
 #![no_main]
 #![no_std]
 
+extern crate alloc;
+
 use core::{
     fmt,
     fmt::Write,
     panic::PanicInfo,
     str,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 use serviceos_abi::{BootstrapPlatform, ControlTag, ServiceImageId, bootstrap_resource};
@@ -28,15 +30,57 @@ use serviceos_kernel_core::{
     user::{self as kernel_user, SpawnError, TaskExitStatus},
 };
 use serviceos_platform_virt::{
-    block, boot, dtb::InterruptControllerRegions, framebuffer, input, net, selftest, timer, uart,
+    audio, block, boot, dtb::InterruptControllerRegions, framebuffer, input, net, selftest, timer,
+    uart,
 };
 use serviceos_userspace_catalog::BOOT_STORE_IMAGE;
-use spin::Once;
+use spin::{Mutex, Once};
 
 const TIMER_TICK_HZ: u64 = 100;
 const MAX_MMIO_REGIONS: usize = 40;
 
 static HARDWARE_TICKS: AtomicBool = AtomicBool::new(false);
+
+// Device IRQ ack table: INTID -> virtio-mmio register base. The GIC hook
+// runs at IRQ context with interrupts masked, so it only touches device MMIO
+// (InterruptStatus read + InterruptAck write, register offsets shared by
+// virtio-mmio v1 and v2) and never driver locks; the executor's poll pass
+// then drains the completed work.
+const VIRTIO_MMIO_INTERRUPT_STATUS: u64 = 0x60;
+const VIRTIO_MMIO_INTERRUPT_ACK: u64 = 0x64;
+const MAX_DEVICE_IRQS: usize = 32;
+static DEVICE_IRQ_BASES: Mutex<[(u16, u64); MAX_DEVICE_IRQS]> =
+    Mutex::new([(0, 0); MAX_DEVICE_IRQS]);
+static DEVICE_IRQS_ACKED: AtomicU64 = AtomicU64::new(0);
+
+fn register_device_irq_base(intid: u16, mmio_base: u64) {
+    let mut table = DEVICE_IRQ_BASES.lock();
+    for entry in table.iter_mut() {
+        if entry.0 == intid {
+            return;
+        }
+        if entry.0 == 0 {
+            *entry = (intid, mmio_base);
+            return;
+        }
+    }
+}
+
+fn virtio_device_irq_hook(intid: u16) {
+    let table = DEVICE_IRQ_BASES.lock();
+    if let Some((_, base)) = table.iter().find(|entry| entry.0 == intid && entry.1 != 0) {
+        let status =
+            unsafe { core::ptr::read_volatile((base + VIRTIO_MMIO_INTERRUPT_STATUS) as *const u32) };
+        // Ack every bit the device reports: the ISR can carry more than the
+        // two standard used/config bits under QEMU, and leftover bits keep a
+        // level line asserted forever.
+        unsafe {
+            core::ptr::write_volatile((base + VIRTIO_MMIO_INTERRUPT_ACK) as *mut u32, status);
+        }
+        drop(table);
+        DEVICE_IRQS_ACKED.fetch_add(1, Ordering::Relaxed);
+    }
+}
 
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".boot_stack")]
@@ -284,6 +328,15 @@ extern "C" fn serviceos_virt_entry(dtb_ptr: usize) -> ! {
         &boot_state.summary.virtio_mmio_devices[..boot_state.summary.virtio_mmio_count];
     let block_backend = block::initialize(virtio_devices);
     let network_backend = net::initialize(virtio_devices);
+    // Register the lock-free device IRQ ack hook BEFORE enabling any device
+    // SPI: with the SPIs enabled and nobody acking the device line, the
+    // first completion would re-fire forever as an IRQ storm.
+    for device in virtio_devices.iter().copied().filter(|d| d.is_populated()) {
+        if device.irq >= 32 && device.irq <= u32::from(u16::MAX) {
+            register_device_irq_base(device.irq as u16, device.base.as_u64());
+        }
+    }
+    serviceos_kernel_core::interrupts::register_external_irq_hook(virtio_device_irq_hook);
     let display_backend = framebuffer::initialize(virtio_devices);
     let input_backend = input::initialize(virtio_devices);
     let bootstrap_block = block_backend
@@ -298,6 +351,12 @@ extern "C" fn serviceos_virt_entry(dtb_ptr: usize) -> ! {
     let bootstrap_input = input_backend
         .clone()
         .map(|backend| kernel.objects().registry().create_input_source(backend));
+    let bootstrap_audio = Some(
+        kernel
+            .objects()
+            .registry()
+            .create_audio_endpoint(audio::initialize()),
+    );
 
     if let Some(summary) = block::bringup_summary() {
         log(
@@ -361,6 +420,13 @@ extern "C" fn serviceos_virt_entry(dtb_ptr: usize) -> ! {
     } else {
         log_line("input", "no virtio-input device detected");
     }
+    log(
+        "audio",
+        format_args!(
+            "backend={:?} null-sink pcm-soft-mix-only",
+            serviceos_abi::AudioEndpointBackend::Unknown
+        ),
+    );
 
     log_memory_summary(&boot_state.boot_info);
     log(
@@ -371,14 +437,18 @@ extern "C" fn serviceos_virt_entry(dtb_ptr: usize) -> ! {
             TIMER_TICK_HZ,
         ),
     );
-    match bring_up_interrupts(boot_state.summary.interrupt_controller) {
+    match bring_up_interrupts(
+        boot_state.summary.interrupt_controller,
+        boot_state.summary.timer_ppi_intid,
+        virtio_devices,
+    ) {
         Ok(interval_cycles) => {
             HARDWARE_TICKS.store(true, Ordering::Relaxed);
             log(
                 "interrupts",
                 format_args!(
                     "backend=gic-v3 timer=el1-physical ppi={} tick-hz={} interval-cycles={}",
-                    gic::TIMER_PPI_INTID,
+                    gic::timer_ppi_intid(),
                     TIMER_TICK_HZ,
                     interval_cycles,
                 ),
@@ -406,6 +476,7 @@ extern "C" fn serviceos_virt_entry(dtb_ptr: usize) -> ! {
         bootstrap_network,
         bootstrap_display,
         bootstrap_input,
+        bootstrap_audio,
     ) {
         Ok(summary) => summary,
         Err(error) => panic_with_error("bootstrap", error),
@@ -498,6 +569,7 @@ fn launch_root_manager(
     bootstrap_network: Option<KernelObjectRef>,
     bootstrap_display: Option<KernelObjectRef>,
     bootstrap_input: Option<KernelObjectRef>,
+    bootstrap_audio: Option<KernelObjectRef>,
 ) -> Result<RootBootstrapSummary, BootstrapError> {
     let ipc_kernel = ipc::kernel().ok_or(BootstrapError::MissingBootStore)?;
     let bootstrap_task = kernel
@@ -574,6 +646,11 @@ fn launch_root_manager(
         bootstrap_input,
         CapabilityRights::input_source(),
     )?;
+    let audio_transfer = transfer_bootstrap_object(
+        bootstrap_task,
+        bootstrap_audio,
+        CapabilityRights::audio_endpoint(),
+    )?;
 
     let root = kernel_user::spawn_builtin_task(
         ServiceImageId::RootManager as u32,
@@ -592,6 +669,9 @@ fn launch_root_manager(
     }
     if input_transfer.is_some() {
         bootstrap_resource_flags |= bootstrap_resource::INPUT;
+    }
+    if audio_transfer.is_some() {
+        bootstrap_resource_flags |= bootstrap_resource::AUDIO;
     }
     let mut startup = OutgoingMessage::new(
         MessageTag(ControlTag::Startup as u32),
@@ -615,6 +695,9 @@ fn launch_root_manager(
     }
     if let Some(input_transfer) = input_transfer {
         startup = startup.add_transfer(input_transfer)?;
+    }
+    if let Some(audio_transfer) = audio_transfer {
+        startup = startup.add_transfer(audio_transfer)?;
     }
     ipc_kernel.send(
         bootstrap_task.capability_space(),
@@ -660,7 +743,14 @@ fn launch_root_manager(
 
 fn bring_up_interrupts(
     controller: Option<InterruptControllerRegions>,
+    timer_ppi_intid: Option<u16>,
+    virtio_devices: &[serviceos_platform_virt::dtb::VirtioMmioDevice],
 ) -> Result<u64, &'static str> {
+    // The device tree names the EL1 non-secure physical timer PPI; arming
+    // `cntp_cval_el0` asserts that INTID, not the secure-physical PPI 29.
+    if let Some(intid) = timer_ppi_intid {
+        gic::set_timer_ppi_intid(intid);
+    }
     let Some(controller) = controller else {
         return Err("device-tree-gic-missing");
     };
@@ -675,6 +765,14 @@ fn bring_up_interrupts(
         GicInitError::DistributorWriteTimeout => "gic-distributor-write-timeout",
         GicInitError::SystemRegisterUnsupported => "gic-system-register-unsupported",
     })?;
+    // Device IRQ enable path: GIC init masks every SPI, so each populated
+    // virtio-mmio INTID (device tree already decodes SPI numbers to INTIDs)
+    // must be enabled here before any device interrupt can be delivered.
+    for device in virtio_devices.iter().copied().filter(|d| d.is_populated()) {
+        if device.irq >= 32 && device.irq <= u32::from(u16::MAX) {
+            gic::enable_spi(device.irq as u16);
+        }
+    }
     kernel_timer::arm_periodic_tick(TIMER_TICK_HZ)
         .map_err(|_| "timer-counter-frequency-unavailable")
 }
@@ -685,7 +783,9 @@ fn run_userspace_executor(
 ) -> Result<(), BootstrapError> {
     let hardware_ticks = HARDWARE_TICKS.load(Ordering::Relaxed);
     let mut timer_state = initialize_timer_poll_state();
+    let mut executor_iterations: u64 = 0;
     loop {
+        executor_iterations += 1;
         if hardware_ticks {
             while let Some(event) = kernel.time().take_wakeup() {
                 let _ = kernel.tasks().handle_time_wakeup(event);
@@ -698,16 +798,22 @@ fn run_userspace_executor(
         let snapshot = scheduler.snapshot();
         let current = snapshot.current;
         poll_device_events();
-        log(
-            "executor",
-            format_args!(
-                "DBG iter cur={:?} run={} blk={} sw={}",
-                current.map(|thread| thread.0),
-                snapshot.runnable_threads,
-                snapshot.blocked_threads,
-                snapshot.context_switches,
-            ),
-        );
+        // The per-iteration executor trace is debug-grade noise under TCG
+        // (UART per loop pass dominates the schedule); emit it at a coarse
+        // cadence instead so boot logs stay readable and the loop keeps up
+        // with poll-drain delivery.
+        if executor_iterations % 4096 == 0 {
+            log(
+                "executor",
+                format_args!(
+                    "DBG iter cur={:?} run={} blk={} sw={}",
+                    current.map(|thread| thread.0),
+                    snapshot.runnable_threads,
+                    snapshot.blocked_threads,
+                    snapshot.context_switches,
+                ),
+            );
+        }
         let root_status = kernel_user::runtime()
             .and_then(|runtime| runtime.task_exit_status(root_task))
             .unwrap_or(TaskExitStatus::Running);

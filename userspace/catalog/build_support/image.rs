@@ -27,9 +27,8 @@ pub(crate) fn build_program(
     command.env("CARGO_TARGET_DIR", target_dir);
     // Nested cargo inherits the OUTER cargo's rustflags env (root config
     // selects kernel code-model for the x86_64-unknown-none kernel image).
-    // Strip it so userspace programs get only the leaf config (which supplies
-    // the -Tlink.ld / --gc-sections link arguments for every userspace
-    // target) plus the explicit per-program flags below.
+    // Strip it so userspace programs get only the leaf config plus the
+    // explicit per-program flags below.
     command.env_remove("CARGO_ENCODED_RUSTFLAGS");
     command.env_remove("RUSTFLAGS");
     command.args([
@@ -44,10 +43,25 @@ pub(crate) fn build_program(
     if profile == "release" {
         command.arg("--release");
     }
-    // PIC codegen keeps every reference RIP-relative: the image lives high in
-    // the 64-bit user window where small/static-model 32-bit relocations
-    // cannot reach (nightly regressed on anon-rodata refs, rust#116344).
-    command.args(["--", "-C", "relocation-model=pic"]);
+    // Re-state the linker script explicitly with an ABSOLUTE path. The leaf
+    // config's relative -Tlink.ld resolves against the linker process cwd,
+    // which works today but would produce an unscripted link the moment that
+    // cwd changed; a duplicated -T pins segment placement regardless and
+    // --gc-sections stays co-located with it.
+    let link_script = programs_root.join("link.ld");
+    command.args([
+        "--",
+        "-C",
+        &format!("link-arg=-T{}", link_script.display()),
+        "-C",
+        "link-arg=--gc-sections",
+        // PIC codegen keeps every reference RIP-relative: the image lives high
+        // in the 64-bit user window where small/static-model 32-bit
+        // relocations cannot reach (nightly regressed on anon-rodata refs,
+        // rust#116344).
+        "-C",
+        "relocation-model=pic",
+    ]);
     if user_target == X86_64_USER_TARGET {
         command.args(["-C", "code-model=large"]);
         // No userspace program performs floating-point work, and the kernel

@@ -173,7 +173,7 @@ pub(crate) fn plan_band_flush(
     clip: Option<DamageRect>,
     allow_partial: bool,
 ) -> BandFlushPlan {
-    let Some((start_y, end_y, cmp_bytes)) = flush_span(output, clip) else {
+    let Some((start_y, end_y, col_start, col_end)) = flush_span(output, clip) else {
         return BandFlushPlan::full();
     };
     if frame.len() != presented.len() {
@@ -181,6 +181,7 @@ pub(crate) fn plan_band_flush(
     }
     let stride_bytes = output.stride as usize * output.bytes_per_pixel as usize;
     let frame_total_bytes = output.height as u64 * stride_bytes as u64;
+    let cmp_bytes = col_end - col_start;
 
     let mut spans = [(0u32, 0u32); MAX_FLUSH_BANDS];
     let mut span_count = 0usize;
@@ -188,8 +189,10 @@ pub(crate) fn plan_band_flush(
     let mut run_start: Option<u32> = None;
     for row in start_y..end_y {
         let offset = row as usize * stride_bytes;
+        // Compare only the clipped column range; anchoring at column 0
+        // would read a prefix that can sit entirely outside the damage.
         let changed =
-            frame[offset..offset + cmp_bytes] != presented[offset..offset + cmp_bytes];
+            frame[offset + col_start..offset + col_end] != presented[offset + col_start..offset + col_end];
         if changed && run_start.is_none() {
             run_start = Some(row);
         }
@@ -241,12 +244,13 @@ pub(crate) fn plan_band_flush(
     plan
 }
 
-/// Visible-row range plus compared byte width for `clip` (`None` = whole
-/// frame width), mirroring the clamping rules of `region_byte_span`.
+/// Visible-row range plus the clipped column byte range for `clip`
+/// (`None` = full visible width), mirroring the clamping rules of
+/// `region_byte_span`.
 fn flush_span(
     output: rt::DisplayOutputInfo,
     clip: Option<DamageRect>,
-) -> Option<(u32, u32, usize)> {
+) -> Option<(u32, u32, usize, usize)> {
     let bpp = output.bytes_per_pixel as usize;
     if output.width == 0 || output.height == 0 || bpp == 0 {
         return None;
@@ -266,7 +270,12 @@ fn flush_span(
     if start_x >= end_x || start_y >= end_y {
         return None;
     }
-    Some((start_y, end_y, (end_x - start_x) * bpp))
+    Some((
+        start_y,
+        end_y,
+        start_x * bpp,
+        end_x * bpp,
+    ))
 }
 
 pub(crate) fn compose_and_present(
@@ -965,6 +974,24 @@ mod tests {
         // Whole-frame clip reports the full visible byte span.
         let whole = plan_band_flush(&frame, &presented, out, None, true);
         assert_eq!(whole.action, BandAction::Skip(out.byte_len));
+    }
+
+    #[test]
+    fn band_plan_compares_at_damage_column_offset() {
+        let out = output(64, 4, 64, 4);
+        let mut frame = vec![0u8; out.byte_len as usize];
+        let presented = vec![0u8; out.byte_len as usize];
+        // Only the damaged columns change (x=48..56, rows 1..3). The row
+        // prefix spanning [0, damage width) stays identical, so a compare
+        // anchored at column 0 must not report the region as unchanged.
+        for row in 1..3 {
+            for x in 48..56 {
+                let offset = (row as usize * 64 + x) * 4;
+                frame[offset] = 0xff;
+            }
+        }
+        let plan = plan_band_flush(&frame, &presented, out, Some(rect(48, 1, 8, 2)), true);
+        assert!(!matches!(plan.action, BandAction::Skip(_)));
     }
 
     #[test]

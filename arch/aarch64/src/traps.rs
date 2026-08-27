@@ -241,6 +241,17 @@ serviceos_aarch64_fatal_vector:
             interrupts::dispatch_syscall(SyscallNumber(context.x8 as u32), &syscall_context);
         context.x0 = result.value;
         context.x1 = result.abi_error_code();
+        // Deliver the syscall result through the task's raw_syscall result
+        // slot at [sp_el0-16, sp_el0-8], below the suspended sp. Memory
+        // delivery keeps the return path on the same EL1->EL0 store/load
+        // channel as channel payloads, which stays coherent across the eret
+        // boundary where register-only returns were observed to revert to
+        // their pre-svc values.
+        unsafe {
+            let result_slot = (context.sp_el0 - 16) as *mut u64;
+            core::ptr::write_volatile(result_slot, result.value);
+            core::ptr::write_volatile(result_slot.add(1), result.abi_error_code());
+        }
         match result.action {
             serviceos_kernel_core::syscall::SyscallAction::ReturnToCaller => 0,
             serviceos_kernel_core::syscall::SyscallAction::YieldCurrentThread => {

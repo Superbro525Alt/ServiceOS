@@ -224,18 +224,26 @@ mod imp {
     }
 
     pub unsafe fn load_page_table_root(root: PhysicalAddress) {
+        // Every address space must attribute its translations to a distinct
+        // ASID: all user images share the same VA window, so a TLB entry
+        // cached under one address space must never satisfy a lookup for
+        // another. TTBR0 carries the ASID (TCR.A1=0), derived from the root
+        // frame so each space gets a stable unique tag. The IS-broadcast
+        // invalidate retires the previous space's entries on every PE.
+        let asid = (root.as_u64() >> 12) & 0xFF;
+        let ttbr = root.as_u64() | (asid << 48);
         unsafe {
             core::arch::asm!(
+                "dsb ish",
                 "msr ttbr0_el1, {value}",
                 // A TTBR0 write does not architecturally invalidate cached
-                // translations, and every user address space shares ASID 0.
-                // Without this flush the next eret can reuse stale VA->PA
-                // entries from the previous address space and execute the
-                // wrong task's code at the shared link address.
-                "tlbi vmalle1",
+                // translations. Without this flush the next eret can reuse
+                // stale VA->PA entries from the previous address space and
+                // execute the wrong task's code at the shared link address.
+                "tlbi vmalle1is",
                 "dsb ish",
                 "isb",
-                value = in(reg) root.as_u64(),
+                value = in(reg) ttbr,
                 options(nostack)
             );
         }
@@ -581,7 +589,7 @@ mod imp {
         unsafe {
             core::arch::asm!(
                 "dsb ishst",
-                "tlbi vmalle1",
+                "tlbi vmalle1is",
                 "dsb ish",
                 "isb",
                 options(nostack)

@@ -170,11 +170,17 @@ fn raw_syscall(
     arg4: u64,
     arg5: u64,
 ) -> (u64, u64) {
+    // The kernel returns (value, error) through the task's raw_syscall
+    // result slot at [sp-16, sp-8] during the svc, mirroring the
+    // memory-delivery path used for channel payloads. Register-only return
+    // values proved unreliable across the eret boundary on virt.
     let mut value = arg0;
     let mut error = arg1;
     unsafe {
         asm!(
             "svc #0",
+            "ldr x0, [sp, #-16]",
+            "ldr x1, [sp, #-8]",
             in("x8") number,
             inlateout("x0") value,
             inlateout("x1") error,

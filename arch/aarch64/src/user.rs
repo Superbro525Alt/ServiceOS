@@ -37,6 +37,16 @@ serviceos_aarch64_resume_user:
     adrp x10, serviceos_aarch64_current_context
     add x10, x10, :lo12:serviceos_aarch64_current_context
     str x0, [x10]
+    // Publish (x0, x1) into the raw_syscall result slot at [sp-16, sp-8],
+    // below the suspended sp, so syscalls that resumed through the
+    // scheduler (blocked receive, yield, wake) deliver their result through
+    // the same memory channel the direct-return path uses.
+    ldr x9, [x0, #0xF8]
+    sub x9, x9, #16
+    ldr x10, [x0]
+    ldr x11, [x0, #8]
+    str x10, [x9]
+    str x11, [x9, #8]
 
     mov x30, x0
     ldr x12, [x30, #0xF8]

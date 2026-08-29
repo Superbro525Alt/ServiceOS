@@ -1,5 +1,13 @@
 # qemu-isa handoff — final userspace-entry fault
 
+> STATUS UPDATE (latest session): the syscall-return/eret defect described
+> below was fixed on the aarch64 path via a memory result-slot protocol
+> (kernel publishes (value,error) to [sp_el0-16,sp_el0-8]; runtime reads
+> post-svc from that slot — see commit 38b8463). The SAME root cause likely
+> explains the qemu-isa GPF at first user entry. qemu-isa is untested since;
+> next agent should retry a boot, and if the GPF persists, port the
+> result-slot protocol to the x86_64 syscall path.
+
 ## What works (verified)
 - `cargo xtask run --platform qemu-isa` boots via SeaBIOS PVH ELF note.
 - Long-mode trampoline (`mb_entry.S`): identity 2MiB pages, tables at

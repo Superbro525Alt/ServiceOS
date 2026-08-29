@@ -3,6 +3,9 @@
 Guidance for AI agents working in this repository. Read fully before your
 first action; it encodes hard-won lessons from many prior agent sessions.
 
+Acting as the ORCHESTRATOR (dispatching subagents, verifying, committing)?
+Read `ORCHESTRATOR.md` — it is the operating manual for that role.
+
 ## Current state snapshot (verify, don't trust)
 
 - Rust capability-based microkernel-style OS: `kernel/core` + `arch/*` +

@@ -6,7 +6,7 @@
 //! ```text
 //! e2e::CaseDef;            e2e::load_cases(root) -> Vec<CaseDef>;
 //! e2e::SerialSession::{spawn,wait_witness,send_line,send_bytes,wait_prompt,tail};
-//! e2e::run_case(&CaseDef, &RunCtx) -> CaseResult;   // RunCtx{stage_root, jobs, builds}
+//! e2e::run_case(&CaseDef, &RunCtx, platform) -> CaseResult;  // RunCtx{stage_root, jobs, builds}
 //! e2e::aggregate(vec<CaseResult>) -> ExitCode;      // codes per §4
 //! ```
 
@@ -41,28 +41,33 @@ pub use witness::Pattern;
 /// `SERVICEOS_BOOT_TIMEOUT_SECS` specifies one (matches bootlog.rs).
 pub const DEFAULT_CASE_TIMEOUT_SECS: u64 = 240;
 
-/// No-output watchdog default documented for API consumers; the runner
-/// currently derives its per-case value from the case budget (see
-/// `execute_row`), with per-phase calibration planned for WP4.
+/// No-output watchdog default (plan §2.3: separate from the total budget).
+/// Per boot phase the effective value is `SERVICEOS_IDLE_TIMEOUT_SECS` when
+/// set, else the smaller of this constant and the case's total budget, so a
+/// wedged console fails fast instead of squatting on a worker slot until the
+/// full per-case timeout.
 pub const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 180;
 
 /// raspi5 staged-bundle contents asserted by the build-only smoke case.
 pub const RASPI_STAGED_FILES: [&str; 3] = ["config.txt", "kernel8.img", "serviceos/bootstore.bin"];
 
-/// Everything a case execution needs beyond its own definition.
+/// Everything a case execution needs beyond its own definition. After the
+/// serial pre-build phase (see the runner in `support/xtask/src/e2e.rs`) the
+/// context is frozen and shared by reference across worker threads; rows
+/// carry their platform explicitly via [`run_case`].
 pub struct RunCtx {
     pub workspace_root: PathBuf,
     /// Root for per-case/slot staging (`target/e2e/...`).
     pub stage_root: PathBuf,
-    /// Concurrency cap; scheduling is strict-sequential until WP4 lands the
-    /// semaphore worker pool that consumes this value.
+    /// Concurrency cap consumed by the worker pool.
     pub jobs: usize,
     pub timeout_override: Option<u64>,
     pub release: bool,
-    /// Lazily hydrated builds keyed by platform name.
+    /// Retain every stage dir (disables PASS pruning) for postmortems.
+    pub keep_all: bool,
+    /// Builds hydrated during the serial pre-build phase, keyed by
+    /// `platform::<sorted gate tuple>`; read-only once workers start.
     pub builds: BTreeMap<String, PlatformBuild>,
-    /// Platform for the currently executing [`run_case`] row.
-    pub current_platform: String,
 }
 
 /// A built platform plus its freshly staged dev image, shared by all cases
@@ -82,12 +87,15 @@ impl RunCtx {
             jobs,
             timeout_override: None,
             release,
+            keep_all: false,
             builds: BTreeMap::new(),
-            current_platform: String::new(),
         }
     }
 
-    /// Resolve + build + image exactly once per platform.
+    /// Resolve + build + image exactly once per platform. Serial-only: cargo
+    /// invocations, the gate env guard, and the guest-artifact marker file
+    /// are process-global and must never overlap (runner pre-builds every
+    /// needed platform+tuple before any worker thread starts).
     pub fn ensure_build(
         &mut self,
         platform: &str,
@@ -122,7 +130,7 @@ impl RunCtx {
         let spec = PlatformSpec::resolve(platform)?;
         // The option_env! reads live inside guest crates compiled by the cargo
         // invocations below; the guard windows them so nothing else observes
-        // ambient drift (single-threaded scheduling per §4).
+        // ambient drift (serial pre-build phase — worker threads never build).
         let gate_pairs: Vec<(String, String)> = flags
             .iter()
             .map(|(key, value)| (key.clone(), value.clone()))
@@ -136,9 +144,17 @@ impl RunCtx {
         println!("=== e2e build: {platform} ===");
         let artifacts = build_for_platform(spec, self.release)?;
         drop(_gate_guard);
-        let image = create_platform_image(&artifacts)?;
+        let built = create_platform_image(&artifacts)?;
+        // Snapshot the build output under a per-tuple path BEFORE any other
+        // tuple can build: create_platform_image writes every tuple to the
+        // same fixed location, and the pre-build phase runs back-to-back, so
+        // the last tuple would otherwise clobber the image content earlier
+        // tuples cached (observed: gfx rows booted the input-gated image and
+        // never emitted witnesses). Slot staging then copies from this
+        // tuple-private snapshot, keeping boots tuple-exact.
+        let image = snapshot_build_output(&self.workspace_root, &built, &cache_key)?;
         println!(
-            "=== e2e build complete: {platform} at {} ===",
+            "=== e2e build complete: {platform} tuple {cache_key:?} at {} ===",
             image.display()
         );
         self.builds.insert(
@@ -152,9 +168,12 @@ impl RunCtx {
         Ok(())
     }
 
-    /// Current-platform artifacts for a case's flag tuple, building once.
+    /// Current-platform artifacts for a case's flag tuple. The runner's
+    /// serial pre-build phase guarantees presence; a miss here is a harness
+    /// bug and surfaces as an InfraFailed row rather than a mid-flight build
+    /// racing other workers' cargo invocations.
     fn artifacts_for_case(
-        &mut self,
+        &self,
         case: &CaseDef,
         platform: &str,
     ) -> Result<&PlatformBuild, Box<dyn Error>> {
@@ -168,10 +187,12 @@ impl RunCtx {
                 .collect::<Vec<_>>()
                 .join(",")
         );
-        if !self.builds.contains_key(&cache_key) {
-            self.ensure_build(platform, &case.env_build)?;
-        }
-        Ok(&self.builds[&cache_key])
+        self.builds.get(&cache_key).ok_or_else(|| {
+            format!(
+                "pre-build phase did not hydrate platform {platform:?} tuple {cache_key:?}"
+            )
+            .into()
+        })
     }
 
     /// Budget priority: `--timeout-secs` > case file > env default.
@@ -189,12 +210,13 @@ impl RunCtx {
     }
 }
 
-/// Execute one (case, [`RunCtx::current_platform`]) row end-to-end. Guest
-/// misbehavior becomes data on the result row; only harness breakdowns land
-/// in `Err` and surface as InfraFailed rows upstream.
-pub fn run_case(case: &CaseDef, ctx: &mut RunCtx) -> CaseResult {
+/// Execute one (case, platform) row end-to-end. Guest misbehavior becomes
+/// data on the result row; only harness breakdowns land in `Err` and surface
+/// as InfraFailed rows upstream. Safe to call from multiple worker threads:
+/// the context is frozen (read-only) and every mutable interaction — env
+/// capture, staging, QEMU spawn — is per-row.
+pub fn run_case(case: &CaseDef, ctx: &RunCtx, platform: &str) -> CaseResult {
     let started = Instant::now();
-    let platform = ctx.current_platform.clone();
 
     // Declaratively-blocked cases (e.g. kernel-owned mechanisms) surface as
     // SKIPPED rows with the documented reason instead of vanishing from the
@@ -202,30 +224,38 @@ pub fn run_case(case: &CaseDef, ctx: &mut RunCtx) -> CaseResult {
     if !case.blocker.is_empty() {
         return CaseResult::skipped(
             case,
-            &platform,
+            platform,
             started,
             format!("blocked: {}", case.blocker),
         );
     }
 
-    if !case.platforms.iter().any(|declared| declared == &platform) {
+    if !case.platforms.iter().any(|declared| declared == platform) {
         return CaseResult::skipped(
             case,
-            &platform,
+            platform,
             started,
             format!("excluded: case does not declare platform {platform}"),
         );
     }
 
-    match execute_row(case, ctx, &platform, started) {
+    let result = match execute_row(case, ctx, platform, started) {
         Ok(result) => result,
-        Err(error) => CaseResult::infra_failed(case, &platform, started, error.to_string()),
+        Err(error) => CaseResult::infra_failed(case, platform, started, error.to_string()),
+    };
+    // Plan WP4: PASSing rows shed their staged images so parallel batches
+    // don't accumulate disk; failures (and --keep-all) retain everything.
+    if matches!(result.outcome, Outcome::Passed) && !ctx.keep_all {
+        if let Err(error) = isolation::discard_stage_dir(&ctx.workspace_root, &case.name, 0) {
+            eprintln!("    note: stage prune skipped for {}: {error}", case.name);
+        }
     }
+    result
 }
 
 fn execute_row(
     case: &CaseDef,
-    ctx: &mut RunCtx,
+    ctx: &RunCtx,
     platform: &str,
     started: Instant,
 ) -> Result<CaseResult, Box<dyn Error>> {
@@ -238,8 +268,6 @@ fn execute_row(
         return Ok(CaseResult::skipped(case, platform, started, reason.to_owned()));
     }
 
-    ctx.ensure_build(platform, &case.env_build)?;
-
     // Only UEFI (qemu-virtio) boots consume a slot disk copy; the kernel-ELF /
     // Image platforms (-machine pc, aarch64 virt, riscv64-virt) take their
     // payload straight from BuildArtifacts and stage no block device, so
@@ -249,8 +277,9 @@ fn execute_row(
     // The staged disk/data images are REUSED verbatim across a boot-B phase so
     // first-boot state written by boot A is visible to boot B (plan §T4
     // wizard-first-boot-chain row; pattern reused from upgrade.rs).
+    let artifacts = ctx.artifacts_for_case(case, platform)?;
     let built_disk = match platform {
-        "qemu-virtio" => Some(ctx.artifacts_for_case(case, platform)?.image.as_path().to_path_buf()),
+        "qemu-virtio" => Some(artifacts.image.as_path().to_path_buf()),
         _ => None,
     };
     let paths = isolation::stage_case_images(
@@ -261,25 +290,22 @@ fn execute_row(
         0,
     )?;
 
-    // Ambient env mutations happen under a restoration guard while still
-    // single-threaded; the built spec then carries an explicit snapshot so
-    // later spawning ignores ambient drift entirely.
-    let mut builder_env = vec![("QEMU_HEADLESS".to_owned(), "1".to_owned())];
+    // Per-row env pairs for argv assembly: hermetic headless boot, the slot's
+    // own throwaway OVMF vars overlay, and any case-declared launch env
+    // (e.g. the plan §2.5 audio pair). Captured under the process-wide spec
+    // gate so concurrent rows never interleave ambient-env reads/writes; the
+    // returned spec replays the snapshot verbatim at spawn time.
+    let mut env_pairs = vec![("QEMU_HEADLESS".to_owned(), "1".to_owned())];
     if let Some(vars_path) = &paths.ovmf_vars {
-        builder_env.push((
+        env_pairs.push((
             "SERVICEOS_OVMF_VARS".to_owned(),
             vars_path.display().to_string(),
         ));
     }
-    // Case-declared launch-time env (e.g. the plan §2.5 audio pair) rides
-    // the same guard window so the spec snapshots it; restored on drop.
     for (key, value) in &case.qemu_env {
-        builder_env.push((key.clone(), value.clone()));
+        env_pairs.push((key.clone(), value.clone()));
     }
-    let _guard = qemu::EnvGuard::apply(&builder_env);
-    let artifacts = ctx.artifacts_for_case(case, platform)?;
-    let mut spec = qemu::spec_for(platform, &artifacts.artifacts, &paths)?;
-    drop(_guard);
+    let mut spec = qemu::capture_spec(platform, &artifacts.artifacts, &paths, &env_pairs)?;
 
     // Scripted cases opt into the injection pipe. Input-injection cases may
     // additionally demand the muxed HMP monitor on the same stdio pair.
@@ -300,7 +326,7 @@ fn execute_row(
 
     // ---- Boot A ----
     let deadline_a = Instant::now() + ctx.case_timeout(case);
-    let verdict_a = run_single_boot(case, &spec, deadline_a);
+    let verdict_a = run_single_boot(case, &spec, deadline_a, idle_budget(case, ctx));
     let boot_b_demanded = !case.boot_b_witnesses.is_empty();
     match verdict_a {
         BootOutcome::Passed { .. } => {
@@ -315,7 +341,7 @@ fn execute_row(
                 case.name, platform, paths.dir.display()
             );
             let deadline_b = Instant::now() + ctx.case_timeout(case);
-            let boot_b = second_boot_verdict(case, &spec, deadline_b);
+            let boot_b = second_boot_verdict(case, &spec, deadline_b, idle_budget(case, ctx));
             return Ok(match boot_b {
                 BootOutcome::Passed { .. } => CaseResult::passed(case, platform, started),
                 BootOutcome::Failed(reason, Some(text)) => {
@@ -355,8 +381,15 @@ fn execute_row(
 
 /// One serial-phase run over an already-built spec: spawn, optional script,
 /// witness drive, kill. Output text is kept for failure diagnostics.
-fn run_single_boot(case: &CaseDef, spec: &qemu::QemuSpec, deadline: Instant) -> BootOutcome {
-    let mut session = match SerialSession::spawn(spec.clone(), budget_until(deadline)) {
+/// `deadline` bounds the whole phase; `idle` is the no-output watchdog
+/// (plan §2.3 separate knob) that trips when the console goes quiet.
+fn run_single_boot(
+    case: &CaseDef,
+    spec: &qemu::QemuSpec,
+    deadline: Instant,
+    idle: Duration,
+) -> BootOutcome {
+    let mut session = match SerialSession::spawn(spec.clone(), idle) {
         Ok(session) => session,
         Err(error) => return BootOutcome::Infra(format!("QEMU spawn failed: {error}")),
     };
@@ -383,7 +416,12 @@ fn run_single_boot(case: &CaseDef, spec: &qemu::QemuSpec, deadline: Instant) -> 
 
 /// Second-boot phase of a regression chain: fresh spawn on the SAME staged
 /// volume, different witness/fail_on sets, no script.
-fn second_boot_verdict(case: &CaseDef, spec: &qemu::QemuSpec, deadline: Instant) -> BootOutcome {
+fn second_boot_verdict(
+    case: &CaseDef,
+    spec: &qemu::QemuSpec,
+    deadline: Instant,
+    idle: Duration,
+) -> BootOutcome {
     let mut witnesses = Vec::with_capacity(case.boot_b_witnesses.len());
     for raw in &case.boot_b_witnesses {
         match Pattern::new(raw) {
@@ -399,7 +437,7 @@ fn second_boot_verdict(case: &CaseDef, spec: &qemu::QemuSpec, deadline: Instant)
         }
     }
 
-    let mut session = match SerialSession::spawn(spec.clone(), budget_until(deadline)) {
+    let mut session = match SerialSession::spawn(spec.clone(), idle) {
         Ok(session) => session,
         Err(error) => return BootOutcome::Infra(format!("QEMU spawn failed: {error}")),
     };
@@ -462,10 +500,53 @@ fn invalidate_guest_build_for_gates(
     Ok(())
 }
 
-/// Budget handed to SerialSession::spawn: remaining wall clock until the
-/// phase deadline (mirrors the historical per-case timeout shape).
-fn budget_until(deadline: Instant) -> Duration {
-    deadline.saturating_duration_since(Instant::now())
+/// Copy one build output (file or directory bundle) into
+/// `<workspace>/target/e2e/builds/<tuple>/`, giving each gate tuple a
+/// private, stable image path for the whole invocation.
+fn snapshot_build_output(
+    workspace_root: &Path,
+    built: &Path,
+    cache_key: &str,
+) -> Result<PathBuf, Box<dyn Error>> {
+    let tuple_dir = workspace_root
+        .join("target")
+        .join("e2e")
+        .join("builds")
+        .join(isolation::sanitize_case_name(cache_key));
+    let destination = if built.is_dir() {
+        if tuple_dir.exists() {
+            std::fs::remove_dir_all(&tuple_dir)?;
+        }
+        std::fs::create_dir_all(&tuple_dir)?;
+        let into = tuple_dir.join(built.file_name().ok_or("bundle output lacks name")?);
+        isolation::copy_tree(built, &into)?;
+        into
+    } else {
+        std::fs::create_dir_all(&tuple_dir)?;
+        let into = tuple_dir.join(built.file_name().ok_or("image output lacks name")?);
+        std::fs::copy(built, &into)?;
+        into
+    };
+    Ok(destination)
+}
+
+/// Idle (no-output) watchdog budget for one boot phase: the separate knob
+/// from plan §2.3. Priority: case `idle_timeout_secs` (long-silent guest
+/// workloads) > `SERVICEOS_IDLE_TIMEOUT_SECS` env > the smaller of the
+/// constant default and the case's total budget, so a wedged console
+/// releases its worker slot well before the per-case deadline.
+fn idle_budget(case: &CaseDef, ctx: &RunCtx) -> Duration {
+    let budget_secs = ctx.case_timeout(case).as_secs();
+    let secs = case
+        .idle_timeout_secs
+        .or_else(|| {
+            std::env::var("SERVICEOS_IDLE_TIMEOUT_SECS")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .filter(|secs| *secs > 0)
+        })
+        .unwrap_or_else(|| DEFAULT_IDLE_TIMEOUT_SECS.min(budget_secs));
+    Duration::from_secs(secs.max(1))
 }
 
 
@@ -572,11 +653,10 @@ fn drive_pattern_sets(
 
 fn execute_raspi_image_assertion(
     case: &CaseDef,
-    ctx: &mut RunCtx,
+    ctx: &RunCtx,
     platform: &str,
     started: Instant,
 ) -> Result<CaseResult, Box<dyn Error>> {
-    ctx.ensure_build(platform, &case.env_build)?;
     let bundle_root = ctx.artifacts_for_case(case, platform)?.image.clone();
     let mut missing = Vec::new();
     for rel in RASPI_STAGED_FILES {

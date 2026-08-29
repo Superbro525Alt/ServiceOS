@@ -1,7 +1,7 @@
 //! `cargo xtask test-e2e` — end-to-end suite orchestration per
-//! docs/test-plan.md §4: tier/filter selection, one build per platform,
-//! sequential execution (parallel scheduling lands in WP4 behind the same
-//! RunCtx), TAP-style reporting, and the 0/1/2 exit-code contract.
+//! docs/test-plan.md §4: tier/filter selection, one serial pre-build per
+//! platform+gate-tuple, tier-ordered parallel row scheduling behind the same
+//! RunCtx (WP4), TAP-style reporting, and the 0/1/2 exit-code contract.
 
 use std::{error::Error, path::PathBuf, time::Instant};
 
@@ -17,11 +17,16 @@ struct TestE2eOptions {
     jobs: Option<usize>,
     timeout_secs: Option<u64>,
     report: Option<PathBuf>,
+    keep_all: bool,
     release: bool,
     list: bool,
 }
 
-const USAGE_TEST_E2E: &str = "usage: cargo xtask test-e2e [--platform <qemu-virtio|raspi5|virt|qemu-isa|riscv64-virt>] [--tier <1..4>]\n       [--filter <substr-or-regex>] [--tag <t>] [-j <n>] [--timeout-secs <s>] [--report <path>] [--release] [--list]";
+const USAGE_TEST_E2E: &str = "usage: cargo xtask test-e2e [--platform <qemu-virtio|raspi5|virt|qemu-isa|riscv64-virt>] [--tier <1..4>]\n       [--filter <substr-or-regex>] [--tag <t>] [-j <n>] [--timeout-secs <s>] [--report <path>] [--keep-all] [--release] [--list]";
+
+/// Sane ceiling for concurrent QEMU slots (plan §2.5: RAM-budgeted batches);
+/// `-j` beyond this is refused rather than silently swapping the host.
+const MAX_JOBS: usize = 8;
 
 pub fn run_test_e2e(
     _cli_platform: &str,
@@ -58,6 +63,7 @@ fn parse_options(args: &[String]) -> TestE2eOptions {
         match flag {
             "--list" => options.list = true,
             "--release" => options.release = true,
+            "--keep-all" => options.keep_all = true,
             other => {
                 if let Some(value) = other.strip_prefix("--platform=") {
                     options.platform = Some(value.to_owned());
@@ -67,7 +73,7 @@ fn parse_options(args: &[String]) -> TestE2eOptions {
                     options.filter = Some(value.to_owned());
                 } else if let Some(value) = other.strip_prefix("--tag=") {
                     options.tag = Some(value.to_owned());
-                } else if let Some(value) = other.strip_prefix("-j") {
+                } else if let Some(value) = other.strip_prefix("-j").filter(|rest| !rest.is_empty()) {
                     options.jobs = Some(parse_jobs(value));
                 } else if let Some(value) = other.strip_prefix("--jobs=") {
                     options.jobs = Some(parse_jobs(value));
@@ -106,8 +112,12 @@ fn parse_jobs(raw: &str) -> usize {
     raw.trim_start_matches(|c: char| c == '=')
         .parse::<usize>()
         .ok()
-        .filter(|jobs| *jobs >= 1)
-        .unwrap_or_else(|| usage_error("-j/--jobs must be >= 1"))
+        .filter(|jobs| (1..=MAX_JOBS).contains(jobs))
+        .unwrap_or_else(|| {
+            usage_error(&format!(
+                "-j/--jobs must be an integer within 1..={MAX_JOBS}"
+            ))
+        })
 }
 
 fn parse_secs(raw: &str) -> u64 {
@@ -181,17 +191,7 @@ fn execute(options: TestE2eOptions, cli_release: bool) -> Result<i32, Box<dyn Er
         println!("note: T0 host unit tests are not part of test-e2e; run `cargo test --workspace`");
     }
 
-    let jobs = options
-        .jobs
-        .unwrap_or(4)
-        .clamp(1, usize::from(u16::MAX));
-    if jobs > 1 {
-        // Structure exists today; the semaphore worker pool that actually
-        // interleaves boots is WP4 scope. Sequencing stays deterministic.
-        println!(
-            "note: -j {jobs} recorded in RunCtx; scheduling is sequential until WP4 lands"
-        );
-    }
+    let jobs = options.jobs.unwrap_or(1);
 
     // WP3: env_build guest gates now plumb into per-tuple cached builds
     // (serviceos_e2e::RunCtx::ensure_build); the fingerprint file remains a
@@ -200,41 +200,108 @@ fn execute(options: TestE2eOptions, cli_release: bool) -> Result<i32, Box<dyn Er
         write_build_fingerprint(&active)?;
     }
 
-    // Group rows by their flag tuple so gated builds are compiled contiguously
-    // instead of ping-ponging rebuilds between default- and flagged-image
-    // tuples across the sequential schedule. Order within a tuple keeps file
-    // order; tuple order follows first appearance.
-    let mut tuple_order: Vec<Vec<(String, String)>> = Vec::new();
-    for case in &active {
-        let mut flags = case.env_build.clone();
-        flags.sort();
-        if !tuple_order.contains(&flags) {
-            tuple_order.push(flags);
-        }
-    }
+    // Build rows first so the pre-build pass can walk them in the same
+    // tuple-grouped order the sequential runner used (gate-switch purges of
+    // the shared guest target dir stay minimal and correctly ordered).
     let mut ordered: Vec<&CaseDef> = Vec::with_capacity(active.len());
-    for flags in &tuple_order {
-        for case in active.iter().filter(|case| {
-            let mut own = case.env_build.clone();
-            own.sort();
-            own == *flags
-        }) {
-            ordered.push(case);
+    {
+        let mut tuple_order: Vec<Vec<(String, String)>> = Vec::new();
+        for case in &active {
+            let mut flags = case.env_build.clone();
+            flags.sort();
+            if !tuple_order.contains(&flags) {
+                tuple_order.push(flags);
+            }
+        }
+        for flags in &tuple_order {
+            for case in active.iter().filter(|case| {
+                let mut own = case.env_build.clone();
+                own.sort();
+                own == *flags
+            }) {
+                ordered.push(case);
+            }
         }
     }
 
+    let mut rows: Vec<(&CaseDef, String)> = ordered
+        .iter()
+        .flat_map(|case| case.platforms.iter().map(move |platform| (*case, platform.clone())))
+        .collect();
+    // Serial pre-build phase: hydrate every needed platform+tuple build
+    // before any worker thread starts (cargo, the gate env guard, and the
+    // guest-artifact marker file are process-global; builds never overlap).
     let mut ctx = RunCtx::new(root.clone(), jobs, release);
     ctx.timeout_override = options.timeout_secs;
-
-    let mut results: Vec<CaseResult> = Vec::new();
-    for case in &ordered {
-        println!("\n=== case {}: T{} targets {:?} ===", case.name, case.tier, case.platforms);
-        let row_platforms: Vec<String> = case.platforms.clone();
-        for platform in row_platforms {
-            ctx.current_platform = platform;
-            results.push(e2e::run_case(case, &mut ctx));
-        }
+    ctx.keep_all = options.keep_all;
+    for (case, platform) in &rows {
+        ctx.ensure_build(platform, &case.env_build)?;
     }
+
+    // Scheduling fairness: fast low-tier smokes grab slots first while the
+    // long TCG / high-tier boots land last; case name then platform keep the
+    // order deterministic run-to-run. (Build hydration above stays in
+    // tuple-grouped file order; only BOOT scheduling is reordered.)
+    rows.sort_by(|(case_a, platform_a), (case_b, platform_b)| {
+        case_a
+            .tier
+            .cmp(&case_b.tier)
+            .then_with(|| case_a.name.cmp(&case_b.name))
+            .then_with(|| platform_a.cmp(platform_b))
+    });
+
+    // Deterministic result buffer: one slot per scheduled row, filled by
+    // whichever worker finishes it; summaries re-sort by case name below so
+    // completion order never leaks into the report.
+    let results: Vec<std::sync::Mutex<Option<CaseResult>>> =
+        (0..rows.len()).map(|_| std::sync::Mutex::new(None)).collect();
+    let next_row = std::sync::atomic::AtomicUsize::new(0);
+    let workers = jobs.min(rows.len()).max(1);
+    println!(
+        "\nscheduling {} row(s) across {workers} worker slot(s) (tier-ordered)",
+        rows.len()
+    );
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| loop {
+                let index = next_row.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if index >= rows.len() {
+                    break;
+                }
+                let (case, platform) = &rows[index];
+                let (case, platform) = (*case, platform.as_str());
+                println!(
+                    "\n=== case {}: T{} targets {:?} ===",
+                    case.name, case.tier, case.platforms
+                );
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    e2e::run_case(case, &ctx, platform)
+                }));
+                let row = outcome.unwrap_or_else(|panic| {
+                    CaseResult::infra_failed(
+                        case,
+                        platform,
+                        Instant::now(),
+                        format!("worker thread panicked: {panic:?}"),
+                    )
+                });
+                let mut slot = results[index]
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                *slot = Some(row);
+            });
+        }
+    });
+    let mut results: Vec<CaseResult> = results
+        .into_iter()
+        .map(|slot| {
+            slot.into_inner()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+        })
+        .map(|filled| filled.expect("every scheduled row produced a result"))
+        .collect();
+    // Deterministic summary + TAP ordering regardless of completion order.
+    results.sort_by(|a, b| a.case.cmp(&b.case).then_with(|| a.platform.cmp(&b.platform)));
 
     e2e::print_summary_table(&mut std::io::stdout().lock(), &results)?;
 

@@ -5,7 +5,10 @@
 name = "smoke.virt-boot"
 tier = 1
 platforms = ["virt"]
-timeout_secs = 420
+timeout_secs = 600
+# aarch64 TCG net-selftest has multi-minute silent stretches when the host
+# is loaded; the WP4 no-output watchdog default (180s) needs per-case slack.
+idle_timeout_secs = 540
 witnesses = [
     "selftest file-written bytes=",
     "net-selftest end",

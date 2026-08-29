@@ -47,6 +47,11 @@ pub struct CaseDef {
     pub platforms: Vec<String>,
     /// None => SERVICEOS_BOOT_TIMEOUT_SECS or DEFAULT_CASE_TIMEOUT_SECS.
     pub timeout_secs: Option<u64>,
+    /// None => SERVICEOS_IDLE_TIMEOUT_SECS, else min(DEFAULT_IDLE_TIMEOUT_SECS,
+    /// case budget). Per-case override for guest workloads with long silent
+    /// stretches (e.g. the gfx present loop) on top of the WP4 separate
+    /// no-output watchdog knob.
+    pub idle_timeout_secs: Option<u64>,
     pub witnesses: Vec<String>,
     pub fail_on: Vec<String>,
     /// option_env!-style guest build gates (WP2 plumbs them into builds).
@@ -344,11 +349,12 @@ fn split_top_level(inner: &str, separator: char) -> Vec<String> {
     parts
 }
 
-const KNOWN_KEYS: [&str; 18] = [
+const KNOWN_KEYS: [&str; 19] = [
     "name",
     "tier",
     "platforms",
     "timeout_secs",
+    "idle_timeout_secs",
     "witnesses",
     "fail_on",
     "env_build",
@@ -376,6 +382,7 @@ impl CaseDef {
             tier: 1,
             platforms: vec!["qemu-virtio".to_owned()],
             timeout_secs: None,
+            idle_timeout_secs: None,
             witnesses: Vec::new(),
             fail_on: Vec::new(),
             env_build: Vec::new(),
@@ -433,6 +440,14 @@ impl CaseDef {
                             .as_u64()
                             .filter(|secs| *secs > 0)
                             .ok_or_else(|| err(path, line, "timeout_secs must be positive"))?,
+                    );
+                }
+                "idle_timeout_secs" => {
+                    def.idle_timeout_secs = Some(
+                        value
+                            .as_u64()
+                            .filter(|secs| *secs > 0)
+                            .ok_or_else(|| err(path, line, "idle_timeout_secs must be positive"))?,
                     );
                 }
                 "witnesses" => {

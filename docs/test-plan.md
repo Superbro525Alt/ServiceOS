@@ -309,7 +309,7 @@ CLI (`support/xtask/src/cli.rs` gets `CommandKind::TestE2e`):
 ```
 cargo xtask test-e2e [--platform <p>] [--tier 0..4] [--filter <substr-or-regex>]
                      [--tag <t>] [-j <n>] [--timeout-secs <s>] [--report <path>]
-                     [--release] [--list]
+                     [--keep-all] [--release] [--list]
 ```
 
 Behavior:
@@ -334,12 +334,30 @@ not ok 13 - regress.ghost-outlines # timeout; TAIL_START ... TAIL_END
 - Exit codes: 0 all pass/skip; 1 any FAIL; 2 infrastructure error (image build
   failure, QEMU spawn failure not attributable to the case).
 - CI compatibility (`ci.rs` exists for ci-matrix today): future job =
-  `cargo xtask test-e2e -j 2 --report target/e2e/report.tap`; TAP parseable;
-  keep wall-clock bounded via `--timeout-secs` ceiling ≈ SERVICEOS_BOOT_TIMEOUT_SECS default (240).
+  `cargo xtask test-e2e -j 4 --report target/e2e/report.tap` (single line,
+  TAP parseable at `target/e2e/report.tap`); keep wall-clock bounded via
+  `--timeout-secs` ceiling ≈ SERVICEOS_BOOT_TIMEOUT_SECS default (240).
 
 Guest rebuild awareness: cases declaring `env_build` invalidate a cached guest
 build keyed by flag tuple; store fingerprint in `target/e2e/build-fingerprint.json`.
 (Keeps default-flagged builds fast.)
+
+WP4 scheduling contract (as landed):
+- `-j N` (default 1, hard cap 8 — higher values are refused with exit 2).
+  Builds hydrate serially per platform+gate-tuple BEFORE any worker starts;
+  boot rows then run on `N` worker threads, tier-ordered (fast smokes first,
+  long TCG/high-tier last), with each row's per-case timeout enforced
+  concurrently and a deterministic name-sorted summary/TAP regardless of
+  completion order.
+- Per-tuple image snapshots live under `target/e2e/builds/<tuple>/` (the
+  builder's fixed output path would otherwise be clobbered across tuples);
+  slots stage copies from there, so no two boots ever share an image, and
+  qemu-virtio keeps its throwaway per-slot OVMF vars overlay.
+- PASSing rows prune their stage dirs; failures retain them (`--keep-all`
+  disables pruning).
+- No-output watchdog is a separate knob from the per-case budget:
+  case `idle_timeout_secs` > env `SERVICEOS_IDLE_TIMEOUT_SECS` >
+  min(180s, case budget).
 
 ---
 

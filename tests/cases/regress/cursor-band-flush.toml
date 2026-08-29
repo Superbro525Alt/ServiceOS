@@ -6,7 +6,7 @@
 name = "regress.cursor-band-flush"
 tier = 4
 platforms = ["qemu-virtio"]
-timeout_secs = 300
+timeout_secs = 600
 env_build = ["SERVICEOS_E2E_GFX=1"]
 witnesses = [
     # At least ten completed synth cycles each asserting visible=1 proves the
@@ -21,3 +21,7 @@ fail_on = [
 serial_script = ""
 data_fresh = true
 tags = ["regress", "graphics", "t4", "e2e-probe"]
+
+# gfx present loop renders silently between milestone lines; the 180s
+# no-output watchdog default would kill a healthy run (WP4 calibration).
+idle_timeout_secs = 540

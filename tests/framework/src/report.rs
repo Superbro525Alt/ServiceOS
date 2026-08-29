@@ -249,6 +249,7 @@ mod tests {
             tier,
             platforms: vec!["qemu-virtio".to_owned()],
             timeout_secs: None,
+            idle_timeout_secs: None,
             witnesses: vec!["marker".to_owned()],
             fail_on: Vec::new(),
             env_build: Vec::new(),

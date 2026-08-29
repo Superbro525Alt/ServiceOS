@@ -46,6 +46,15 @@ pub fn sanitize_case_name(name: &str) -> String {
         .collect()
 }
 
+/// Slot directory for a case name (pruning + diagnostics reuse).
+pub fn slot_dir(workspace_root: &Path, case_name: &str, slot: u32) -> PathBuf {
+    workspace_root
+        .join("target")
+        .join("e2e")
+        .join(sanitize_case_name(case_name))
+        .join(format!("slot{slot}"))
+}
+
 /// Stage `target/e2e/<case-name>/slot<N>/` contents. `built_disk` is the
 /// freshly created platform image (never the long-lived dev image handle);
 /// None for platforms whose boot argv mounts no disk (kernel-boot targets).
@@ -56,11 +65,7 @@ pub fn stage_case_images(
     built_disk: Option<&Path>,
     slot: u32,
 ) -> Result<SlotPaths, Box<dyn Error>> {
-    let dir = workspace_root
-        .join("target")
-        .join("e2e")
-        .join(sanitize_case_name(&case.name))
-        .join(format!("slot{slot}"));
+    let dir = slot_dir(workspace_root, &case.name, slot);
     recreate_dir(&dir)?;
 
     let disk_image = dir.join(disk_file_name(platform));
@@ -115,6 +120,22 @@ fn recreate_dir(dir: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Recursive directory copy for bundle-style build outputs (raspi5 staged
+/// bundle, virt kernel bundle); std-only, no symlink following.
+pub fn copy_tree(source: &Path, destination: &Path) -> Result<(), Box<dyn Error>> {
+    fs::create_dir_all(destination)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let target = destination.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_tree(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
 fn create_zeroed_image(path: &Path, size_mib: u64) -> Result<(), Box<dyn Error>> {
     if path.exists() {
         fs::remove_file(path)?;
@@ -156,11 +177,21 @@ fn stage_ovmf_vars_atomic(slot_dir: &Path) -> Result<PathBuf, Box<dyn Error>> {
     Ok(destination)
 }
 
-/// WP4 will prune PASSing slots; keep a public hook now so the policy lives
-/// in one place even though WP1 always retains stages for postmortem.
-pub fn discard_stage(paths: &SlotPaths) -> Result<(), Box<dyn Error>> {
-    fs::remove_dir_all(&paths.dir)?;
-    Ok(())
+/// WP4 pruning policy: PASSing cases shed their staged images so parallel
+/// batches never accumulate `N × slots × ~1.2 GiB` of disk; failures keep
+/// everything for postmortem (override with the runner's `--keep-all`).
+pub fn discard_stage_dir(
+    workspace_root: &Path,
+    case_name: &str,
+    slot: u32,
+) -> Result<(), Box<dyn Error>> {
+    match fs::remove_dir_all(slot_dir(workspace_root, case_name, slot)) {
+        // Idempotent: rows that never staged (blocked skips, build-only
+        // raspi5 assertions) prune as no-ops.
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 #[cfg(test)]

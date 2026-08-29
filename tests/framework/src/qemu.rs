@@ -8,6 +8,7 @@ use std::{
     ffi::OsString,
     path::PathBuf,
     process::{Command, Stdio},
+    sync::Mutex,
 };
 
 pub use xtask_core::run::{
@@ -196,6 +197,29 @@ pub fn current_builder_env() -> Vec<(String, String)> {
         .iter()
         .filter_map(|key| std::env::var(key).ok().map(|value| ((*key).to_owned(), value)))
         .collect()
+}
+
+/// WP4: argv assembly under parallel scheduling. The builders inside
+/// `xtask-core::run` read process-global env (QEMU_ACCEL, SERVICEOS_AUDIO,
+/// QEMU_EXTRA_ARGS, ...) while constructing their Commands, so captures are
+/// serialized behind a process-wide gate and each capture applies its own
+/// env pairs inside an exclusive guard window. The returned spec replays the
+/// captured env verbatim at spawn time, so concurrent boots share nothing.
+pub fn capture_spec(
+    platform: &str,
+    artifacts: &xtask_core::build::BuildArtifacts,
+    paths: &crate::isolation::SlotPaths,
+    pairs: &[(String, String)],
+) -> Result<QemuSpec, Box<dyn std::error::Error>> {
+    static SPEC_CAPTURE_GATE: Mutex<()> = Mutex::new(());
+    let gate = SPEC_CAPTURE_GATE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _guard = EnvGuard::apply(pairs);
+    let spec = spec_for(platform, artifacts, paths)?;
+    drop(_guard);
+    drop(gate);
+    Ok(spec)
 }
 
 /// Directories searched by binary finders, exposed for diagnostics only.

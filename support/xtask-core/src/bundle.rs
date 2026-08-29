@@ -1,5 +1,6 @@
 use std::{error::Error, fs, path::PathBuf};
 
+use crate::boot_mode::selected_boot_mode;
 use crate::{build::BuildArtifacts, platform::BootKind};
 
 pub struct StagedPlatformLayout {
@@ -26,6 +27,7 @@ pub fn stage_platform_bundle(
         BootKind::MultibootElf => root_dir.join("kernels"),
     };
     let serviceos_dir = root_dir.join("serviceos");
+    let boot_mode_note = serviceos_dir.join("bootmode.txt");
 
     fs::create_dir_all(&boot_dir)?;
     fs::create_dir_all(&serviceos_dir)?;
@@ -35,10 +37,16 @@ pub fn stage_platform_bundle(
             serviceos_dir.join("bootstore.bin"),
         )?;
     }
-    if std::env::var("SERVICEOS_BOOT_MODE").as_deref() == Ok("recovery") {
-        // Operator-visible note in the staged bundle; the actual boot-mode
-        // word is compiled into the platform loader via SERVICEOS_BOOT_MODE.
-        fs::write(serviceos_dir.join("bootmode.txt"), b"recovery\n")?;
+    if let Some(mode) = selected_boot_mode()? {
+        if mode.writes_bundle_note() {
+            // Operator-visible note in the staged bundle; the actual boot-mode
+            // word is compiled into the platform loader via SERVICEOS_BOOT_MODE.
+            fs::write(&boot_mode_note, format!("{}\n", mode.env_value()))?;
+        } else if boot_mode_note.exists() {
+            fs::remove_file(&boot_mode_note)?;
+        }
+    } else if boot_mode_note.exists() {
+        fs::remove_file(&boot_mode_note)?;
     }
 
     if let Some(kernel_binary) = &artifacts.kernel_binary {

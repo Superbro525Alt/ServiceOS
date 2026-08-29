@@ -4,6 +4,7 @@ use std::{
     process::{Command, ExitStatus},
 };
 
+use crate::boot_mode::selected_boot_mode;
 use crate::platform::PlatformSpec;
 
 const USERSPACE_CATALOG_PACKAGE: &str = "serviceos-userspace-catalog";
@@ -20,6 +21,7 @@ pub fn build_for_platform(
     spec: PlatformSpec,
     release: bool,
 ) -> Result<BuildArtifacts, Box<dyn Error>> {
+    selected_boot_mode()?;
     let profile = if release { "release" } else { "debug" };
     let workspace_root = workspace_root();
     let userspace_target = userspace_target(spec);

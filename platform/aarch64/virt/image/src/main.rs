@@ -553,13 +553,15 @@ fn panic(info: &PanicInfo<'_>) -> ! {
 
 use serviceos_kernel_core::memory::PhysicalAddress;
 /// Boot-mode word passed to the root-manager in the startup message
-/// (3 = recovery; see root-manager bootmode). Selected at build time via
-/// SERVICEOS_BOOT_MODE=recovery, e.g. `cargo xtask recover`.
+/// (0 = full, 1 = reduced, 2 = safe, 3 = recovery; see root-manager
+/// bootmode). Selected at build time via SERVICEOS_BOOT_MODE, with
+/// `cargo xtask recover` setting recovery explicitly.
 fn root_boot_mode_word() -> u64 {
-    if option_env!("SERVICEOS_BOOT_MODE") == Some("recovery") {
-        3
-    } else {
-        0
+    match option_env!("SERVICEOS_BOOT_MODE") {
+        Some("reduced") => 1,
+        Some("safe") => 2,
+        Some("recovery") => 3,
+        _ => 0,
     }
 }
 

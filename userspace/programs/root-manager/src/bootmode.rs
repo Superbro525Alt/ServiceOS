@@ -354,6 +354,8 @@ pub(crate) fn log_cycle_path(cycle: &CyclePath) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::ServiceSlot;
+    use serviceos_bundle::ServiceStartupMode;
 
     fn tables(ids: &[ServiceId], edges: &[(usize, ServiceId)]) -> (RefTables, usize) {
         let mut tables = RefTables::empty();
@@ -389,12 +391,118 @@ mod tests {
         )
     }
 
+    fn slot(id: ServiceId, deps: &[ServiceId], startup: ServiceStartupMode) -> ServiceSlot {
+        let mut slot = ServiceSlot {
+            occupied: true,
+            ..ServiceSlot::empty()
+        };
+        slot.manifest.service_id = id;
+        slot.manifest.startup = startup;
+        for dependency in deps {
+            let index = slot.manifest.dependency_count;
+            slot.manifest.dependencies[index] = *dependency;
+            slot.manifest.dependency_count += 1;
+        }
+        slot
+    }
+
+    fn service_ids(
+        slots: &[ServiceSlot; MAX_SERVICE_SLOTS],
+        service_count: usize,
+    ) -> Vec<ServiceId> {
+        slots[..service_count]
+            .iter()
+            .filter(|slot| slot.occupied)
+            .map(|slot| slot.manifest.service_id)
+            .collect()
+    }
+
+    fn seeded_slots() -> ([ServiceSlot; MAX_SERVICE_SLOTS], usize) {
+        let mut slots = [ServiceSlot::empty(); MAX_SERVICE_SLOTS];
+        let seeded = [
+            slot(ServiceId::Storage, &[], ServiceStartupMode::Eager),
+            slot(ServiceId::Console, &[], ServiceStartupMode::Eager),
+            slot(
+                ServiceId::Config,
+                &[ServiceId::Storage],
+                ServiceStartupMode::Eager,
+            ),
+            slot(
+                ServiceId::Log,
+                &[ServiceId::Console, ServiceId::Config],
+                ServiceStartupMode::Eager,
+            ),
+            slot(
+                ServiceId::Status,
+                &[ServiceId::Log, ServiceId::Config],
+                ServiceStartupMode::Eager,
+            ),
+            slot(
+                ServiceId::Package,
+                &[ServiceId::Storage, ServiceId::Log],
+                ServiceStartupMode::Eager,
+            ),
+            slot(
+                ServiceId::Network,
+                &[ServiceId::Log, ServiceId::Config],
+                ServiceStartupMode::Eager,
+            ),
+            slot(
+                ServiceId::Security,
+                &[ServiceId::Storage, ServiceId::Log],
+                ServiceStartupMode::Eager,
+            ),
+            slot(
+                ServiceId::Shell,
+                &[
+                    ServiceId::Console,
+                    ServiceId::Log,
+                    ServiceId::Config,
+                    ServiceId::Storage,
+                    ServiceId::Status,
+                    ServiceId::Package,
+                    ServiceId::Network,
+                    ServiceId::Security,
+                ],
+                ServiceStartupMode::Eager,
+            ),
+            slot(
+                ServiceId::Backup,
+                &[ServiceId::Storage],
+                ServiceStartupMode::OnDemand,
+            ),
+            slot(
+                ServiceId::DesktopShell,
+                &[ServiceId::Log, ServiceId::Status],
+                ServiceStartupMode::Eager,
+            ),
+            slot(
+                ServiceId::Audio,
+                &[ServiceId::Log],
+                ServiceStartupMode::Eager,
+            ),
+        ];
+        for (index, slot) in seeded.into_iter().enumerate() {
+            slots[index] = slot;
+        }
+        (slots, seeded.len())
+    }
+
     #[test]
     fn boot_mode_parses_words() {
         assert_eq!(BootMode::from_word(0), BootMode::Full);
         assert_eq!(BootMode::from_word(1), BootMode::Reduced);
         assert_eq!(BootMode::from_word(2), BootMode::Safe);
+        assert_eq!(BootMode::from_word(3), BootMode::Recovery);
         assert_eq!(BootMode::from_word(99), BootMode::Full);
+    }
+
+    #[test]
+    fn boot_mode_core_sets_match_contract() {
+        assert_eq!(BootMode::Full.core_set(), &[]);
+        assert_eq!(BootMode::Reduced.core_set(), &REDUCED_CORE);
+        assert_eq!(BootMode::Safe.core_set(), &SAFE_CORE);
+        assert_eq!(BootMode::Recovery.core_set(), &RECOVERY_CORE);
     }
 
     #[test]
@@ -463,5 +571,55 @@ mod tests {
         blocked_on[0] = ServiceId::Storage;
         // storage is present but never waiting -> chain terminates, no cycle
         assert!(find_blocked_cycle(&waiting, &ids, &blocked_on, 2).is_none());
+    }
+
+    #[test]
+    fn apply_boot_mode_keeps_reduced_core_and_prunes_desktop_extras() {
+        let (mut slots, service_count) = seeded_slots();
+        let kept = apply_boot_mode(&mut slots, service_count, BootMode::Reduced);
+        assert_eq!(kept, 9);
+        assert_eq!(
+            service_ids(&slots, service_count),
+            vec![
+                ServiceId::Storage,
+                ServiceId::Console,
+                ServiceId::Config,
+                ServiceId::Log,
+                ServiceId::Status,
+                ServiceId::Package,
+                ServiceId::Network,
+                ServiceId::Security,
+                ServiceId::Shell,
+            ]
+        );
+    }
+
+    #[test]
+    fn apply_boot_mode_keeps_safe_core_only() {
+        let (mut slots, service_count) = seeded_slots();
+        let kept = apply_boot_mode(&mut slots, service_count, BootMode::Safe);
+        assert_eq!(kept, 5);
+        assert_eq!(
+            service_ids(&slots, service_count),
+            vec![
+                ServiceId::Storage,
+                ServiceId::Console,
+                ServiceId::Config,
+                ServiceId::Log,
+                ServiceId::Status,
+            ]
+        );
+    }
+
+    #[test]
+    fn apply_boot_mode_keeps_recovery_core_and_backup_activation_path() {
+        let (mut slots, service_count) = seeded_slots();
+        let kept = apply_boot_mode(&mut slots, service_count, BootMode::Recovery);
+        assert_eq!(kept, 3);
+        assert_eq!(
+            service_ids(&slots, service_count),
+            vec![ServiceId::Storage, ServiceId::Console, ServiceId::Backup]
+        );
+        assert!(BootMode::Recovery.activates_on_demand());
     }
 }

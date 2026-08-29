@@ -7,11 +7,15 @@ name = "bringup.graph-factory"
 tier = 2
 platforms = ["qemu-virtio"]
 witnesses = [
+    "boot mode=full",
     "selftest file-written bytes=",
     "net-selftest end",
     "selftest mix",
 ]
 fail_on = [
+    "panic",
+    "triple",
+    "general protection",
     "selftest persist FAILED",
     "CRASH LOOP",
     "bring-up failed",

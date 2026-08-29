@@ -6,6 +6,7 @@
 //! here are byte-identical to their historical locations; `cargo xtask`
 //! behavior is unchanged (docs/test-plan.md §2.3).
 
+pub mod boot_mode;
 pub mod bootlog;
 pub mod build;
 pub mod bundle;

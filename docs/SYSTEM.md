@@ -354,7 +354,10 @@ windows (400 ticks, re-armed per keystroke) let interactive operators drive
 setup while headless boots fall through to documented defaults.
 
 Boot modes are selected at build time and passed as a word to root-manager
-(`userspace/programs/root-manager/src/bootmode.rs`):
+(`userspace/programs/root-manager/src/bootmode.rs`). `support/xtask-core`
+validates `SERVICEOS_BOOT_MODE` before build/image staging, rejects anything
+outside `full|reduced|safe|recovery`, and leaves unset boots on the byte-
+identical full path:
 
 | Word | Mode | Core set kept |
 |---|---|---|
@@ -363,8 +366,10 @@ Boot modes are selected at build time and passed as a word to root-manager
 | 2 | safe | storage, console, config, log, status |
 | 3 | recovery | storage, console, backup (on-demand activation forced) |
 
-`cargo xtask recover` builds with `SERVICEOS_BOOT_MODE=recovery` (all four
-loader crates pass the word). Recovery gives operators persistent storage, a
+All four graph-capable loaders (`qemu-virtio`, `qemu-isa`, `virt`, `raspi5`)
+compile the selected word into the root-manager startup message. `cargo xtask
+recover` is the recovery convenience path and simply sets
+`SERVICEOS_BOOT_MODE=recovery`. Recovery gives operators persistent storage, a
 serial console, and backup-service export/restore. Independent of boot mode,
 the root-manager recovery engine supervises the running graph: crash-loop
 accounting against `CRASH_LOOP_LIMIT` yields Restart, SupervisorCall, or
@@ -410,7 +415,7 @@ QEMU/toolchain environment variables (`support/xtask/src/run.rs`,
 | `SERVICEOS_SMP=<n>` | guest CPU count (default 1; keeps boot output byte-stable) |
 | `SERVICEOS_AUDIO=1` | attach virtio-sound-pci playback (host audiodev defaults to silent `none`) |
 | `SERVICEOS_GL=1` | GTK display with `gl=on` instead of `gl=off` |
-| `SERVICEOS_BOOT_MODE=recovery` | compile recovery boot-mode word into the loader (`xtask recover` sets it) |
+| `SERVICEOS_BOOT_MODE=full|reduced|safe|recovery` | compile the selected boot-mode word into every graph-capable loader; invalid values fail in host tooling and `xtask recover` selects `recovery` |
 | `QEMU_ACCEL=kvm/tcg` | force accelerator (auto-detect `/dev/kvm` otherwise) |
 | `QEMU_EXTRA_ARGS="..."` | appended verbatim to the QEMU command line |
 | `QEMU_AUDIODEV=<spec>/off` | host audiodev spec override |
@@ -430,7 +435,7 @@ platforms: `qemu-virtio`, `raspi5`, `virt`, `qemu-isa`, `riscv64-virt`):
 | `build` | arch crate + platform crate + image + userspace catalog per platform |
 | `image` | stage bootable artifact (raw disk for virtio; Pi boot partition; etc.) |
 | `run` / `qemu` | build, image, and launch QEMU with the env-var surface above |
-| `recover` | run with `SERVICEOS_BOOT_MODE=recovery` |
+| `recover` | convenience wrapper that runs with `SERVICEOS_BOOT_MODE=recovery` |
 | `release` | release images for all platforms + `RELEASE-MANIFEST.json` |
 | `test-upgrade` | boot-upgrade-boot cycle on qemu-virtio verifying persistence markers |
 | `validate` | workspace check + tests + bounded qemu-virtio boot + optional aarch64 `virt` boot, grepping selftest markers (`selftest file-written bytes=`, `net-selftest end`, `selftest mix`) with a summary table |

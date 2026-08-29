@@ -1,0 +1,31 @@
+# T2 bounded non-default boot-mode selector proof on qemu-virtio. The guest
+# is rebuilt with SERVICEOS_BOOT_MODE=recovery, so the loader must pass startup
+# word 3 and root-manager must prune the graph to storage + console + backup.
+[case]
+name = "bringup.bootmode-recovery"
+tier = 2
+platforms = ["qemu-virtio"]
+timeout_secs = 120
+witnesses = [
+    "boot mode=recovery",
+    "boot mode=recovery kept 3 of",
+    "activating backup-service",
+    "event=service-ready target=root-manager",
+]
+fail_on = [
+    "panic",
+    "triple",
+    "general protection",
+    "activating log-service",
+    "activating shell-service",
+    "serviceos shell ready",
+    "desktop-ready",
+    "net-selftest end",
+    "selftest mix",
+    "CRASH LOOP",
+    "bring-up failed",
+]
+env_build = ["SERVICEOS_BOOT_MODE=recovery"]
+serial_script = ""
+data_fresh = true
+tags = ["bringup", "bootmode", "recovery"]

@@ -81,6 +81,22 @@ pub(super) fn cmd_pkg_list(bootstrap: rt::Handle, output: ShellOutput) -> rt::Re
         let active_version = core::str::from_utf8(&active[..entry.active_version_len])
             .map_err(|_| rt::Error::InvalidArgument)?;
         let decision = catalog.decision(entry.service_id, Some(installed_version));
+        // Staged-rollout gate: the update flag is only "yes" when the
+        // package-service would actually offer the target (cohort + rules).
+        let mut blocked_by: Option<&'static str> = None;
+        let update_flag = match decision {
+            UpdateDecision::UpdateAvailable => {
+                match super::rollout::gated_update_offered(bootstrap, entry.service_id) {
+                    (Some(true), _) => "yes",
+                    (Some(false), reason) => {
+                        blocked_by = Some(super::rollout::reason_name(reason));
+                        "no"
+                    }
+                    (None, _) => "yes",
+                }
+            }
+            other => other.flag(),
+        };
         write_output_linef(
             output,
             format_args!(
@@ -94,9 +110,15 @@ pub(super) fn cmd_pkg_list(bootstrap: rt::Handle, output: ShellOutput) -> rt::Re
                 } else {
                     "no"
                 },
-                decision.flag(),
+                update_flag,
             ),
         )?;
+        if let Some(reason) = blocked_by {
+            write_output_linef(
+                output,
+                format_args!("  rollout: {} blocks the update", reason),
+            )?;
+        }
         index += 1;
     }
 
@@ -254,10 +276,17 @@ pub(super) fn cmd_pkg_info(
     }
 
     // Update/remove visibility: compare the installed version against the
-    // newest catalog version and report when this package last changed.
+    // newest catalog version and report when this package last changed. The
+    // staged-rollout gate decides whether the update is actually offered.
     let installed_text = core::str::from_utf8(&installed[..info.installed_version_len]).ok();
     let latest_text = core::str::from_utf8(&latest[..info.latest_version_len]).ok();
     let decision = decide_update(installed_text, latest_text);
+    let gated = matches!(decision, UpdateDecision::UpdateAvailable);
+    let gate = if gated {
+        super::rollout::gated_update_offered(bootstrap, service_id)
+    } else {
+        (None, 0)
+    };
     let mut last_change = rt::FixedLogBuffer::<48>::new();
     match last_package_event(bootstrap, service_id) {
         Some((kind, tick)) => {
@@ -279,6 +308,15 @@ pub(super) fn cmd_pkg_info(
             last_change.as_str(),
         ),
     )?;
+    if let (Some(false), reason) = gate {
+        write_output_linef(
+            output,
+            format_args!(
+                "  rollout: {} blocks the update",
+                super::rollout::reason_name(reason)
+            ),
+        )?;
+    }
     Ok(())
 }
 

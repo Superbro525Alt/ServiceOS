@@ -466,6 +466,7 @@ pub(crate) fn load_journal_state(
 
 pub(crate) const FEED_KEYS_PATH: &str = "state/packages/feed-keys.cfg";
 pub(crate) const REJECT_JOURNAL_PATH: &str = "state/packages/feed-journal.cfg";
+pub(crate) const ROLLOUT_POLICY_PATH: &str = "state/packages/policy.cfg";
 
 pub(crate) const SYSUPDATE_TXN_PATH: &str = "state/packages/sysupdate-txn.cfg";
 pub(crate) const SYSUPDATE_HISTORY_PATH: &str = "state/packages/sysupdate-history.cfg";
@@ -578,6 +579,30 @@ pub(crate) fn persist_feed_keystore(storage_handle: rt::Handle) -> rt::Result<()
     let mut text = rt::FixedLogBuffer::<MAX_STATE_BYTES>::new();
     crate::signing::serialize_keystore(unsafe { &*core::ptr::addr_of!(FEED_KEYSTORE) }, &mut text);
     write_storage_file(storage_handle, FEED_KEYS_PATH, text.as_bytes())
+}
+
+pub(crate) fn persist_rollout_policy(storage_handle: rt::Handle) -> rt::Result<()> {
+    let mut text = rt::FixedLogBuffer::<MAX_STATE_BYTES>::new();
+    crate::rollout::serialize_policy(unsafe { &*core::ptr::addr_of!(ROLLOUT_POLICY) }, &mut text);
+    write_storage_file(storage_handle, ROLLOUT_POLICY_PATH, text.as_bytes())
+}
+
+pub(crate) fn load_rollout_policy(storage_handle: rt::Handle) -> rt::Result<()> {
+    let (blob, len) = match rt::storage_open(storage_handle, ROLLOUT_POLICY_PATH) {
+        Ok(value) => value,
+        Err(rt::Error::NotFound) => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    let mut bytes = [0u8; MAX_STATE_BYTES];
+    let requested = len.min(bytes.len());
+    let loaded = rt::storage_read_all(blob, &mut bytes, requested)?;
+    let _ = rt::storage_blob_close(blob);
+    let text = core::str::from_utf8(&bytes[..loaded]).map_err(|_| rt::Error::InvalidArgument)?;
+    let parsed = crate::rollout::parse_policy(text);
+    unsafe {
+        ROLLOUT_POLICY = parsed;
+    }
+    Ok(())
 }
 
 pub(crate) fn load_feed_keystore(storage_handle: rt::Handle) -> rt::Result<()> {

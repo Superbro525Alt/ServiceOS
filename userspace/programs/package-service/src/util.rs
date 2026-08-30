@@ -16,24 +16,8 @@ pub(crate) fn sort_package_versions(slot: &mut PackageSlot) {
 }
 
 pub(crate) fn compare_versions(left: &str, right: &str) -> Ordering {
-    parse_version_triplet(left).cmp(&parse_version_triplet(right))
-}
-
-fn parse_version_triplet(value: &str) -> (u32, u32, u32) {
-    let mut parts = value.split('.');
-    let major = parts
-        .next()
-        .and_then(|part| part.parse::<u32>().ok())
-        .unwrap_or(0);
-    let minor = parts
-        .next()
-        .and_then(|part| part.parse::<u32>().ok())
-        .unwrap_or(0);
-    let patch = parts
-        .next()
-        .and_then(|part| part.parse::<u32>().ok())
-        .unwrap_or(0);
-    (major, minor, patch)
+    crate::sysupdate_model::parse_version_triplet(left)
+        .cmp(&crate::sysupdate_model::parse_version_triplet(right))
 }
 
 pub(crate) fn latest_version_index(slot: &PackageSlot) -> Option<usize> {
@@ -152,10 +136,49 @@ pub(crate) fn select_update_target(
         || explicit_version.is_some()
         || resolved_source.is_some()
     {
-        Ok(Some(target))
+        if update_gate_reason(repos, slot, target, explicit_version.is_some())
+            == crate::rollout::RolloutReason::Admit
+        {
+            Ok(Some(target))
+        } else {
+            Ok(None)
+        }
     } else {
         Ok(None)
     }
+}
+
+/// Rollout gate for one candidate update target. An explicit operator
+/// version bypasses staging entirely (documented escape hatch); automatic
+/// offers always consult the serving source's policy row.
+pub(crate) fn update_gate_reason(
+    repos: &[RepositorySlot; MAX_REPOSITORIES],
+    slot: &PackageSlot,
+    target: usize,
+    explicit_version: bool,
+) -> crate::rollout::RolloutReason {
+    if explicit_version {
+        return crate::rollout::RolloutReason::Admit;
+    }
+    let Some(repo) = repos
+        .get(slot.versions[target].repo_index)
+        .copied()
+        .filter(|repo| repo.occupied)
+    else {
+        return crate::rollout::RolloutReason::Admit;
+    };
+    let Ok(source) = repo.name.as_str() else {
+        return crate::rollout::RolloutReason::Admit;
+    };
+    let policy = rollout_policy_for(source);
+    crate::rollout::evaluate_update_gate(
+        policy,
+        source,
+        slot.package_name.as_str().unwrap_or(""),
+        repo.ring,
+        version_text(slot, target),
+        version_text(slot, slot.installed.unwrap_or(target)),
+    )
 }
 
 pub(crate) fn version_allowed(
@@ -308,7 +331,7 @@ pub(crate) fn send_operation_reply(
 }
 
 pub(crate) fn encode_version_text(version: &str) -> u64 {
-    let (major, minor, patch) = parse_version_triplet(version);
+    let (major, minor, patch) = crate::sysupdate_model::parse_version_triplet(version);
     ((major as u64) << 32) | ((minor as u64) << 16) | patch as u64
 }
 

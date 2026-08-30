@@ -4,6 +4,7 @@
 //! unit tests. See [`ops_model`] for details.
 
 pub mod ops_model;
+pub mod rollout;
 pub mod signing;
 pub mod sysupdate_model;
 

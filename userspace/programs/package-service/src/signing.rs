@@ -54,7 +54,7 @@ const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x1000_0000_01b3;
 
 #[allow(dead_code)]
-fn fnv1a64(bytes: &[u8]) -> u64 {
+pub(crate) fn fnv1a64(bytes: &[u8]) -> u64 {
     let mut hash = FNV_OFFSET;
     for byte in bytes.iter().copied() {
         hash ^= byte as u64;

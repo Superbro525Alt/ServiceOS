@@ -252,10 +252,7 @@ pub fn parse_history_rows(text: &str) -> ([HistoryRow; SYSUPDATE_HISTORY_CAP], u
 }
 
 /// Append one row, evicting the oldest when the ring is full.
-pub fn push_history_row(
-    ring: &mut ([HistoryRow; SYSUPDATE_HISTORY_CAP], usize),
-    row: HistoryRow,
-) {
+pub fn push_history_row(ring: &mut ([HistoryRow; SYSUPDATE_HISTORY_CAP], usize), row: HistoryRow) {
     let (rows, count) = ring;
     if *count < SYSUPDATE_HISTORY_CAP {
         rows[*count] = row;
@@ -344,19 +341,52 @@ mod tests {
 
     #[test]
     fn state_machine_allows_only_documented_transitions() {
-        assert!(txn_transition_allowed(TXN_STATE_PLANNING, TXN_STATE_APPLYING));
-        assert!(txn_transition_allowed(TXN_STATE_APPLYING, TXN_STATE_COMMITTING));
-        assert!(txn_transition_allowed(TXN_STATE_COMMITTING, TXN_STATE_COMMITTED));
-        assert!(txn_transition_allowed(TXN_STATE_COMMITTED, TXN_STATE_ROLLING_BACK));
-        assert!(txn_transition_allowed(TXN_STATE_ROLLING_BACK, TXN_STATE_ROLLED_BACK));
+        assert!(txn_transition_allowed(
+            TXN_STATE_PLANNING,
+            TXN_STATE_APPLYING
+        ));
+        assert!(txn_transition_allowed(
+            TXN_STATE_APPLYING,
+            TXN_STATE_COMMITTING
+        ));
+        assert!(txn_transition_allowed(
+            TXN_STATE_COMMITTING,
+            TXN_STATE_COMMITTED
+        ));
+        assert!(txn_transition_allowed(
+            TXN_STATE_COMMITTED,
+            TXN_STATE_ROLLING_BACK
+        ));
+        assert!(txn_transition_allowed(
+            TXN_STATE_ROLLING_BACK,
+            TXN_STATE_ROLLED_BACK
+        ));
         assert!(txn_transition_allowed(TXN_STATE_APPLYING, TXN_STATE_FAILED));
         assert!(txn_transition_allowed(TXN_STATE_FAILED, TXN_STATE_APPLYING));
-        assert!(txn_transition_allowed(TXN_STATE_FAILED, TXN_STATE_ROLLING_BACK));
-        assert!(!txn_transition_allowed(TXN_STATE_PLANNING, TXN_STATE_COMMITTED));
-        assert!(!txn_transition_allowed(TXN_STATE_COMMITTED, TXN_STATE_APPLYING));
-        assert!(!txn_transition_allowed(TXN_STATE_ROLLED_BACK, TXN_STATE_APPLYING));
-        assert!(!txn_transition_allowed(TXN_STATE_COMMITTED, TXN_STATE_COMMITTED));
-        assert!(!txn_transition_allowed(TXN_STATE_APPLYING, TXN_STATE_ROLLED_BACK));
+        assert!(txn_transition_allowed(
+            TXN_STATE_FAILED,
+            TXN_STATE_ROLLING_BACK
+        ));
+        assert!(!txn_transition_allowed(
+            TXN_STATE_PLANNING,
+            TXN_STATE_COMMITTED
+        ));
+        assert!(!txn_transition_allowed(
+            TXN_STATE_COMMITTED,
+            TXN_STATE_APPLYING
+        ));
+        assert!(!txn_transition_allowed(
+            TXN_STATE_ROLLED_BACK,
+            TXN_STATE_APPLYING
+        ));
+        assert!(!txn_transition_allowed(
+            TXN_STATE_COMMITTED,
+            TXN_STATE_COMMITTED
+        ));
+        assert!(!txn_transition_allowed(
+            TXN_STATE_APPLYING,
+            TXN_STATE_ROLLED_BACK
+        ));
     }
 
     #[test]
@@ -418,7 +448,15 @@ mod tests {
 
     #[test]
     fn history_ring_keeps_newest_cap_rows() {
-        let mut ring = ([HistoryRow { seq: 0, tick: 0, applied: 0, rolled_back: false }; SYSUPDATE_HISTORY_CAP], 0usize);
+        let mut ring = (
+            [HistoryRow {
+                seq: 0,
+                tick: 0,
+                applied: 0,
+                rolled_back: false,
+            }; SYSUPDATE_HISTORY_CAP],
+            0usize,
+        );
         for seq in 0..(SYSUPDATE_HISTORY_CAP as u64 + 3) {
             push_history_row(
                 &mut ring,
@@ -472,4 +510,25 @@ mod tests {
         assert_eq!(txn_state_name(TXN_STATE_ROLLING_BACK), "rolling-back");
         assert_eq!(txn_state_name(99), "unknown");
     }
+}
+
+/// Parse a dotted version into its (major, minor, patch) triplet. Missing
+/// components count as zero; non-numeric components parse as zero (existing
+/// sort behavior). Shared by the version sort/compare helpers and the
+/// staged-rollout step cap.
+pub fn parse_version_triplet(value: &str) -> (u32, u32, u32) {
+    let mut parts = value.split('.');
+    let major = parts
+        .next()
+        .and_then(|part| part.parse::<u32>().ok())
+        .unwrap_or(0);
+    let minor = parts
+        .next()
+        .and_then(|part| part.parse::<u32>().ok())
+        .unwrap_or(0);
+    let patch = parts
+        .next()
+        .and_then(|part| part.parse::<u32>().ok())
+        .unwrap_or(0);
+    (major, minor, patch)
 }

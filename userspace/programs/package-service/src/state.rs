@@ -157,11 +157,20 @@ static mut RECOVERY_STATE: Option<JournalState> = None;
 pub(crate) static mut FEED_KEYSTORE: crate::signing::Keystore = crate::signing::Keystore::empty();
 pub(crate) static mut REJECT_JOURNAL: crate::signing::RejectJournal =
     crate::signing::RejectJournal::empty();
+pub(crate) static mut ROLLOUT_POLICY: crate::rollout::RolloutPolicy =
+    crate::rollout::RolloutPolicy::empty();
 
 /// Keys pinned for a feed source, if any.
 pub(crate) fn feed_keys_for(source: &str) -> Option<&'static crate::signing::SourceKeys> {
     let keystore = unsafe { &*core::ptr::addr_of!(FEED_KEYSTORE) };
     keystore.source_keys(source)
+}
+
+/// Staged-rollout/upgrade-rules row for a feed source, if configured.
+/// Absence means the source is unstaged: every target admits.
+pub(crate) fn rollout_policy_for(source: &str) -> Option<&'static crate::rollout::SourceRollout> {
+    let policy = unsafe { &*core::ptr::addr_of!(ROLLOUT_POLICY) };
+    policy.source_rollout(source)
 }
 
 /// Journal entry observed as stale during startup (interrupted operation),

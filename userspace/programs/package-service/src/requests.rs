@@ -129,6 +129,14 @@ pub(crate) fn handle_request(
         x if x == PackageTag::KeysGenRequest as u32 => {
             handle_keys_gen_request(storage_handle, message)
         }
+        x if x == PackageTag::RolloutListRequest as u32 => handle_rollout_list_request(message),
+        x if x == PackageTag::RolloutGetRequest as u32 => handle_rollout_get_request(message),
+        x if x == PackageTag::RolloutSetRequest as u32 => {
+            handle_rollout_set_request(storage_handle, message)
+        }
+        x if x == PackageTag::RolloutStatusRequest as u32 => {
+            handle_rollout_status_request(repos, *repo_count, packages, *package_count, message)
+        }
         _ => Ok(()),
     }
 }
@@ -1258,4 +1266,373 @@ fn handle_keys_gen_request(storage_handle: rt::Handle, message: &RawMessage) -> 
     }
     keys_send_reply(reply_handle, &reply);
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Per-source staged-rollout cohorts + upgrade rules (additive shell surface,
+// PackageTag 0x72a..). Same shape as the keystore block above: variable
+// fields ride inline as [len words][packed bytes]; list/status replies fit
+// the 16-word budget; hold names page two per reply; mutations persist the
+// policy table before replying so a crash never advertises un-persisted
+// rules. Defaults (no row for a source) admit every target, so an empty
+// policy table is behaviorally invisible.
+// ---------------------------------------------------------------------------
+
+/// Holds echoed per RolloutGetReply page; one name per reply keeps the
+/// 16-word budget with a wide margin (8 header words + 3 packed words).
+const ROLLOUT_HOLD_PAGE: usize = 1;
+
+fn rollout_policy_table() -> &'static crate::rollout::RolloutPolicy {
+    unsafe { &*core::ptr::addr_of!(ROLLOUT_POLICY) }
+}
+
+fn rollout_policy_table_mut() -> &'static mut crate::rollout::RolloutPolicy {
+    unsafe { &mut *core::ptr::addr_of_mut!(ROLLOUT_POLICY) }
+}
+
+/// RolloutListRequest: words[0] = flat index over configured sources.
+/// Reply: [status][index][percent][min_ring][max_step][hold_count]
+/// [source_len][name_len] + packed(source, cohort_name). End-of-list is
+/// status=End with word_count=1, mirroring the keystore-list contract.
+fn handle_rollout_list_request(message: &RawMessage) -> rt::Result<()> {
+    if message.word_count < 1 || message.handle_count < 1 {
+        return Ok(());
+    }
+    let reply_handle = message.handles[0];
+    let target_index = message.words[0] as usize;
+    let policy = rollout_policy_table();
+
+    let mut reply = RawMessage::empty(PackageTag::RolloutListReply as u32);
+    match policy.sources[..policy.count].get(target_index) {
+        Some(row) => {
+            let source_text = row.source.as_str();
+            let name_text = row.cohort.name.as_str();
+            reply.words[0] = PackageStatus::Ok as u32 as u64;
+            reply.words[1] = target_index as u64;
+            reply.words[2] = u64::from(row.cohort.percent);
+            reply.words[3] = u64::from(crate::rollout::ring_word(row.min_ring));
+            reply.words[4] = u64::from(row.max_step);
+            reply.words[5] = row.hold_count as u64;
+            reply.words[6] = source_text.len() as u64;
+            reply.words[7] = name_text.len() as u64;
+            let mut combined =
+                [0u8; crate::rollout::ROLLOUT_SOURCE_MAX + crate::rollout::COHORT_NAME_MAX];
+            let mut cursor = 0usize;
+            for field in [source_text.as_bytes(), name_text.as_bytes()] {
+                let _ = copy_into(&mut combined[cursor..], field);
+                cursor += field.len();
+            }
+            reply.word_count = 8 + pack_bytes(&combined[..cursor], &mut reply.words[8..])?;
+        }
+        None => {
+            reply.word_count = 1;
+            reply.words[0] = PackageStatus::End as u32 as u64;
+        }
+    }
+    keys_send_reply(reply_handle, &reply);
+    Ok(())
+}
+
+/// RolloutGetRequest: [page][source_len] + packed(source). Reply:
+/// [status][percent][min_ring][max_step][hold_total][page_count]
+/// [page_start][reserved] + packed(hold names joined by ','). Pages the
+/// hold list so a full table cannot overflow the 16-word budget.
+fn handle_rollout_get_request(message: &RawMessage) -> rt::Result<()> {
+    if message.word_count < 2 || message.handle_count < 1 {
+        return Ok(());
+    }
+    let reply_handle = message.handles[0];
+    let page = message.words[0] as usize;
+    let mut combined = [0u8; crate::signing::SOURCE_NAME_MAX];
+    // Request layout: [page][source_len][packed source bytes...].
+    let Some(source) = keys_read_one_field(
+        &message.words[1..message.word_count as usize],
+        &mut combined,
+    ) else {
+        keys_reject(
+            reply_handle,
+            PackageTag::RolloutGetReply,
+            PackageStatus::InvalidParameter,
+        );
+        return Ok(());
+    };
+    let Some(row) = rollout_policy_table().source_rollout(source) else {
+        keys_reject(
+            reply_handle,
+            PackageTag::RolloutGetReply,
+            PackageStatus::NotFound,
+        );
+        return Ok(());
+    };
+
+    let page_start = page * ROLLOUT_HOLD_PAGE;
+    let mut names = [0u8; 2 * (crate::rollout::HOLD_NAME_MAX + 1)];
+    let mut cursor = 0usize;
+    let mut page_count = 0usize;
+    for index in page_start..row.hold_count {
+        if page_count >= ROLLOUT_HOLD_PAGE {
+            break;
+        }
+        if cursor > 0 {
+            names[cursor] = b',';
+            cursor += 1;
+        }
+        let name = row.hold[index].as_str().as_bytes();
+        names[cursor..cursor + name.len()].copy_from_slice(name);
+        cursor += name.len();
+        page_count += 1;
+    }
+
+    let mut reply = RawMessage::empty(PackageTag::RolloutGetReply as u32);
+    reply.words[0] = PackageStatus::Ok as u32 as u64;
+    reply.words[1] = u64::from(row.cohort.percent);
+    reply.words[2] = u64::from(crate::rollout::ring_word(row.min_ring));
+    reply.words[3] = u64::from(row.max_step);
+    reply.words[4] = row.hold_count as u64;
+    reply.words[5] = page_count as u64;
+    reply.words[6] = page_start as u64;
+    reply.words[7] = 0;
+    reply.word_count = 8 + pack_bytes(&names[..cursor], &mut reply.words[8..])?;
+    keys_send_reply(reply_handle, &reply);
+    Ok(())
+}
+
+/// RolloutSetRequest: [op][value][source_len][arg_len] + packed(source, arg).
+/// One rule per request (keystore-enroll shape). Success persists first.
+fn handle_rollout_set_request(storage_handle: rt::Handle, message: &RawMessage) -> rt::Result<()> {
+    use crate::rollout::{
+        ROLLOUT_OP_CLEAR, ROLLOUT_OP_COHORT, ROLLOUT_OP_HOLD_ADD, ROLLOUT_OP_HOLD_CLEAR,
+        ROLLOUT_OP_HOLD_REMOVE, ROLLOUT_OP_MAX_STEP, ROLLOUT_OP_MIN_RING,
+    };
+    if message.word_count < 3 || message.handle_count < 1 {
+        return Ok(());
+    }
+    let reply_handle = message.handles[0];
+    let op = message.words[0];
+    let value = message.words[1];
+    let needs_argument = matches!(
+        op,
+        ROLLOUT_OP_COHORT | ROLLOUT_OP_HOLD_ADD | ROLLOUT_OP_HOLD_REMOVE
+    );
+    let mut combined = [0u8; crate::signing::SOURCE_NAME_MAX + crate::signing::KEY_HEX_MAX];
+    // Request layout: [op][value][source_len][arg_len][packed bytes...].
+    // Argument-bearing ops pack two fields; the rest pack source only.
+    let fields = if needs_argument {
+        keys_read_two_fields(
+            &message.words[2..message.word_count as usize],
+            &mut combined,
+        )
+    } else {
+        keys_read_one_field(
+            &message.words[2..message.word_count as usize],
+            &mut combined,
+        )
+        .map(|source| (source, ""))
+    };
+    let Some((source, argument)) = fields else {
+        keys_reject(
+            reply_handle,
+            PackageTag::RolloutSetReply,
+            PackageStatus::InvalidParameter,
+        );
+        return Ok(());
+    };
+    if argument.len() > crate::rollout::HOLD_NAME_MAX {
+        keys_reject(
+            reply_handle,
+            PackageTag::RolloutSetReply,
+            PackageStatus::InvalidParameter,
+        );
+        return Ok(());
+    }
+
+    let table = rollout_policy_table_mut();
+    let status = match op {
+        ROLLOUT_OP_COHORT => match crate::rollout::parse_cohort_argument(argument) {
+            Some(spec) => match table.source_or_insert(source) {
+                Some(row) => {
+                    row.cohort = spec;
+                    PackageStatus::Ok
+                }
+                None => PackageStatus::Busy,
+            },
+            None => PackageStatus::InvalidParameter,
+        },
+        ROLLOUT_OP_HOLD_ADD => {
+            if argument.is_empty() {
+                PackageStatus::InvalidParameter
+            } else {
+                match table.source_or_insert(source) {
+                    Some(row) => {
+                        if row.hold_add(argument) {
+                            PackageStatus::Ok
+                        } else {
+                            PackageStatus::Busy
+                        }
+                    }
+                    None => PackageStatus::Busy,
+                }
+            }
+        }
+        ROLLOUT_OP_HOLD_REMOVE => {
+            if argument.is_empty() {
+                PackageStatus::InvalidParameter
+            } else {
+                match table.source_rollout_mut(source) {
+                    Some(row) => {
+                        if row.hold_remove(argument) {
+                            PackageStatus::Ok
+                        } else {
+                            PackageStatus::NoChange
+                        }
+                    }
+                    None => PackageStatus::NotFound,
+                }
+            }
+        }
+        ROLLOUT_OP_HOLD_CLEAR => match table.source_rollout_mut(source) {
+            Some(row) => {
+                row.hold_clear();
+                PackageStatus::Ok
+            }
+            None => PackageStatus::NotFound,
+        },
+        ROLLOUT_OP_MIN_RING => match value {
+            1..=3 => match table.source_or_insert(source) {
+                Some(row) => {
+                    row.min_ring = match value {
+                        2 => PackageRing::Preview,
+                        3 => PackageRing::Testing,
+                        _ => PackageRing::Production,
+                    };
+                    PackageStatus::Ok
+                }
+                None => PackageStatus::Busy,
+            },
+            _ => PackageStatus::InvalidParameter,
+        },
+        ROLLOUT_OP_MAX_STEP => match table.source_or_insert(source) {
+            Some(row) => {
+                row.max_step = value as u32;
+                PackageStatus::Ok
+            }
+            None => PackageStatus::Busy,
+        },
+        ROLLOUT_OP_CLEAR => {
+            if table.remove_source(source) {
+                PackageStatus::Ok
+            } else {
+                PackageStatus::NotFound
+            }
+        }
+        _ => PackageStatus::InvalidParameter,
+    };
+
+    if status == PackageStatus::Ok
+        && crate::storage::persist_rollout_policy(storage_handle).is_err()
+    {
+        keys_reject(
+            reply_handle,
+            PackageTag::RolloutSetReply,
+            PackageStatus::VerificationFailed,
+        );
+        return Ok(());
+    }
+
+    let mut reply = RawMessage::empty(PackageTag::RolloutSetReply as u32);
+    reply.word_count = 1;
+    reply.words[0] = status as u32 as u64;
+    keys_send_reply(reply_handle, &reply);
+    Ok(())
+}
+
+/// RolloutStatusRequest: [service_id]. Reply: [status][offered][reason]
+/// [percent][min_ring][max_step][hold_count][target_len] + packed(target
+/// version). `offered` mirrors exactly what an automatic `pkg update` would
+/// decide (the gated select_update_target outcome), so shell flags and the
+/// service can never disagree.
+fn handle_rollout_status_request(
+    repos: &[RepositorySlot; MAX_REPOSITORIES],
+    repo_count: usize,
+    packages: &[PackageSlot; MAX_PACKAGE_SLOTS],
+    package_count: usize,
+    message: &RawMessage,
+) -> rt::Result<()> {
+    if message.word_count < 1 || message.handle_count < 1 {
+        return Ok(());
+    }
+    let reply_handle = message.handles[0];
+    let service_id = service_id_from_word(message.words[0]);
+    let mut reply = RawMessage::empty(PackageTag::RolloutStatusReply as u32);
+    reply.word_count = 8;
+    reply.words[0] = PackageStatus::NotFound as u32 as u64;
+    reply.words[1] = 0;
+    reply.words[2] = crate::rollout::RolloutReason::NoUpdate as u32 as u64;
+    reply.words[3] = 100;
+    reply.words[4] = 1; // PackageRing::Production
+    reply.words[5] = 0;
+    reply.words[6] = 0;
+    reply.words[7] = 0;
+
+    if let Some(index) = find_package_slot(packages, service_id, package_count) {
+        let slot = &packages[index];
+        reply.words[0] = PackageStatus::Ok as u32 as u64;
+        match select_update_target(slot, repos, repo_count, None, None) {
+            Ok(Some(target)) => {
+                reply.words[1] = 1;
+                reply.words[2] = crate::rollout::RolloutReason::Admit as u32 as u64;
+                let serving = slot.versions[target].repo_index;
+                let policy = repos
+                    .get(serving)
+                    .filter(|repo| repo.occupied)
+                    .and_then(|repo| repo.name.as_str().ok())
+                    .and_then(rollout_policy_for);
+                if let Some(policy) = policy {
+                    reply.words[3] = u64::from(policy.cohort.percent);
+                    reply.words[4] = u64::from(crate::rollout::ring_word(policy.min_ring));
+                    reply.words[5] = u64::from(policy.max_step);
+                    reply.words[6] = policy.hold_count as u64;
+                }
+                let target_bytes = version_bytes(slot, Some(target));
+                let room = (IPC_MAX_WORDS - 8) * 8;
+                if target_bytes.len() <= room && !target_bytes.is_empty() {
+                    reply.words[7] = target_bytes.len() as u64;
+                    let mut combined = [0u8; (IPC_MAX_WORDS - 8) * 8];
+                    let _ = copy_into(&mut combined, target_bytes);
+                    reply.word_count +=
+                        pack_bytes(&combined[..target_bytes.len()], &mut reply.words[8..])?;
+                }
+            }
+            Ok(None) => {
+                reply.words[2] = blocked_reason(repos, repo_count, slot) as u32 as u64;
+            }
+            Err(_) => {}
+        }
+    }
+
+    let _ = rt::channel_send(reply_handle, &reply);
+    let _ = rt::handle_close(reply_handle);
+    Ok(())
+}
+
+/// Diagnose why an otherwise-newer target is not being offered: recompute
+/// the ungated candidate and consult the gates in contract order.
+fn blocked_reason(
+    repos: &[RepositorySlot; MAX_REPOSITORIES],
+    repo_count: usize,
+    slot: &PackageSlot,
+) -> crate::rollout::RolloutReason {
+    let Some(current) = slot.installed else {
+        return crate::rollout::RolloutReason::NoUpdate;
+    };
+    let Ok(target) = select_install_target(slot, repos, repo_count, None, None) else {
+        return crate::rollout::RolloutReason::NoUpdate;
+    };
+    if target == current
+        || compare_versions(version_text(slot, target), version_text(slot, current))
+            != Ordering::Greater
+    {
+        return crate::rollout::RolloutReason::NoUpdate;
+    }
+    update_gate_reason(repos, slot, target, false)
 }

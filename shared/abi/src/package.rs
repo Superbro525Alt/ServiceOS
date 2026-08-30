@@ -45,6 +45,17 @@ pub enum PackageTag {
     KeysRotateReply = 0x727,
     KeysGenRequest = 0x728,
     KeysGenReply = 0x729,
+    /// Per-source staged-rollout cohorts and upgrade rules (additive,
+    /// shell-driven): list configured policies / page hold names / mutate
+    /// one rule / report the gated update decision for one package.
+    RolloutListRequest = 0x72a,
+    RolloutListReply = 0x72b,
+    RolloutGetRequest = 0x72c,
+    RolloutGetReply = 0x72d,
+    RolloutSetRequest = 0x72e,
+    RolloutSetReply = 0x72f,
+    RolloutStatusRequest = 0x730,
+    RolloutStatusReply = 0x731,
 }
 
 #[repr(u32)]

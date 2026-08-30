@@ -196,7 +196,7 @@ pub(crate) fn handle_key_down(
 
     // Pane focus navigation and split-ratio resize.
     if modifiers & MOD_CTRL != 0 && modifiers & MOD_ALT != 0 {
-        use crate::panes::{PaneDirection, RATIO_STEP_PERMILLE};
+        use crate::panes::PaneDirection;
         let direction = match key_code {
             KEY_LEFT => Some(PaneDirection::Left),
             KEY_RIGHT => Some(PaneDirection::Right),
@@ -205,15 +205,20 @@ pub(crate) fn handle_key_down(
             _ => None,
         };
         if let Some(direction) = direction {
-            if modifiers & MOD_SHIFT != 0 {
-                let delta = match direction {
-                    PaneDirection::Left | PaneDirection::Up => -(RATIO_STEP_PERMILLE as i32),
-                    PaneDirection::Right | PaneDirection::Down => RATIO_STEP_PERMILLE as i32,
-                };
+            if let Some(delta) = crate::panes::pane_resize_delta(key_code, modifiers) {
+                let mut resized = false;
                 if let Some(tab) = crate::tabs::active_tab_mut(state) {
                     if tab.tree.split {
                         tab.tree.resize_ratio(delta);
+                        resized = true;
                     }
+                }
+                // The ratio change moves the pane rects immediately:
+                // re-derive grid sizes, reflow scrollback, and push the new
+                // geometry to terminal-service now instead of waiting for
+                // the next window-geometry event.
+                if resized {
+                    crate::tabs::refresh_pane_sizes(state);
                 }
             } else if let Some(tab) = crate::tabs::active_tab_mut(state) {
                 tab.tree.focus_direction(direction);

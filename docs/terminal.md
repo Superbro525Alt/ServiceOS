@@ -144,6 +144,34 @@ It currently:
 - supports mouse-wheel and keyboard scrollback navigation
 - supports selectable terminal themes without changing shell semantics
 
+### Resize and reflow semantics
+
+Column-count changes reflow the pane's scrollback grid instead of clipping
+it. The policy lives entirely in `terminal-app` (host-tested):
+
+- Rewrap is char-granular (standard terminal wrap): soft-wrapped spans
+  re-join and re-split at the new width, hard newlines are preserved. Cell
+  granularity means there are no unbreakable runs, so nothing is truncated
+  and no truncation marker is needed.
+- A soft-wrapped row joins with its full source width — erased tails are
+  logical spaces, so continuation column alignment survives a resize.
+- When a rewrap overflows the fixed scrollback ring (wide-to-narrow can
+  multiply line counts), the oldest lines drop in batched shifts and the
+  newest (live) content always survives.
+- The live cursor and the saved (DECSC) cursor re-derive exactly: each maps
+  to wherever its source cell lands in the new geometry, then clamps.
+- The grid model is ASCII-only (`Cell.ch` is one byte; the VT parser drops
+  other bytes), so no CJK/wide-char width classes exist yet — documented
+  honestly rather than approximated.
+- `terminal-service`'s retained scrollback ring is width-agnostic raw bytes
+  by design, so no service-side codec change is involved: reattach replays
+  the retained stream through the VT parser at the attaching pane's current
+  width, re-deriving the grid.
+- Live resize paths that change pane geometry reflow immediately: window
+  resize and the Ctrl+Alt+Shift+arrow split-ratio chord both re-derive pane
+  grid sizes, reflow scrollback, and push the new geometry to
+  terminal-service in the same turn.
+
 The terminal window therefore uses the same graphics/session/window model as
 other desktop apps instead of bypassing the compositor.
 
@@ -180,7 +208,9 @@ The terminal is now materially more practical for daily use:
 - broader ANSI/VT handling for cursor motion, positioning, line editing, title
   updates, cursor visibility, and SGR colors
 - resize-aware redraw behavior with scrollback reflow across window geometry
-  changes
+  changes, split-ratio resize, and session reattach (char-granular rewrap,
+  drop-oldest overflow, exact cursor re-derivation — see the resize and
+  reflow semantics above)
 - multiple built-in terminal themes that stay inside the terminal UI layer
 
 ## Roadmap note

@@ -408,6 +408,81 @@ pub(crate) fn scroll_pane_grid(slot: usize, lines: usize) {
     }
 }
 
+/// Lines dropped from the top of the reflow staging buffer per overflow
+/// shift. Batched so a worst-case wide-to-narrow reflow (256 source lines
+/// exploding past the ring capacity) stays a handful of memcpys instead of
+/// one shift per produced line.
+const REFLOW_DROP_CHUNK: usize = MAX_SCROLLBACK_LINES / 4;
+
+/// Tracks one grid position (the live cursor or the DECSC saved cursor)
+/// through a reflow pass. The position re-derives exactly: it maps to
+/// wherever its source cell lands in the new geometry, or to the row's
+/// next-write position when it sat at or past the streamed span.
+struct PositionMap {
+    source_line: usize,
+    source_col: usize,
+    mapped: Option<(usize, usize)>,
+}
+
+impl PositionMap {
+    fn new(line: usize, col: usize) -> Self {
+        Self {
+            source_line: line,
+            source_col: col,
+            mapped: None,
+        }
+    }
+
+    /// Mid-stream checkpoint: the source cell about to be written at
+    /// (out_line, out_col) is this position's cell.
+    fn note_cell(&mut self, row: usize, col: usize, out_line: usize, out_col: usize) {
+        if self.mapped.is_none() && row == self.source_line && col == self.source_col {
+            self.mapped = Some((out_line, out_col));
+        }
+    }
+
+    /// End-of-row checkpoint: the position sat at or past the row's streamed
+    /// span, so it maps to the row's next-write slot (wrapping lazily when
+    /// the row exactly filled the new width).
+    fn note_row_end(&mut self, row: usize, out_line: usize, out_col: usize, new_columns: usize) {
+        if self.mapped.is_none() && row == self.source_line {
+            let (line, col) = if out_col >= new_columns {
+                (out_line + 1, 0)
+            } else {
+                (out_line, out_col)
+            };
+            self.mapped = Some((line.min(MAX_SCROLLBACK_LINES - 1), col));
+        }
+    }
+
+    /// Drop-oldest shifted the staging buffer up; mapped positions follow.
+    fn shift_up(&mut self, lines: usize) {
+        if let Some((line, col)) = self.mapped {
+            self.mapped = Some((line.saturating_sub(lines), col));
+        }
+    }
+}
+
+/// Drop the oldest staged lines when reflow output exceeds the ring,
+/// keeping the newest (live) content. Batched by REFLOW_DROP_CHUNK.
+fn reflow_drop_oldest(
+    target: &mut [[Cell; MAX_COLS]; MAX_SCROLLBACK_LINES],
+    target_wraps: &mut [bool; MAX_SCROLLBACK_LINES],
+    out_line: &mut usize,
+    cursor_map: &mut PositionMap,
+    saved_map: &mut PositionMap,
+) {
+    target.copy_within(REFLOW_DROP_CHUNK..MAX_SCROLLBACK_LINES, 0);
+    target_wraps.copy_within(REFLOW_DROP_CHUNK..MAX_SCROLLBACK_LINES, 0);
+    for line in MAX_SCROLLBACK_LINES - REFLOW_DROP_CHUNK..MAX_SCROLLBACK_LINES {
+        target[line].fill(Cell::blank());
+        target_wraps[line] = false;
+    }
+    *out_line -= REFLOW_DROP_CHUNK;
+    cursor_map.shift_up(REFLOW_DROP_CHUNK);
+    saved_map.shift_up(REFLOW_DROP_CHUNK);
+}
+
 pub(crate) fn reflow_pane(
     pane: &mut TerminalPane,
     slot: usize,
@@ -425,42 +500,90 @@ pub(crate) fn reflow_pane(
         target.fill([Cell::blank(); MAX_COLS]);
         target_wraps.fill(false);
 
+        let line_count = pane.line_count.min(MAX_SCROLLBACK_LINES);
+        let mut cursor_map = PositionMap::new(
+            pane.cursor_line.min(line_count.saturating_sub(1)),
+            pane.cursor_col,
+        );
+        let mut saved_map = PositionMap::new(
+            pane.saved_cursor_line.min(line_count.saturating_sub(1)),
+            pane.saved_cursor_col,
+        );
+
         let mut out_line = 0usize;
         let mut out_col = 0usize;
         let mut row = 0usize;
-        while row < pane.line_count.min(MAX_SCROLLBACK_LINES) && out_line < MAX_SCROLLBACK_LINES {
-            let mut visual_len = row_visual_len(&source[row], old_columns);
-            if source_wraps[row] && visual_len == old_columns {
-                visual_len = old_columns;
-            }
-            for col in 0..visual_len.min(old_columns) {
+        while row < line_count {
+            // Soft-wrapped rows join with their full source width: erased
+            // tails are still logical spaces, so continuation column
+            // alignment survives the round trip. Hard rows end at their
+            // last written cell.
+            let span = if source_wraps[row] {
+                old_columns
+            } else {
+                row_visual_len(&source[row], old_columns)
+            };
+            let mut col = 0usize;
+            while col < span.min(old_columns) {
                 if out_col == new_columns {
                     target_wraps[out_line] = true;
                     out_line += 1;
                     out_col = 0;
                     if out_line >= MAX_SCROLLBACK_LINES {
-                        break;
+                        reflow_drop_oldest(
+                            target,
+                            target_wraps,
+                            &mut out_line,
+                            &mut cursor_map,
+                            &mut saved_map,
+                        );
                     }
                 }
+                cursor_map.note_cell(row, col, out_line, out_col);
+                saved_map.note_cell(row, col, out_line, out_col);
                 target[out_line][out_col] = source[row][col];
                 out_col += 1;
+                col += 1;
             }
-            if out_line >= MAX_SCROLLBACK_LINES {
-                break;
-            }
+            cursor_map.note_row_end(row, out_line, out_col, new_columns);
+            saved_map.note_row_end(row, out_line, out_col, new_columns);
             if !source_wraps[row] {
                 out_line += 1;
                 out_col = 0;
+                if out_line >= MAX_SCROLLBACK_LINES && row + 1 < line_count {
+                    reflow_drop_oldest(
+                        target,
+                        target_wraps,
+                        &mut out_line,
+                        &mut cursor_map,
+                        &mut saved_map,
+                    );
+                }
             }
             row += 1;
         }
-        let new_line_count = out_line.max(1).min(MAX_SCROLLBACK_LINES);
+        // The last line counts even when the stream ended mid-soft-span.
+        let new_line_count = out_line
+            .saturating_add(usize::from(out_col > 0))
+            .clamp(1, MAX_SCROLLBACK_LINES);
         let dest = GRIDS.pane_mut(slot);
         dest.copy_from_slice(target);
         source_wraps.copy_from_slice(target_wraps);
         pane.line_count = new_line_count;
-        pane.cursor_line = pane.cursor_line.min(pane.line_count.saturating_sub(1));
-        pane.cursor_col = pane.cursor_col.min(new_columns.saturating_sub(1));
+        if let Some((line, col)) = cursor_map.mapped {
+            pane.cursor_line = line.min(new_line_count - 1);
+            pane.cursor_col = col.min(new_columns - 1);
+        } else {
+            pane.cursor_line = pane.cursor_line.min(new_line_count - 1);
+            pane.cursor_col = pane.cursor_col.min(new_columns.saturating_sub(1));
+        }
+        if let Some((line, col)) = saved_map.mapped {
+            pane.saved_cursor_line = line.min(new_line_count - 1);
+            pane.saved_cursor_col = col.min(new_columns - 1);
+        } else {
+            pane.saved_cursor_line = pane.saved_cursor_line.min(new_line_count - 1);
+            pane.saved_cursor_col = pane.saved_cursor_col.min(new_columns.saturating_sub(1));
+        }
     }
 }
 
@@ -470,4 +593,260 @@ pub(crate) fn row_visual_len(row: &[Cell; MAX_COLS], columns: usize) -> usize {
         .rposition(|cell| *cell != Cell::blank())
         .map(|index| index + 1)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::string::String;
+    use std::sync::Mutex;
+
+    /// reflow_pane stages through the shared REFLOW_CELLS/REFLOW_WRAPS
+    /// scratch statics, so host tests serialize their reflow passes. Each
+    /// test also owns a disjoint grid slot.
+    static REFLOW_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn clear_slot(slot: usize) {
+        unsafe {
+            GRIDS.pane_mut(slot).fill([Cell::blank(); MAX_COLS]);
+            WRAPS.wraps_mut(slot).fill(false);
+        }
+    }
+
+    fn write_row(slot: usize, line: usize, text: &[u8]) {
+        let grid = unsafe { GRIDS.pane_mut(slot) };
+        for (col, byte) in text.iter().enumerate() {
+            grid[line][col] = Cell {
+                ch: *byte,
+                fg: COLOR_DEFAULT,
+                bg: COLOR_DEFAULT,
+                flags: 0,
+            };
+        }
+    }
+
+    fn set_wraps(slot: usize, lines: &[usize]) {
+        let wraps = unsafe { WRAPS.wraps_mut(slot) };
+        for line in lines {
+            wraps[*line] = true;
+        }
+    }
+
+    fn row_text(slot: usize, line: usize, cols: usize) -> String {
+        let grid = unsafe { GRIDS.pane(slot) };
+        let end = grid[line][..cols]
+            .iter()
+            .rposition(|cell| *cell != Cell::blank())
+            .map_or(0, |index| index + 1);
+        String::from_utf8(grid[line][..end].iter().map(|cell| cell.ch).collect()).unwrap()
+    }
+
+    fn row_cells(slot: usize, line: usize, cols: usize) -> std::vec::Vec<u8> {
+        let grid = unsafe { GRIDS.pane(slot) };
+        grid[line][..cols].iter().map(|cell| cell.ch).collect()
+    }
+
+    fn pane_with(
+        line_count: usize,
+        cursor: (usize, usize),
+        saved: (usize, usize),
+    ) -> TerminalPane {
+        let mut pane = TerminalPane::empty();
+        pane.line_count = line_count;
+        pane.cursor_line = cursor.0;
+        pane.cursor_col = cursor.1;
+        pane.saved_cursor_line = saved.0;
+        pane.saved_cursor_col = saved.1;
+        pane
+    }
+
+    #[test]
+    fn reflow_narrow_to_wide_rejoins_soft_wraps() {
+        let _guard = REFLOW_TEST_LOCK.lock().unwrap();
+        let slot = 0;
+        clear_slot(slot);
+        write_row(slot, 0, b"abcd");
+        write_row(slot, 1, b"efgh");
+        write_row(slot, 2, b"ij");
+        set_wraps(slot, &[0, 1]);
+        let mut pane = pane_with(3, (2, 2), (0, 0));
+
+        reflow_pane(&mut pane, slot, 4, 8);
+
+        assert_eq!(pane.line_count, 2);
+        assert_eq!(row_text(slot, 0, 8), "abcdefgh");
+        assert_eq!(row_text(slot, 1, 8), "ij");
+        let wraps = unsafe { WRAPS.wraps_mut(slot) };
+        assert!(wraps[0]);
+        assert!(!wraps[1]);
+        // Cursor sat at the end of the hard tail; it follows the text.
+        assert_eq!((pane.cursor_line, pane.cursor_col), (1, 2));
+    }
+
+    #[test]
+    fn reflow_wide_to_narrow_preserves_hard_lines() {
+        let _guard = REFLOW_TEST_LOCK.lock().unwrap();
+        let slot = 1;
+        clear_slot(slot);
+        write_row(slot, 0, b"abcd");
+        write_row(slot, 1, b"efgh");
+        let mut pane = pane_with(2, (1, 4), (0, 0));
+
+        reflow_pane(&mut pane, slot, 8, 3);
+
+        assert_eq!(pane.line_count, 4);
+        assert_eq!(row_text(slot, 0, 3), "abc");
+        assert_eq!(row_text(slot, 1, 3), "d");
+        assert_eq!(row_text(slot, 2, 3), "efg");
+        assert_eq!(row_text(slot, 3, 3), "h");
+        let wraps = unsafe { WRAPS.wraps_mut(slot) };
+        assert!(wraps[0]);
+        assert!(!wraps[1]);
+        assert!(wraps[2]);
+        assert!(!wraps[3]);
+        // Cursor sat one past "efgh"; it lands one past the rewrapped "h".
+        assert_eq!((pane.cursor_line, pane.cursor_col), (3, 1));
+    }
+
+    #[test]
+    fn reflow_unbreakable_run_wraps_at_char_boundary() {
+        let _guard = REFLOW_TEST_LOCK.lock().unwrap();
+        let slot = 2;
+        clear_slot(slot);
+        write_row(slot, 0, b"AAAAAAAA");
+        let mut pane = pane_with(2, (1, 0), (0, 0));
+
+        // Policy: char-granular wrap. No unbreakable runs exist at cell
+        // granularity, so nothing is truncated and no marker is needed.
+        reflow_pane(&mut pane, slot, 8, 3);
+
+        assert_eq!(pane.line_count, 4);
+        assert_eq!(row_text(slot, 0, 3), "AAA");
+        assert_eq!(row_text(slot, 1, 3), "AAA");
+        assert_eq!(row_text(slot, 2, 3), "AA");
+        let total: usize = (0..3).map(|line| row_text(slot, line, 3).len()).sum();
+        assert_eq!(total, 8);
+    }
+
+    #[test]
+    fn reflow_overflow_drops_oldest_keeps_live_tail() {
+        let _guard = REFLOW_TEST_LOCK.lock().unwrap();
+        let slot = 3;
+        clear_slot(slot);
+        // 256 hard lines of 120 identical chars each: shrinking to 8 columns
+        // produces 15 output lines per source line (3840), overflowing the
+        // 256-line ring. Oldest output must drop; the live tail survives.
+        for line in 0..MAX_SCROLLBACK_LINES {
+            let row = [b'A' + (line % 26) as u8; 120];
+            write_row(slot, line, &row);
+        }
+        let mut pane = pane_with(MAX_SCROLLBACK_LINES, (255, 119), (0, 0));
+
+        reflow_pane(&mut pane, slot, 120, 8);
+
+        assert_eq!(pane.line_count, MAX_SCROLLBACK_LINES);
+        // 3584 output lines dropped: the first retained line is the last
+        // chunk of source line 238 ('E'), the last is source line 255's
+        // final chunk ('V').
+        assert_eq!(row_text(slot, 0, 8), "EEEEEEEE");
+        assert_eq!(row_text(slot, 255, 8), "VVVVVVVV");
+        // Cursor tracked source (255,119) to output line 255, col 7.
+        assert_eq!((pane.cursor_line, pane.cursor_col), (255, 7));
+    }
+
+    #[test]
+    fn reflow_cursor_map_matrix() {
+        let _guard = REFLOW_TEST_LOCK.lock().unwrap();
+        let slot = 4;
+
+        // (a) cursor mid first line stays put across a join.
+        clear_slot(slot);
+        write_row(slot, 0, b"abcd");
+        write_row(slot, 1, b"ef");
+        set_wraps(slot, &[0]);
+        let mut pane = pane_with(2, (0, 2), (0, 0));
+        reflow_pane(&mut pane, slot, 4, 8);
+        assert_eq!((pane.cursor_line, pane.cursor_col), (0, 2));
+
+        // (b) cursor on the continuation row follows the merge.
+        clear_slot(slot);
+        write_row(slot, 0, b"abcd");
+        write_row(slot, 1, b"ef");
+        set_wraps(slot, &[0]);
+        let mut pane = pane_with(2, (1, 1), (0, 0));
+        reflow_pane(&mut pane, slot, 4, 8);
+        assert_eq!((pane.cursor_line, pane.cursor_col), (0, 5));
+
+        // (c) cursor past the row's text maps to the next-write position.
+        clear_slot(slot);
+        write_row(slot, 0, b"abcd");
+        write_row(slot, 1, b"ef");
+        set_wraps(slot, &[0]);
+        let mut pane = pane_with(2, (1, 3), (0, 0));
+        reflow_pane(&mut pane, slot, 4, 8);
+        assert_eq!((pane.cursor_line, pane.cursor_col), (0, 6));
+
+        // (d) out-of-range cursor (CSI H can overshoot line_count) clamps.
+        clear_slot(slot);
+        write_row(slot, 0, b"abcd");
+        let mut pane = pane_with(1, (90, 40), (0, 0));
+        reflow_pane(&mut pane, slot, 8, 4);
+        assert_eq!(pane.cursor_line, 0);
+        assert!(pane.cursor_col < 4);
+    }
+
+    #[test]
+    fn reflow_saved_cursor_and_erased_wrap_tail_align() {
+        let _guard = REFLOW_TEST_LOCK.lock().unwrap();
+        let slot = 5;
+        clear_slot(slot);
+        // Row 0 soft-wrapped with its tail erased: the blanks are logical
+        // spaces, so the continuation must re-split in place rather than
+        // sliding "XY" left.
+        write_row(slot, 0, b"abcd");
+        write_row(slot, 1, b"XY");
+        set_wraps(slot, &[0]);
+        let mut pane = pane_with(2, (1, 2), (0, 6));
+
+        reflow_pane(&mut pane, slot, 8, 4);
+
+        assert_eq!(pane.line_count, 3);
+        assert_eq!(row_text(slot, 0, 4), "abcd");
+        assert_eq!(row_cells(slot, 1, 4), vec![b' ', b' ', b' ', b' ']);
+        assert_eq!(row_text(slot, 2, 4), "XY");
+        let wraps = unsafe { WRAPS.wraps_mut(slot) };
+        assert!(wraps[0]);
+        assert!(wraps[1]);
+        assert!(!wraps[2]);
+        // Saved cursor inside the erased tail maps into the blank span.
+        assert_eq!((pane.saved_cursor_line, pane.saved_cursor_col), (1, 2));
+        // Live cursor followed "XY".
+        assert_eq!((pane.cursor_line, pane.cursor_col), (2, 2));
+    }
+
+    #[test]
+    fn reattach_replay_rewraps_retained_bytes_at_pane_width() {
+        let slot = 6;
+        clear_slot(slot);
+        // Replay path: retained service bytes stream through the VT parser
+        // at the attaching pane's current width, re-deriving the grid.
+        let mut pane = TerminalPane::empty();
+        pane.columns = 5;
+        pane.rows = 10;
+
+        apply_output(&mut pane, slot, b"abcdefghij\r\n$ ");
+
+        assert_eq!(pane.line_count, 4);
+        assert_eq!(row_text(slot, 0, 5), "abcde");
+        assert_eq!(row_text(slot, 1, 5), "fghij");
+        assert_eq!(row_text(slot, 2, 5), "");
+        // Trailing blank trims from the visual text; the cursor proves the
+        // prompt's trailing space was consumed.
+        assert_eq!(row_text(slot, 3, 5), "$");
+        let wraps = unsafe { WRAPS.wraps_mut(slot) };
+        assert!(wraps[0]);
+        assert!(wraps[1]);
+        assert!(!wraps[2]);
+        assert_eq!((pane.cursor_line, pane.cursor_col), (3, 2));
+    }
 }

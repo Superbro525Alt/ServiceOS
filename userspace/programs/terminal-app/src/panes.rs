@@ -79,6 +79,21 @@ impl PaneTree {
     }
 }
 
+/// Ctrl+Alt+Shift+arrow on a split tab resizes the split ratio; the same
+/// arrows without Shift move focus. Returns the permille delta for the
+/// resize chord, None for any other combination.
+pub(crate) fn pane_resize_delta(key_code: u32, modifiers: u32) -> Option<i32> {
+    let chord = MOD_CTRL | MOD_ALT | MOD_SHIFT;
+    if modifiers & chord != chord {
+        return None;
+    }
+    match key_code {
+        KEY_LEFT | KEY_UP => Some(-(RATIO_STEP_PERMILLE as i32)),
+        KEY_RIGHT | KEY_DOWN => Some(RATIO_STEP_PERMILLE as i32),
+        _ => None,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PixelRect {
     pub(crate) x: usize,
@@ -330,5 +345,26 @@ mod tests {
             h: 5000,
         };
         assert_eq!(grid_dims_for(huge), (MAX_COLS, MAX_SCROLLBACK_LINES));
+    }
+
+    #[test]
+    fn pane_resize_delta_key_matrix() {
+        let chord = MOD_CTRL | MOD_ALT | MOD_SHIFT;
+        assert_eq!(
+            pane_resize_delta(KEY_LEFT, chord),
+            Some(-(RATIO_STEP_PERMILLE as i32))
+        );
+        assert_eq!(pane_resize_delta(KEY_UP, chord), Some(-(RATIO_STEP_PERMILLE as i32)));
+        assert_eq!(
+            pane_resize_delta(KEY_RIGHT, chord),
+            Some(RATIO_STEP_PERMILLE as i32)
+        );
+        assert_eq!(pane_resize_delta(KEY_DOWN, chord), Some(RATIO_STEP_PERMILLE as i32));
+        // Missing any chord modifier is not a resize (Ctrl+Alt+arrow is the
+        // focus path; plain arrows are view scroll).
+        assert_eq!(pane_resize_delta(KEY_LEFT, MOD_CTRL | MOD_ALT), None);
+        assert_eq!(pane_resize_delta(KEY_LEFT, 0), None);
+        // Non-arrow keys stay unmatched even with the full chord.
+        assert_eq!(pane_resize_delta(KEY_Q, chord), None);
     }
 }

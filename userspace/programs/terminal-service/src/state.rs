@@ -97,6 +97,12 @@ impl ThemeState {
 
 /// Byte ring holding the most recent session output. Records continuously so
 /// any later attach can restore the pane's visible history.
+///
+/// Resize/reflow policy: the ring is width-agnostic on purpose — it retains
+/// the raw output stream, not a width-shaped grid, so a width change needs no
+/// service-side transformation and no codec extension. The attaching app
+/// re-wraps the replayed stream at its current pane width (terminal-app's
+/// vt::reflow_pane owns the reflow semantics for live resizes and reattach).
 #[derive(Clone, Copy)]
 pub(crate) struct ScrollbackRing {
     bytes: [u8; SCROLLBACK_BYTES],

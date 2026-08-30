@@ -2,17 +2,20 @@ use rt::{AppControlTag, RawMessage};
 use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
 
-use crate::actions::{PackageAction, apply_selected_package_action, launch_guidance, set_statusf, sync_repositories};
-use crate::catalog_meta::keycode_to_char;
-use crate::repositories::{
-    self, SourcesClick, SourcesKey, execute_add, refresh_sources, sync_selected,
+use crate::actions::{
+    apply_selected_package_action, launch_guidance, set_statusf, sync_repositories, PackageAction,
 };
+use crate::catalog_meta::keycode_to_char;
+use crate::developer::{self, DevKey};
 use crate::render::render;
+use crate::repositories::{
+    self, execute_add, refresh_sources, sync_selected, SourcesClick, SourcesKey,
+};
 use crate::state::{
-    AppState, KEY_BACKSPACE, KEY_DELETE, KEY_DOWN, KEY_ENTER, KEY_ESC, KEY_L, KEY_PAGE_DOWN,
-    KEY_PAGE_UP, KEY_R, KEY_S, KEY_TAB, KEY_UP, ROW_HEIGHT, SURFACE_BUFFER_SLOTS, clamp_view,
-    clear_query, compute_layout, cycle_category_filter, ensure_selected_visible, pop_query_char,
-    push_query_char, scroll_down, scroll_up, selected_entry, visible_row_count,
+    clamp_view, clear_query, compute_layout, cycle_category_filter, ensure_selected_visible,
+    pop_query_char, push_query_char, scroll_down, scroll_up, selected_entry, visible_row_count,
+    AppState, Layout, KEY_BACKSPACE, KEY_DELETE, KEY_DOWN, KEY_ENTER, KEY_ESC, KEY_J, KEY_L,
+    KEY_PAGE_DOWN, KEY_PAGE_UP, KEY_R, KEY_S, KEY_TAB, KEY_UP, ROW_HEIGHT, SURFACE_BUFFER_SLOTS,
 };
 
 pub(crate) enum ControlFlow {
@@ -113,6 +116,9 @@ fn handle_pointer_down(
     if state.sources.open {
         return Ok(handle_sources_pointer(package_handle, state, x, y, layout));
     }
+    if state.developer.open {
+        return Ok(handle_dev_pointer(state, x, y, layout));
+    }
 
     if y >= layout.install_y0
         && y < layout.install_y1
@@ -206,6 +212,36 @@ fn handle_sources_pointer(
     }
 }
 
+fn handle_dev_pointer(state: &mut AppState, x: i32, y: i32, layout: Layout) -> bool {
+    let visible_rows = layout.visible_rows();
+    if x >= layout.left_x
+        && x < layout.left_x + layout.left_w
+        && y >= layout.list_rows_y
+        && y < layout.list_rows_y + visible_rows as i32 * ROW_HEIGHT
+    {
+        let row = ((y - layout.list_rows_y) / ROW_HEIGHT) as usize;
+        let position = state.developer.scroll + row;
+        if position < state.developer.job_count {
+            state.developer.selected = position;
+            state.developer.ensure_visible(visible_rows);
+        }
+        return true;
+    }
+    false
+}
+
+fn handle_dev_key(state: &mut AppState, key: u32) -> bool {
+    match developer::handle_key(&mut state.developer, key) {
+        DevKey::None => {}
+        DevKey::Back => {
+            state.developer.open = false;
+            set_statusf(state, format_args!("developer panel closed"));
+            return true;
+        }
+    }
+    false
+}
+
 fn handle_sources_key(package_handle: rt::Handle, state: &mut AppState, key: u32) -> bool {
     match repositories::handle_key(&mut state.sources, key) {
         SourcesKey::None => {}
@@ -242,6 +278,9 @@ fn handle_sources_key(package_handle: rt::Handle, state: &mut AppState, key: u32
 }
 
 fn handle_key_down(package_handle: rt::Handle, state: &mut AppState, key: u32) -> rt::Result<bool> {
+    if state.developer.open {
+        return Ok(handle_dev_key(state, key));
+    }
     if state.sources.open {
         return Ok(handle_sources_key(package_handle, state, key));
     }
@@ -309,6 +348,16 @@ fn handle_key_down(package_handle: rt::Handle, state: &mut AppState, key: u32) -
         KEY_S if state.query_len == 0 => {
             state.sources.open = true;
             refresh_sources(package_handle, state);
+            return Ok(true);
+        }
+        KEY_J if state.query_len == 0 => {
+            state.developer.open = true;
+            set_statusf(
+                state,
+                format_args!(
+                    "developer jobs: no channel to developer-service (shell: dev build|jobs)"
+                ),
+            );
             return Ok(true);
         }
         KEY_L if state.query_len == 0 => {

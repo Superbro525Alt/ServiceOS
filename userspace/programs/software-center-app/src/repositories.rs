@@ -4,7 +4,7 @@ use rt::{PackageChannel, PackageRepositorySyncState, PackageRepositoryTrustMode,
 use serviceos_userspace_runtime as rt;
 
 use crate::actions::{error_label, set_statusf};
-use crate::state::{AppState, BUTTON_HEIGHT, Layout, ROW_HEIGHT};
+use crate::state::{AppState, Layout, BUTTON_HEIGHT, ROW_HEIGHT};
 
 /// Package-service keeps at most 4 repository slots (`MAX_REPOSITORIES`).
 pub(crate) const MAX_REPOS: usize = 4;
@@ -182,9 +182,7 @@ impl SourcesState {
         match field {
             AddField::Name => core::str::from_utf8(&self.name[..self.name_len]).unwrap_or(""),
             AddField::Url => core::str::from_utf8(&self.url[..self.url_len]).unwrap_or(""),
-            AddField::Digest => {
-                core::str::from_utf8(&self.digest[..self.digest_len]).unwrap_or("")
-            }
+            AddField::Digest => core::str::from_utf8(&self.digest[..self.digest_len]).unwrap_or(""),
         }
     }
 
@@ -253,7 +251,10 @@ fn field_char_ok(field: AddField, byte: u8) -> bool {
         AddField::Name => byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'),
         AddField::Url => {
             byte.is_ascii_alphanumeric()
-                || matches!(byte, b'-' | b'_' | b'.' | b'/' | b':' | b'%' | b'?' | b'=' | b'&')
+                || matches!(
+                    byte,
+                    b'-' | b'_' | b'.' | b'/' | b':' | b'%' | b'?' | b'=' | b'&'
+                )
         }
         AddField::Digest => byte.is_ascii_hexdigit(),
     }
@@ -410,17 +411,9 @@ fn inside(x: i32, y: i32, x0: i32, y0: i32, x1: i32, y1: i32) -> bool {
     x >= x0 && x < x1 && y >= y0 && y < y1
 }
 
-pub(crate) fn handle_pointer(
-    state: &SourcesState,
-    layout: Layout,
-    x: i32,
-    y: i32,
-) -> SourcesClick {
+pub(crate) fn handle_pointer(state: &SourcesState, layout: Layout, x: i32, y: i32) -> SourcesClick {
     // Left-panel repo rows share the catalog list geometry.
-    if x >= layout.left_x + 8
-        && x < layout.left_x + layout.left_w - 8
-        && y >= layout.list_rows_y
-    {
+    if x >= layout.left_x + 8 && x < layout.left_x + layout.left_w - 8 && y >= layout.list_rows_y {
         let visible = layout.visible_rows();
         let row = ((y - layout.list_rows_y) / ROW_HEIGHT) as usize;
         let position = state.scroll + row;
@@ -429,7 +422,10 @@ pub(crate) fn handle_pointer(
         }
     }
 
-    let area = rects(layout, state.trust == PackageRepositoryTrustMode::PinnedDigest);
+    let area = rects(
+        layout,
+        state.trust == PackageRepositoryTrustMode::PinnedDigest,
+    );
     if state.phase == SourcesPhase::Review {
         if inside(
             x,
@@ -454,7 +450,8 @@ pub(crate) fn handle_pointer(
         return SourcesClick::None;
     }
 
-    let field_row = |top: i32| -> bool { inside(x, y, area.field_x0, top, area.field_x1, top + 20) };
+    let field_row =
+        |top: i32| -> bool { inside(x, y, area.field_x0, top, area.field_x1, top + 20) };
     if field_row(area.name_y) {
         return SourcesClick::Field(AddField::Name);
     }
@@ -610,7 +607,10 @@ pub(crate) fn execute_add(package_handle: rt::Handle, state: &mut AppState) {
         }
         Err(error) => {
             state.sources.cancel_review();
-            set_statusf(state, format_args!("repo add failed: {}", error_label(error)));
+            set_statusf(
+                state,
+                format_args!("repo add failed: {}", error_label(error)),
+            );
         }
     }
 }
@@ -670,7 +670,10 @@ pub(crate) mod heapless_line {
 
     impl Line {
         pub(crate) const fn new() -> Self {
-            Self { bytes: [0; 96], len: 0 }
+            Self {
+                bytes: [0; 96],
+                len: 0,
+            }
         }
 
         pub(crate) fn as_str(&self) -> &str {
@@ -742,7 +745,10 @@ mod tests {
             trust_mode_name(PackageRepositoryTrustMode::PinnedDigest),
             "pinned"
         );
-        assert_eq!(sync_state_name(PackageRepositorySyncState::Offline), "offline");
+        assert_eq!(
+            sync_state_name(PackageRepositorySyncState::Offline),
+            "offline"
+        );
         assert_eq!(repo_channel_name(PackageChannel::Canary), "canary");
         assert_eq!(repo_ring_name(PackageRing::Preview), "preview");
     }

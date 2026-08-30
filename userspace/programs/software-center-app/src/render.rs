@@ -6,11 +6,12 @@ use serviceos_userspace_runtime as rt;
 
 use crate::actions::{action_label, channel_label, ring_label, text_or_dash, trust_badge};
 use crate::catalog_meta::{self, MAX_QUERY_BYTES};
+use crate::developer;
 use crate::repositories::{self, AddField, LEDGER_NOTE, SIDELOAD_NOTE};
 use crate::state::{
-    AppState, BUFFER_BYTES, BUFFER_HEIGHT, BUFFER_WIDTH, CATEGORY_FILTERS, CatalogEntry,
-    HEADER_HEIGHT, Layout, MAX_SOURCE_BYTES, PIXEL_STRIDE, ROW_HEIGHT, STATUS_BAR_HEIGHT,
-    compute_layout, installed_count, query_text, selected_entry, service_title,
+    compute_layout, installed_count, query_text, selected_entry, service_title, AppState,
+    CatalogEntry, Layout, BUFFER_BYTES, BUFFER_HEIGHT, BUFFER_WIDTH, CATEGORY_FILTERS,
+    HEADER_HEIGHT, MAX_SOURCE_BYTES, PIXEL_STRIDE, ROW_HEIGHT, STATUS_BAR_HEIGHT,
 };
 
 pub(crate) fn render(
@@ -27,6 +28,9 @@ pub(crate) fn render(
     if state.sources.open {
         return draw_sources(presenter, buffer_slot, bytes, layout, state);
     }
+    if state.developer.open {
+        return draw_developer(presenter, buffer_slot, bytes, layout, state);
+    }
     let mut detail0 = FixedLogBuffer::<64>::new();
     let mut detail1 = FixedLogBuffer::<80>::new();
     let mut detail2 = FixedLogBuffer::<80>::new();
@@ -37,10 +41,8 @@ pub(crate) fn render(
     let recommendation_count = {
         let inputs = |index: usize| {
             let entry = &state.entries[index];
-            let doc = catalog_meta::doc_for(
-                entry.service_id,
-                &entry.category[..entry.category_len],
-            );
+            let doc =
+                catalog_meta::doc_for(entry.service_id, &entry.category[..entry.category_len]);
             catalog_meta::RecommendInput {
                 category: doc.category,
                 keywords: doc.keywords,
@@ -245,7 +247,13 @@ pub(crate) fn render(
         draw_screenshot_card(bytes, layout, section_y, entry.service_id);
         section_y += SCREENSHOT_CARD_HEIGHT + 16;
     }
-    draw_recommendations(bytes, layout, section_y, &recommendations[..recommendation_count], state);
+    draw_recommendations(
+        bytes,
+        layout,
+        section_y,
+        &recommendations[..recommendation_count],
+        state,
+    );
     draw_button(
         bytes,
         layout.install_x0,
@@ -319,7 +327,7 @@ fn draw_header(bytes: &mut [u8], layout: Layout, state: &AppState) {
     if query_text(state).is_empty() {
         let _ = write!(
             &mut search,
-            "find: type to search   cat:{}  tab=next  s=sources",
+            "find: type to search   cat:{}  tab=next  s=sources  j=dev",
             filter
         );
     } else {
@@ -599,12 +607,7 @@ const SCREENSHOT_CARD_HEIGHT: i32 = 56;
 /// Stylized, honestly-labeled screenshot placeholder. The framebuffer text
 /// stack has no image decoding, so a screenshot reference renders as a framed
 /// card naming what would be shown instead of pretending to show pixels.
-fn draw_screenshot_card(
-    bytes: &mut [u8],
-    layout: Layout,
-    y: i32,
-    service_id: rt::ServiceId,
-) {
+fn draw_screenshot_card(bytes: &mut [u8], layout: Layout, y: i32, service_id: rt::ServiceId) {
     let screenshot_ref = catalog_meta::screenshot_ref_for(service_id);
     let Some(headline) = catalog_meta::screenshot_placeholder_headline(screenshot_ref) else {
         return;
@@ -621,8 +624,22 @@ fn draw_screenshot_card(
         ui::BG_WINDOW,
     );
     // Accent spine on the left edge marks this as a media slot.
-    draw_panel(bytes, x + 2, y + 2, 5, SCREENSHOT_CARD_HEIGHT - 4, ui::ACCENT);
-    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, x + 14, y + 7, ui::TEXT_PRIMARY, headline);
+    draw_panel(
+        bytes,
+        x + 2,
+        y + 2,
+        5,
+        SCREENSHOT_CARD_HEIGHT - 4,
+        ui::ACCENT,
+    );
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        x + 14,
+        y + 7,
+        ui::TEXT_PRIMARY,
+        headline,
+    );
     let mut reference = FixedLogBuffer::<64>::new();
     let _ = write!(&mut reference, "ref: {}", screenshot_ref);
     rt::draw_text_rgba8888(
@@ -936,6 +953,261 @@ fn draw_sources_unavailable(bytes: &mut [u8], layout: Layout) {
     );
 }
 
+/// Developer/jobs surface (roadmap §13 increment): read-only view of
+/// developer-service build jobs. The app holds no developer-service channel
+/// grant (root-manager grants Package only), so the panel stays honest: the
+/// decoders in crate::developer are host-tested but nothing populates the
+/// list in-guest, and the pane shows shell pointers instead of fake data.
+fn draw_developer(
+    presenter: &mut ui::FirstPresentSurface,
+    buffer_slot: u32,
+    bytes: &mut [u8],
+    layout: Layout,
+    state: &AppState,
+) -> rt::Result<()> {
+    let width = state.width.min(BUFFER_WIDTH) as usize;
+    let height = state.height.min(BUFFER_HEIGHT) as usize;
+    ui::draw_window_frame_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        width,
+        height,
+        state.focused,
+        ui::BG_WINDOW_ALT,
+        "SOFTWARE CENTER",
+    );
+    draw_panel(
+        bytes,
+        layout.header_x,
+        layout.header_y,
+        layout.header_w,
+        HEADER_HEIGHT,
+        ui::BG_PANEL,
+    );
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        layout.header_x + 14,
+        layout.header_y + 12,
+        ui::TEXT_PRIMARY,
+        "DEVELOPER BUILDS",
+    );
+    let mut summary = FixedLogBuffer::<64>::new();
+    let _ = write!(
+        &mut summary,
+        "{} jobs  J closes  esc closes  read-only",
+        state.developer.job_count,
+    );
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        layout.header_x + 14,
+        layout.header_y + 28,
+        ui::TEXT_SECONDARY,
+        str::from_utf8(summary.as_bytes()).unwrap_or(""),
+    );
+    draw_panel(
+        bytes,
+        layout.left_x,
+        layout.left_y,
+        layout.left_w,
+        layout.left_h,
+        ui::BG_PANEL,
+    );
+    draw_panel(
+        bytes,
+        layout.right_x,
+        layout.right_y,
+        layout.right_w,
+        layout.right_h,
+        ui::BG_PANEL,
+    );
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        layout.left_x + 12,
+        layout.left_y + 10,
+        ui::TEXT_PRIMARY,
+        "JOBS",
+    );
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        layout.right_x + 12,
+        layout.right_y + 10,
+        ui::TEXT_PRIMARY,
+        "JOB DETAILS",
+    );
+
+    draw_job_list(bytes, layout, state);
+    if !state.developer.available {
+        draw_developer_unavailable(bytes, layout);
+    } else {
+        draw_job_details(bytes, layout, state);
+    }
+    draw_status_bar(
+        bytes,
+        layout.right_x + 12,
+        layout.status_y,
+        layout.right_w - 24,
+        str::from_utf8(&state.status[..state.status_len]).unwrap_or(""),
+    );
+    presenter.present(
+        buffer_slot,
+        state.width.min(BUFFER_WIDTH),
+        state.height.min(BUFFER_HEIGHT),
+    )
+}
+
+fn draw_job_list(bytes: &mut [u8], layout: Layout, state: &AppState) {
+    let visible_rows = layout.visible_rows();
+    for row in 0..visible_rows {
+        let position = state.developer.scroll + row;
+        if position >= state.developer.job_count {
+            break;
+        }
+        let job = &state.developer.jobs[position];
+        let row_y = layout.list_rows_y as usize + row * ROW_HEIGHT as usize;
+        let selected = position == state.developer.selected;
+        ui::fill_rgba8888_rect(
+            bytes,
+            PIXEL_STRIDE,
+            BUFFER_WIDTH as usize,
+            BUFFER_HEIGHT as usize,
+            (layout.left_x + 8) as usize,
+            row_y,
+            (layout.left_w - 16).max(0) as usize,
+            (ROW_HEIGHT - 4).max(0) as usize,
+            if selected {
+                ui::ACCENT_DIM
+            } else {
+                ui::BG_WINDOW
+            },
+        );
+        let mut title = FixedLogBuffer::<64>::new();
+        let _ = write!(
+            &mut title,
+            "#{} {}",
+            job.job_id,
+            developer::job_state_name(job.state)
+        );
+        rt::draw_text_rgba8888(
+            bytes,
+            PIXEL_STRIDE,
+            layout.left_x + 14,
+            row_y as i32 + 4,
+            if selected {
+                ui::TEXT_PRIMARY
+            } else {
+                ui::TEXT_SECONDARY
+            },
+            str::from_utf8(title.as_bytes()).unwrap_or(""),
+        );
+        rt::draw_text_rgba8888(
+            bytes,
+            PIXEL_STRIDE,
+            layout.left_x + 14,
+            row_y as i32 + 16,
+            ui::TEXT_MUTED,
+            developer::row_meta(job).as_str(),
+        );
+    }
+    if state.developer.job_count == 0 {
+        rt::draw_text_rgba8888(
+            bytes,
+            PIXEL_STRIDE,
+            layout.left_x + 14,
+            layout.list_rows_y + 6,
+            ui::TEXT_MUTED,
+            if state.developer.available {
+                "no build jobs"
+            } else {
+                "list unavailable"
+            },
+        );
+    }
+}
+
+fn draw_developer_unavailable(bytes: &mut [u8], layout: Layout) {
+    let x = layout.right_x + 12;
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        x,
+        layout.detail_title_y,
+        ui::STATUS_WARN,
+        "DEVELOPER BUILDS UNAVAILABLE",
+    );
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        x,
+        layout.detail_title_y + 16,
+        ui::TEXT_SECONDARY,
+        "developer-service is not reachable from this app.",
+    );
+    draw_text_fit(
+        bytes,
+        x,
+        layout.detail_body_y,
+        ui::TEXT_MUTED,
+        developer::CHANNEL_NOTE,
+        layout.detail_text_w,
+    );
+    draw_text_fit(
+        bytes,
+        x,
+        layout.detail_body_y + 14,
+        ui::TEXT_MUTED,
+        developer::OPERATOR_NOTE,
+        layout.detail_text_w,
+    );
+    draw_text_fit(
+        bytes,
+        x,
+        layout.detail_body_y + 28,
+        ui::TEXT_MUTED,
+        "toolchains/workspaces: shell dev toolchains | dev workspaces",
+        layout.detail_text_w,
+    );
+}
+
+fn draw_job_details(bytes: &mut [u8], layout: Layout, state: &AppState) {
+    let x = layout.right_x + 12;
+    let Some(job) = state.developer.selected_job() else {
+        rt::draw_text_rgba8888(
+            bytes,
+            PIXEL_STRIDE,
+            x,
+            layout.detail_title_y,
+            ui::TEXT_MUTED,
+            "select a build job",
+        );
+        return;
+    };
+    let mut title = FixedLogBuffer::<48>::new();
+    let _ = write!(&mut title, "JOB #{}", job.job_id);
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        x,
+        layout.detail_title_y,
+        ui::TEXT_PRIMARY,
+        str::from_utf8(title.as_bytes()).unwrap_or(""),
+    );
+    let lines = developer::detail_lines(job);
+    for (index, line) in lines.iter().enumerate() {
+        draw_text_fit(
+            bytes,
+            x,
+            layout.detail_body_y + index as i32 * 16,
+            ui::TEXT_SECONDARY,
+            line.as_str(),
+            layout.detail_text_w,
+        );
+    }
+}
+
 fn draw_source_details(bytes: &mut [u8], layout: Layout, state: &AppState) {
     let x = layout.right_x + 12;
     let Some(entry) = state.sources.selected_repo() else {
@@ -974,7 +1246,12 @@ fn draw_source_details(bytes: &mut [u8], layout: Layout, state: &AppState) {
         return;
     };
     let mut title = FixedLogBuffer::<64>::new();
-    let _ = write!(&mut title, "#{} {}", entry.info.repo_index, entry.name_text());
+    let _ = write!(
+        &mut title,
+        "#{} {}",
+        entry.info.repo_index,
+        entry.name_text()
+    );
     draw_text_fit(
         bytes,
         x,
@@ -1039,11 +1316,7 @@ fn draw_source_details(bytes: &mut [u8], layout: Layout, state: &AppState) {
         layout.detail_text_w,
     );
     let mut digests = FixedLogBuffer::<64>::new();
-    let _ = write!(
-        &mut digests,
-        "last={:016x}",
-        entry.info.last_digest,
-    );
+    let _ = write!(&mut digests, "last={:016x}", entry.info.last_digest,);
     if entry.info.trust_mode == rt::PackageRepositoryTrustMode::PinnedDigest {
         let _ = write!(&mut digests, "  pinned={:016x}", entry.info.pinned_digest);
     }
@@ -1078,8 +1351,24 @@ fn draw_add_form(bytes: &mut [u8], layout: Layout, state: &AppState) {
         ui::TEXT_PRIMARY,
         "ADD SOURCE",
     );
-    draw_field(bytes, area.field_x0, area.field_x1, area.name_y, "name", AddField::Name, state);
-    draw_field(bytes, area.field_x0, area.field_x1, area.url_y, "url", AddField::Url, state);
+    draw_field(
+        bytes,
+        area.field_x0,
+        area.field_x1,
+        area.name_y,
+        "name",
+        AddField::Name,
+        state,
+    );
+    draw_field(
+        bytes,
+        area.field_x0,
+        area.field_x1,
+        area.url_y,
+        "url",
+        AddField::Url,
+        state,
+    );
     let mut trust_value = FixedLogBuffer::<64>::new();
     let _ = write!(
         &mut trust_value,
@@ -1096,7 +1385,15 @@ fn draw_add_form(bytes: &mut [u8], layout: Layout, state: &AppState) {
         false,
     );
     if state.sources.trust == rt::PackageRepositoryTrustMode::PinnedDigest {
-        draw_field(bytes, area.field_x0, area.field_x1, area.digest_y, "digest", AddField::Digest, state);
+        draw_field(
+            bytes,
+            area.field_x0,
+            area.field_x1,
+            area.digest_y,
+            "digest",
+            AddField::Digest,
+            state,
+        );
     }
     draw_button(
         bytes,
@@ -1130,7 +1427,15 @@ fn draw_field(
     state: &AppState,
 ) {
     let focused = state.sources.field == field;
-    draw_field_value(bytes, x0, x1, y, label, state.sources.field_text(field), focused);
+    draw_field_value(
+        bytes,
+        x0,
+        x1,
+        y,
+        label,
+        state.sources.field_text(field),
+        focused,
+    );
 }
 
 fn draw_field_value(
@@ -1190,7 +1495,7 @@ fn draw_add_review(bytes: &mut [u8], layout: Layout, state: &AppState) {
     let name = state.sources.field_text(AddField::Name);
     let url = state.sources.field_text(AddField::Url);
     let trust = state.sources.trust;
-    let mut lines: [FixedLogBuffer::<128>; 8] = [
+    let mut lines: [FixedLogBuffer<128>; 8] = [
         FixedLogBuffer::<128>::new(),
         FixedLogBuffer::<128>::new(),
         FixedLogBuffer::<128>::new(),
@@ -1200,7 +1505,11 @@ fn draw_add_review(bytes: &mut [u8], layout: Layout, state: &AppState) {
         FixedLogBuffer::<128>::new(),
         FixedLogBuffer::<128>::new(),
     ];
-    let _ = write!(&mut lines[0], "trust review for third-party repository {}", name);
+    let _ = write!(
+        &mut lines[0],
+        "trust review for third-party repository {}",
+        name
+    );
     let _ = write!(&mut lines[1], "endpoint {}", url);
     let _ = write!(
         &mut lines[2],

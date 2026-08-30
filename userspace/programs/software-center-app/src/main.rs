@@ -4,6 +4,7 @@
 mod actions;
 mod catalog_meta;
 mod control;
+mod developer;
 mod render;
 mod repositories;
 mod state;
@@ -13,7 +14,7 @@ use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
 
 use crate::actions::{error_label, reload_catalog, set_statusf};
-use crate::control::{ControlFlow, poll_control};
+use crate::control::{poll_control, ControlFlow};
 use crate::render::render;
 use crate::state::{AppState, BUFFER_BYTES, BUFFER_HEIGHT, BUFFER_WIDTH, SURFACE_BUFFER_SLOTS};
 

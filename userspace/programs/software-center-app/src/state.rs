@@ -2,6 +2,7 @@ use rt::ServiceId;
 use serviceos_userspace_runtime as rt;
 
 use crate::catalog_meta::{self, MAX_QUERY_BYTES};
+use crate::developer::DevState;
 use crate::repositories::SourcesState;
 
 pub(crate) const MAX_ENTRIES: usize = 24;
@@ -30,6 +31,7 @@ pub(crate) const KEY_ESC: u32 = 1;
 pub(crate) const KEY_R: u32 = 19;
 pub(crate) const KEY_S: u32 = 31;
 pub(crate) const KEY_L: u32 = 38;
+pub(crate) const KEY_J: u32 = 36;
 pub(crate) const KEY_TAB: u32 = 15;
 pub(crate) const KEY_UP: u32 = 103;
 pub(crate) const KEY_PAGE_UP: u32 = 104;
@@ -134,6 +136,10 @@ pub(crate) struct AppState {
     /// Repository/sources management surface (toggled with S; kept out of
     /// the default view so plain boots stay untouched).
     pub(crate) sources: SourcesState,
+    /// Developer/jobs surface (toggled with J). Honest read-only: the app
+    /// holds no developer-service channel grant, so this stays in the
+    /// unavailable state with shell pointers (see crate::developer).
+    pub(crate) developer: DevState,
 }
 
 pub(crate) const CATEGORY_FILTERS: [&str; 5] =
@@ -159,6 +165,7 @@ impl AppState {
             session_updates: [(ServiceId::RootManager, 0); MAX_ENTRIES],
             session_update_count: 0,
             sources: SourcesState::new(),
+            developer: DevState::new(),
         }
     }
 

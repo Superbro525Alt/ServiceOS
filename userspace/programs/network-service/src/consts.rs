@@ -46,16 +46,23 @@ pub(crate) const MAX_TXT_BYTES: usize = 64;
 // (4 summary words + 2 words per rule <= IPC_MAX_WORDS = 16).
 pub(crate) const MAX_FIREWALL_RULES: usize = 6;
 
-// Reserved network-contract tags handled by this service's public channel.
-// These extend the NetworkTag numeric range (next free value after
-// SocketListenReply = 0x80d) until the shared ABI crate promotes them; the
-// wire format is the standard RawMessage tag/words/handles envelope, so a
-// future shared-abi enum addition is wire-compatible.
-pub(crate) const FIREWALL_RULES_SET_REQUEST: u32 = 0x80e;
-pub(crate) const FIREWALL_RULES_GET_REQUEST: u32 = 0x810;
-pub(crate) const FIREWALL_RULES_REPLY: u32 = 0x80f;
-pub(crate) const RESOLVE_EX_REQUEST: u32 = 0x812;
-pub(crate) const RESOLVE_EX_REPLY: u32 = 0x813;
+// --- Promoted network-contract tags (formal NetworkTag variants) ---
+//
+// These families began as service-local reserved tags (0x80e..=0x821) and are
+// now formal `NetworkTag` variants in the shared ABI; the local aliases below
+// keep the many internal call sites untouched. Wire values are frozen by the
+// abi-level `network_tag_promoted_wire_values` test. The wire format is the
+// standard RawMessage tag/words/handles envelope.
+pub(crate) const FIREWALL_RULES_SET_REQUEST: u32 =
+    serviceos_userspace_runtime::NetworkTag::FirewallRulesSetRequest as u32;
+pub(crate) const FIREWALL_RULES_GET_REQUEST: u32 =
+    serviceos_userspace_runtime::NetworkTag::FirewallRulesGetRequest as u32;
+pub(crate) const FIREWALL_RULES_REPLY: u32 =
+    serviceos_userspace_runtime::NetworkTag::FirewallRulesReply as u32;
+pub(crate) const RESOLVE_EX_REQUEST: u32 =
+    serviceos_userspace_runtime::NetworkTag::ResolveExRequest as u32;
+pub(crate) const RESOLVE_EX_REPLY: u32 =
+    serviceos_userspace_runtime::NetworkTag::ResolveExReply as u32;
 
 /// ResolveEx query type words (DNS rdata type numbers).
 pub(crate) const RESOLVE_EX_TYPE_A: u64 = 1;
@@ -73,30 +80,44 @@ pub(crate) const RESOLVE_DETAIL_POSITIVE_CACHE: u64 = 6;
 pub(crate) const RESOLVE_DETAIL_CHAIN_TOO_LONG: u64 = 7;
 pub(crate) const RESOLVE_DETAIL_MALFORMED: u64 = 8;
 
-// --- Host naming / discovery / diagnostics (S7 reserved tags + limits) ---
+// --- Promoted host naming / discovery / diagnostics tags ---
 //
-// More reserved network-contract tags on the public channel, continuing the
-// firewall/resolve-ex convention above (next free value after 0x813). Wire
-// format stays the standard RawMessage envelope, so a future shared-abi enum
-// promotion is wire-compatible.
-pub(crate) const HOSTNAME_GET_REQUEST: u32 = 0x814;
-pub(crate) const HOSTNAME_GET_REPLY: u32 = 0x815;
-pub(crate) const HOSTNAME_SET_REQUEST: u32 = 0x816;
-pub(crate) const HOSTNAME_SET_REPLY: u32 = 0x817;
-pub(crate) const DIAG_PING_STATS_REQUEST: u32 = 0x818;
-pub(crate) const DIAG_PING_STATS_REPLY: u32 = 0x819;
-pub(crate) const NEIGHBOR_DUMP_REQUEST: u32 = 0x81a;
-pub(crate) const NEIGHBOR_DUMP_REPLY: u32 = 0x81b;
-pub(crate) const LISTEN_PORTS_REQUEST: u32 = 0x81c;
-pub(crate) const LISTEN_PORTS_REPLY: u32 = 0x81d;
-pub(crate) const DISCOVERY_REGISTER_REQUEST: u32 = 0x81e;
-pub(crate) const DISCOVERY_REGISTER_REPLY: u32 = 0x81f;
-pub(crate) const DISCOVERY_PEERS_REQUEST: u32 = 0x820;
-pub(crate) const DISCOVERY_PEERS_REPLY: u32 = 0x821;
+// Continuation of the promotion above (0x814..=0x821 are now formal
+// `NetworkTag` variants; aliases keep call sites untouched).
+pub(crate) const HOSTNAME_GET_REQUEST: u32 =
+    serviceos_userspace_runtime::NetworkTag::HostnameGetRequest as u32;
+pub(crate) const HOSTNAME_GET_REPLY: u32 =
+    serviceos_userspace_runtime::NetworkTag::HostnameGetReply as u32;
+pub(crate) const HOSTNAME_SET_REQUEST: u32 =
+    serviceos_userspace_runtime::NetworkTag::HostnameSetRequest as u32;
+pub(crate) const HOSTNAME_SET_REPLY: u32 =
+    serviceos_userspace_runtime::NetworkTag::HostnameSetReply as u32;
+pub(crate) const DIAG_PING_STATS_REQUEST: u32 =
+    serviceos_userspace_runtime::NetworkTag::DiagPingStatsRequest as u32;
+pub(crate) const DIAG_PING_STATS_REPLY: u32 =
+    serviceos_userspace_runtime::NetworkTag::DiagPingStatsReply as u32;
+pub(crate) const NEIGHBOR_DUMP_REQUEST: u32 =
+    serviceos_userspace_runtime::NetworkTag::NeighborDumpRequest as u32;
+pub(crate) const NEIGHBOR_DUMP_REPLY: u32 =
+    serviceos_userspace_runtime::NetworkTag::NeighborDumpReply as u32;
+pub(crate) const LISTEN_PORTS_REQUEST: u32 =
+    serviceos_userspace_runtime::NetworkTag::ListenPortsRequest as u32;
+pub(crate) const LISTEN_PORTS_REPLY: u32 =
+    serviceos_userspace_runtime::NetworkTag::ListenPortsReply as u32;
+pub(crate) const DISCOVERY_REGISTER_REQUEST: u32 =
+    serviceos_userspace_runtime::NetworkTag::DiscoveryRegisterRequest as u32;
+pub(crate) const DISCOVERY_REGISTER_REPLY: u32 =
+    serviceos_userspace_runtime::NetworkTag::DiscoveryRegisterReply as u32;
+pub(crate) const DISCOVERY_PEERS_REQUEST: u32 =
+    serviceos_userspace_runtime::NetworkTag::DiscoveryPeersRequest as u32;
+pub(crate) const DISCOVERY_PEERS_REPLY: u32 =
+    serviceos_userspace_runtime::NetworkTag::DiscoveryPeersReply as u32;
 
-// --- Shared RX ring / zero-copy stats (S7 reserved tags) ---
+// --- Shared RX ring / zero-copy stats (service-local tags) ---
 //
-// Continues the same reserved-tag convention (next free value after 0x821).
+// The last reserved public-channel tags on this service (next free value
+// after the promoted DiscoveryPeersReply = 0x821); pending their own ABI
+// promotion.
 // ZeroCopyStatsReply: words[1] = frames pushed into the shared ring,
 // words[2] = IPC copies avoided, words[3] = bytes saved by consuming frames
 // in place, words[4] = frames dropped by the ring's drop-oldest overflow.

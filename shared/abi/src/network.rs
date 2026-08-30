@@ -69,6 +69,50 @@ pub enum NetworkTag {
     /// established stream handles speaking the standard stream protocol.
     SocketListenRequest = 0x80c,
     SocketListenReply = 0x80d,
+    // --- Additive public-channel families promoted from network-service
+    // reserved tags (0x80e..=0x821). Wire values are historical and frozen by
+    // the `network_tag_promoted_wire_values` test below; append new families
+    // only after DiscoveryPeersReply. Note: 0x820/0x821 are unique within THIS
+    // channel's tag space; NetworkSocketTag reuses those numerics on the
+    // separate per-socket control channels, matching the per-channel namespace
+    // convention every tag family in this ABI follows.
+    /// Ordered first-match firewall table. One SET op per message via
+    /// words[0]: 0 = replace all rules (words[1] count, words[2..] records),
+    /// 1 = set default inbound policy (words[1] != 0 allows), 2 = clear
+    /// rules. Replies carry the table + hit/deny counters.
+    FirewallRulesSetRequest = 0x80e,
+    FirewallRulesReply = 0x80f,
+    /// Query the full firewall table + counters. Replies
+    /// FirewallRulesReply.
+    FirewallRulesGetRequest = 0x810,
+    /// Extended resolver query: words carry a DNS rdata type (A/AAAA/TXT)
+    /// plus name; reply appends a typed detail code to the standard
+    /// ResolveReply shape.
+    ResolveExRequest = 0x812,
+    ResolveExReply = 0x813,
+    HostnameGetRequest = 0x814,
+    HostnameGetReply = 0x815,
+    /// Session-scoped runtime hostname set (default `serviceos`).
+    HostnameSetRequest = 0x816,
+    HostnameSetReply = 0x817,
+    /// Continuous-ping diagnostics: N sequential ICMP probes with per-packet
+    /// RTTs folded into min/max/avg/jitter/permil-loss stats.
+    DiagPingStatsRequest = 0x818,
+    DiagPingStatsReply = 0x819,
+    /// ARP-snooped neighbor table dump observed off the RX path.
+    NeighborDumpRequest = 0x81a,
+    NeighborDumpReply = 0x81b,
+    /// Self port-scan: TCP listeners, client UDP sockets, internal service
+    /// ports.
+    ListenPortsRequest = 0x81c,
+    ListenPortsReply = 0x81d,
+    /// Local service discovery registry over a service-local UDP beacon
+    /// (port 41453, service-local wire format).
+    DiscoveryRegisterRequest = 0x81e,
+    DiscoveryRegisterReply = 0x81f,
+    /// Peer query returning hosts announced within a caller-supplied window.
+    DiscoveryPeersRequest = 0x820,
+    DiscoveryPeersReply = 0x821,
 }
 
 #[repr(u32)]
@@ -521,5 +565,36 @@ mod tests {
         let endpoint = pack_ipv4_endpoint(0x0a00_020f, 5353);
         assert_eq!(unpack_ipv4_endpoint(endpoint), (0x0a00_020f, 5353));
         assert_eq!(unpack_ipv4_endpoint(pack_ipv4_endpoint(0, 0)), (0, 0));
+    }
+
+    #[test]
+    fn network_tag_promoted_wire_values() {
+        use NetworkTag as T;
+        // Historical reserved-tag numbers from network-service; promotion into
+        // the shared ABI must never renumber them (wire contract).
+        assert_eq!(T::FirewallRulesSetRequest as u32, 0x80e);
+        assert_eq!(T::FirewallRulesReply as u32, 0x80f);
+        assert_eq!(T::FirewallRulesGetRequest as u32, 0x810);
+        assert_eq!(T::ResolveExRequest as u32, 0x812);
+        assert_eq!(T::ResolveExReply as u32, 0x813);
+        assert_eq!(T::HostnameGetRequest as u32, 0x814);
+        assert_eq!(T::HostnameGetReply as u32, 0x815);
+        assert_eq!(T::HostnameSetRequest as u32, 0x816);
+        assert_eq!(T::HostnameSetReply as u32, 0x817);
+        assert_eq!(T::DiagPingStatsRequest as u32, 0x818);
+        assert_eq!(T::DiagPingStatsReply as u32, 0x819);
+        assert_eq!(T::NeighborDumpRequest as u32, 0x81a);
+        assert_eq!(T::NeighborDumpReply as u32, 0x81b);
+        assert_eq!(T::ListenPortsRequest as u32, 0x81c);
+        assert_eq!(T::ListenPortsReply as u32, 0x81d);
+        assert_eq!(T::DiscoveryRegisterRequest as u32, 0x81e);
+        assert_eq!(T::DiscoveryRegisterReply as u32, 0x81f);
+        assert_eq!(T::DiscoveryPeersRequest as u32, 0x820);
+        assert_eq!(T::DiscoveryPeersReply as u32, 0x821);
+        // Pre-existing public-channel tags keep their numbers too.
+        assert_eq!(T::SocketListenReply as u32, 0x80d);
+        // Cross-namespace sanity: per-socket control channels are a distinct
+        // tag space, so 0x820 legally appears in both enums.
+        assert_eq!(NetworkSocketTag::StatusRequest as u32, 0x820);
     }
 }

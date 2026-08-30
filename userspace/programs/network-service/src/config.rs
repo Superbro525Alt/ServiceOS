@@ -111,6 +111,7 @@ pub(crate) fn load_hosts(
     handle: rt::Handle,
     hosts: &mut [HostEntry; MAX_HOSTS],
     options: &mut NetFileOptions,
+    wifi: &mut crate::wifi::WifiState,
 ) -> rt::Result<usize> {
     if handle == rt::INVALID_HANDLE {
         return Ok(0);
@@ -156,6 +157,13 @@ pub(crate) fn load_hosts(
                 continue;
             }
             _ => {}
+        }
+
+        // Wireless saved-network boot seeds (`wifi-ssid=` / `wifi-psk=`);
+        // unknown wifi-* lines are ignored inside the router.
+        if name.starts_with("wifi-") {
+            crate::wifi::note_config_line(name, value, wifi);
+            continue;
         }
 
         if count == hosts.len() {

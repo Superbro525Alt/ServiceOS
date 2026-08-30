@@ -4,6 +4,7 @@ members = [
     "shared/abi",
     "shared/bundle",
     "shared/crypto",
+    "shared/wireless",
     "kernel/core",
     "arch/x86_64",
     "arch/aarch64",

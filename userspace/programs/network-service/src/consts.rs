@@ -115,14 +115,28 @@ pub(crate) const DISCOVERY_PEERS_REPLY: u32 =
 
 // --- Shared RX ring / zero-copy stats (service-local tags) ---
 //
-// The last reserved public-channel tags on this service (next free value
-// after the promoted DiscoveryPeersReply = 0x821); pending their own ABI
-// promotion.
+// Local tags on this service; pending their own ABI promotion. The wireless
+// family below takes the next free values (0x824+), leaving 0x822/0x823
+// reserved for this pair.
 // ZeroCopyStatsReply: words[1] = frames pushed into the shared ring,
 // words[2] = IPC copies avoided, words[3] = bytes saved by consuming frames
 // in place, words[4] = frames dropped by the ring's drop-oldest overflow.
 pub(crate) const ZERO_COPY_STATS_REQUEST: u32 = 0x822;
 pub(crate) const ZERO_COPY_STATS_REPLY: u32 = 0x823;
+
+// --- Wireless control (formal NetworkTag variants 0x824..=0x831) ---
+//
+// Wire values are frozen by the abi-level `network_tag_promoted_wire_values`
+// test; the aliases below keep dispatch call sites in the same style as the
+// other promoted families.
+
+/// Max scan entries carried in one WifiScanReply (5 summary words + 6 words
+/// per entry <= IPC_MAX_WORDS = 16).
+pub(crate) const WIFI_SCAN_ENTRIES_PER_REPLY: usize = 2;
+/// Max saved-network entries carried in one WifiSavedListReply.
+pub(crate) const WIFI_SAVED_ENTRIES_PER_REPLY: usize = 2;
+/// WifiStatusReply flags: bit 0 = a WirelessBackend device is registered.
+pub(crate) const WIFI_STATUS_FLAG_BACKEND_PRESENT: u64 = 1 << 0;
 
 /// UDP port for the mDNS-LITE responder. Honest subset only: unicast A-record
 /// answers to direct queries for `<hostname>.local`. No multicast group join,

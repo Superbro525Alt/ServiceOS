@@ -1,4 +1,7 @@
-use rt::{NetworkSocketInfo, NetworkSocketKind, NetworkSocketState, ServiceId};
+use rt::{
+    NetworkSocketInfo, NetworkSocketKind, NetworkSocketState, NetworkWifiSavedNetwork,
+    NetworkWifiScanEntry, ServiceId, WifiLinkState, WifiSecurity,
+};
 use serviceos_userspace_runtime as rt;
 
 use crate::util::{
@@ -287,6 +290,251 @@ fn http_fetch(
     Ok(())
 }
 
+
+// --- wifi command family (wireless control plane) ---
+
+pub(crate) fn cmd_wifi<'a, I>(
+    bootstrap: rt::Handle,
+    output: ShellOutput,
+    mut parts: I,
+) -> rt::Result<()>
+where
+    I: Iterator<Item = &'a str>,
+{
+    match parts.next() {
+        Some("scan") => cmd_wifi_scan(bootstrap, output),
+        Some("join") => match parts.next() {
+            Some(ssid) => {
+                let psk = parts.next().filter(|psk| !psk.is_empty());
+                cmd_wifi_join(bootstrap, output, ssid, psk)
+            }
+            None => write_output_linef(output, format_args!("usage: wifi join <ssid> [psk]")),
+        },
+        Some("leave") => cmd_wifi_leave(bootstrap, output),
+        Some("saved") => match parts.next() {
+            None | Some("list") => cmd_wifi_saved_list(bootstrap, output),
+            Some("add") => match (parts.next(), parts.next()) {
+                (Some(ssid), Some(psk)) if !psk.is_empty() => {
+                    cmd_wifi_saved_add(bootstrap, output, ssid, psk)
+                }
+                _ => write_output_linef(output, format_args!("usage: wifi saved add <ssid> <psk>")),
+            },
+            Some("remove") => match parts.next() {
+                Some(ssid) => cmd_wifi_saved_remove(bootstrap, output, ssid),
+                None => write_output_linef(output, format_args!("usage: wifi saved remove <ssid>")),
+            },
+            _ => write_output_linef(
+                output,
+                format_args!("usage: wifi saved [list|add <ssid> <psk>|remove <ssid>]"),
+            ),
+        },
+        Some("status") => cmd_wifi_status(bootstrap, output),
+        _ => write_output_linef(
+            output,
+            format_args!("usage: wifi <scan|join <ssid> [psk]|leave|saved|status> ..."),
+        ),
+    }
+}
+
+pub(crate) fn wifi_security_name(security: WifiSecurity) -> &'static str {
+    match security {
+        WifiSecurity::Open => "open",
+        WifiSecurity::Wpa2 => "wpa2",
+        WifiSecurity::Wpa3 => "wpa3",
+        WifiSecurity::Unknown => "unknown",
+    }
+}
+
+pub(crate) fn wifi_link_state_name(state: WifiLinkState) -> &'static str {
+    match state {
+        WifiLinkState::Down => "down",
+        WifiLinkState::Scanning => "scanning",
+        WifiLinkState::Authenticating => "authenticating",
+        WifiLinkState::Associating => "associating",
+        WifiLinkState::Connected => "connected",
+    }
+}
+
+/// Renders an SSID octet slice as UTF-8 text, or a placeholder when the
+/// beacon carried none (wildcard/hidden) or the octets are not UTF-8.
+fn wifi_ssid_text(ssid: &[u8]) -> &str {
+    if ssid.is_empty() {
+        "<hidden>"
+    } else {
+        core::str::from_utf8(ssid).unwrap_or("<binary>")
+    }
+}
+
+fn cmd_wifi_scan(bootstrap: rt::Handle, output: ShellOutput) -> rt::Result<()> {
+    let network_handle = rt::lookup_service(bootstrap, ServiceId::Network)?;
+    let mut entries = [NetworkWifiScanEntry {
+        bssid: [0; 6],
+        channel: 0,
+        rssi: 0,
+        ssid_len: 0,
+        ssid: [0; 32],
+        security: WifiSecurity::Unknown,
+    }; rt::NETWORK_WIFI_SCAN_REPLY_ENTRIES_MAX];
+    let result = rt::network_wifi_scan(network_handle, &mut entries);
+    let _ = rt::handle_close(network_handle);
+    match result {
+        Ok(total) if total == 0 => {
+            write_output_linef(output, format_args!("wifi scan: no networks"))
+        }
+        Ok(total) => {
+            for entry in entries.iter().take(total) {
+                let ssid = wifi_ssid_text(&entry.ssid[..entry.ssid_len]);
+                write_output_linef(
+                    output,
+                    format_args!(
+                        "wifi scan: ch{} rssi{} {} {} {:02x?}",
+                        entry.channel,
+                        entry.rssi,
+                        wifi_security_name(entry.security),
+                        ssid,
+                        entry.bssid,
+                    ),
+                )?;
+            }
+            Ok(())
+        }
+        Err(rt::Error::Unsupported) => {
+            write_output_linef(output, format_args!("wifi scan: no wireless backend"))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn cmd_wifi_join(
+    bootstrap: rt::Handle,
+    output: ShellOutput,
+    ssid: &str,
+    psk: Option<&str>,
+) -> rt::Result<()> {
+    let network_handle = rt::lookup_service(bootstrap, ServiceId::Network)?;
+    let result = rt::network_wifi_join(network_handle, ssid, psk);
+    let _ = rt::handle_close(network_handle);
+    match result {
+        Ok(state) => write_output_linef(
+            output,
+            format_args!("wifi join {}: link={}", ssid, wifi_link_state_name(state)),
+        ),
+        Err(rt::Error::Unsupported) => {
+            write_output_linef(output, format_args!("wifi join: no wireless backend"))
+        }
+        Err(rt::Error::InvalidArgument) => write_output_linef(
+            output,
+            format_args!("wifi join: invalid ssid or psk (psk 8..=64 chars, or none for open)"),
+        ),
+        Err(error) => Err(error),
+    }
+}
+
+fn cmd_wifi_leave(bootstrap: rt::Handle, output: ShellOutput) -> rt::Result<()> {
+    let network_handle = rt::lookup_service(bootstrap, ServiceId::Network)?;
+    let result = rt::network_wifi_leave(network_handle);
+    let _ = rt::handle_close(network_handle);
+    match result {
+        Ok(state) => write_output_linef(
+            output,
+            format_args!("wifi leave: link={}", wifi_link_state_name(state)),
+        ),
+        Err(rt::Error::Unsupported) => {
+            write_output_linef(output, format_args!("wifi leave: no wireless backend"))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn cmd_wifi_saved_list(bootstrap: rt::Handle, output: ShellOutput) -> rt::Result<()> {
+    let network_handle = rt::lookup_service(bootstrap, ServiceId::Network)?;
+    let mut saved = [NetworkWifiSavedNetwork {
+        ssid_len: 0,
+        ssid: [0; 32],
+        priority: 0,
+    }; rt::NETWORK_WIFI_SAVED_REPLY_ENTRIES_MAX];
+    let result = rt::network_wifi_saved_list(network_handle, &mut saved);
+    let _ = rt::handle_close(network_handle);
+    match result {
+        Ok(total) if total == 0 => write_output_linef(output, format_args!("wifi saved: none")),
+        Ok(total) => {
+            for record in saved.iter().take(total) {
+                let ssid =
+                    core::str::from_utf8(&record.ssid[..record.ssid_len]).unwrap_or("<invalid>");
+                write_output_linef(
+                    output,
+                    format_args!("wifi saved: {} priority={}", ssid, record.priority),
+                )?;
+            }
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn cmd_wifi_saved_add(
+    bootstrap: rt::Handle,
+    output: ShellOutput,
+    ssid: &str,
+    psk: &str,
+) -> rt::Result<()> {
+    let network_handle = rt::lookup_service(bootstrap, ServiceId::Network)?;
+    let result = rt::network_wifi_saved_add(network_handle, ssid, psk, 0);
+    let _ = rt::handle_close(network_handle);
+    match result {
+        Ok(()) => write_output_linef(output, format_args!("wifi saved: added {}", ssid)),
+        Err(rt::Error::CapacityExceeded) => {
+            write_output_linef(output, format_args!("wifi saved: store full"))
+        }
+        Err(rt::Error::InvalidArgument) => write_output_linef(
+            output,
+            format_args!("wifi saved: invalid ssid or psk (psk required, 8..=64 chars)"),
+        ),
+        Err(error) => Err(error),
+    }
+}
+
+fn cmd_wifi_saved_remove(
+    bootstrap: rt::Handle,
+    output: ShellOutput,
+    ssid: &str,
+) -> rt::Result<()> {
+    let network_handle = rt::lookup_service(bootstrap, ServiceId::Network)?;
+    let result = rt::network_wifi_saved_remove(network_handle, ssid);
+    let _ = rt::handle_close(network_handle);
+    match result {
+        Ok(()) => write_output_linef(output, format_args!("wifi saved: removed {}", ssid)),
+        Err(rt::Error::NotFound) => {
+            write_output_linef(output, format_args!("wifi saved: {} not found", ssid))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn cmd_wifi_status(bootstrap: rt::Handle, output: ShellOutput) -> rt::Result<()> {
+    let network_handle = rt::lookup_service(bootstrap, ServiceId::Network)?;
+    let result = rt::network_wifi_status(network_handle);
+    let _ = rt::handle_close(network_handle);
+    match result {
+        Ok(status) => {
+            let ssid = wifi_ssid_text(&status.ssid[..status.ssid_len]);
+            write_output_linef(
+                output,
+                format_args!(
+                    "wifi status: link={} backend={} ssid={}",
+                    wifi_link_state_name(status.link_state),
+                    if status.backend_present { "yes" } else { "no" },
+                    if ssid.is_empty() { "<none>" } else { ssid },
+                ),
+            )
+        }
+        Err(rt::Error::Unsupported) => {
+            write_output_linef(output, format_args!("wifi status: no wireless backend"))
+        }
+        Err(error) => Err(error),
+    }
+}
+
 fn wait_for_socket_established(socket_handle: rt::Handle, timeout_ticks: u64) -> rt::Result<()> {
     let start = rt::monotonic_now()?;
     loop {
@@ -302,5 +550,63 @@ fn wait_for_socket_established(socket_handle: rt::Handle, timeout_ticks: u64) ->
             return Err(rt::Error::QueueEmpty);
         }
         rt::yield_current()?;
+    }
+}
+
+#[cfg(test)]
+mod wifi_tests {
+    use super::*;
+
+    #[test]
+    fn wifi_security_names_cover_every_classification() {
+        assert_eq!(wifi_security_name(WifiSecurity::Open), "open");
+        assert_eq!(wifi_security_name(WifiSecurity::Wpa2), "wpa2");
+        assert_eq!(wifi_security_name(WifiSecurity::Wpa3), "wpa3");
+        assert_eq!(wifi_security_name(WifiSecurity::Unknown), "unknown");
+    }
+
+    #[test]
+    fn wifi_link_state_names_cover_every_phase() {
+        assert_eq!(wifi_link_state_name(WifiLinkState::Down), "down");
+        assert_eq!(wifi_link_state_name(WifiLinkState::Scanning), "scanning");
+        assert_eq!(
+            wifi_link_state_name(WifiLinkState::Authenticating),
+            "authenticating"
+        );
+        assert_eq!(
+            wifi_link_state_name(WifiLinkState::Associating),
+            "associating"
+        );
+        assert_eq!(wifi_link_state_name(WifiLinkState::Connected), "connected");
+    }
+
+    #[test]
+    fn wifi_ssid_text_renders_hidden_and_binary_placeholders() {
+        assert_eq!(wifi_ssid_text(b"home"), "home");
+        assert_eq!(wifi_ssid_text(b""), "<hidden>");
+        assert_eq!(wifi_ssid_text(&[0xff, 0xfe]), "<binary>");
+    }
+
+    #[test]
+    fn wifi_scan_entry_field_layout_matches_runtime_type() {
+        // Guards the field names the renderer destructures; the runtime type
+        // is the wire contract (bssid/channel/rssi/ssid/security).
+        let entry = NetworkWifiScanEntry {
+            bssid: [0x10, 0x20, 0x30, 0x40, 0x50, 0x60],
+            channel: 6,
+            rssi: -40,
+            ssid_len: 4,
+            ssid: {
+                let mut ssid = [0u8; 32];
+                ssid[..4].copy_from_slice(b"home");
+                ssid
+            },
+            security: WifiSecurity::Wpa2,
+        };
+        assert_eq!(entry.ssid_len, 4);
+        assert_eq!(entry.channel, 6);
+        assert_eq!(entry.rssi, -40);
+        assert_eq!(wifi_ssid_text(&entry.ssid[..entry.ssid_len]), "home");
+        assert_eq!(wifi_security_name(entry.security), "wpa2");
     }
 }

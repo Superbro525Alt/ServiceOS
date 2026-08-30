@@ -244,6 +244,7 @@ dependencies = [
  "serviceos-crypto",
  "serviceos-kernel-arch-x86_64",
  "serviceos-kernel-core",
+ "serviceos-wireless",
  "spin",
  "uefi",
  "virtio-drivers",
@@ -285,6 +286,10 @@ version = "0.1.0"
 dependencies = [
  "serviceos-bundle",
 ]
+
+[[package]]
+name = "serviceos-wireless"
+version = "0.1.0"
 
 [[package]]
 name = "spin"

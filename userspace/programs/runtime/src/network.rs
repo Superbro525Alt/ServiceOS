@@ -1,11 +1,13 @@
 use crate::{
     Error, Handle, IPC_MAX_WORDS, NetworkDiagPingStats, NetworkDiscoveryPeer,
     NetworkFirewallSummary, NetworkInterfaceStatusInfo, NetworkListenPort, NetworkNeighborEntry,
-    NetworkSocketInfo, NetworkSocketKind, NetworkSocketTag, NetworkStatus, NetworkTag, RawMessage,
-    Result, channel_call, network_config_mode_from_word, network_config_state_from_word,
-    network_listen_port_kind_from_word, network_socket_kind_from_word,
-    network_socket_state_from_word, network_status_error, network_status_from_word, pack_bytes,
-    packet_backend_from_word, packet_link_state_from_word, unpack_bytes, unpack_mac,
+    NetworkSocketInfo, NetworkSocketKind, NetworkSocketTag, NetworkStatus, NetworkTag,
+    NetworkWifiSavedNetwork, NetworkWifiScanEntry, NetworkWifiStatus, RawMessage, Result,
+    WifiLinkState, WifiSecurity, channel_call, network_config_mode_from_word,
+    network_config_state_from_word, network_listen_port_kind_from_word,
+    network_socket_kind_from_word, network_socket_state_from_word, network_status_error,
+    network_status_from_word, pack_bytes, packet_backend_from_word, packet_link_state_from_word,
+    unpack_bytes, unpack_mac,
 };
 
 pub fn network_interface_count(network_handle: Handle) -> Result<usize> {
@@ -293,6 +295,311 @@ pub fn network_discovery_peers_parse_reply(
         };
     }
     Ok(count)
+}
+
+// --- Wireless control (network-service Wi-Fi family) ---
+
+/// Longest SSID/PSK the runtime will inline into a wireless request; mirrors
+/// the 802.11 limits enforced by the pure layer.
+pub const NETWORK_WIFI_SSID_BYTES_MAX: usize = 32;
+pub const NETWORK_WIFI_PSK_BYTES_MAX: usize = 64;
+
+/// Entry capacity a caller must provide to always receive a full
+/// WifiScanReply message (the service caps replies at 2 entries).
+pub const NETWORK_WIFI_SCAN_REPLY_ENTRIES_MAX: usize = 2;
+/// Entry capacity matching a full WifiSavedListReply message.
+pub const NETWORK_WIFI_SAVED_REPLY_ENTRIES_MAX: usize = 2;
+
+/// Words per packed scan entry in a WifiScanReply (see the ABI docs).
+pub(crate) const WIFI_SCAN_ENTRY_WORDS: usize = 6;
+/// Words per packed saved-network entry in a WifiSavedListReply.
+pub(crate) const WIFI_SAVED_ENTRY_WORDS: usize = 5;
+
+fn wifi_link_state_from_word(word: u64) -> Result<WifiLinkState> {
+    match word {
+        x if x == WifiLinkState::Down as u64 => Ok(WifiLinkState::Down),
+        x if x == WifiLinkState::Scanning as u64 => Ok(WifiLinkState::Scanning),
+        x if x == WifiLinkState::Authenticating as u64 => Ok(WifiLinkState::Authenticating),
+        x if x == WifiLinkState::Associating as u64 => Ok(WifiLinkState::Associating),
+        x if x == WifiLinkState::Connected as u64 => Ok(WifiLinkState::Connected),
+        _ => Err(Error::InvalidArgument),
+    }
+}
+
+pub fn network_wifi_security_from_word(word: u64) -> Result<WifiSecurity> {
+    match word {
+        x if x == WifiSecurity::Open as u64 => Ok(WifiSecurity::Open),
+        x if x == WifiSecurity::Wpa2 as u64 => Ok(WifiSecurity::Wpa2),
+        x if x == WifiSecurity::Wpa3 as u64 => Ok(WifiSecurity::Wpa3),
+        x if x == WifiSecurity::Unknown as u64 => Ok(WifiSecurity::Unknown),
+        _ => Err(Error::InvalidArgument),
+    }
+}
+
+/// Triggers a scan and decodes the entries carried in the reply. With no
+/// wireless backend registered this fails with [`Error::Unsupported`] —
+/// honest absence, never fabricated results.
+pub fn network_wifi_scan(
+    network_handle: Handle,
+    entries: &mut [NetworkWifiScanEntry],
+) -> Result<usize> {
+    let response = channel_call(
+        network_handle,
+        &mut RawMessage::empty(NetworkTag::WifiScanRequest as u32),
+    )?;
+    network_wifi_scan_parse_reply(&response, entries)
+}
+
+pub fn network_wifi_scan_parse_reply(
+    response: &RawMessage,
+    entries: &mut [NetworkWifiScanEntry],
+) -> Result<usize> {
+    if response.tag != NetworkTag::WifiScanReply as u32 || response.word_count < 3 {
+        return Err(Error::InvalidArgument);
+    }
+    let status = network_status_from_word(response.words[0]);
+    if status != NetworkStatus::Ok {
+        return Err(network_status_error(status));
+    }
+    let total = response.words[1] as usize;
+    let carried = response.words[2] as usize;
+    if (response.word_count as usize) != 3 + carried * WIFI_SCAN_ENTRY_WORDS {
+        return Err(Error::InvalidArgument);
+    }
+    if carried > entries.len() {
+        return Err(Error::BufferTooSmall);
+    }
+    for (index, entry) in entries.iter_mut().enumerate().take(carried) {
+        let base = 3 + index * WIFI_SCAN_ENTRY_WORDS;
+        let word0 = response.words[base];
+        let word1 = response.words[base + 1];
+        let bssid48 = word0 & 0xffff_ffff_ffff;
+        let ssid_len = (word1 >> 56) as usize;
+        if ssid_len > NETWORK_WIFI_SSID_BYTES_MAX {
+            return Err(Error::InvalidArgument);
+        }
+        let mut ssid = [0u8; NETWORK_WIFI_SSID_BYTES_MAX];
+        unpack_bytes(&response.words[base + 1..base + WIFI_SCAN_ENTRY_WORDS], ssid_len, &mut ssid)?;
+        *entry = NetworkWifiScanEntry {
+            bssid: [
+                (bssid48 >> 40) as u8,
+                (bssid48 >> 32) as u8,
+                (bssid48 >> 24) as u8,
+                (bssid48 >> 16) as u8,
+                (bssid48 >> 8) as u8,
+                bssid48 as u8,
+            ],
+            channel: (word0 >> 56) as u8,
+            rssi: ((word0 >> 48) & 0xff) as u8 as i8,
+            ssid_len,
+            ssid,
+            security: network_wifi_security_from_word((word1 >> 48) & 0xff)?,
+        };
+    }
+    Ok(total)
+}
+
+/// Joins a network (None psk = open). With no wireless backend this fails
+/// with [`Error::Unsupported`].
+pub fn network_wifi_join(
+    network_handle: Handle,
+    ssid: &str,
+    psk: Option<&str>,
+) -> Result<WifiLinkState> {
+    let mut request = network_wifi_join_request(ssid, psk)?;
+    let response = channel_call(network_handle, &mut request)?;
+    network_wifi_join_parse_reply(&response)
+}
+
+pub fn network_wifi_join_request(ssid: &str, psk: Option<&str>) -> Result<RawMessage> {
+    let ssid_bytes = ssid.as_bytes();
+    let psk_bytes = psk.unwrap_or("").as_bytes();
+    if ssid_bytes.is_empty()
+        || ssid_bytes.len() > NETWORK_WIFI_SSID_BYTES_MAX
+        || psk_bytes.len() > NETWORK_WIFI_PSK_BYTES_MAX
+        || (!psk_bytes.is_empty() && psk_bytes.len() < 8)
+    {
+        return Err(Error::InvalidArgument);
+    }
+    let mut request = RawMessage::empty(NetworkTag::WifiJoinRequest as u32);
+    request.word_count = 2 + pack_bytes(ssid_bytes, &mut request.words[2..])?;
+    let psk_words = pack_bytes(psk_bytes, &mut request.words[request.word_count as usize..])?;
+    request.words[0] = ssid_bytes.len() as u64;
+    request.words[1] = psk_bytes.len() as u64;
+    request.word_count += psk_words;
+    Ok(request)
+}
+
+pub fn network_wifi_join_parse_reply(response: &RawMessage) -> Result<WifiLinkState> {
+    if response.tag != NetworkTag::WifiJoinReply as u32 || response.word_count < 2 {
+        return Err(Error::InvalidArgument);
+    }
+    let status = network_status_from_word(response.words[0]);
+    if status != NetworkStatus::Ok {
+        return Err(network_status_error(status));
+    }
+    wifi_link_state_from_word(response.words[1])
+}
+
+/// Drops the current wireless link (no-op refusal without a backend).
+pub fn network_wifi_leave(network_handle: Handle) -> Result<WifiLinkState> {
+    let response = channel_call(
+        network_handle,
+        &mut RawMessage::empty(NetworkTag::WifiLeaveRequest as u32),
+    )?;
+    network_wifi_leave_parse_reply(&response)
+}
+
+pub fn network_wifi_leave_parse_reply(response: &RawMessage) -> Result<WifiLinkState> {
+    if response.tag != NetworkTag::WifiLeaveReply as u32 || response.word_count < 2 {
+        return Err(Error::InvalidArgument);
+    }
+    let status = network_status_from_word(response.words[0]);
+    if status != NetworkStatus::Ok {
+        return Err(network_status_error(status));
+    }
+    wifi_link_state_from_word(response.words[1])
+}
+
+/// Lists saved networks (up to the reply's per-message entry cap).
+pub fn network_wifi_saved_list(
+    network_handle: Handle,
+    saved: &mut [NetworkWifiSavedNetwork],
+) -> Result<usize> {
+    let response = channel_call(
+        network_handle,
+        &mut RawMessage::empty(NetworkTag::WifiSavedListRequest as u32),
+    )?;
+    network_wifi_saved_list_parse_reply(&response, saved)
+}
+
+pub fn network_wifi_saved_list_parse_reply(
+    response: &RawMessage,
+    saved: &mut [NetworkWifiSavedNetwork],
+) -> Result<usize> {
+    if response.tag != NetworkTag::WifiSavedListReply as u32 || response.word_count < 3 {
+        return Err(Error::InvalidArgument);
+    }
+    let status = network_status_from_word(response.words[0]);
+    if status != NetworkStatus::Ok {
+        return Err(network_status_error(status));
+    }
+    let total = response.words[1] as usize;
+    let carried = response.words[2] as usize;
+    if (response.word_count as usize) != 3 + carried * WIFI_SAVED_ENTRY_WORDS {
+        return Err(Error::InvalidArgument);
+    }
+    if carried > saved.len() {
+        return Err(Error::BufferTooSmall);
+    }
+    for (index, record) in saved.iter_mut().enumerate().take(carried) {
+        let base = 3 + index * WIFI_SAVED_ENTRY_WORDS;
+        let word0 = response.words[base];
+        let ssid_len = (word0 >> 56) as usize;
+        if ssid_len > NETWORK_WIFI_SSID_BYTES_MAX {
+            return Err(Error::InvalidArgument);
+        }
+        let mut ssid = [0u8; NETWORK_WIFI_SSID_BYTES_MAX];
+        unpack_bytes(&response.words[base..base + WIFI_SAVED_ENTRY_WORDS], ssid_len, &mut ssid)?;
+        *record = NetworkWifiSavedNetwork {
+            ssid_len,
+            ssid,
+            priority: ((word0 >> 48) & 0xff) as u8,
+        };
+    }
+    Ok(total)
+}
+
+pub fn network_wifi_saved_add(
+    network_handle: Handle,
+    ssid: &str,
+    psk: &str,
+    priority: u8,
+) -> Result<()> {
+    let mut request = network_wifi_saved_add_request(ssid, psk, priority)?;
+    let response = channel_call(network_handle, &mut request)?;
+    network_wifi_status_reply(&response, NetworkTag::WifiSavedAddReply)
+}
+
+pub fn network_wifi_saved_add_request(ssid: &str, psk: &str, priority: u8) -> Result<RawMessage> {
+    let ssid_bytes = ssid.as_bytes();
+    let psk_bytes = psk.as_bytes();
+    if ssid_bytes.is_empty()
+        || ssid_bytes.len() > NETWORK_WIFI_SSID_BYTES_MAX
+        || psk_bytes.is_empty()
+        || psk_bytes.len() > NETWORK_WIFI_PSK_BYTES_MAX
+    {
+        return Err(Error::InvalidArgument);
+    }
+    let mut request = RawMessage::empty(NetworkTag::WifiSavedAddRequest as u32);
+    request.word_count = 3 + pack_bytes(ssid_bytes, &mut request.words[3..])?;
+    let psk_words = pack_bytes(psk_bytes, &mut request.words[request.word_count as usize..])?;
+    request.words[0] = ssid_bytes.len() as u64;
+    request.words[1] = psk_bytes.len() as u64;
+    request.words[2] = priority as u64;
+    request.word_count += psk_words;
+    Ok(request)
+}
+
+pub fn network_wifi_saved_remove(network_handle: Handle, ssid: &str) -> Result<()> {
+    let mut request = network_wifi_saved_remove_request(ssid)?;
+    let response = channel_call(network_handle, &mut request)?;
+    network_wifi_status_reply(&response, NetworkTag::WifiSavedRemoveReply)
+}
+
+pub fn network_wifi_saved_remove_request(ssid: &str) -> Result<RawMessage> {
+    let ssid_bytes = ssid.as_bytes();
+    if ssid_bytes.is_empty() || ssid_bytes.len() > NETWORK_WIFI_SSID_BYTES_MAX {
+        return Err(Error::InvalidArgument);
+    }
+    let mut request = RawMessage::empty(NetworkTag::WifiSavedRemoveRequest as u32);
+    request.word_count = 1 + pack_bytes(ssid_bytes, &mut request.words[1..])?;
+    request.words[0] = ssid_bytes.len() as u64;
+    Ok(request)
+}
+
+/// Wireless status echo. Fails with [`Error::Unsupported`] while no backend
+/// exists (the only configuration in-tree today); the parse still validates
+/// the echo fields so a future backend reply is shape-checked on day one.
+pub fn network_wifi_status(network_handle: Handle) -> Result<NetworkWifiStatus> {
+    let response = channel_call(
+        network_handle,
+        &mut RawMessage::empty(NetworkTag::WifiStatusRequest as u32),
+    )?;
+    network_wifi_status_parse_reply(&response)
+}
+
+pub fn network_wifi_status_parse_reply(response: &RawMessage) -> Result<NetworkWifiStatus> {
+    if response.tag != NetworkTag::WifiStatusReply as u32 || response.word_count < 4 {
+        return Err(Error::InvalidArgument);
+    }
+    let status = network_status_from_word(response.words[0]);
+    if status != NetworkStatus::Ok {
+        return Err(network_status_error(status));
+    }
+    let ssid_len = response.words[3] as usize;
+    if ssid_len > NETWORK_WIFI_SSID_BYTES_MAX {
+        return Err(Error::InvalidArgument);
+    }
+    let mut ssid = [0u8; NETWORK_WIFI_SSID_BYTES_MAX];
+    unpack_bytes(&response.words[4..8], ssid_len, &mut ssid)?;
+    Ok(NetworkWifiStatus {
+        link_state: wifi_link_state_from_word(response.words[1])?,
+        backend_present: response.words[2] & 1 != 0,
+        ssid_len,
+        ssid,
+    })
+}
+
+fn network_wifi_status_reply(response: &RawMessage, tag: NetworkTag) -> Result<()> {
+    if response.tag != tag as u32 || response.word_count < 1 {
+        return Err(Error::InvalidArgument);
+    }
+    let status = network_status_from_word(response.words[0]);
+    if status != NetworkStatus::Ok {
+        return Err(network_status_error(status));
+    }
+    Ok(())
 }
 
 pub fn network_firewall_summary(network_handle: Handle) -> Result<NetworkFirewallSummary> {
@@ -747,4 +1054,171 @@ mod tests {
         assert_eq!(info.resolver_hits, 12);
         assert_eq!(info.resolver_misses, 34);
     }
+
+    // --- wireless wrappers ---
+
+    #[test]
+    fn wifi_join_request_packs_ssid_psk_inline_and_validates() {
+        let request =
+            network_wifi_join_request("home", Some("passphrase1")).expect("request builds");
+        assert_eq!(request.tag, NetworkTag::WifiJoinRequest as u32);
+        assert_eq!(request.words[0], 4);
+        assert_eq!(request.words[1], 11);
+        assert_eq!(request.word_count, 2 + 1 + 2);
+        let mut ssid = [0u8; 8];
+        unpack_bytes(&request.words[2..3], 4, &mut ssid).expect("ssid decodes");
+        assert_eq!(&ssid[..4], b"home");
+        let mut psk = [0u8; 16];
+        unpack_bytes(&request.words[3..5], 11, &mut psk).expect("psk decodes");
+        assert_eq!(&psk[..11], b"passphrase1");
+
+        // Open network: psk length 0, no psk words.
+        let request = network_wifi_join_request("cafe", None).expect("request builds");
+        assert_eq!(request.word_count, 3);
+        assert_eq!(request.words[1], 0);
+
+        // Validation: empty ssid, oversized psk, too-short psk.
+        assert!(network_wifi_join_request("", None).is_err());
+        assert!(network_wifi_join_request("home", Some("short")).is_err());
+        let long_psk = "p".repeat(NETWORK_WIFI_PSK_BYTES_MAX + 1);
+        assert!(network_wifi_join_request("home", Some(&long_psk)).is_err());
+        assert!(network_wifi_join_request("", None).is_err());
+    }
+
+    #[test]
+    fn wifi_join_parse_reply_maps_status_and_link_state() {
+        let mut reply = RawMessage::empty(NetworkTag::WifiJoinReply as u32);
+        reply.word_count = 2;
+        reply.words[0] = NetworkStatus::Ok as u32 as u64;
+        reply.words[1] = WifiLinkState::Connected as u64;
+        assert_eq!(
+            network_wifi_join_parse_reply(&reply).expect("parses"),
+            WifiLinkState::Connected
+        );
+
+        // Backend absent: Unsupported maps to the honest error.
+        reply.words[0] = NetworkStatus::Unsupported as u32 as u64;
+        assert_eq!(
+            network_wifi_join_parse_reply(&reply).expect_err("unsupported"),
+            Error::Unsupported
+        );
+
+        // Unknown link-state word is rejected.
+        reply.words[0] = NetworkStatus::Ok as u32 as u64;
+        reply.words[1] = 99;
+        assert!(network_wifi_join_parse_reply(&reply).is_err());
+    }
+
+    #[test]
+    fn wifi_scan_parse_reply_decodes_entry_fields() {
+        let mut reply = RawMessage::empty(NetworkTag::WifiScanReply as u32);
+        reply.word_count = 3 + WIFI_SCAN_ENTRY_WORDS as u32;
+        reply.words[0] = NetworkStatus::Ok as u32 as u64;
+        reply.words[1] = 1;
+        reply.words[2] = 1;
+        let bssid48 = 0xaabbccddeeffu64;
+        reply.words[3] = (6u64 << 56) | (0xd8u64 << 48) | bssid48;
+        reply.words[4] = (4u64 << 56) | (1u64 << 48) | u64::from_le_bytes(*b"home\0\0\0\0");
+        reply.words[5] = u64::from_le_bytes(*b"work\0\0\0\0");
+        reply.words[6] = 0;
+        reply.words[7] = 0;
+        reply.words[8] = 0;
+        let mut entries = [NetworkWifiScanEntry {
+            bssid: [0; 6],
+            channel: 0,
+            rssi: 0,
+            ssid_len: 0,
+            ssid: [0; 32],
+            security: WifiSecurity::Unknown,
+        }; 2];
+        let total = network_wifi_scan_parse_reply(&reply, &mut entries).expect("parses");
+        assert_eq!(total, 1);
+        let entry = &entries[0];
+        assert_eq!(entry.bssid, [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff]);
+        assert_eq!(entry.channel, 6);
+        assert_eq!(entry.rssi, -40);
+        assert_eq!(entry.ssid_len, 4);
+        assert_eq!(&entry.ssid[..4], b"home");
+        assert_eq!(entry.security, WifiSecurity::Wpa2);
+
+        // Unsupported status (no backend) surfaces the honest error.
+        let mut absent = RawMessage::empty(NetworkTag::WifiScanReply as u32);
+        absent.word_count = 3;
+        absent.words[0] = NetworkStatus::Unsupported as u32 as u64;
+        absent.words[1] = 0;
+        absent.words[2] = 0;
+        assert_eq!(
+            network_wifi_scan_parse_reply(&absent, &mut entries).expect_err("unsupported"),
+            Error::Unsupported
+        );
+    }
+
+    #[test]
+    fn wifi_saved_list_parse_reply_decodes_ssid_and_priority() {
+        let mut reply = RawMessage::empty(NetworkTag::WifiSavedListReply as u32);
+        reply.word_count = (3 + WIFI_SAVED_ENTRY_WORDS) as u32;
+        reply.words[0] = NetworkStatus::Ok as u32 as u64;
+        reply.words[1] = 1;
+        reply.words[2] = 1;
+        reply.words[3] = (4u64 << 56) | (3u64 << 48) | u64::from_le_bytes(*b"home\0\0\0\0");
+        reply.words[4] = 0;
+        let mut saved = [NetworkWifiSavedNetwork {
+            ssid_len: 0,
+            ssid: [0; 32],
+            priority: 0,
+        }; 2];
+        let total = network_wifi_saved_list_parse_reply(&reply, &mut saved).expect("parses");
+        assert_eq!(total, 1);
+        assert_eq!(saved[0].ssid_len, 4);
+        assert_eq!(&saved[0].ssid[..4], b"home");
+        assert_eq!(saved[0].priority, 3);
+    }
+
+    #[test]
+    fn wifi_saved_add_remove_request_shapes_roundtrip() {
+        let request =
+            network_wifi_saved_add_request("home", "passphrase1", 3).expect("request builds");
+        assert_eq!(request.tag, NetworkTag::WifiSavedAddRequest as u32);
+        assert_eq!(request.word_count, 6);
+        assert_eq!(request.words[0], 4);
+        assert_eq!(request.words[1], 11);
+        assert_eq!(request.words[2], 3);
+        // Open-network saves are rejected up front (codec cannot store them).
+        assert!(network_wifi_saved_add_request("open", "", 0).is_err());
+        assert!(network_wifi_saved_add_request("", "passphrase1", 0).is_err());
+
+        let remove = network_wifi_saved_remove_request("home").expect("request builds");
+        assert_eq!(remove.tag, NetworkTag::WifiSavedRemoveRequest as u32);
+        assert_eq!(remove.word_count, 2);
+        assert_eq!(remove.words[0], 4);
+        assert!(network_wifi_saved_remove_request("").is_err());
+    }
+
+    #[test]
+    fn wifi_status_parse_reply_validates_echo_shape() {
+        let mut reply = RawMessage::empty(NetworkTag::WifiStatusReply as u32);
+        reply.word_count = 8;
+        reply.words[0] = NetworkStatus::Ok as u32 as u64;
+        reply.words[1] = WifiLinkState::Connected as u64;
+        reply.words[2] = 1;
+        reply.words[3] = 4;
+        reply.words[4] = u64::from_le_bytes(*b"home\0\0\0\0");
+        let status = network_wifi_status_parse_reply(&reply).expect("parses");
+        assert_eq!(status.link_state, WifiLinkState::Connected);
+        assert!(status.backend_present);
+        assert_eq!(&status.ssid[..4], b"home");
+
+        // No backend: honest Unsupported error.
+        reply.words[0] = NetworkStatus::Unsupported as u32 as u64;
+        assert_eq!(
+            network_wifi_status_parse_reply(&reply).expect_err("unsupported"),
+            Error::Unsupported
+        );
+
+        // Unknown link-state word rejected.
+        reply.words[0] = NetworkStatus::Ok as u32 as u64;
+        reply.words[1] = 42;
+        assert!(network_wifi_status_parse_reply(&reply).is_err());
+    }
 }
+

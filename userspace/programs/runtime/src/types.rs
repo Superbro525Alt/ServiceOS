@@ -7,7 +7,8 @@ use crate::{
     NetworkSocketState, PackageChannel, PackageMaintenanceAction, PackageRepositorySyncState,
     PackageRepositoryTrustMode, PackageRing, PackageTrustState, PacketInterfaceBackend,
     PacketInterfaceLinkState, PermissionPolicyState, RuntimeEnvState, RuntimeKind, RuntimeRunState,
-    RuntimeWorkloadKind, SecurityAuditKind, ServiceId, SessionInputSource,
+    RuntimeWorkloadKind, SecurityAuditKind, ServiceId, SessionInputSource, WifiLinkState,
+    WifiSecurity,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -234,6 +235,37 @@ pub struct NetworkDiscoveryPeer {
     pub name_len: usize,
     pub name: [u8; 15],
     pub age_ms: u32,
+}
+
+/// One wireless scan result as decoded by network-service (backend-absent
+/// boots never populate these; the shape pins the pure scan-record fields).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NetworkWifiScanEntry {
+    pub bssid: [u8; 6],
+    pub channel: u8,
+    pub rssi: i8,
+    pub ssid_len: usize,
+    pub ssid: [u8; 32],
+    pub security: WifiSecurity,
+}
+
+/// One remembered wireless network. PSK octets never leave network-service.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NetworkWifiSavedNetwork {
+    pub ssid_len: usize,
+    pub ssid: [u8; 32],
+    pub priority: u8,
+}
+
+/// Wireless status echo from WifiStatusRequest.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NetworkWifiStatus {
+    pub link_state: WifiLinkState,
+    /// True only when a WirelessBackend device is registered with the kernel;
+    /// always false today.
+    pub backend_present: bool,
+    pub ssid_len: usize,
+    pub ssid: [u8; 32],
 }
 
 /// Read-only firewall snapshot from FirewallRulesGetRequest.

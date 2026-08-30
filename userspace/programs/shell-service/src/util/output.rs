@@ -74,6 +74,11 @@ net sockets: show active network sockets\r\n\
 net resolve <name>: resolve a host or literal\r\n\
 net ping <name|ip>: run an ICMP reachability probe\r\n\
 net http <host> [path]: fetch a URL over TCP through network-service\r\n\
+wifi scan: list wireless networks\r\n\
+wifi join <ssid> [psk]: join a wireless network\r\n\
+wifi leave: drop the wireless link\r\n\
+wifi saved [list|add <ssid> <psk>|remove <ssid>]: manage saved networks\r\n\
+wifi status: show the wireless link state\r\n\
 audio endpoints: show audio endpoints\r\n\
 audio streams: show active audio streams\r\n\
 audio tone <hz> [ms]: play a diagnostic tone through audio-service\r\n\

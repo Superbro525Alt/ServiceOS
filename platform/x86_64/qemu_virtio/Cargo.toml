@@ -14,6 +14,7 @@ bench = false
 [dependencies]
 serviceos-abi = { path = "../../../shared/abi" }
 serviceos-crypto = { path = "../../../shared/crypto" }
+serviceos-wireless = { path = "../../../shared/wireless" }
 serviceos-kernel-core = { path = "../../../kernel/core" }
 serviceos-kernel-arch-x86_64 = { path = "../../../arch/x86_64" }
 spin = "0.9"

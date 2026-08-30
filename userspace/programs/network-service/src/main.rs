@@ -24,6 +24,7 @@ mod mdns;
 mod protocol;
 mod types;
 mod util;
+mod wifi;
 
 rt::entry!(run);
 
@@ -79,9 +80,10 @@ pub(crate) fn run() -> u64 {
     };
     let _ = rt::handle_close(config_handle);
 
+    let mut wifi = crate::wifi::WifiState::new();
     let mut hosts = [HostEntry::empty(); MAX_HOSTS];
     let mut net_options = crate::config::NetFileOptions::defaults();
-    let host_count = match load_hosts(hosts_handle, &mut hosts, &mut net_options) {
+    let host_count = match load_hosts(hosts_handle, &mut hosts, &mut net_options, &mut wifi) {
         Ok(count) => count,
         Err(_) => return 0xfb05,
     };
@@ -574,6 +576,7 @@ pub(crate) fn run() -> u64 {
                     &mut identity,
                     &mut registry,
                     &mut peer_table,
+                    &mut wifi,
                 )
                 .is_err()
                 {

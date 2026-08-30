@@ -76,6 +76,7 @@ pub(crate) fn handle_public_request(
     identity: &mut HostIdentity,
     registry: &mut Registry,
     peers: &mut PeerTable,
+    wifi: &mut crate::wifi::WifiState,
 ) -> rt::Result<()> {
     match request.tag {
         x if x == NetworkTag::InterfaceListRequest as u32 => {
@@ -804,6 +805,16 @@ pub(crate) fn handle_public_request(
             reply.words[1] = written as u64;
             let _ = rt::channel_send(reply_handle, &reply);
             let _ = rt::handle_close(reply_handle);
+        }
+        x if x == NetworkTag::WifiScanRequest as u32
+            || x == NetworkTag::WifiJoinRequest as u32
+            || x == NetworkTag::WifiLeaveRequest as u32
+            || x == NetworkTag::WifiSavedListRequest as u32
+            || x == NetworkTag::WifiSavedAddRequest as u32
+            || x == NetworkTag::WifiSavedRemoveRequest as u32
+            || x == NetworkTag::WifiStatusRequest as u32 =>
+        {
+            crate::wifi::handle(request, wifi)?;
         }
         x if x == ZERO_COPY_STATS_REQUEST as u32 => {
             if request.handle_count < 1 {

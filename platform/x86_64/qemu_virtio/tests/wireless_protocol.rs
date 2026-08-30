@@ -20,7 +20,7 @@ use wireless::{
     Authenticator, CMD_ASSOCIATE, CMD_AUTHENTICATE, CMD_DISCONNECT, CMD_JOIN, CMD_TRIGGER_SCAN,
     CodecError, CommandBuilder, DecodeError, EapolKeyFrame, HandshakeError, HandshakeState,
     LinkEvent, LinkMonitor, LinkState, LinkStateError, MAX_SAVED_NETWORKS, ParseError, STATUS_OK,
-    STATUS_REJECTED, SavedNetwork, SavedNetworkStore, Security, WireError,
+    STATUS_REJECTED, SavedNetwork, SavedNetworkStore, ScanEntry, Security, WireError,
 };
 
 // ---------------------------------------------------------------------------
@@ -199,7 +199,7 @@ fn rsne(akm_type: u8) -> Vec<u8> {
 #[test]
 fn scan_decode_classifies_open_network_with_bssid_and_channel() {
     let record = beacon_record(-55, 1, Some(6), b"open-net", None);
-    let entry = wireless::decode_scan_record(&record).expect("decodes");
+    let entry: ScanEntry = wireless::decode_scan_record(&record).expect("decodes");
     assert_eq!(entry.rssi, -55);
     assert_eq!(entry.bssid, [0x10, 0x20, 0x30, 0x40, 0x50, 0x60]);
     assert_eq!(entry.ssid, b"open-net");

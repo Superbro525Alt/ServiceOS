@@ -159,6 +159,7 @@ pub(crate) fn execute_command(
             _ => write_output_linef(output, format_args!("usage: ps app [name]")),
         },
         "net" => network::cmd_net(bootstrap, output, parts),
+        "wifi" => network::cmd_wifi(bootstrap, output, parts),
         "audio" => audio::cmd_audio(bootstrap, output, parts),
         "gfx" => graphics::cmd_gfx(bootstrap, output, parts),
         "desktop" => desktop::cmd_desktop(bootstrap, output, parts),

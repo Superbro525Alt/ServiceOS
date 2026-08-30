@@ -113,6 +113,73 @@ pub enum NetworkTag {
     /// Peer query returning hosts announced within a caller-supplied window.
     DiscoveryPeersRequest = 0x820,
     DiscoveryPeersReply = 0x821,
+    // --- Wireless (Wi-Fi) control family. Additive at the end; the
+    // service-local 0x822/0x823 zero-copy-stats pair stays out of the ABI
+    // until its own promotion. Every request carries a reply handle in
+    // handles[0]; every reply leads with words[0] = NetworkStatus. With no
+    // WirelessBackend device registered (the only configuration in-tree
+    // today) every operation replies `Unsupported` — never fake success.
+    /// Trigger a scan. Reply WifiScanReply: words[1] = total networks found,
+    /// words[2] = entries in this message, then 5 words per entry
+    /// (see the scan-entry packing note below; max 2 entries per reply).
+    WifiScanRequest = 0x824,
+    WifiScanReply = 0x825,
+    /// Join a network: words[0] = ssid length, words[1] = psk length
+    /// (0 = open network), words[2..] = inline ssid bytes followed by
+    /// inline psk bytes. Reply WifiJoinReply: words[1] = WifiLinkState.
+    WifiJoinRequest = 0x826,
+    WifiJoinReply = 0x827,
+    /// Drop the current wireless link. Reply WifiLeaveReply:
+    /// words[1] = WifiLinkState.
+    WifiLeaveRequest = 0x828,
+    WifiLeaveReply = 0x829,
+    /// List saved networks. Reply WifiSavedListReply: words[1] = total saved
+    /// count, words[2] = entries in this message, then 5 words per entry
+    /// (see the saved-entry packing note below; max 2 per message). PSK
+    /// octets never leave the service.
+    WifiSavedListRequest = 0x82a,
+    WifiSavedListReply = 0x82b,
+    /// Remember a network: words[0] = ssid length, words[1] = psk length,
+    /// words[2] = priority, words[3..] = inline ssid then psk bytes.
+    /// Reply WifiSavedAddReply: status only (Ok / InvalidTarget /
+    /// CapacityExceeded).
+    WifiSavedAddRequest = 0x82c,
+    WifiSavedAddReply = 0x82d,
+    /// Forget a network: words[0] = ssid length, words[1..] = inline ssid.
+    /// Reply WifiSavedRemoveReply: status only (Ok / NotFound /
+    /// InvalidTarget).
+    WifiSavedRemoveRequest = 0x82e,
+    WifiSavedRemoveReply = 0x82f,
+    /// Wireless status echo. Reply WifiStatusReply: words[1] = WifiLinkState,
+    /// words[2] = flags (bit 0 = wireless backend registered), words[3] =
+    /// current ssid length, words[4..] = inline ssid bytes (0 length when
+    /// down). The status word is `Unsupported` while no backend exists —
+    /// the state echo is still honest service-side truth.
+    WifiStatusRequest = 0x830,
+    WifiStatusReply = 0x831,
+}
+
+/// Service-layer security classification for a wireless network. Values
+/// mirror the pure-layer `Security` classification (RSNE presence + AKM).
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WifiSecurity {
+    Open = 0,
+    Wpa2 = 1,
+    Wpa3 = 2,
+    Unknown = 3,
+}
+
+/// Service-visible wireless link phases. Values mirror the pure-layer
+/// `LinkState` machine the network-service drives.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WifiLinkState {
+    Down = 0,
+    Scanning = 1,
+    Authenticating = 2,
+    Associating = 3,
+    Connected = 4,
 }
 
 #[repr(u32)]
@@ -591,6 +658,21 @@ mod tests {
         assert_eq!(T::DiscoveryRegisterReply as u32, 0x81f);
         assert_eq!(T::DiscoveryPeersRequest as u32, 0x820);
         assert_eq!(T::DiscoveryPeersReply as u32, 0x821);
+        // Wireless family appended after the promoted block.
+        assert_eq!(T::WifiScanRequest as u32, 0x824);
+        assert_eq!(T::WifiScanReply as u32, 0x825);
+        assert_eq!(T::WifiJoinRequest as u32, 0x826);
+        assert_eq!(T::WifiJoinReply as u32, 0x827);
+        assert_eq!(T::WifiLeaveRequest as u32, 0x828);
+        assert_eq!(T::WifiLeaveReply as u32, 0x829);
+        assert_eq!(T::WifiSavedListRequest as u32, 0x82a);
+        assert_eq!(T::WifiSavedListReply as u32, 0x82b);
+        assert_eq!(T::WifiSavedAddRequest as u32, 0x82c);
+        assert_eq!(T::WifiSavedAddReply as u32, 0x82d);
+        assert_eq!(T::WifiSavedRemoveRequest as u32, 0x82e);
+        assert_eq!(T::WifiSavedRemoveReply as u32, 0x82f);
+        assert_eq!(T::WifiStatusRequest as u32, 0x830);
+        assert_eq!(T::WifiStatusReply as u32, 0x831);
         // Pre-existing public-channel tags keep their numbers too.
         assert_eq!(T::SocketListenReply as u32, 0x80d);
         // Cross-namespace sanity: per-socket control channels are a distinct

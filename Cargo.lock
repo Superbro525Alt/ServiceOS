@@ -241,6 +241,7 @@ name = "serviceos-platform-qemu-virtio"
 version = "0.1.0"
 dependencies = [
  "serviceos-abi",
+ "serviceos-crypto",
  "serviceos-kernel-arch-x86_64",
  "serviceos-kernel-core",
  "spin",

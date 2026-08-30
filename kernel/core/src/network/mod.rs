@@ -1,9 +1,11 @@
 mod backend;
 mod core;
 pub mod ring;
+mod wireless;
 
 pub use backend::{PacketBackend, PacketInterfaceError, PacketInterfaceObject};
 pub use core::{NetworkCore, initialize, manager};
+pub use wireless::{WirelessBackend, WirelessCapabilities, WirelessError};
 
 #[cfg(test)]
 mod tests {

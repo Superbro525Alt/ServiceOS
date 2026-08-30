@@ -56,9 +56,11 @@ pub(crate) type OpResult<T> = Result<T, OpError>;
 /// Strategy selected for a move/rename request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum MovePlan {
-    /// Server-side rename primitive (not on the wire today).
+    /// Server-side rename primitive: same-directory rename, cross-directory
+    /// move, and whole-subtree directory moves in one atomic request.
     Rename,
-    /// Chunked copy to the target followed by source delete.
+    /// Chunked copy to the target followed by source delete; used when the
+    /// source/destination pair cannot pack into one rename message.
     CopyDelete,
     CopyDeleteTree,
 }
@@ -70,6 +72,24 @@ impl MovePlan {
             (_, EntryKind::Directory) => MovePlan::CopyDeleteTree,
             (_, EntryKind::File) | (_, EntryKind::Parent) => MovePlan::CopyDelete,
         }
+    }
+}
+
+/// True when a source/destination pair fits a single rename message:
+/// two length words plus both byte-packed paths must stay within
+/// `IPC_MAX_WORDS`. Outside this window the copy-then-delete plan runs.
+pub(crate) fn rename_packs(source_len: usize, dest_len: usize) -> bool {
+    2 + source_len.div_ceil(8) + dest_len.div_ceil(8) <= rt::IPC_MAX_WORDS
+}
+
+/// Rename-specific status mapping: the storage service reports destination
+/// collisions with `AlreadyExists`, which the runtime transports as `Busy`
+/// (the established collision encoding from directory-create). In rename
+/// context that can only mean the destination name is taken.
+pub(crate) fn rename_error(error: rt::Error) -> OpError {
+    match error {
+        rt::Error::Busy => OpError::Exists,
+        other => OpError::from(other),
     }
 }
 
@@ -573,8 +593,10 @@ pub(crate) fn delete_tree(storage: rt::Handle, dir_path: &[u8], depth: usize) ->
     )
 }
 
-/// Moves (or renames) an entry: composed as chunked copy followed by
-/// source deletion — no rename primitive exists on the wire.
+/// Moves (or renames) an entry: the storage service applies the whole
+/// change atomically on the wire (subtree rewrite for directories,
+/// destination persistence adopted); oversized path pairs fall back to
+/// chunked copy plus source deletion.
 pub(crate) fn move_entry(
     storage: rt::Handle,
     kind: EntryKind,
@@ -583,8 +605,12 @@ pub(crate) fn move_entry(
     dst_name: &[u8],
     progress: &mut dyn FnMut(CopyProgress),
 ) -> OpResult<()> {
-    match MovePlan::decide(false, kind) {
-        MovePlan::Rename => Err(OpError::Denied),
+    let (dst_len, dst_path) = compose_target(dst_parent, dst_name, kind)?;
+    match MovePlan::decide(rename_packs(src_path.len(), dst_len), kind) {
+        MovePlan::Rename => {
+            let dest = path_text(&dst_path[..dst_len])?;
+            rt::storage_rename(storage, path_text(src_path)?, dest).map_err(rename_error)
+        }
         MovePlan::CopyDelete => {
             copy_file(storage, src_path, dst_parent, dst_name, progress)?;
             let segments = split_segments(src_path)?;
@@ -698,19 +724,80 @@ mod tests {
     }
 
     #[test]
-    fn move_plan_renames_only_when_supported() {
+    fn move_plan_native_rename_covers_files_directories_and_parent_rows() {
+        assert_eq!(MovePlan::decide(true, EntryKind::File), MovePlan::Rename);
         assert_eq!(
-            MovePlan::decide(true, EntryKind::File),
+            MovePlan::decide(true, EntryKind::Directory),
             MovePlan::Rename
         );
+        assert_eq!(MovePlan::decide(true, EntryKind::Parent), MovePlan::Rename);
+    }
+
+    #[test]
+    fn move_plan_copy_delete_only_when_rename_cannot_pack() {
         assert_eq!(
             MovePlan::decide(false, EntryKind::File),
+            MovePlan::CopyDelete
+        );
+        assert_eq!(
+            MovePlan::decide(false, EntryKind::Parent),
             MovePlan::CopyDelete
         );
         assert_eq!(
             MovePlan::decide(false, EntryKind::Directory),
             MovePlan::CopyDeleteTree
         );
+    }
+
+    #[test]
+    fn rename_packs_tracks_single_message_capacity_boundary() {
+        assert!(rename_packs(0, 0));
+        assert!(rename_packs(11, 14));
+        assert!(rename_packs(96, 16));
+        assert!(!rename_packs(96, 17));
+        assert!(!rename_packs(96, 96));
+    }
+
+    #[test]
+    fn rename_error_maps_collision_to_exists_and_keeps_other_mappings() {
+        assert_eq!(rename_error(rt::Error::Busy), OpError::Exists);
+        assert_eq!(rename_error(rt::Error::NotFound), OpError::NotFound);
+        assert_eq!(
+            rename_error(rt::Error::InvalidArgument),
+            OpError::InvalidName
+        );
+        assert_eq!(rename_error(rt::Error::PermissionDenied), OpError::Denied);
+        assert_eq!(rename_error(rt::Error::BufferTooSmall), OpError::TooLong);
+        assert_eq!(
+            rename_error(rt::Error::CapacityExceeded),
+            OpError::Transport
+        );
+    }
+
+    #[test]
+    fn rename_wire_layout_packs_source_then_dest_with_kind_slashes() {
+        let request = rt::storage_rename_request(b"home/note.txt", b"tmp/note.txt")
+            .expect("file move request builds");
+        assert_eq!(request.tag, rt::StorageTag::RenameRequest as u32);
+        assert_eq!(request.word_count, 6);
+        assert_eq!(request.words[0], 13);
+        assert_eq!(request.words[1], 12);
+        let mut source = [0u8; MAX_STORAGE_PATH];
+        rt::unpack_bytes(&request.words[2..4], 13, &mut source).expect("source decodes");
+        assert_eq!(&source[..13], b"home/note.txt");
+        let mut dest = [0u8; MAX_STORAGE_PATH];
+        rt::unpack_bytes(&request.words[4..6], 12, &mut dest).expect("dest decodes");
+        assert_eq!(&dest[..12], b"tmp/note.txt");
+
+        let request = rt::storage_rename_request(b"home/box/", b"tmp/box/")
+            .expect("directory move request builds");
+        assert_eq!(request.tag, rt::StorageTag::RenameRequest as u32);
+        assert_eq!(request.word_count, 5);
+        assert_eq!(request.words[0], 9);
+        assert_eq!(request.words[1], 8);
+        let mut dest = [0u8; MAX_STORAGE_PATH];
+        rt::unpack_bytes(&request.words[4..5], 8, &mut dest).expect("dest decodes");
+        assert_eq!(&dest[..8], b"tmp/box/");
     }
 
     #[test]

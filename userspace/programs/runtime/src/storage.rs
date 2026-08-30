@@ -626,6 +626,47 @@ pub fn storage_directory_open_path_file(
     storage_directory_traverse(directory_handle, path, false, writable)
 }
 
+/// Builds a `RenameRequest` carrying two namespace paths: `words[0]` holds
+/// the source byte length, `words[1]` the destination byte length, and the
+/// payload packs the source bytes (padded to a word) followed by the
+/// destination bytes. Directory paths carry their kind through the
+/// trailing-slash convention on both endpoints.
+pub fn storage_rename_request(source: &[u8], dest: &[u8]) -> Result<RawMessage> {
+    let source_words = source.len().div_ceil(8);
+    let dest_words = dest.len().div_ceil(8);
+    if 2 + source_words + dest_words > IPC_MAX_WORDS {
+        return Err(Error::BufferTooSmall);
+    }
+
+    let mut request = RawMessage::empty(StorageTag::RenameRequest as u32);
+    request.word_count = 2 + pack_bytes(source, &mut request.words[2..])?;
+    let dest_offset = request.word_count as usize;
+    request.word_count += pack_bytes(dest, &mut request.words[dest_offset..])?;
+    request.words[0] = source.len() as u64;
+    request.words[1] = dest.len() as u64;
+    Ok(request)
+}
+
+/// Server-side rename/move: same-directory rename, cross-directory move,
+/// and whole-subtree directory moves are one atomic request. Destination
+/// collisions are rejected without overwrite.
+pub fn storage_rename(storage_handle: Handle, source: &str, dest: &str) -> Result<()> {
+    let mut request = storage_rename_request(source.as_bytes(), dest.as_bytes())?;
+    let response = channel_call(storage_handle, &mut request)?;
+    if response.tag != StorageTag::RenameReply as u32 || response.word_count < 1 {
+        return Err(Error::InvalidArgument);
+    }
+
+    match response.words[0] as u32 {
+        x if x == StorageStatus::Ok as u32 => Ok(()),
+        x if x == StorageStatus::NotFound as u32 => Err(Error::NotFound),
+        x if x == StorageStatus::Denied as u32 => Err(Error::PermissionDenied),
+        x if x == StorageStatus::AlreadyExists as u32 => Err(Error::Busy),
+        x if x == StorageStatus::InvalidPath as u32 => Err(Error::InvalidArgument),
+        _ => Err(Error::InvalidArgument),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -722,5 +763,35 @@ mod tests {
             storage_search_parse_reply::<16>(&reply),
             Err(Error::InvalidArgument)
         );
+    }
+
+    #[test]
+    fn storage_rename_request_packs_source_then_dest_with_lengths() {
+        let request =
+            storage_rename_request(b"home/note.txt", b"home/renamed.txt").expect("request builds");
+        assert_eq!(request.tag, StorageTag::RenameRequest as u32);
+        assert_eq!(request.word_count, 6);
+        assert_eq!(request.words[0], 13);
+        assert_eq!(request.words[1], 16);
+
+        let mut source = [0u8; 16];
+        unpack_bytes(&request.words[2..4], 13, &mut source).expect("source decodes");
+        assert_eq!(&source[..13], b"home/note.txt");
+
+        let mut dest = [0u8; 16];
+        unpack_bytes(&request.words[4..6], 16, &mut dest).expect("dest decodes");
+        assert_eq!(&dest[..16], b"home/renamed.txt");
+    }
+
+    #[test]
+    fn storage_rename_request_rejects_pairs_that_overflow_one_message() {
+        let source = [b'a'; (IPC_MAX_WORDS - 3) * 8];
+        let dest = [b'b'; 9];
+        assert_eq!(
+            storage_rename_request(&source, &dest),
+            Err(Error::BufferTooSmall)
+        );
+        let dest = [b'b'; 8];
+        assert!(storage_rename_request(&source, &dest).is_ok());
     }
 }

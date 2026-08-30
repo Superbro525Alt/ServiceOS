@@ -411,6 +411,31 @@ pub(crate) fn enumerate_sessions(
     Ok(count)
 }
 
+/// Query terminal-service's active theme (service-global operator pick).
+/// Returns None on any transport or reply failure so callers keep their
+/// local default; a fresh service answers 0 (the default theme).
+pub(crate) fn query_active_theme(service_handle: rt::Handle) -> Option<u8> {
+    let reply = rt::channel_create().ok()?;
+    let mut request = RawMessage::empty(crate::wire::THEME_GET_REQUEST);
+    request.handle_count = 1;
+    request.handles[0] = reply.second;
+    request.handle_rights[0] = rt::rights::SEND;
+    let sent = rt::channel_send(service_handle, &request);
+    let _ = rt::handle_close(reply.second);
+    sent.ok()?;
+
+    let mut response = RawMessage::empty(0);
+    rt::channel_receive_blocking(reply.first, &mut response).ok()?;
+    let _ = rt::handle_close(reply.first);
+    if response.tag != crate::wire::THEME_GET_REPLY || response.word_count < 2 {
+        return None;
+    }
+    if (response.words[0] as u32) != TerminalStatus::Ok as u32 {
+        return None;
+    }
+    Some(response.words[1] as u8)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

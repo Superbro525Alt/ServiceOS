@@ -87,8 +87,7 @@ fn draw_titlebar(bytes: &mut [u8], width: usize, state: &TerminalState) {
         "X",
     );
     rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, 10, 9, ui::TEXT_PRIMARY, "TERMINAL");
-    let profile =
-        state.profiles[state.profile_index % profiles::PROFILE_COUNT].name_str();
+    let profile = state.profiles[state.profile_index % profiles::PROFILE_COUNT].name_str();
     rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, 76, 9, ui::TEXT_PRIMARY, profile);
     rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, 140, 9, theme.muted, theme.name);
 }
@@ -298,7 +297,7 @@ fn draw_pane(
                     cursor_y + CELL_HEIGHT - 2,
                     CELL_WIDTH,
                     2,
-                    ui::ACCENT,
+                    theme.cursor,
                 );
             }
         }
@@ -324,7 +323,14 @@ fn draw_search_overlay(bytes: &mut [u8], state: &TerminalState, theme: &Theme) {
         return;
     }
     let row_y = rect.y + rect.h - CELL_HEIGHT - 1;
-    fill_rect(bytes, rect.x, row_y, rect.w, CELL_HEIGHT + 1, theme.panel_alt);
+    fill_rect(
+        bytes,
+        rect.x,
+        row_y,
+        rect.w,
+        CELL_HEIGHT + 1,
+        theme.panel_alt,
+    );
 
     use serviceos_shell_service::history_search as hs;
     let pane = &tab.panes[overlay.pane_index];
@@ -350,7 +356,8 @@ fn draw_search_overlay(bytes: &mut [u8], state: &TerminalState, theme: &Theme) {
     );
 }
 
-fn resolve_cell_colors(cell: Cell, theme: &Theme) -> (u32, u32) {    let mut fg = if cell.fg == COLOR_DEFAULT {
+fn resolve_cell_colors(cell: Cell, theme: &Theme) -> (u32, u32) {
+    let mut fg = if cell.fg == COLOR_DEFAULT {
         theme.fg
     } else {
         theme.ansi[(cell.fg - 1).min(15) as usize]

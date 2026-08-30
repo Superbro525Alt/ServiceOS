@@ -60,12 +60,24 @@ fn main() -> u64 {
     // Durable profile persistence: pull the stored profile set (theme picks
     // included) from the persistent storage mount when reachable; otherwise
     // run on the built-in defaults.
-    let storage_handle = rt::lookup_service(bootstrap, rt::ServiceId::Storage)
-        .unwrap_or(rt::INVALID_HANDLE);
+    let storage_handle =
+        rt::lookup_service(bootstrap, rt::ServiceId::Storage).unwrap_or(rt::INVALID_HANDLE);
     let mut profiles = profiles::DEFAULT_PROFILES;
+    let mut store_loaded = false;
     if storage_handle != rt::INVALID_HANDLE {
         if let Some(stored) = profiles::load_profiles(storage_handle) {
             profiles = stored;
+            store_loaded = true;
+        }
+    }
+    let mut theme_index = profiles[0].theme_index as usize % THEMES.len();
+    // No durable profile store yet (fresh data image or storage mount
+    // unavailable): adopt terminal-service's active theme so concurrent
+    // instances agree. A fresh service answers the default (0 = MIDNIGHT),
+    // keeping default boots byte-identical.
+    if !store_loaded {
+        if let Some(theme) = profiles::query_active_theme(terminal_handle) {
+            theme_index = theme as usize % THEMES.len();
         }
     }
     let mut state = TerminalState {
@@ -82,7 +94,7 @@ fn main() -> u64 {
         content_w: 0,
         content_h: 0,
         active_tab: 0,
-        theme_index: profiles[0].theme_index as usize % THEMES.len(),
+        theme_index,
         profile_index: 0,
         profiles,
         search: None,

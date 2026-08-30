@@ -24,6 +24,9 @@ pub(crate) const TAB_WIDTH: usize = 100;
 pub(crate) const KEY_1: u32 = 2;
 pub(crate) const KEY_2: u32 = 3;
 pub(crate) const KEY_3: u32 = 4;
+pub(crate) const KEY_4: u32 = 5;
+pub(crate) const KEY_5: u32 = 6;
+pub(crate) const KEY_6: u32 = 7;
 pub(crate) const KEY_ESC: u32 = 1;
 pub(crate) const KEY_BACKSPACE: u32 = 14;
 pub(crate) const KEY_TAB: u32 = 15;
@@ -32,6 +35,7 @@ pub(crate) const KEY_W: u32 = 17;
 pub(crate) const KEY_E: u32 = 18;
 pub(crate) const KEY_R: u32 = 19;
 pub(crate) const KEY_T: u32 = 20;
+pub(crate) const KEY_Y: u32 = 21;
 pub(crate) const KEY_P: u32 = 25;
 pub(crate) const KEY_D: u32 = 32;
 pub(crate) const KEY_B: u32 = 48;
@@ -58,6 +62,11 @@ pub(crate) mod wire {
     pub(crate) const SESSION_BOOKMARK_CYCLE: u32 = 0xb15;
     pub(crate) const SESSION_ENUMERATE_REQUEST: u32 = 0xb16;
     pub(crate) const SESSION_ENUMERATE_REPLY: u32 = 0xb17;
+    // Theme extensions: get the service's active theme, set the theme for a
+    // session (mirroring an operator pick). Values sit past 0xb17.
+    pub(crate) const THEME_GET_REQUEST: u32 = 0xb18;
+    pub(crate) const THEME_GET_REPLY: u32 = 0xb19;
+    pub(crate) const THEME_SET: u32 = 0xb1a;
 }
 
 pub(crate) const COLOR_DEFAULT: u8 = 0;
@@ -156,6 +165,10 @@ pub(crate) static WRAPS: GlobalWraps = GlobalWraps::new();
 pub(crate) static REFLOW_CELLS: ReflowCells = ReflowCells::new();
 pub(crate) static REFLOW_WRAPS: ReflowWraps = ReflowWraps::new();
 
+/// Named terminal color theme: window chrome colors, the default foreground
+/// and background, the focused-cursor color, and the 16-color ANSI palette.
+/// Cells carry palette indexes; rendering is a direct table lookup through
+/// the active theme (no dithering or blending).
 #[derive(Clone, Copy)]
 pub(crate) struct Theme {
     pub(crate) name: &'static str,
@@ -165,10 +178,11 @@ pub(crate) struct Theme {
     pub(crate) fg: u32,
     pub(crate) muted: u32,
     pub(crate) selection: u32,
+    pub(crate) cursor: u32,
     pub(crate) ansi: [u32; 16],
 }
 
-pub(crate) const THEMES: [Theme; 3] = [
+pub(crate) const THEMES: [Theme; 6] = [
     Theme {
         name: "MIDNIGHT",
         bg: 0x0b1220,
@@ -177,6 +191,7 @@ pub(crate) const THEMES: [Theme; 3] = [
         fg: 0xe6edf5,
         muted: 0x8fa4ba,
         selection: 0x23496f,
+        cursor: 0x7cc6ff,
         ansi: [
             0x0b1220, 0xd05858, 0x65b35c, 0xd1af47, 0x5d8bd6, 0xb470d0, 0x57b8c4, 0xc7d3df,
             0x405469, 0xff8b8b, 0x8ce17f, 0xf4d46f, 0x89b4ff, 0xd7a7ff, 0x7de2ef, 0xf8fbff,
@@ -190,6 +205,7 @@ pub(crate) const THEMES: [Theme; 3] = [
         fg: 0x1f242a,
         muted: 0x61686f,
         selection: 0xbfd7ff,
+        cursor: 0x2257a8,
         ansi: [
             0xf2efe8, 0xb53c3c, 0x3f8d3c, 0xa76d10, 0x2e63ad, 0x8a47a6, 0x287d82, 0x3f474f,
             0xa89f92, 0xd95a5a, 0x52ad4f, 0xc88d1f, 0x447fd4, 0xa663c4, 0x3b9fa5, 0x101316,
@@ -203,12 +219,60 @@ pub(crate) const THEMES: [Theme; 3] = [
         fg: 0xf0d0a2,
         muted: 0xb59363,
         selection: 0x5b3a12,
+        cursor: 0xffc46b,
         ansi: [
             0x140f08, 0xc35b4c, 0x9ea95b, 0xe0a14a, 0x7e90c4, 0xb986c8, 0x6ca2b8, 0xf0d0a2,
             0x6b5135, 0xe48a73, 0xc6d47d, 0xffc46b, 0x9fb3e8, 0xd3a5df, 0x88bfd4, 0xffefd0,
         ],
     },
+    Theme {
+        name: "CONTRAST",
+        bg: 0x000000,
+        panel: 0x0a0a0a,
+        panel_alt: 0x141414,
+        fg: 0xffffff,
+        muted: 0xd0d0d0,
+        selection: 0x1e50a0,
+        cursor: 0xffffff,
+        ansi: [
+            0x000000, 0xff5c5c, 0x5cff5c, 0xffff5c, 0x5c9dff, 0xff5cff, 0x5cffff, 0xffffff,
+            0x7a7a7a, 0xff8b8b, 0x8bff8b, 0xffff8b, 0x9db9ff, 0xff9dff, 0x9dffff, 0xffffff,
+        ],
+    },
+    Theme {
+        name: "FOREST",
+        bg: 0x0b1410,
+        panel: 0x101b15,
+        panel_alt: 0x14241b,
+        fg: 0xdce8dc,
+        muted: 0x8aa894,
+        selection: 0x1f4d33,
+        cursor: 0x7fe0a0,
+        ansi: [
+            0x0b1410, 0xd07058, 0x6fbf6f, 0xc9b458, 0x6f9fc0, 0xb478c8, 0x62b8a4, 0xc4d4c8,
+            0x46584c, 0xe89078, 0x92d98f, 0xe0cc70, 0x92bce8, 0xd0a0e0, 0x84d8c8, 0xf0f8f0,
+        ],
+    },
+    Theme {
+        name: "SLATE",
+        bg: 0x14171c,
+        panel: 0x1a1e24,
+        panel_alt: 0x21262e,
+        fg: 0xe2e6ea,
+        muted: 0x929ba6,
+        selection: 0x2f4257,
+        cursor: 0x9ecbff,
+        ansi: [
+            0x14171c, 0xd07070, 0x7fb87f, 0xd0b870, 0x7fa8d8, 0xc090d8, 0x78b8c8, 0xd0d8e0,
+            0x4c5560, 0xe89090, 0x9fd89f, 0xe8d090, 0xa0c0e8, 0xd8a8e8, 0x90d0e0, 0xf0f4f8,
+        ],
+    },
 ];
+
+/// Next theme index when cycling (Ctrl+T), wrapping past the registry end.
+pub(crate) const fn next_theme_index(current: usize) -> usize {
+    (current + 1) % THEMES.len()
+}
 
 #[derive(Clone, Copy)]
 pub(crate) struct TerminalState {
@@ -438,8 +502,7 @@ impl TerminalPane {
             .iter()
             .position(|byte| *byte != b' ' && *byte != b'\t')
             .unwrap_or(end);
-        let end = slice
-            [start..]
+        let end = slice[start..]
             .iter()
             .rposition(|byte| *byte != b' ' && *byte != b'\t')
             .map_or(start, |offset| start + offset + 1);
@@ -478,4 +541,58 @@ pub(crate) struct Selection {
     pub(crate) anchor: CellPos,
     pub(crate) focus: CellPos,
     pub(crate) dragging: bool,
+}
+
+#[cfg(test)]
+mod theme_tests {
+    use super::*;
+
+    /// Default theme must stay byte-identical to the colors the terminal
+    /// rendered before themes were introduced: fresh boots must not shift a
+    /// single pixel.
+    #[test]
+    fn default_theme_matches_pinned_colors() {
+        let theme = &THEMES[0];
+        assert_eq!(theme.name, "MIDNIGHT");
+        assert_eq!(theme.bg, 0x0b1220);
+        assert_eq!(theme.panel, 0x10151d);
+        assert_eq!(theme.panel_alt, 0x122035);
+        assert_eq!(theme.fg, 0xe6edf5);
+        assert_eq!(theme.muted, 0x8fa4ba);
+        assert_eq!(theme.selection, 0x23496f);
+        assert_eq!(theme.cursor, 0x7cc6ff);
+        assert_eq!(
+            theme.ansi,
+            [
+                0x0b1220, 0xd05858, 0x65b35c, 0xd1af47, 0x5d8bd6, 0xb470d0, 0x57b8c4, 0xc7d3df,
+                0x405469, 0xff8b8b, 0x8ce17f, 0xf4d46f, 0x89b4ff, 0xd7a7ff, 0x7de2ef, 0xf8fbff,
+            ]
+        );
+    }
+
+    #[test]
+    fn registry_is_complete_and_uniquely_named() {
+        assert!(THEMES.len() >= 6);
+        for theme in &THEMES {
+            assert!(!theme.name.is_empty());
+        }
+        for (index, theme) in THEMES.iter().enumerate() {
+            assert!(
+                THEMES[..index].iter().all(|other| other.name != theme.name),
+                "duplicate theme name {}",
+                theme.name
+            );
+        }
+    }
+
+    #[test]
+    fn theme_cycle_wraps_past_registry_end() {
+        assert_eq!(next_theme_index(0), 1);
+        assert_eq!(next_theme_index(THEMES.len() - 1), 0);
+        let mut index = 0;
+        for _ in 0..THEMES.len() * 2 + 1 {
+            index = next_theme_index(index);
+        }
+        assert_eq!(index, 1);
+    }
 }

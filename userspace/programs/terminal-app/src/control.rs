@@ -161,6 +161,11 @@ pub(crate) fn handle_key_down(
                 let _ = crate::render::paste_clipboard(state);
                 return Ok(true);
             }
+            // Cycle to the next named theme, wrapping past the registry end.
+            KEY_Y => {
+                set_theme(state, crate::state::next_theme_index(state.theme_index));
+                return Ok(true);
+            }
             KEY_1 => {
                 set_theme(state, 0);
                 return Ok(true);
@@ -171,6 +176,18 @@ pub(crate) fn handle_key_down(
             }
             KEY_3 => {
                 set_theme(state, 2);
+                return Ok(true);
+            }
+            KEY_4 => {
+                set_theme(state, 3);
+                return Ok(true);
+            }
+            KEY_5 => {
+                set_theme(state, 4);
+                return Ok(true);
+            }
+            KEY_6 => {
+                set_theme(state, 5);
                 return Ok(true);
             }
             _ => {}
@@ -305,7 +322,12 @@ pub(crate) fn handle_key_down(
 }
 
 /// Apply a theme pick: recolor now, fold it into the active profile's stored
-/// theme, and persist the profile set durably (best effort).
+/// theme, persist the profile set durably (best effort), and mirror the pick
+/// to terminal-service so the session's service-side override and the
+/// service-global active theme track the operator's latest choice. The
+/// durable copy is written first: persistence happens before the pick is
+/// mirrored or repainted, matching the access.cfg degrade model (the mirror
+/// is best-effort and the service keeps theme state in memory only).
 fn set_theme(state: &mut TerminalState, theme_index: usize) {
     state.theme_index = theme_index % crate::THEMES.len();
     let profile_index = state.profile_index % profiles::PROFILE_COUNT;
@@ -313,6 +335,24 @@ fn set_theme(state: &mut TerminalState, theme_index: usize) {
     if state.storage_handle != rt::INVALID_HANDLE {
         let _ = profiles::store_profiles(state.storage_handle, &state.profiles);
     }
+    send_theme_set(state);
+}
+
+/// Mirror the active theme pick to terminal-service on the focused pane's
+/// session channel. Best effort: an unavailable session simply keeps the
+/// app-local theme.
+fn send_theme_set(state: &TerminalState) {
+    let handle = crate::tabs::active_tab_ref(state)
+        .and_then(|tab| tab.focused_pane_ref())
+        .map(|pane| pane.session_handle)
+        .filter(|handle| *handle != rt::INVALID_HANDLE);
+    let Some(handle) = handle else {
+        return;
+    };
+    let mut message = rt::RawMessage::empty(crate::wire::THEME_SET);
+    message.word_count = 1;
+    message.words[0] = state.theme_index as u64;
+    let _ = rt::channel_send(handle, &message);
 }
 
 fn handle_pointer_down(state: &mut TerminalState, x: i32, y: i32) -> bool {

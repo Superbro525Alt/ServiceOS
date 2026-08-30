@@ -6,13 +6,16 @@ use crate::{
         attach_client, bookmark_current_line, bookmark_cycle, detach_session, handle_input_byte,
         initialize_session, release_session, unpack_bytes,
     },
-    state::{MAX_INLINE_BYTES, MAX_SESSIONS, PROFILE_WIRE_LEN, Session, SessionProfile, wire},
+    state::{
+        MAX_INLINE_BYTES, MAX_SESSIONS, PROFILE_WIRE_LEN, Session, SessionProfile, ThemeState, wire,
+    },
 };
 
 pub(crate) fn handle_public_request(
     bootstrap: rt::Handle,
     sessions: &mut [Session; MAX_SESSIONS],
     next_session_id: &mut u32,
+    themes: &mut ThemeState,
     request: &RawMessage,
 ) -> rt::Result<()> {
     match request.tag {
@@ -171,6 +174,18 @@ pub(crate) fn handle_public_request(
             let _ = rt::channel_send(reply_handle, &reply);
             let _ = rt::handle_close(reply_handle);
         }
+        x if x == wire::THEME_GET_REQUEST as u32 => {
+            if request.handle_count < 1 {
+                return Ok(());
+            }
+            let reply_handle = request.handles[0];
+            let mut reply = RawMessage::empty(wire::THEME_GET_REPLY);
+            reply.word_count = 2;
+            reply.words[0] = TerminalStatus::Ok as u32 as u64;
+            reply.words[1] = themes.active() as u64;
+            let _ = rt::channel_send(reply_handle, &reply);
+            let _ = rt::handle_close(reply_handle);
+        }
         _ => {}
     }
 
@@ -180,6 +195,7 @@ pub(crate) fn handle_public_request(
 pub(crate) fn handle_session_message(
     bootstrap: rt::Handle,
     session: &mut Session,
+    themes: &mut ThemeState,
     message: &RawMessage,
 ) -> rt::Result<()> {
     match message.tag {
@@ -219,6 +235,15 @@ pub(crate) fn handle_session_message(
         }
         x if x == wire::SESSION_BOOKMARK_CYCLE as u32 => {
             bookmark_cycle(session)?;
+        }
+        x if x == wire::THEME_SET as u32 => {
+            // Operator theme pick mirrored from the app: set the session
+            // override (and service-global active) or clear the override.
+            // State is applied before any downstream reply/render; service
+            // theme state stays in memory (no storage grant here).
+            if message.word_count >= 1 {
+                session.apply_theme_set(themes, message.words[0]);
+            }
         }
         _ => {}
     }

@@ -49,6 +49,50 @@ pub(crate) mod wire {
     pub(crate) const SESSION_BOOKMARK_CYCLE: u32 = 0xb15;
     pub(crate) const SESSION_ENUMERATE_REQUEST: u32 = 0xb16;
     pub(crate) const SESSION_ENUMERATE_REPLY: u32 = 0xb17;
+    // Theme extensions: a client queries the service-global active theme
+    // (GET pair, public channel) and mirrors operator picks per session
+    // (SET, session channel). Values sit past 0xb17.
+    pub(crate) const THEME_GET_REQUEST: u32 = 0xb18;
+    pub(crate) const THEME_GET_REPLY: u32 = 0xb19;
+    pub(crate) const THEME_SET: u32 = 0xb1a;
+}
+
+/// Number of named themes the terminal-app registry carries; indexes outside
+/// this range are rejected rather than clamped.
+pub(crate) const THEME_COUNT: usize = 6;
+/// THEME_SET words[0] sentinel: clear the session override so the session
+/// follows the service-global active theme again.
+pub(crate) const THEME_CLEAR: u64 = 0xff;
+
+/// Service-side theme state: one service-global active theme index plus an
+/// optional per-session override on each session row. In memory only by
+/// design — terminal-service holds no storage grant, so the durable operator
+/// preference lives in the app's profiles.cfg store, which the app writes
+/// before mirroring a pick here (graceful in-memory degrade, access.cfg
+/// precedent).
+#[derive(Clone, Copy)]
+pub(crate) struct ThemeState {
+    active: u8,
+}
+
+impl ThemeState {
+    pub(crate) const fn new() -> Self {
+        Self { active: 0 }
+    }
+
+    pub(crate) const fn active(&self) -> u8 {
+        self.active
+    }
+
+    /// Set the service-global active theme. Rejects indexes past the
+    /// registry (returns false, state unchanged).
+    pub(crate) fn set_active(&mut self, index: u64) -> bool {
+        if index as usize >= THEME_COUNT {
+            return false;
+        }
+        self.active = index as u8;
+        true
+    }
 }
 
 /// Byte ring holding the most recent session output. Records continuously so
@@ -293,6 +337,9 @@ pub(crate) struct Session {
     pub(crate) scrollback: ScrollbackRing,
     pub(crate) bookmarks: BookmarkList,
     pub(crate) profile: SessionProfile,
+    /// Per-session theme override (Some(index) while the pane picked its own
+    /// theme); None means follow the service-global active theme.
+    pub(crate) theme_override: Option<u8>,
     pub(crate) occupied: bool,
 }
 
@@ -322,8 +369,36 @@ impl Session {
             scrollback: ScrollbackRing::empty(),
             bookmarks: BookmarkList::empty(),
             profile: SessionProfile::empty(),
+            theme_override: None,
             occupied: false,
         }
+    }
+
+    /// Effective theme index for this session: its override when set, the
+    /// service-global active theme otherwise.
+    #[allow(dead_code)] // exercised by host tests; future surfaces read it too
+    pub(crate) fn effective_theme(&self, themes: &ThemeState) -> u8 {
+        self.theme_override.unwrap_or_else(|| themes.active())
+    }
+
+    /// Apply a THEME_SET to this session. words[0] = THEME_CLEAR drops the
+    /// override (session follows global); a valid index sets the override
+    /// AND mirrors the service-global active theme; any other value is
+    /// rejected. Returns true when state changed.
+    pub(crate) fn apply_theme_set(&mut self, themes: &mut ThemeState, value: u64) -> bool {
+        if value == THEME_CLEAR {
+            if self.theme_override.is_none() {
+                return false;
+            }
+            self.theme_override = None;
+            return true;
+        }
+        if value as usize >= THEME_COUNT {
+            return false;
+        }
+        self.theme_override = Some(value as u8);
+        themes.set_active(value);
+        true
     }
 
     /// A detached session keeps its shell state but has no attached pane.
@@ -483,5 +558,71 @@ mod tests {
         let oversized = [b'x'; MAX_LINE_BYTES + 1];
         assert!(!bookmarks.add(&oversized));
         assert_eq!(bookmarks.count(), 0);
+    }
+}
+
+#[cfg(test)]
+mod theme_tests {
+    use super::*;
+
+    #[test]
+    fn theme_state_starts_on_default_and_rejects_out_of_registry() {
+        let mut themes = ThemeState::new();
+        assert_eq!(themes.active(), 0);
+        assert!(themes.set_active(5));
+        assert_eq!(themes.active(), 5);
+        assert!(!themes.set_active(THEME_COUNT as u64));
+        assert_eq!(themes.active(), 5, "rejected set leaves state unchanged");
+        assert!(!themes.set_active(u64::MAX));
+    }
+
+    #[test]
+    fn session_override_set_clear_and_fallback() {
+        let mut themes = ThemeState::new();
+        let mut session = Session::empty();
+        session.occupied = true;
+        assert_eq!(session.effective_theme(&themes), 0, "no override: global");
+
+        assert!(session.apply_theme_set(&mut themes, 3));
+        assert_eq!(session.theme_override, Some(3));
+        assert_eq!(session.effective_theme(&themes), 3);
+        assert_eq!(themes.active(), 3, "pick mirrors service-global");
+
+        assert!(session.apply_theme_set(&mut themes, THEME_CLEAR));
+        assert_eq!(session.theme_override, None);
+        assert_eq!(
+            session.effective_theme(&themes),
+            3,
+            "follows global after clear"
+        );
+
+        assert!(!session.apply_theme_set(&mut themes, THEME_COUNT as u64));
+        assert_eq!(session.theme_override, None, "invalid index rejected");
+
+        assert!(
+            !session.apply_theme_set(&mut themes, THEME_CLEAR),
+            "clear twice: no-op"
+        );
+    }
+
+    #[test]
+    fn theme_wire_tags_are_additive_and_distinct() {
+        assert_eq!(wire::THEME_GET_REQUEST, 0xb18);
+        assert_eq!(wire::THEME_GET_REPLY, 0xb19);
+        assert_eq!(wire::THEME_SET, 0xb1a);
+        let existing = [
+            wire::SESSION_ATTACH_REQUEST,
+            wire::SESSION_ATTACH_REPLY,
+            wire::SESSION_DETACH,
+            wire::SESSION_BOOKMARK_ADD,
+            wire::SESSION_BOOKMARK_CYCLE,
+            wire::SESSION_ENUMERATE_REQUEST,
+            wire::SESSION_ENUMERATE_REPLY,
+        ];
+        for tag in existing {
+            assert_ne!(tag, wire::THEME_GET_REQUEST);
+            assert_ne!(tag, wire::THEME_GET_REPLY);
+            assert_ne!(tag, wire::THEME_SET);
+        }
     }
 }

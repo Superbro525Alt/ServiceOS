@@ -17,7 +17,7 @@ use crate::{
     session::release_session,
     state::{
         MAX_PUBLIC_REQUESTS_PER_TURN, MAX_REMOTE_LINKS, MAX_SESSION_MESSAGES_PER_TURN,
-        MAX_SESSIONS, REMOTE_LISTENER_PORT, Session,
+        MAX_SESSIONS, REMOTE_LISTENER_PORT, Session, ThemeState,
     },
 };
 
@@ -45,6 +45,9 @@ fn main() -> u64 {
 
     let mut sessions = [Session::empty(); MAX_SESSIONS];
     let mut next_session_id = 1u32;
+    // Service-side theme state: global active theme plus per-session
+    // overrides, in memory only (see ThemeState docs).
+    let mut themes = ThemeState::new();
     // Remote (TCP) session bridges: listener plus per-connection protocol
     // state. Plaintext rsh-like framing; see remote.rs module docs.
     let listener = bind_listener(bootstrap);
@@ -112,6 +115,7 @@ fn main() -> u64 {
                         bootstrap,
                         &mut sessions,
                         &mut next_session_id,
+                        &mut themes,
                         &request,
                     )
                     .is_err()
@@ -137,7 +141,9 @@ fn main() -> u64 {
                 let mut message = RawMessage::empty(0);
                 match rt::channel_receive_nonblocking(session.endpoint, &mut message) {
                     Ok(()) => {
-                        if handle_session_message(bootstrap, session, &message).is_err() {
+                        if handle_session_message(bootstrap, session, &mut themes, &message)
+                            .is_err()
+                        {
                             release_session(bootstrap, session);
                             break;
                         }

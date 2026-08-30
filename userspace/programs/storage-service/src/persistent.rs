@@ -492,31 +492,68 @@ fn write_record_batch<const N: usize>(
     count: usize,
     build: impl Fn(usize) -> [u8; N],
 ) -> rt::Result<()> {
-    let block_size = store.block_size;
+    let slot_base = (slot * store.slot_blocks) as u64;
+    let handle = store.handle;
+    write_record_span_batch(
+        |block_index, buffer| {
+            rt::block_device_read(handle, slot_base + block_index as u64, buffer)?;
+            Ok(())
+        },
+        |block_index, buffer| {
+            rt::block_device_write(handle, slot_base + block_index as u64, buffer)?;
+            Ok(())
+        },
+        base_offset,
+        store.block_size,
+        scratch,
+        count,
+        build,
+    )
+}
+
+/// Accumulates records into whole-block writes so every record of the batch
+/// survives: a block is only emitted once full (or at batch end), and a batch
+/// starting mid-block reads the block back first so records an adjacent
+/// region wrote into the same block are preserved.
+fn write_record_span_batch<const N: usize>(
+    mut read_block: impl FnMut(usize, &mut [u8]) -> rt::Result<()>,
+    mut write_block: impl FnMut(usize, &[u8]) -> rt::Result<()>,
+    base_offset: usize,
+    block_size: usize,
+    scratch: &mut [u8; BLOCK_BUFFER_BYTES],
+    count: usize,
+    build: impl Fn(usize) -> [u8; N],
+) -> rt::Result<()> {
+    let mut pending: Option<usize> = None;
     for index in 0..count {
         let record = build(index);
-        let record_offset = base_offset + index * N;
         let mut written = 0usize;
         while written < N {
-            let absolute = record_offset + written;
+            let absolute = base_offset + index * N + written;
             let block_index = absolute / block_size;
             let block_offset = absolute % block_size;
             let copy_len = (N - written).min(block_size - block_offset);
+            if pending != Some(block_index) {
+                if let Some(previous) = pending.replace(block_index) {
+                    write_block(previous, &scratch[..block_size])?;
+                }
+                if block_offset == 0 {
+                    scratch[..block_size].fill(0);
+                } else {
+                    read_block(block_index, &mut scratch[..block_size])?;
+                }
+            }
             scratch[block_offset..block_offset + copy_len]
                 .copy_from_slice(&record[written..written + copy_len]);
-            let end_of_record_in_block =
-                block_offset + copy_len == block_size || written + copy_len == N;
-            if end_of_record_in_block {
-                rt::block_device_write(
-                    store.handle,
-                    (slot * store.slot_blocks + block_index) as u64,
-                    &scratch[..block_size],
-                )?;
-                // Keep untouched tail zeroed for subsequent spans.
-                scratch[block_offset..block_size].fill(0);
-            }
             written += copy_len;
+            if block_offset + copy_len == block_size {
+                write_block(block_index, &scratch[..block_size])?;
+                pending = None;
+            }
         }
+    }
+    if let Some(previous) = pending.take() {
+        write_block(previous, &scratch[..block_size])?;
     }
     Ok(())
 }
@@ -574,4 +611,101 @@ pub(crate) fn release_directory_session(session: &mut crate::DirectorySession) {
         let _ = rt::handle_close(session.endpoint);
     }
     *session = crate::DirectorySession::empty();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    const TEST_BLOCK_SIZE: usize = 512;
+    const TEST_BLOCK_COUNT: usize = 8;
+
+    type TestDevice = RefCell<Vec<u8>>;
+
+    fn new_device() -> TestDevice {
+        RefCell::new(vec![0u8; TEST_BLOCK_SIZE * TEST_BLOCK_COUNT])
+    }
+
+    fn test_record(index: usize) -> [u8; PERSISTENT_RECORD_BYTES] {
+        let mut record = [0u8; PERSISTENT_RECORD_BYTES];
+        record[0] = 1;
+        record[2..4].copy_from_slice(&(index as u16).to_le_bytes());
+        let path = format!("rec/{index}");
+        record[24..24 + path.len()].copy_from_slice(path.as_bytes());
+        record
+    }
+
+    fn write_batch(
+        device: &TestDevice,
+        base: usize,
+        count: usize,
+        scratch: &mut [u8; BLOCK_BUFFER_BYTES],
+    ) -> rt::Result<()> {
+        write_record_span_batch(
+            |block_index, buffer| {
+                let start = block_index * TEST_BLOCK_SIZE;
+                buffer.copy_from_slice(&device.borrow()[start..start + TEST_BLOCK_SIZE]);
+                Ok(())
+            },
+            |block_index, buffer| {
+                let start = block_index * TEST_BLOCK_SIZE;
+                device.borrow_mut()[start..start + buffer.len()].copy_from_slice(buffer);
+                Ok(())
+            },
+            base,
+            TEST_BLOCK_SIZE,
+            scratch,
+            count,
+            test_record,
+        )
+    }
+
+    fn assert_record(device: &TestDevice, absolute: usize, index: usize) {
+        let record = &device.borrow()[absolute..absolute + PERSISTENT_RECORD_BYTES];
+        assert_eq!(record[0], 1, "record {index} must survive at {absolute}");
+        assert_eq!(
+            u16::from_le_bytes(record[2..4].try_into().unwrap()),
+            index as u16
+        );
+        let path = format!("rec/{index}");
+        assert_eq!(&record[24..24 + path.len()], path.as_bytes());
+    }
+
+    #[test]
+    fn record_batch_keeps_every_record_in_block() {
+        let device = new_device();
+        let mut scratch = [0u8; BLOCK_BUFFER_BYTES];
+        write_batch(&device, TEST_BLOCK_SIZE, 7, &mut scratch).expect("batch writes");
+        for index in 0..7 {
+            assert_record(&device, TEST_BLOCK_SIZE + index * PERSISTENT_RECORD_BYTES, index);
+        }
+    }
+
+    #[test]
+    fn record_batch_preserves_adjacent_region_records() {
+        let device = new_device();
+        let mut scratch = [0u8; BLOCK_BUFFER_BYTES];
+        let entries_end = TEST_BLOCK_SIZE + 6 * PERSISTENT_RECORD_BYTES;
+        write_batch(&device, TEST_BLOCK_SIZE, 6, &mut scratch).expect("entry batch writes");
+        write_batch(&device, entries_end, 6, &mut scratch).expect("mount batch writes");
+        for index in 0..12 {
+            assert_record(
+                &device,
+                TEST_BLOCK_SIZE + index * PERSISTENT_RECORD_BYTES,
+                index % 6,
+            );
+        }
+    }
+
+    #[test]
+    fn record_batch_handles_block_spanning_records() {
+        let device = new_device();
+        let mut scratch = [0u8; BLOCK_BUFFER_BYTES];
+        let base = 448usize;
+        write_batch(&device, base, 5, &mut scratch).expect("batch writes");
+        for index in 0..5 {
+            assert_record(&device, base + index * PERSISTENT_RECORD_BYTES, index);
+        }
+    }
 }

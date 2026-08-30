@@ -267,6 +267,9 @@ The first app set is intentionally small and platform-validating.
   - reads live config and network values through service contracts
 - `files-app`
   - lists persisted boot-store paths through `storage-service`
+  - searches names in the current directory subtree when printable typing
+    starts a bounded search; Backspace/Escape restore browsing, and Enter uses
+    the normal directory-navigation or file-routing path
 - `monitor-app`
   - shows heartbeat and network status through `status-service` and
     `network-service`

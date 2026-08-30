@@ -5,8 +5,6 @@ use crate::{OVERLAY_RESULT_MAX, PaletteAction};
 pub(crate) const DOC_HITS_MAX: usize = 4;
 pub(crate) const DOC_PATH_MAX: usize = 88;
 pub(crate) const DOC_ACTION_RESERVE_MAX: usize = 2;
-const SEARCH_REQUEST_TAG: u32 = 0x521;
-const SEARCH_REPLY_TAG: u32 = 0x522;
 const GREP_REQUEST_TAG: u32 = 0x523;
 const GREP_REPLY_TAG: u32 = 0x524;
 const GREP_NEEDLE_MAX: usize = 32;
@@ -116,20 +114,6 @@ fn decode_doc_hit(payload: &[u64], path_len: u64, kind: u64, line: u32) -> Optio
     Some(hit)
 }
 
-/// Parses one cursor reply of the storage name-search contract (tag 0x522:
-/// status, next-cursor, kind, path-len, packed path). `None` covers both the
-/// end-of-stream and degraded replies, which callers treat identically as
-/// "stop collecting".
-pub(crate) fn parse_search_reply(reply: &rt::RawMessage) -> Option<DocHit> {
-    if reply.tag != SEARCH_REPLY_TAG || reply.word_count < 4 {
-        return None;
-    }
-    if reply.words[0] != STATUS_OK {
-        return None;
-    }
-    decode_doc_hit(&reply.words[4..], reply.words[3], reply.words[2], 0)
-}
-
 /// Parses one cursor reply of the storage grep contract (tag 0x524: status,
 /// next-cursor, line, flags, path-len, packed path).
 pub(crate) fn parse_grep_reply(reply: &rt::RawMessage) -> Option<DocHit> {
@@ -147,22 +131,6 @@ pub(crate) fn parse_grep_reply(reply: &rt::RawMessage) -> Option<DocHit> {
     )
 }
 
-fn build_search_request(cursor: usize, tokens: &[u8]) -> Option<rt::RawMessage> {
-    if tokens.is_empty() {
-        return None;
-    }
-    let mut request = rt::RawMessage::empty(SEARCH_REQUEST_TAG);
-    request.word_count = 6;
-    request.words[0] = cursor as u64;
-    request.words[1] = 0;
-    request.words[2] = 0;
-    request.words[3] = 0;
-    request.words[4] = 0;
-    request.words[5] = tokens.len() as u64;
-    request.word_count += rt::pack_bytes(tokens, &mut request.words[6..]).ok()?;
-    Some(request)
-}
-
 fn build_grep_request(cursor: usize, needle: &[u8]) -> Option<rt::RawMessage> {
     if needle.is_empty() || needle.len() > GREP_NEEDLE_MAX {
         return None;
@@ -178,28 +146,37 @@ fn build_grep_request(cursor: usize, needle: &[u8]) -> Option<rt::RawMessage> {
     Some(request)
 }
 
+fn doc_hit_from_search_hit(hit: rt::StorageSearchHit<DOC_PATH_MAX>) -> DocHit {
+    DocHit {
+        path: hit.path,
+        path_len: hit.path_len,
+        kind: hit.kind as u32 as u64,
+        line: 0,
+    }
+}
+
 fn collect_name_hits(
     storage: rt::Handle,
     tokens: &[u8],
     hits: &mut [DocHit; DOC_HITS_MAX],
     hits_len: &mut usize,
 ) {
-    for cursor in 0..DOC_HITS_MAX {
-        if *hits_len >= DOC_HITS_MAX {
-            return;
-        }
-        let Some(mut request) = build_search_request(cursor, tokens) else {
-            return;
-        };
-        match rt::channel_call(storage, &mut request) {
-            Ok(reply) => match parse_search_reply(&reply) {
-                Some(hit) => {
-                    hits[*hits_len] = hit;
-                    *hits_len += 1;
+    let Some(query) = rt::StorageSearchQuery::from_bytes(tokens) else {
+        return;
+    };
+    let mut cursor = 0usize;
+    while *hits_len < DOC_HITS_MAX {
+        match rt::storage_search(storage, cursor, b"", &query) {
+            Ok(Some(hit)) => {
+                let next_cursor = hit.next_cursor;
+                hits[*hits_len] = doc_hit_from_search_hit(hit);
+                *hits_len += 1;
+                if next_cursor <= cursor {
+                    return;
                 }
-                None => return,
-            },
-            Err(_) => return,
+                cursor = next_cursor;
+            }
+            Ok(None) | Err(_) => return,
         }
     }
 }
@@ -322,7 +299,10 @@ mod tests {
             PaletteAction::ToggleMedia,
             PaletteAction::FocusNext,
         ];
-        let docs = [hit(b"docs/readme.txt", KIND_FILE, 0), hit(b"notes", KIND_DIRECTORY, 0)];
+        let docs = [
+            hit(b"docs/readme.txt", KIND_FILE, 0),
+            hit(b"notes", KIND_DIRECTORY, 0),
+        ];
         let mut results = [PaletteEntry::Action(PaletteAction::FocusNext); OVERLAY_RESULT_MAX];
         let count = merge_palette_entries(&actions, &docs, &mut results);
         assert_eq!(count, 5);
@@ -362,14 +342,8 @@ mod tests {
             OVERLAY_RESULT_MAX - 2,
             "broad queries must still reserve document slots"
         );
-        assert_eq!(
-            results[OVERLAY_RESULT_MAX - 2],
-            PaletteEntry::Doc(docs[0])
-        );
-        assert_eq!(
-            results[OVERLAY_RESULT_MAX - 1],
-            PaletteEntry::Doc(docs[1])
-        );
+        assert_eq!(results[OVERLAY_RESULT_MAX - 2], PaletteEntry::Doc(docs[0]));
+        assert_eq!(results[OVERLAY_RESULT_MAX - 1], PaletteEntry::Doc(docs[1]));
     }
 
     #[test]
@@ -382,43 +356,6 @@ mod tests {
         let count = merge_palette_entries(&actions, &[], &mut results);
         assert_eq!(count, 2);
         assert!(matches!(results[0], PaletteEntry::Action(_)));
-    }
-
-    #[test]
-    fn search_reply_parses_ok_end_and_degraded_shapes() {
-        // Ok reply: status, cursor, kind, path-len, packed path.
-        let mut words = [0u64; rt::IPC_MAX_WORDS];
-        words[0] = STATUS_OK;
-        words[1] = 1;
-        words[2] = KIND_FILE;
-        words[3] = b"boot/notes.txt".len() as u64;
-        words[4..12].copy_from_slice(&{
-            let mut payload = [0u64; 8];
-            assert!(rt::pack_bytes(b"boot/notes.txt", &mut payload).is_ok());
-            payload
-        });
-        let mut reply = rt::RawMessage::empty(SEARCH_REPLY_TAG);
-        reply.word_count = 4;
-        reply.words = words;
-        reply.word_count += 1; // one payload word used
-        let parsed = parse_search_reply(&reply).expect("ok reply must parse");
-        assert_eq!(parsed.path_str(), "boot/notes.txt");
-        assert_eq!(parsed.kind, KIND_FILE);
-        assert_eq!(parsed.line, 0);
-
-        reply.words[0] = rt::StorageStatus::End as u64;
-        assert!(parse_search_reply(&reply).is_none(), "end must yield none");
-
-        reply.tag = 0x999;
-        reply.words[0] = STATUS_OK;
-        assert!(parse_search_reply(&reply).is_none(), "wrong tag is degraded");
-
-        reply.tag = SEARCH_REPLY_TAG;
-        reply.word_count = 2;
-        assert!(
-            parse_search_reply(&reply).is_none(),
-            "truncated reply is degraded"
-        );
     }
 
     #[test]
@@ -449,23 +386,17 @@ mod tests {
     }
 
     #[test]
-    fn request_builders_shape_storage_contracts() {
-        let request = build_search_request(3, b"note").expect("search request builds");
-        assert_eq!(request.tag, SEARCH_REQUEST_TAG);
-        assert_eq!(request.words[0], 3);
-        assert_eq!(request.words[1], 0, "empty scope means whole subtree");
-        assert_eq!(request.words[5], 4);
-        assert_eq!(request.word_count, 6 + 1);
-
-        assert!(build_search_request(0, b"").is_none());
-
+    fn grep_request_builder_shapes_storage_contract() {
         let request = build_grep_request(0, b"wav").expect("grep request builds");
         assert_eq!(request.tag, GREP_REQUEST_TAG);
         assert_eq!(request.words[2], 3);
         assert_eq!(request.words[3], 0, "default per-file byte cap");
         assert_eq!(request.words[4], 0, "default result cap");
 
-        assert!(build_grep_request(0, b"").is_none(), "empty needle never sent");
+        assert!(
+            build_grep_request(0, b"").is_none(),
+            "empty needle never sent"
+        );
         assert!(
             build_grep_request(0, &[b'x'; GREP_NEEDLE_MAX + 1]).is_none(),
             "over-length needles never sent"

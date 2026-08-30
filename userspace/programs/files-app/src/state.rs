@@ -8,6 +8,7 @@ pub(crate) const SURFACE_BUFFER_SLOTS: usize = 2;
 pub(crate) const PIXEL_STRIDE: usize = BUFFER_WIDTH as usize;
 pub(crate) const MAX_STORAGE_PATH: usize = 96;
 pub(crate) const MAX_ENTRIES: usize = 64;
+pub(crate) const MAX_SEARCH_QUERY: usize = rt::STORAGE_SEARCH_QUERY_BYTES_MAX;
 pub(crate) const LIST_X: usize = 12;
 pub(crate) const LIST_Y: usize = ui::TITLEBAR_HEIGHT as usize + 34;
 pub(crate) const LIST_BOTTOM_MARGIN: usize = 18;
@@ -43,6 +44,7 @@ pub(crate) enum EntryKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ViewMode {
     Directory,
+    Search,
     Recent,
 }
 
@@ -85,6 +87,9 @@ pub(crate) struct ExplorerState {
     pub(crate) load_failed: bool,
     /// Recent-files view toggle.
     pub(crate) view_mode: ViewMode,
+    /// Bounded directory-scoped name-search text.
+    pub(crate) search_query: [u8; MAX_SEARCH_QUERY],
+    pub(crate) search_query_len: usize,
     pub(crate) recent_sel: usize,
     /// Pending press on a file row that may grow into a drag gesture.
     pub(crate) press: Option<Press>,
@@ -133,7 +138,10 @@ pub(crate) enum Dialog {
     /// ENTER confirms deleting entry `index`, ESC cancels.
     ConfirmDelete { index: usize },
     /// Text prompt; commits per purpose on ENTER, cancels on ESC.
-    Prompt { purpose: PromptPurpose, index: usize },
+    Prompt {
+        purpose: PromptPurpose,
+        index: usize,
+    },
     /// Friendly failure text; any key dismisses.
     Error { message: &'static str },
     /// Chunked copy/move progress bar.
@@ -183,7 +191,9 @@ pub(crate) fn menu_hit(x: i32, y: i32) -> Option<usize> {
         return None;
     }
     let row = (y - MENU_Y - MENU_HEADER_H) / ROW_HEIGHT as i32;
-    (0..MENU_ACTION_COUNT as i32).contains(&row).then(|| row as usize)
+    (0..MENU_ACTION_COUNT as i32)
+        .contains(&row)
+        .then(|| row as usize)
 }
 
 #[cfg(test)]

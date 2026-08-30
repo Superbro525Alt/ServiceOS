@@ -6,18 +6,17 @@ use crate::assoc;
 use crate::bridge::send_content_intent;
 use crate::navigation::{
     clamp_view, ensure_selected_visible, entry_name_bytes, navigate_parent, open_path_in_explorer,
-    open_selected, reload_directory, reopen_directory, scroll_down, scroll_up, visible_row_count,
+    open_selected, reload_directory, reload_search, reopen_directory, scroll_down, scroll_up,
+    visible_row_count,
 };
-use crate::ops::{
-    self, CopyProgress, OpError,
-};
+use crate::ops::{self, CopyProgress, OpError};
 use crate::persist;
 use crate::render::render;
 use crate::state::{
-    menu_hit, Dialog, DRAG_THRESHOLD_PX, EntryKind, ExplorerState, KEY_BACKSPACE,
-    KEY_D, KEY_DELETE, KEY_DOWN, KEY_ENTER, KEY_ESC, KEY_F2, KEY_LEFT, KEY_N, KEY_O, KEY_PAGE_DOWN,
-    KEY_PAGE_UP, KEY_R, KEY_RIGHT, KEY_UP, MenuAction, MOD_CTRL, MOD_SHIFT, Press,
-    SURFACE_BUFFER_SLOTS, ViewMode,
+    DRAG_THRESHOLD_PX, Dialog, EntryKind, ExplorerState, KEY_BACKSPACE, KEY_D, KEY_DELETE,
+    KEY_DOWN, KEY_ENTER, KEY_ESC, KEY_F2, KEY_LEFT, KEY_N, KEY_O, KEY_PAGE_DOWN, KEY_PAGE_UP,
+    KEY_R, KEY_RIGHT, KEY_UP, MOD_CTRL, MOD_SHIFT, MenuAction, Press, SURFACE_BUFFER_SLOTS,
+    ViewMode, menu_hit,
 };
 
 /// Candidate slot ceiling for open-with cycling.
@@ -114,10 +113,7 @@ pub(crate) fn poll_control(
                     ui::decode_app_key_action(message.words[0]),
                     Some(AppKeyAction::Down)
                 ) {
-                    let mut ui_out = UiOut {
-                        buffers,
-                        presenter,
-                    };
+                    let mut ui_out = UiOut { buffers, presenter };
                     changed |= handle_key_down(
                         state,
                         storage_handle,
@@ -245,10 +241,7 @@ fn end_press(state: &mut ExplorerState) -> bool {
 /// Pointer-up resolves a press into a click: navigation for directories,
 /// selection for files, and a context menu when the click lands on the
 /// row that was already awaiting a second click.
-fn handle_pointer_up(
-    state: &mut ExplorerState,
-    storage_handle: rt::Handle,
-) -> rt::Result<bool> {
+fn handle_pointer_up(state: &mut ExplorerState, storage_handle: rt::Handle) -> rt::Result<bool> {
     let Some(press) = state.press.take() else {
         return Ok(false);
     };
@@ -295,9 +288,13 @@ fn handle_key_down(
     mut progress_ui: Option<&mut UiOut>,
 ) -> rt::Result<bool> {
     // Modal layers swallow input before list handling.
-    if let Some(consumed) =
-        handle_dialog_key(state, storage_handle, key_code, modifiers, progress_ui.as_deref_mut())?
-    {
+    if let Some(consumed) = handle_dialog_key(
+        state,
+        storage_handle,
+        key_code,
+        modifiers,
+        progress_ui.as_deref_mut(),
+    )? {
         return Ok(consumed);
     }
     if state.menu.is_some() {
@@ -308,11 +305,11 @@ fn handle_key_down(
             progress_ui.as_deref_mut(),
         ));
     }
-    if key_code == KEY_R {
+    if key_code == KEY_R && modifiers & MOD_CTRL != 0 {
         state.open_with_pick = None;
         state.view_mode = match state.view_mode {
-            ViewMode::Directory => ViewMode::Recent,
             ViewMode::Recent => ViewMode::Directory,
+            ViewMode::Directory | ViewMode::Search => ViewMode::Recent,
         };
         clamp_view(state);
         return Ok(true);
@@ -320,6 +317,23 @@ fn handle_key_down(
     match state.view_mode {
         ViewMode::Recent => return handle_key_recent(state, storage_handle, key_code),
         ViewMode::Directory => {}
+        ViewMode::Search => {
+            return handle_key_search(state, storage_handle, desktop_handle, key_code, modifiers);
+        }
+    }
+
+    if modifiers & MOD_CTRL == 0
+        && let Some(character) = ops::scancode_to_char(key_code, modifiers)
+    {
+        if character.is_ascii_graphic() {
+            state.search_query[0] = character;
+            state.search_query_len = 1;
+            state.view_mode = ViewMode::Search;
+            if reload_search(state, storage_handle).is_err() {
+                state.load_failed = true;
+            }
+            return Ok(true);
+        }
     }
 
     let visible_rows = visible_row_count(state).max(1);
@@ -373,8 +387,8 @@ fn handle_key_down(
                 return Ok(true);
             }
         }
-        KEY_O => cycle_open_with_pick(state),
-        KEY_D => commit_open_with_default(state),
+        KEY_O if modifiers & MOD_CTRL != 0 => cycle_open_with_pick(state),
+        KEY_D if modifiers & MOD_CTRL != 0 => commit_open_with_default(state),
         KEY_DELETE => {
             if let Some(index) = deletable_selection(state) {
                 state.dialog = Some(Dialog::ConfirmDelete { index });
@@ -408,6 +422,85 @@ fn handle_key_down(
         _ => {}
     }
     Ok(false)
+}
+
+fn exit_search(state: &mut ExplorerState) {
+    state.search_query.fill(0);
+    state.search_query_len = 0;
+    state.view_mode = ViewMode::Directory;
+}
+
+fn handle_key_search(
+    state: &mut ExplorerState,
+    storage_handle: rt::Handle,
+    desktop_handle: rt::Handle,
+    key_code: u32,
+    modifiers: u32,
+) -> rt::Result<bool> {
+    match key_code {
+        KEY_ESC => {
+            exit_search(state);
+            if reload_directory(state).is_err() {
+                state.load_failed = true;
+            }
+        }
+        KEY_BACKSPACE => {
+            state.search_query_len = state.search_query_len.saturating_sub(1);
+            state.search_query[state.search_query_len] = 0;
+            if state.search_query_len == 0 {
+                exit_search(state);
+                if reload_directory(state).is_err() {
+                    state.load_failed = true;
+                }
+            } else if reload_search(state, storage_handle).is_err() {
+                state.load_failed = true;
+            }
+        }
+        KEY_ENTER | KEY_RIGHT => {
+            let Some(selected_kind) = state
+                .entries
+                .get(state.selected_index)
+                .filter(|_| state.selected_index < state.entry_count)
+                .map(|entry| entry.kind)
+            else {
+                return Ok(true);
+            };
+            let is_file = selected_kind == EntryKind::File;
+            exit_search(state);
+            if open_selected_routed(state, storage_handle, desktop_handle).is_err() {
+                state.load_failed = true;
+            }
+            if is_file && reload_directory(state).is_err() {
+                state.load_failed = true;
+            }
+        }
+        KEY_UP => {
+            if state.selected_index > 0 {
+                state.selected_index -= 1;
+                ensure_selected_visible(state);
+            }
+        }
+        KEY_DOWN => {
+            if state.selected_index + 1 < state.entry_count {
+                state.selected_index += 1;
+                ensure_selected_visible(state);
+            }
+        }
+        _ => {
+            if let Some(character) = ops::scancode_to_char(key_code, modifiers) {
+                if (character.is_ascii_graphic() || character == b' ')
+                    && state.search_query_len < state.search_query.len()
+                {
+                    state.search_query[state.search_query_len] = character;
+                    state.search_query_len += 1;
+                    if reload_search(state, storage_handle).is_err() {
+                        state.load_failed = true;
+                    }
+                }
+            }
+        }
+    }
+    Ok(true)
 }
 
 /// Index of the selected entry when an op may target it (never the
@@ -519,7 +612,10 @@ fn run_delete(state: &mut ExplorerState, storage_handle: rt::Handle, index: usiz
     ) {
         Ok(()) => {
             state.dialog = None;
-            if reopen_directory(state, storage_handle).and_then(|_| reload_directory(state)).is_err() {
+            if reopen_directory(state, storage_handle)
+                .and_then(|_| reload_directory(state))
+                .is_err()
+            {
                 state.load_failed = true;
             }
         }
@@ -606,7 +702,9 @@ fn commit_prompt(
             // Destination dir text from the prompt (root allowed as "").
             let mut dst_parent = [0u8; crate::state::MAX_STORAGE_PATH];
             dst_parent[..name_len].copy_from_slice(name);
-            let dst_len = if name_len > 0 && dst_parent[name_len - 1] != b'/' && name_len < dst_parent.len()
+            let dst_len = if name_len > 0
+                && dst_parent[name_len - 1] != b'/'
+                && name_len < dst_parent.len()
             {
                 dst_parent[name_len] = b'/';
                 name_len + 1
@@ -807,16 +905,15 @@ fn duplicate_entry(
         }
     };
     let mut target = [0u8; ops::NAME_MAX];
-    let target_len =
-        match ops::variant_name(&base[..base_len], variant, &mut target) {
-            Ok(len) => len,
-            Err(error) => {
-                state.dialog = Some(Dialog::Error {
-                    message: ops::friendly_error(error),
-                });
-                return;
-            }
-        };
+    let target_len = match ops::variant_name(&base[..base_len], variant, &mut target) {
+        Ok(len) => len,
+        Err(error) => {
+            state.dialog = Some(Dialog::Error {
+                message: ops::friendly_error(error),
+            });
+            return;
+        }
+    };
 
     let parent_len = state.current_path_len;
     let mut parent = [0u8; crate::state::MAX_STORAGE_PATH];
@@ -846,9 +943,7 @@ fn duplicate_entry(
 }
 
 /// Closure over the current listing matching any existing entry name.
-fn listing_taken_names(
-    state: &ExplorerState,
-) -> impl FnMut(&[u8]) -> bool + '_ {
+fn listing_taken_names(state: &ExplorerState) -> impl FnMut(&[u8]) -> bool + '_ {
     move |candidate: &[u8]| {
         (0..state.entry_count).any(|index| {
             let entry = state.entries[index];
@@ -1046,6 +1141,8 @@ mod tests {
             scroll_offset: 0,
             load_failed: false,
             view_mode: ViewMode::Directory,
+            search_query: [0; crate::state::MAX_SEARCH_QUERY],
+            search_query_len: 0,
             recent_sel: 0,
             press: None,
             dragging: false,
@@ -1062,6 +1159,24 @@ mod tests {
         state.entries[0].kind = EntryKind::File;
         state.entries[0].path_len = path.len();
         state.entries[0].path[..path.len()].copy_from_slice(path);
+        state
+    }
+
+    fn search_state(paths: &[(&[u8], EntryKind)]) -> ExplorerState {
+        let mut state = file_state(
+            paths
+                .first()
+                .map(|(path, _)| *path)
+                .unwrap_or(b"home/notes.txt"),
+        );
+        state.view_mode = ViewMode::Search;
+        state.entry_count = 0;
+        for (index, (path, kind)) in paths.iter().enumerate() {
+            state.entries[index].kind = *kind;
+            state.entries[index].path_len = path.len();
+            state.entries[index].path[..path.len()].copy_from_slice(path);
+            state.entry_count += 1;
+        }
         state
     }
 
@@ -1158,7 +1273,15 @@ mod tests {
     fn recent_toggle_and_escape_return_to_directory_view() {
         let mut state = file_state(b"home/notes.txt");
         assert!(
-            handle_key_down(&mut state, rt::INVALID_HANDLE, rt::INVALID_HANDLE, KEY_R, 0, None).unwrap()
+            handle_key_down(
+                &mut state,
+                rt::INVALID_HANDLE,
+                rt::INVALID_HANDLE,
+                KEY_R,
+                MOD_CTRL,
+                None,
+            )
+            .unwrap()
         );
         assert_eq!(state.view_mode, ViewMode::Recent);
         assert!(
@@ -1175,8 +1298,123 @@ mod tests {
         assert_eq!(state.view_mode, ViewMode::Directory);
     }
 
+    #[test]
+    fn printable_typing_enters_bounded_search_and_escape_restores_directory() {
+        let mut state = file_state(b"home/notes.txt");
+        assert!(key(&mut state, 33, 0)); // KEY_F -> 'f'
+        assert_eq!(state.view_mode, ViewMode::Search);
+        assert_eq!(&state.search_query[..state.search_query_len], b"f");
+        assert!(key(&mut state, 24, MOD_SHIFT)); // KEY_O -> 'O'
+        assert_eq!(&state.search_query[..state.search_query_len], b"fO");
+        assert!(key(&mut state, KEY_ESC, 0));
+        assert_eq!(state.view_mode, ViewMode::Directory);
+        assert_eq!(state.search_query_len, 0);
+    }
+
+    #[test]
+    fn leading_space_does_not_enter_search_mode() {
+        let mut state = file_state(b"home/notes.txt");
+        assert!(!key(&mut state, 57, 0)); // KEY_SPACE
+        assert_eq!(state.view_mode, ViewMode::Directory);
+        assert_eq!(state.search_query_len, 0);
+    }
+
+    #[test]
+    fn search_backspace_to_empty_restores_directory_listing_mode() {
+        let mut state = file_state(b"home/notes.txt");
+        state.view_mode = ViewMode::Search;
+        state.search_query[0] = b'n';
+        state.search_query_len = 1;
+        assert!(key(&mut state, KEY_BACKSPACE, 0));
+        assert_eq!(state.view_mode, ViewMode::Directory);
+        assert_eq!(state.search_query_len, 0);
+    }
+
+    #[test]
+    fn search_backspace_trims_query_without_exiting_until_empty() {
+        let mut state = file_state(b"home/notes.txt");
+        state.view_mode = ViewMode::Search;
+        state.search_query[..2].copy_from_slice(b"no");
+        state.search_query_len = 2;
+
+        assert!(key(&mut state, KEY_BACKSPACE, 0));
+
+        assert_eq!(state.view_mode, ViewMode::Search);
+        assert_eq!(state.search_query_len, 1);
+        assert_eq!(&state.search_query[..state.search_query_len], b"n");
+        assert_eq!(state.search_query[1], 0);
+    }
+
+    #[test]
+    fn search_selection_stays_within_result_bounds() {
+        let mut state = search_state(&[
+            (b"docs/".as_slice(), EntryKind::Directory),
+            (b"docs/guide.txt".as_slice(), EntryKind::File),
+            (b"docs/notes.txt".as_slice(), EntryKind::File),
+        ]);
+
+        assert!(key(&mut state, KEY_UP, 0));
+        assert_eq!(state.selected_index, 0);
+
+        assert!(key(&mut state, KEY_DOWN, 0));
+        assert_eq!(state.selected_index, 1);
+        assert!(key(&mut state, KEY_DOWN, 0));
+        assert_eq!(state.selected_index, 2);
+        assert!(key(&mut state, KEY_DOWN, 0));
+        assert_eq!(state.selected_index, 2);
+    }
+
+    #[test]
+    fn search_query_growth_stops_at_fixed_capacity() {
+        let mut state = file_state(b"home/notes.txt");
+        state.view_mode = ViewMode::Search;
+        state.search_query.fill(b'x');
+        state.search_query_len = state.search_query.len();
+
+        assert!(key(&mut state, 33, 0));
+
+        assert_eq!(state.search_query_len, crate::state::MAX_SEARCH_QUERY);
+        assert!(state.search_query.iter().all(|byte| *byte == b'x'));
+    }
+
+    #[test]
+    fn enter_on_search_directory_hit_exits_search_and_targets_directory() {
+        let mut state = search_state(&[(b"docs/".as_slice(), EntryKind::Directory)]);
+        state.search_query[0] = b'd';
+        state.search_query_len = 1;
+
+        assert!(key(&mut state, KEY_ENTER, 0));
+
+        assert_eq!(state.view_mode, ViewMode::Directory);
+        assert_eq!(state.search_query_len, 0);
+        assert_eq!(&state.current_path[..state.current_path_len], b"docs/");
+        assert!(state.load_failed);
+    }
+
+    #[test]
+    fn enter_on_search_file_hit_exits_search_and_reuses_file_routing() {
+        let mut state = search_state(&[(b"docs/readme".as_slice(), EntryKind::File)]);
+        state.search_query[0] = b'r';
+        state.search_query_len = 1;
+
+        assert!(key(&mut state, KEY_ENTER, 0));
+
+        assert_eq!(state.view_mode, ViewMode::Directory);
+        assert_eq!(state.search_query_len, 0);
+        assert_eq!(&state.current_path[..state.current_path_len], b"docs/");
+        assert!(state.load_failed);
+    }
+
     fn key(state: &mut ExplorerState, code: u32, modifiers: u32) -> bool {
-        handle_key_down(state, rt::INVALID_HANDLE, rt::INVALID_HANDLE, code, modifiers, None).unwrap()
+        handle_key_down(
+            state,
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            code,
+            modifiers,
+            None,
+        )
+        .unwrap()
     }
 
     #[test]
@@ -1217,8 +1455,7 @@ mod tests {
             Some(crate::state::Dialog::Prompt {
                 purpose: crate::state::PromptPurpose::NewFolder,
                 index: usize::MAX,
-            }
-            )
+            })
         );
         assert_eq!(&state.prompt_input[..state.prompt_len], b"New Folder");
         assert!(key(&mut state, KEY_ESC, 0));

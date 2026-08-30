@@ -59,6 +59,8 @@ fn main() -> u64 {
         scroll_offset: 0,
         load_failed: false,
         view_mode: ViewMode::Directory,
+        search_query: [0; state::MAX_SEARCH_QUERY],
+        search_query_len: 0,
         recent_sel: 0,
         press: None,
         dragging: false,

@@ -216,6 +216,15 @@ capability rather than through root-handle path walking. That keeps browsing,
 create, open-for-write, and removal flows aligned around the same scoped
 authority model.
 
+From a directory view, printable typing now switches `files-app` into bounded
+name search using the storage index. The app sends the current directory path
+as the subtree scope, keeps at most its fixed 64 visible hits, and preserves the
+service's exact/prefix/substring ranking. Backspace edits the query, while an
+empty query or Escape reloads the ordinary directory listing. Enter navigates
+directory hits or sends file hits through the same open-with and recent-files
+path as normal browsing. This is filename discovery only; the app does not
+expose the storage grep primitive or an editor.
+
 The shell now also opens the namespace root once, then traverses or mutates
 through scoped directory capabilities instead of relying on repeated root-path
 opens for ordinary file operations.

@@ -23,6 +23,7 @@ pub(crate) fn render(
 
     let title = match state.view_mode {
         ViewMode::Directory => "FILES",
+        ViewMode::Search => "SEARCH",
         ViewMode::Recent => "RECENT",
     };
     ui::draw_window_frame_rgba8888(
@@ -36,7 +37,7 @@ pub(crate) fn render(
     );
     draw_header(bytes, state);
     match state.view_mode {
-        ViewMode::Directory => draw_list(bytes, state),
+        ViewMode::Directory | ViewMode::Search => draw_list(bytes, state),
         ViewMode::Recent => draw_recent(bytes, state),
     }
     draw_footer(bytes, state);
@@ -59,6 +60,12 @@ fn draw_header(bytes: &mut [u8], state: &ExplorerState) {
     let _ = path_line.write_fmt(format_args!("PATH "));
     if state.view_mode == ViewMode::Recent {
         let _ = path_line.write_fmt(format_args!("RECENT {} FILES", state.recent.len()));
+    } else if state.view_mode == ViewMode::Search {
+        let query = str::from_utf8(&state.search_query[..state.search_query_len]).unwrap_or("?");
+        let _ = path_line.write_fmt(format_args!("SEARCH {query} IN /"));
+        if let Ok(path) = str::from_utf8(&state.current_path[..state.current_path_len]) {
+            let _ = path_line.write_fmt(format_args!("{path}"));
+        }
     } else if state.current_path_len == 0 {
         let _ = path_line.write_fmt(format_args!("/"));
     } else if let Ok(path) = str::from_utf8(&state.current_path[..state.current_path_len]) {
@@ -103,7 +110,15 @@ fn draw_list(bytes: &mut [u8], state: &ExplorerState) {
     }
 
     if state.entry_count == 0 {
-        draw_note(bytes, "EMPTY", ui::TEXT_MUTED);
+        draw_note(
+            bytes,
+            if state.view_mode == ViewMode::Search {
+                "NO MATCHES"
+            } else {
+                "EMPTY"
+            },
+            ui::TEXT_MUTED,
+        );
         return;
     }
 
@@ -233,7 +248,7 @@ fn draw_footer(bytes: &mut [u8], state: &ExplorerState) {
         ViewMode::Recent => {
             let _ = write!(
                 footer,
-                "{} of {}  [R] BACK",
+                "{} of {}  [CTRL+R] BACK",
                 state.recent_sel.min(state.recent.len().saturating_sub(1)) + 1,
                 state.recent.len(),
             );
@@ -260,6 +275,11 @@ fn draw_footer(bytes: &mut [u8], state: &ExplorerState) {
                 push_selected_path(&mut footer, selected);
                 append_open_hint(&mut footer, state);
             }
+        }
+        ViewMode::Search => {
+            let query =
+                str::from_utf8(&state.search_query[..state.search_query_len]).unwrap_or("?");
+            let _ = write!(footer, "SEARCH {query}  [ESC] CANCEL");
         }
     }
     rt::draw_text_rgba8888(
@@ -411,8 +431,28 @@ fn draw_dialog(bytes: &mut [u8], state: &ExplorerState, dialog: crate::state::Di
     let box_h = 16 * 3 + 18;
     let x = width.saturating_sub(box_w) / 2;
     let y = height.saturating_sub(box_h) / 2;
-    ui::fill_rgba8888_rect(bytes, PIXEL_STRIDE, width, height, x, y, box_w, box_h, ui::BG_WINDOW);
-    ui::fill_rgba8888_rect(bytes, PIXEL_STRIDE, width, height, x, y, box_w, 14, ui::BG_WINDOW_ALT);
+    ui::fill_rgba8888_rect(
+        bytes,
+        PIXEL_STRIDE,
+        width,
+        height,
+        x,
+        y,
+        box_w,
+        box_h,
+        ui::BG_WINDOW,
+    );
+    ui::fill_rgba8888_rect(
+        bytes,
+        PIXEL_STRIDE,
+        width,
+        height,
+        x,
+        y,
+        box_w,
+        14,
+        ui::BG_WINDOW_ALT,
+    );
     text_at(bytes, x + 6, y + 3, dialog_title(dialog), ui::TEXT_PRIMARY);
 
     let mut body = FixedLogBuffer::<96>::new();
@@ -436,7 +476,10 @@ fn draw_dialog(bytes: &mut [u8], state: &ExplorerState, dialog: crate::state::Di
                 purpose.title(),
                 core::str::from_utf8(&state.prompt_input[..typed_len]).unwrap_or("")
             );
-            ("ENTER=OK ESC=CANCEL", str::from_utf8(body2.as_bytes()).unwrap_or("INPUT"))
+            (
+                "ENTER=OK ESC=CANCEL",
+                str::from_utf8(body2.as_bytes()).unwrap_or("INPUT"),
+            )
         }
         crate::state::Dialog::Error { message } => (message, "PRESS ANY KEY"),
         crate::state::Dialog::Progress { done, total } => {
@@ -465,17 +508,11 @@ fn dialog_title(dialog: crate::state::Dialog) -> &'static str {
 }
 
 fn text_at(bytes: &mut [u8], x: usize, y: usize, text: &str, color: u32) {
-    rt::draw_text_rgba8888(
-        bytes,
-        PIXEL_STRIDE,
-        x as i32,
-        y as i32,
-        color,
-        text,
-    );
+    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, x as i32, y as i32, color, text);
 }
 
-fn draw_entry_label(bytes: &mut [u8], entry: ExplorerEntry, x: i32, y: i32, color: u32) {    let mut label = FixedLogBuffer::<96>::new();
+fn draw_entry_label(bytes: &mut [u8], entry: ExplorerEntry, x: i32, y: i32, color: u32) {
+    let mut label = FixedLogBuffer::<96>::new();
     if entry.kind == EntryKind::Parent {
         let _ = write!(label, "UP   ..");
     } else {

@@ -5,7 +5,7 @@ use serviceos_userspace_runtime as rt;
 
 use crate::state::{
     BUFFER_HEIGHT, EntryKind, ExplorerEntry, ExplorerState, LIST_BOTTOM_MARGIN, LIST_Y,
-    MAX_ENTRIES, MAX_STORAGE_PATH, ROW_HEIGHT,
+    MAX_ENTRIES, MAX_STORAGE_PATH, ROW_HEIGHT, ViewMode,
 };
 
 pub(crate) fn visible_row_count(state: &ExplorerState) -> usize {
@@ -30,11 +30,15 @@ pub(crate) fn reopen_directory(
     Ok(())
 }
 
-pub(crate) fn reload_directory(state: &mut ExplorerState) -> rt::Result<()> {
+fn reset_listing(state: &mut ExplorerState) {
     state.entry_count = 0;
     state.scroll_offset = 0;
     state.selected_index = 0;
     state.load_failed = false;
+}
+
+pub(crate) fn reload_directory(state: &mut ExplorerState) -> rt::Result<()> {
+    reset_listing(state);
 
     if state.current_path_len != 0 {
         let parent_len = parent_path_bytes(
@@ -74,6 +78,53 @@ pub(crate) fn reload_directory(state: &mut ExplorerState) -> rt::Result<()> {
     sort_entries(state);
     clamp_view(state);
     Ok(())
+}
+
+/// Replaces the visible directory entries with ranked name hits limited to
+/// the current directory subtree. The service cursor and the UI entry array
+/// bound both IPC work and memory use.
+pub(crate) fn reload_search(
+    state: &mut ExplorerState,
+    storage_handle: rt::Handle,
+) -> rt::Result<()> {
+    reset_listing(state);
+
+    let Some((scope_len, scope, query)) = search_request(state) else {
+        state.view_mode = ViewMode::Directory;
+        return reload_directory(state);
+    };
+    let scope = &scope[..scope_len];
+    let mut cursor = 0usize;
+    while state.entry_count < MAX_ENTRIES {
+        match rt::storage_search::<MAX_STORAGE_PATH>(storage_handle, cursor, scope, &query)? {
+            Some(hit) => {
+                state.entries[state.entry_count].kind = match hit.kind {
+                    rt::StorageEntryKind::Directory => EntryKind::Directory,
+                    rt::StorageEntryKind::File => EntryKind::File,
+                };
+                state.entries[state.entry_count].path_len = hit.path_len;
+                state.entries[state.entry_count].path[..hit.path_len]
+                    .copy_from_slice(&hit.path[..hit.path_len]);
+                state.entry_count += 1;
+                if hit.next_cursor <= cursor {
+                    break;
+                }
+                cursor = hit.next_cursor;
+            }
+            None => break,
+        }
+    }
+    clamp_view(state);
+    Ok(())
+}
+
+fn search_request(
+    state: &ExplorerState,
+) -> Option<(usize, [u8; MAX_STORAGE_PATH], rt::StorageSearchQuery)> {
+    let query = rt::StorageSearchQuery::from_bytes(&state.search_query[..state.search_query_len])?;
+    let mut scope = [0u8; MAX_STORAGE_PATH];
+    scope[..state.current_path_len].copy_from_slice(&state.current_path[..state.current_path_len]);
+    Some((state.current_path_len, scope, query))
 }
 
 pub(crate) fn entry_name_bytes(entry: &ExplorerEntry) -> &[u8] {
@@ -289,4 +340,112 @@ fn parent_path_bytes(path: &[u8], output: &mut [u8; MAX_STORAGE_PATH]) -> usize 
     let len = separator + 1;
     output[..len].copy_from_slice(&trimmed[..len]);
     len
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::assoc::AssocTable;
+    use crate::recent::RecentRing;
+    use crate::state::{ExplorerEntry, ViewMode};
+
+    fn empty_state() -> ExplorerState {
+        ExplorerState {
+            width: 800,
+            height: 600,
+            focused: true,
+            loading_initial_directory: false,
+            current_directory_handle: rt::INVALID_HANDLE,
+            current_path: [0; MAX_STORAGE_PATH],
+            current_path_len: 0,
+            entries: [ExplorerEntry::empty(); MAX_ENTRIES],
+            entry_count: 0,
+            selected_index: 0,
+            scroll_offset: 0,
+            load_failed: false,
+            view_mode: ViewMode::Directory,
+            search_query: [0; crate::state::MAX_SEARCH_QUERY],
+            search_query_len: 0,
+            recent_sel: 0,
+            press: None,
+            dragging: false,
+            open_with_pick: None,
+            assoc: AssocTable::empty(),
+            recent: RecentRing::empty(),
+            persist_dir: rt::INVALID_HANDLE,
+            dialog: None,
+            prompt_input: [0; crate::ops::NAME_MAX],
+            prompt_len: 0,
+            menu: None,
+            await_context: None,
+        }
+    }
+
+    #[test]
+    fn search_request_uses_current_directory_scope_and_compacts_query() {
+        let mut state = empty_state();
+        state.current_path_len = 9;
+        state.current_path[..9].copy_from_slice(b"docs/api/");
+        let raw = b"Read   me  now later";
+        state.search_query[..raw.len()].copy_from_slice(raw);
+        state.search_query_len = raw.len();
+
+        let (scope_len, scope, query) = search_request(&state).expect("query should build");
+        assert_eq!(&scope[..scope_len], b"docs/api/");
+        assert_eq!(query.as_bytes(), b"Read me now");
+    }
+
+    #[test]
+    fn search_request_rejects_empty_query_bytes() {
+        let mut state = empty_state();
+        state.search_query[0] = b' ';
+        state.search_query_len = 1;
+        assert!(search_request(&state).is_none());
+    }
+
+    #[test]
+    fn reload_search_canonicalizes_whitespace_only_query_back_to_directory_mode() {
+        let mut state = empty_state();
+        state.view_mode = ViewMode::Search;
+        state.search_query[0] = b' ';
+        state.search_query_len = 1;
+
+        let result = reload_search(&mut state, rt::INVALID_HANDLE);
+
+        assert_eq!(result, Err(rt::Error::InvalidArgument));
+        assert_eq!(state.view_mode, ViewMode::Directory);
+        assert_eq!(state.entry_count, 0);
+        assert!(state.load_failed);
+    }
+
+    #[test]
+    fn insert_unique_entry_deduplicates_and_caps_at_max_entries() {
+        let mut state = empty_state();
+        insert_unique_entry(&mut state, EntryKind::File, b"docs/readme.txt");
+        insert_unique_entry(&mut state, EntryKind::File, b"docs/readme.txt");
+        assert_eq!(state.entry_count, 1);
+
+        state.entry_count = MAX_ENTRIES;
+        insert_unique_entry(&mut state, EntryKind::File, b"docs/extra.txt");
+        assert_eq!(state.entry_count, MAX_ENTRIES);
+    }
+
+    #[test]
+    fn clamp_view_brings_selection_and_scroll_back_into_bounds() {
+        let mut state = empty_state();
+        state.entry_count = 2;
+        state.selected_index = 9;
+        state.scroll_offset = 9;
+        state.entries[0].kind = EntryKind::Directory;
+        state.entries[0].path[..5].copy_from_slice(b"docs/");
+        state.entries[0].path_len = 5;
+        state.entries[1].kind = EntryKind::File;
+        state.entries[1].path[..15].copy_from_slice(b"docs/readme.txt");
+        state.entries[1].path_len = 15;
+
+        clamp_view(&mut state);
+
+        assert_eq!(state.selected_index, 1);
+        assert_eq!(state.scroll_offset, 0);
+    }
 }

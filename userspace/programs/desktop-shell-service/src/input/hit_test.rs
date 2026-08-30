@@ -5,6 +5,15 @@ pub(super) fn hit_test(state: &DesktopState, x: i32, y: i32) -> HitTarget {
         return HitTarget::Launcher(app_id);
     }
 
+    // Document rows live under the app grid on the same panel grid; they
+    // participate only while documents exist, so an app-only panel keeps
+    // its previous hit behavior exactly (blank tail stays Background).
+    if state.launcher_docs_len != 0 {
+        if let Some(row) = launcher_doc_row_at(state, x, y) {
+            return HitTarget::LauncherDoc(row);
+        }
+    }
+
     let mut order = [DesktopAppId::Settings; APP_COUNT];
     let mut count = 0usize;
     for slot in state.apps.iter().copied() {
@@ -118,6 +127,20 @@ fn launcher_hit_app(state: &DesktopState, x: i32, y: i32) -> Option<DesktopAppId
 /// highlighting while a content drag is armed.
 pub(crate) fn launcher_hover_app(state: &DesktopState) -> Option<DesktopAppId> {
     launcher_hit_app(state, state.pointer_x, state.pointer_y)
+}
+
+/// Document row under a logical canvas point, bounded by the launcher
+/// panel rect (same bounds as the app rows).
+fn launcher_doc_row_at(state: &DesktopState, x: i32, y: i32) -> Option<usize> {
+    let (launcher_x, launcher_y, launcher_w, launcher_h) = crate::access::launcher_base_rect(state);
+    if x < launcher_x
+        || y < launcher_y
+        || x >= launcher_x + launcher_w as i32
+        || y >= launcher_y + launcher_h as i32
+    {
+        return None;
+    }
+    crate::launcher_docs::launcher_doc_row_at(y - launcher_y)
 }
 
 fn resize_hit_edges(window: &WindowState, local_x: i32, local_y: i32) -> ResizeEdges {

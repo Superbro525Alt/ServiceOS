@@ -17,6 +17,7 @@ pub(crate) const WORKSPACE_COUNT: u32 = 4;
 pub(crate) const MAX_DESKTOP_REQUESTS_PER_TURN: usize = 24;
 pub(crate) const APP_REFRESH_TICKS: u64 = 10;
 pub(crate) const STATUS_REFRESH_TICKS: u64 = 300;
+pub(crate) const LAUNCHER_DOCS_REFRESH_TICKS: u64 = 300;
 pub(crate) const TOPBAR_HEIGHT: u32 = 42;
 pub(crate) const LAUNCHER_WIDTH: u32 = 250;
 pub(crate) const LAUNCHER_HEIGHT: u32 = 144;
@@ -271,6 +272,7 @@ impl core::ops::BitOrAssign for ResizeEdges {
 pub(crate) enum HitTarget {
     Background,
     Launcher(DesktopAppId),
+    LauncherDoc(usize),
     WindowContent(DesktopAppId),
     WindowMove {
         app_id: DesktopAppId,
@@ -344,6 +346,11 @@ pub(crate) struct DesktopState {
     pub(crate) storage_handle: rt::Handle,
     pub(crate) doc_hits: [crate::palette_docs::DocHit; crate::palette_docs::DOC_HITS_MAX],
     pub(crate) doc_hits_len: usize,
+    pub(crate) launcher_docs:
+        [crate::palette_docs::DocHit; crate::launcher_docs::LAUNCHER_DOCS_MAX],
+    pub(crate) launcher_docs_len: usize,
+    pub(crate) launcher_docs_rendered: usize,
+    pub(crate) next_launcher_docs_refresh: u64,
     pub(crate) master_volume: u8,
     pub(crate) master_muted: bool,
     pub(crate) pending_media_refresh: rt::PendingFlag,

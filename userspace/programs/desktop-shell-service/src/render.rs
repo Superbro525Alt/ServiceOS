@@ -167,7 +167,7 @@ fn render_topbar(state: &DesktopState, status_snapshot: DesktopStatusSnapshot) -
 }
 
 fn render_shell_chrome(
-    state: &DesktopState,
+    state: &mut DesktopState,
     status_snapshot: DesktopStatusSnapshot,
     include_launcher: bool,
 ) -> rt::Result<()> {
@@ -178,7 +178,7 @@ fn render_shell_chrome(
     render_status_surface(state, status_snapshot)
 }
 
-fn render_launcher(state: &DesktopState) -> rt::Result<()> {
+fn render_launcher(state: &mut DesktopState) -> rt::Result<()> {
     let dragging = state.content_drag.is_some();
     let hover = if dragging {
         crate::input::launcher_hover_app(state)
@@ -258,6 +258,47 @@ fn render_launcher(state: &DesktopState) -> rt::Result<()> {
             line,
         )?;
     }
+    render_launcher_docs(state)?;
+    Ok(())
+}
+
+/// Document section under the app grid, on the shared panel line grid:
+/// grid row 6 is the "RECENT" header, grid rows 7..10 the up-to-4
+/// recency-ranked documents. Rows render only while documents exist;
+/// the transition to empty clears the slots exactly once so the
+/// app-only layout stays byte-identical (no reserved blank section).
+fn render_launcher_docs(state: &mut DesktopState) -> rt::Result<()> {
+    let docs_len = state
+        .launcher_docs_len
+        .min(crate::launcher_docs::LAUNCHER_DOCS_MAX);
+    let shown = state.launcher_docs_rendered;
+    if docs_len == 0 && shown == 0 {
+        return Ok(());
+    }
+    let t = theme_of(state);
+    rt::surface_set_label(
+        state.chrome.launcher_handle,
+        crate::launcher_docs::DOC_HEADER_SLOT,
+        12,
+        crate::launcher_docs::doc_header_y(),
+        t.text_muted,
+        if docs_len == 0 { "" } else { "RECENT" },
+    )?;
+    for row in 0..crate::launcher_docs::LAUNCHER_DOCS_MAX {
+        let mut line = FixedLogBuffer::<56>::new();
+        if row < docs_len {
+            crate::launcher_docs::doc_row_label(&mut line, &state.launcher_docs[row]);
+        }
+        rt::surface_set_label(
+            state.chrome.launcher_handle,
+            crate::launcher_docs::DOC_ROW_SLOT_BASE + row as u32,
+            12,
+            crate::launcher_docs::doc_row_y(row),
+            t.text_secondary,
+            line.as_str(),
+        )?;
+    }
+    state.launcher_docs_rendered = docs_len;
     Ok(())
 }
 

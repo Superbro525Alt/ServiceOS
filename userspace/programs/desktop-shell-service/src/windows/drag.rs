@@ -214,6 +214,11 @@ mod tests {
             DropDecision::Deliver(DesktopAppId::Files)
         );
         assert_eq!(
+            drop_decision(&HitTarget::LauncherDoc(0)),
+            DropDecision::Cancel,
+            "document rows take clicks, not drops; dropping stays a cancel"
+        );
+        assert_eq!(
             drop_decision(&HitTarget::WindowContent(DesktopAppId::Monitor)),
             DropDecision::Cancel
         );

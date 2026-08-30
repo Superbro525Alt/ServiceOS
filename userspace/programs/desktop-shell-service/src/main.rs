@@ -6,6 +6,7 @@ mod actions;
 mod chrome;
 mod crash;
 mod input;
+mod launcher_docs;
 mod logging;
 mod media;
 mod palette;
@@ -157,6 +158,15 @@ fn main() -> u64 {
             line: 0,
         }; crate::palette_docs::DOC_HITS_MAX],
         doc_hits_len: 0,
+        launcher_docs: [crate::palette_docs::DocHit {
+            path: [0; crate::palette_docs::DOC_PATH_MAX],
+            path_len: 0,
+            kind: 0,
+            line: 0,
+        }; crate::launcher_docs::LAUNCHER_DOCS_MAX],
+        launcher_docs_len: 0,
+        launcher_docs_rendered: 0,
+        next_launcher_docs_refresh: 0,
         master_volume: media::MASTER_VOLUME_DEFAULT,
         master_muted: false,
         pending_media_refresh: rt::PendingFlag::new(),
@@ -175,6 +185,11 @@ fn main() -> u64 {
         zoom_last_fy: -1,
         zoom_last_index: 0,
     };
+
+    // Panel document section: seed from the persistent files-app recent
+    // ring before the first render so a returning session shows its
+    // recent documents immediately. Fresh boots (no ring) stay app-only.
+    launcher_docs::refresh_launcher_docs(&mut state);
 
     if render::render_desktop(&mut state).is_err() {
         return 0xfe0b;
@@ -333,6 +348,15 @@ fn main() -> u64 {
                     if render::render_overlays_only(&mut state).is_err() {
                         return 0xfe1a;
                     }
+                }
+            }
+            if now >= state.next_launcher_docs_refresh {
+                state.next_launcher_docs_refresh =
+                    now.saturating_add(LAUNCHER_DOCS_REFRESH_TICKS);
+                if launcher_docs::refresh_launcher_docs(&mut state)
+                    && render::render_desktop(&mut state).is_err()
+                {
+                    return 0xfe1e;
                 }
             }
         }

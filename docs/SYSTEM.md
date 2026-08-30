@@ -316,10 +316,14 @@ persisted manifests, brings up the dependency-ordered service graph → desktop.
 SeaBIOS PVH ELF note → `mb_entry.S` long-mode trampoline (identity 2 MiB
 pages, NXE+LME) → PVH v1 start_info memmap parsed into `BootInfo` → full
 kernel init succeeds (LAPIC timer, HPET, SMP probe, PIC/PIT, kthread
-self-switches) → bootstrap reaches "entering userspace executor" → **known
-bug**: first `resume_user` IRETQ raises #GP(0xff50) with stale BIOS IVT bytes
-in the restored context; tracked with hypotheses in
-`docs/handoff-qemu-isa.md`.
+self-switches) → bootstrap reaches "entering userspace executor" and user
+entry now works: the historical first-`resume_user` #GP(0xff50) was an ABI
+mismatch (`extern "C"` resolves to win64/RCX on the uefi target but
+SysV/RDI on the none target; the asm read RCX, so none-target builds
+dereferenced RCX=0 into the BIOS IVT) — fixed by pinning the extern to
+`sysv64` and reading RDI. Remaining open: the userspace graph goes silent
+after entry (root-manager receives its bootstrap message, then user mode
+spins with no further syscalls — see `docs/handoff-qemu-isa.md`).
 
 ### 4.3 virt (aarch64)
 

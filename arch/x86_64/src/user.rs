@@ -31,7 +31,7 @@ serviceos_x86_64_resume_user:
     push r14
     push r15
     mov [rip + serviceos_x86_64_user_return_stack], rsp
-    mov r11, rcx
+    mov r11, rdi
     push qword ptr [r11 + 0x98]
     push qword ptr [r11 + 0x90]
     push qword ptr [r11 + 0x88]
@@ -69,7 +69,13 @@ serviceos_x86_64_return_to_kernel:
 "#
 );
 
-unsafe extern "C" {
+// "sysv64" is deliberate: the inline asm above reads the context pointer
+// from RDI. Under `extern "C"` the argument register follows the target's
+// default C ABI — win64 (RCX) on x86_64-unknown-uefi, SysV (RDI) on
+// x86_64-unknown-none — so the uefi build worked while the none-target
+// builds (qemu-isa) dereferenced RCX=0 into the BIOS IVT and faulted on the
+// first iretq. Pinning the ABI keeps both targets passing the pointer in RDI.
+unsafe extern "sysv64" {
     fn serviceos_x86_64_resume_user(context: *const SavedUserContext);
     fn serviceos_x86_64_return_to_kernel() -> !;
 }

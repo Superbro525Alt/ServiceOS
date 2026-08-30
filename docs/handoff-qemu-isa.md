@@ -1,12 +1,25 @@
 # qemu-isa handoff — final userspace-entry fault
 
-> STATUS UPDATE (latest session): the syscall-return/eret defect described
-> below was fixed on the aarch64 path via a memory result-slot protocol
-> (kernel publishes (value,error) to [sp_el0-16,sp_el0-8]; runtime reads
-> post-svc from that slot — see commit 38b8463). The SAME root cause likely
-> explains the qemu-isa GPF at first user entry. qemu-isa is untested since;
-> next agent should retry a boot, and if the GPF persists, port the
-> result-slot protocol to the x86_64 syscall path.
+> FIXED (this session): root cause was a register-ABI mismatch, not memory
+> corruption. `serviceos_x86_64_resume_user` was declared `extern "C"`, which
+> follows the target's default C ABI: win64 (arg in RCX) on
+> x86_64-unknown-uefi, SysV (arg in RDI) on x86_64-unknown-none. The inline
+> asm read RCX unconditionally, so UEFI boots worked while qemu-isa
+> dereferenced RCX=0 into the BIOS IVT (the 0xf000ff53 qwords) and #GP'd on
+> the first iretq. Fix: `extern "sysv64"` + `mov r11, rdi` in
+> arch/x86_64/src/user.rs. `kernel_context_switch` was already ABI-neutral
+> (explicit rcx/rdx placement + clobber_abi). The #GP is gone; isa-smoke e2e
+> passes; qemu-virtio still reaches desktop-ready.
+>
+> NEW OPEN BUG (replaces the entry fault): after "entering userspace
+> executor" on qemu-isa, user mode runs but the graph goes silent. Live
+> `-d int` evidence (60 s boot): root-manager makes exactly one
+> ChannelReceive (syscall 7) and a second thread one ThreadExit (syscall 2),
+> then ~12k timer vectors (v=40) interrupt the SAME user IP (0x4000000035892)
+> with no further syscalls — a syscall-free user-mode spin. Root-manager
+> never reaches its first spawn. Next agent: disassemble the root-manager
+> image at offset 0x35892 to identify the spin site, and compare the same
+> window on qemu-virtio.
 
 ## What works (verified)
 - `cargo xtask run --platform qemu-isa` boots via SeaBIOS PVH ELF note.

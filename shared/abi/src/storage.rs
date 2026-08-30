@@ -34,6 +34,8 @@ pub enum StorageTag {
     StatReply = 0x51e,
     FindRequest = 0x51f,
     FindReply = 0x520,
+    RenameRequest = 0x527,
+    RenameReply = 0x528,
 }
 
 #[repr(u32)]

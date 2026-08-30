@@ -20,7 +20,7 @@ use crate::{
     persistent::{ensure_boot_root, persist_state},
     util::{
         pack_bytes, send_blob_open_reply, send_directory_open_reply, send_mount_reply,
-        send_stat_reply, unpack_bytes,
+        send_stat_reply, send_status_only, unpack_bytes,
     },
 };
 
@@ -88,8 +88,218 @@ pub(crate) fn handle_root_request(
             persistent_store,
             message,
         ),
+        x if x == StorageTag::RenameRequest as u32 => handle_rename_request(
+            mounts,
+            entries,
+            mutable_entries,
+            persistent_store,
+            search_index,
+            message,
+        ),
         _ => Ok(()),
     }
+}
+
+/// Shared rename/move core used by the IPC handler and host tests.
+/// Atomic: the live entry table is only rewritten after every gate passes.
+/// A same-directory rename and a cross-directory move are the same
+/// operation here; a directory source moves its whole subtree. The boot
+/// store is read-only, so sources that exist only there and destinations
+/// that would shadow a boot entry are denied, and destination collisions
+/// with live entries are rejected without overwrite.
+pub(crate) fn try_rename_entry(
+    mounts: &MountTable,
+    entries: &[EntrySlot],
+    mutable_entries: &mut [MutableEntry; MAX_MUTABLE_ENTRIES],
+    search_index: &mut SearchIndex,
+    source: &[u8],
+    dest: &[u8],
+    now: u64,
+) -> StorageStatus {
+    if source.is_empty() || dest.is_empty() {
+        return StorageStatus::InvalidPath;
+    }
+    // Kind is carried by the trailing-slash convention; both endpoints must
+    // agree on it.
+    let source_is_dir = source.ends_with(b"/");
+    if dest.ends_with(b"/") != source_is_dir {
+        return StorageStatus::InvalidPath;
+    }
+    let source_kind = if source_is_dir {
+        StorageEntryKind::Directory
+    } else {
+        StorageEntryKind::File
+    };
+    if source == dest {
+        return StorageStatus::Ok;
+    }
+
+    let Some(source_index) = find_mutable_entry(mutable_entries, source) else {
+        if entries.iter().any(|entry| entry.matches(source)) {
+            return StorageStatus::Denied;
+        }
+        return StorageStatus::NotFound;
+    };
+    if mutable_entries[source_index].kind != source_kind {
+        return StorageStatus::InvalidPath;
+    }
+
+    // Capability gate: both endpoints must sit on writable mounts.
+    if !is_mutable_path(mounts, source) || !is_mutable_path(mounts, dest) {
+        return StorageStatus::Denied;
+    }
+
+    // No overwrite: the destination must not collide with a live mutable
+    // entry nor shadow a read-only boot-store entry.
+    if find_mutable_entry(mutable_entries, dest).is_some() {
+        return StorageStatus::AlreadyExists;
+    }
+    if entries.iter().any(|entry| entry.matches(dest)) {
+        return StorageStatus::Denied;
+    }
+
+    // The destination parent must resolve (root, mount root, boot or
+    // mutable directory). A directory destination's parent excludes the
+    // destination's own trailing component.
+    let dest_parent = match dest
+        .strip_suffix(b"/")
+        .unwrap_or(dest)
+        .iter()
+        .rposition(|byte| *byte == b'/')
+    {
+        Some(position) => &dest[..position + 1],
+        None => &[],
+    };
+    if !directory_openable(mounts, entries, mutable_entries, dest_parent) {
+        return StorageStatus::NotFound;
+    }
+
+    // A directory may not be moved into itself.
+    if source_is_dir && dest.len() > source.len() && dest[..source.len()] == *source {
+        return StorageStatus::InvalidPath;
+    }
+
+    // Subtree capacity and collision plan: every rewritten descendant must
+    // fit under the new prefix and must not land on an entry that stays
+    // put (mutable or boot).
+    if source_is_dir {
+        for entry in mutable_entries.iter() {
+            if !entry.occupied {
+                continue;
+            }
+            let under = entry.path_len > source.len() && entry.path[..source.len()] == *source;
+            if !under {
+                continue;
+            }
+            let suffix = &entry.path[source.len()..entry.path_len];
+            let new_len = dest.len() + suffix.len();
+            if new_len > MAX_STORAGE_PATH {
+                return StorageStatus::InvalidPath;
+            }
+            let mut new_path = [0u8; MAX_STORAGE_PATH];
+            new_path[..dest.len()].copy_from_slice(dest);
+            new_path[dest.len()..new_len].copy_from_slice(suffix);
+            let new_path = &new_path[..new_len];
+            // Only entries that stay put can collide with the moved
+            // subtree; subtree members rewrite injectively among
+            // themselves.
+            let stays_put = |other: &MutableEntry| -> bool {
+                other.occupied
+                    && !(other.path_len == source.len() && other.path[..other.path_len] == *source)
+                    && !(other.path_len > source.len() && other.path[..source.len()] == *source)
+            };
+            if mutable_entries.iter().any(|other| {
+                stays_put(other) && other.path_len == new_len && other.path[..new_len] == *new_path
+            }) {
+                return StorageStatus::AlreadyExists;
+            }
+            if entries.iter().any(|boot| boot.matches(new_path)) {
+                return StorageStatus::Denied;
+            }
+        }
+    }
+
+    // Apply: rewrite paths in place, keeping data handles, sizes, and
+    // kinds; entries adopt the destination mount's persistence (matching
+    // what create would have set there).
+    let persistent_now = resolve_mount(mounts, dest).is_some_and(|mount| mount.persistent());
+    for entry in mutable_entries.iter_mut() {
+        if !entry.occupied {
+            continue;
+        }
+        let is_self = entry.path_len == source.len() && entry.path[..entry.path_len] == *source;
+        let under =
+            source_is_dir && entry.path_len > source.len() && entry.path[..source.len()] == *source;
+        if !is_self && !under {
+            continue;
+        }
+        entry
+            .path
+            .copy_within(source.len()..entry.path_len, dest.len());
+        entry.path[..dest.len()].copy_from_slice(dest);
+        entry.path_len = dest.len() + (entry.path_len - source.len());
+        entry.persistent = persistent_now;
+    }
+
+    if source_is_dir {
+        search_index.rename_tree(source, dest, now);
+    } else {
+        search_index.rename(source, dest, now);
+    }
+    StorageStatus::Ok
+}
+
+fn handle_rename_request(
+    mounts: &mut MountTable,
+    entries: &[EntrySlot],
+    mutable_entries: &mut [MutableEntry; MAX_MUTABLE_ENTRIES],
+    persistent_store: Option<&mut PersistentStore>,
+    search_index: &mut SearchIndex,
+    message: &RawMessage,
+) -> rt::Result<()> {
+    if message.word_count < 3 || message.handle_count < 1 {
+        return Ok(());
+    }
+    let reply_handle = message.handles[0];
+    let source_len = message.words[0] as usize;
+    let dest_len = message.words[1] as usize;
+    let mut source_buf = [0u8; MAX_STORAGE_PATH];
+    let mut dest_buf = [0u8; MAX_STORAGE_PATH];
+    let payload = &message.words[2..message.word_count as usize];
+    if unpack_bytes(payload, source_len, &mut source_buf).is_err() {
+        send_status_only(
+            reply_handle,
+            StorageTag::RenameReply,
+            StorageStatus::InvalidPath,
+        );
+        return Ok(());
+    }
+    let tail = source_len.div_ceil(8);
+    if unpack_bytes(payload.get(tail..).unwrap_or(&[]), dest_len, &mut dest_buf).is_err() {
+        send_status_only(
+            reply_handle,
+            StorageTag::RenameReply,
+            StorageStatus::InvalidPath,
+        );
+        return Ok(());
+    }
+    let source = &source_buf[..source_len];
+    let dest = &dest_buf[..dest_len];
+    let now = rt::monotonic_now().unwrap_or(0);
+    let status = try_rename_entry(
+        mounts,
+        entries,
+        mutable_entries,
+        search_index,
+        source,
+        dest,
+        now,
+    );
+    if status == StorageStatus::Ok {
+        persist_state(persistent_store, mounts, mutable_entries)?;
+    }
+    send_status_only(reply_handle, StorageTag::RenameReply, status);
+    Ok(())
 }
 
 /// Shared unmount core used by both the IPC handler and the boot selftest.
@@ -852,4 +1062,481 @@ fn handle_directory_list_request(
     let _ = rt::channel_send(reply_handle, &reply);
     let _ = rt::handle_close(reply_handle);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::index::{SearchPlan, plan_search};
+    use rt::{STORAGE_MOUNT_FLAG_PERSISTENT, STORAGE_MOUNT_FLAG_WRITABLE, STORAGE_ROOT_AUTHORITY};
+
+    fn seeded_mounts() -> MountTable {
+        let mut mounts = [rt::StorageMount::empty(); rt::STORAGE_MOUNT_TABLE_MAX];
+        let defaults: [(&[u8], StorageMountKind, u64); 3] = [
+            (
+                b"home/",
+                StorageMountKind::Persistent,
+                STORAGE_MOUNT_FLAG_WRITABLE | STORAGE_MOUNT_FLAG_PERSISTENT,
+            ),
+            (
+                b"tmp/",
+                StorageMountKind::Ephemeral,
+                STORAGE_MOUNT_FLAG_WRITABLE,
+            ),
+            (b"rom/", StorageMountKind::Temp, 0),
+        ];
+        for (slot, (path, kind, flags)) in mounts.iter_mut().zip(defaults.iter()) {
+            assert!(
+                slot.install(path, *kind, *flags, STORAGE_ROOT_AUTHORITY)
+                    .is_ok()
+            );
+        }
+        mounts
+    }
+
+    fn mutable_entry(path: &[u8], kind: StorageEntryKind, data_len: usize) -> MutableEntry {
+        let mut entry = MutableEntry::empty();
+        entry.kind = kind;
+        entry.path[..path.len()].copy_from_slice(path);
+        entry.path_len = path.len();
+        entry.persistent = true;
+        entry.data_len = data_len;
+        entry.occupied = true;
+        entry
+    }
+
+    fn boot_entry(path: &[u8], data_len: usize) -> EntrySlot {
+        let mut entry = EntrySlot::empty();
+        entry.kind = BootStoreEntryKind::Data;
+        entry.path[..path.len()].copy_from_slice(path);
+        entry.path_len = path.len();
+        entry.data_offset = 40;
+        entry.data_len = data_len;
+        entry
+    }
+
+    fn insert(
+        mutable_entries: &mut [MutableEntry; MAX_MUTABLE_ENTRIES],
+        path: &[u8],
+        kind: StorageEntryKind,
+        data_len: usize,
+    ) {
+        let slot = mutable_entries
+            .iter_mut()
+            .find(|entry| !entry.occupied)
+            .unwrap();
+        *slot = mutable_entry(path, kind, data_len);
+    }
+
+    fn build_index(
+        entries: &[EntrySlot],
+        mutable_entries: &[MutableEntry; MAX_MUTABLE_ENTRIES],
+    ) -> SearchIndex {
+        let mut index = SearchIndex::new();
+        assert!(index.ensure_built(entries, mutable_entries, 10));
+        index
+    }
+
+    fn indexed_paths(index: &SearchIndex) -> Vec<Vec<u8>> {
+        let mut paths: Vec<Vec<u8>> = index
+            .snapshot()
+            .iter()
+            .map(|entry| entry.path().to_vec())
+            .collect();
+        paths.sort();
+        paths
+    }
+
+    #[test]
+    fn same_dir_rename_reindexes_and_preserves_metadata() {
+        let mounts = seeded_mounts();
+        let boot: [EntrySlot; 0] = [];
+        let mut mutable = [MutableEntry::empty(); MAX_MUTABLE_ENTRIES];
+        insert(&mut mutable, b"home/note.txt", StorageEntryKind::File, 7);
+        insert(&mut mutable, b"home/other.txt", StorageEntryKind::File, 3);
+        let mut index = build_index(&boot, &mutable);
+
+        let status = try_rename_entry(
+            &mounts,
+            &boot,
+            &mut mutable,
+            &mut index,
+            b"home/note.txt",
+            b"home/renamed.txt",
+            77,
+        );
+        assert_eq!(status, StorageStatus::Ok);
+
+        assert!(find_mutable_entry(&mutable, b"home/note.txt").is_none());
+        let moved = find_mutable_entry(&mutable, b"home/renamed.txt").unwrap();
+        assert_eq!(mutable[moved].kind, StorageEntryKind::File);
+        assert_eq!(mutable[moved].data_len, 7);
+        let other = find_mutable_entry(&mutable, b"home/other.txt").unwrap();
+        assert_eq!(mutable[other].data_len, 3);
+
+        let plan = plan_search(index.snapshot(), b"", &[b"renamed"], 0, u64::MAX, 0, 80);
+        assert_eq!(plan.len, 1);
+        let stale = plan_search(index.snapshot(), b"", &[b"note"], 0, u64::MAX, 0, 80);
+        assert_eq!(stale.len, 0);
+        assert!(!index.stats().1);
+        assert_eq!(index.stats().0, 2);
+    }
+
+    #[test]
+    fn cross_dir_move_reindexes_subtree_and_flips_persistence() {
+        let mounts = seeded_mounts();
+        let boot: [EntrySlot; 0] = [];
+        let mut mutable = [MutableEntry::empty(); MAX_MUTABLE_ENTRIES];
+        insert(&mut mutable, b"home/box/", StorageEntryKind::Directory, 0);
+        insert(&mut mutable, b"home/box/a.txt", StorageEntryKind::File, 5);
+        insert(
+            &mut mutable,
+            b"home/box/sub/",
+            StorageEntryKind::Directory,
+            0,
+        );
+        insert(
+            &mut mutable,
+            b"home/box/sub/b.txt",
+            StorageEntryKind::File,
+            2,
+        );
+        insert(&mut mutable, b"home/keep.txt", StorageEntryKind::File, 9);
+        let mut index = build_index(&boot, &mutable);
+
+        let status = try_rename_entry(
+            &mounts,
+            &boot,
+            &mut mutable,
+            &mut index,
+            b"home/box/",
+            b"tmp/moved/",
+            80,
+        );
+        assert_eq!(status, StorageStatus::Ok);
+
+        for old in [
+            b"home/box/".as_slice(),
+            b"home/box/a.txt".as_slice(),
+            b"home/box/sub/".as_slice(),
+            b"home/box/sub/b.txt".as_slice(),
+        ] {
+            assert!(find_mutable_entry(&mutable, old).is_none(), "stale {old:?}");
+        }
+        let moved_file = find_mutable_entry(&mutable, b"tmp/moved/a.txt").unwrap();
+        assert_eq!(mutable[moved_file].kind, StorageEntryKind::File);
+        assert_eq!(mutable[moved_file].data_len, 5);
+        assert!(!mutable[moved_file].persistent);
+        let moved_dir = find_mutable_entry(&mutable, b"tmp/moved/").unwrap();
+        assert_eq!(mutable[moved_dir].kind, StorageEntryKind::Directory);
+        assert!(find_mutable_entry(&mutable, b"tmp/moved/sub/b.txt").is_some());
+        let keeper = find_mutable_entry(&mutable, b"home/keep.txt").unwrap();
+        assert!(mutable[keeper].persistent);
+
+        for path in [
+            b"tmp/moved/".as_slice(),
+            b"tmp/moved/a.txt".as_slice(),
+            b"tmp/moved/sub/".as_slice(),
+            b"tmp/moved/sub/b.txt".as_slice(),
+        ] {
+            assert!(
+                index.snapshot().iter().any(|entry| entry.path() == path),
+                "missing {path:?}"
+            );
+        }
+        assert!(
+            !index
+                .snapshot()
+                .iter()
+                .any(|entry| entry.path().starts_with(b"home/box"))
+        );
+        assert_eq!(index.stats().0, 5);
+        assert!(!index.stats().1);
+        let in_home = plan_search(index.snapshot(), b"home/", &[b"txt"], 0, u64::MAX, 0, 80);
+        assert_eq!(
+            plan_paths_of(&in_home, index.snapshot()),
+            vec![b"home/keep.txt".to_vec()]
+        );
+        let in_tmp = plan_search(index.snapshot(), b"tmp/", &[b"txt"], 0, u64::MAX, 0, 80);
+        assert_eq!(in_tmp.len, 2);
+    }
+
+    #[test]
+    fn dest_collision_rejected_without_overwrite() {
+        let mounts = seeded_mounts();
+        let boot: [EntrySlot; 0] = [];
+        let mut mutable = [MutableEntry::empty(); MAX_MUTABLE_ENTRIES];
+        insert(&mut mutable, b"home/note.txt", StorageEntryKind::File, 7);
+        insert(&mut mutable, b"home/other.txt", StorageEntryKind::File, 3);
+        let mut index = build_index(&boot, &mutable);
+
+        let status = try_rename_entry(
+            &mounts,
+            &boot,
+            &mut mutable,
+            &mut index,
+            b"home/note.txt",
+            b"home/other.txt",
+            90,
+        );
+        assert_eq!(status, StorageStatus::AlreadyExists);
+
+        let note = find_mutable_entry(&mutable, b"home/note.txt").unwrap();
+        let other = find_mutable_entry(&mutable, b"home/other.txt").unwrap();
+        assert_eq!(mutable[note].data_len, 7);
+        assert_eq!(mutable[other].data_len, 3);
+        assert!(!index.stats().1);
+        assert_eq!(indexed_paths(&index).len(), 2);
+    }
+
+    #[test]
+    fn boot_store_sources_and_destinations_are_denied() {
+        let mounts = seeded_mounts();
+        let boot = [boot_entry(b"home/boot.txt", 4)];
+        let mut mutable = [MutableEntry::empty(); MAX_MUTABLE_ENTRIES];
+        insert(&mut mutable, b"home/mine.txt", StorageEntryKind::File, 6);
+        let mut index = build_index(&boot, &mutable);
+
+        // Destination shadowing a read-only boot entry.
+        let status = try_rename_entry(
+            &mounts,
+            &boot,
+            &mut mutable,
+            &mut index,
+            b"home/mine.txt",
+            b"home/boot.txt",
+            90,
+        );
+        assert_eq!(status, StorageStatus::Denied);
+        assert!(find_mutable_entry(&mutable, b"home/mine.txt").is_some());
+
+        // Source that exists only in the boot store.
+        let status = try_rename_entry(
+            &mounts,
+            &boot,
+            &mut mutable,
+            &mut index,
+            b"home/boot.txt",
+            b"home/moved.txt",
+            90,
+        );
+        assert_eq!(status, StorageStatus::Denied);
+        assert!(find_mutable_entry(&mutable, b"home/moved.txt").is_none());
+
+        // Plain missing source.
+        let status = try_rename_entry(
+            &mounts,
+            &boot,
+            &mut mutable,
+            &mut index,
+            b"home/ghost.txt",
+            b"home/anywhere.txt",
+            90,
+        );
+        assert_eq!(status, StorageStatus::NotFound);
+        assert!(!index.stats().1);
+    }
+
+    #[test]
+    fn read_only_mounts_are_denied() {
+        let mounts = seeded_mounts();
+        let boot: [EntrySlot; 0] = [];
+        let mut mutable = [MutableEntry::empty(); MAX_MUTABLE_ENTRIES];
+        insert(&mut mutable, b"rom/locked.txt", StorageEntryKind::File, 4);
+        insert(&mut mutable, b"home/note.txt", StorageEntryKind::File, 7);
+        let mut index = build_index(&boot, &mutable);
+
+        let status = try_rename_entry(
+            &mounts,
+            &boot,
+            &mut mutable,
+            &mut index,
+            b"rom/locked.txt",
+            b"rom/freed.txt",
+            90,
+        );
+        assert_eq!(status, StorageStatus::Denied);
+
+        let status = try_rename_entry(
+            &mounts,
+            &boot,
+            &mut mutable,
+            &mut index,
+            b"home/note.txt",
+            b"rom/locked2.txt",
+            90,
+        );
+        assert_eq!(status, StorageStatus::Denied);
+        assert!(find_mutable_entry(&mutable, b"home/note.txt").is_some());
+        assert!(!index.stats().1);
+    }
+
+    #[test]
+    fn invalid_name_gates_reject() {
+        let mounts = seeded_mounts();
+        let boot: [EntrySlot; 0] = [];
+        let mut mutable = [MutableEntry::empty(); MAX_MUTABLE_ENTRIES];
+        insert(&mut mutable, b"home/note.txt", StorageEntryKind::File, 7);
+        insert(&mut mutable, b"home/box/", StorageEntryKind::Directory, 0);
+        // Corrupt kind/slash pairing to exercise the defense-in-depth gate.
+        let odd = mutable.iter_mut().find(|entry| !entry.occupied).unwrap();
+        *odd = mutable_entry(b"home/weird/", StorageEntryKind::File, 1);
+        let mut index = build_index(&boot, &mutable);
+
+        // Destination kind disagrees with the source kind (slash mismatch).
+        let status = try_rename_entry(
+            &mounts,
+            &boot,
+            &mut mutable,
+            &mut index,
+            b"home/note.txt",
+            b"home/dirname/",
+            90,
+        );
+        assert_eq!(status, StorageStatus::InvalidPath);
+
+        // A directory may not move into its own subtree.
+        let status = try_rename_entry(
+            &mounts,
+            &boot,
+            &mut mutable,
+            &mut index,
+            b"home/box/",
+            b"home/box/inner/",
+            90,
+        );
+        assert_eq!(status, StorageStatus::InvalidPath);
+
+        // Missing destination parent.
+        let status = try_rename_entry(
+            &mounts,
+            &boot,
+            &mut mutable,
+            &mut index,
+            b"home/note.txt",
+            b"home/nope/x.txt",
+            90,
+        );
+        assert_eq!(status, StorageStatus::NotFound);
+
+        // Live entry kind disagrees with the requested path form.
+        let status = try_rename_entry(
+            &mounts,
+            &boot,
+            &mut mutable,
+            &mut index,
+            b"home/weird/",
+            b"home/fixed/",
+            90,
+        );
+        assert_eq!(status, StorageStatus::InvalidPath);
+    }
+
+    #[test]
+    fn subtree_overflow_rejects_atomically() {
+        let mounts = seeded_mounts();
+        let boot: [EntrySlot; 0] = [];
+        let mut mutable = [MutableEntry::empty(); MAX_MUTABLE_ENTRIES];
+        insert(&mut mutable, b"home/big/", StorageEntryKind::Directory, 0);
+        // Child path exactly MAX_STORAGE_PATH bytes long: a 79-byte suffix
+        // under the moved directory.
+        let mut child = b"home/big/".to_vec();
+        child.resize(MAX_STORAGE_PATH, b'x');
+        insert(&mut mutable, &child, StorageEntryKind::File, 8);
+        let mut index = build_index(&boot, &mutable);
+
+        // The deep landing zone would push the child past the path limit.
+        let status = try_rename_entry(
+            &mounts,
+            &boot,
+            &mut mutable,
+            &mut index,
+            b"home/big/",
+            b"tmp/relocated/",
+            90,
+        );
+        assert_eq!(status, StorageStatus::InvalidPath);
+        assert!(find_mutable_entry(&mutable, b"home/big/").is_some());
+        assert!(find_mutable_entry(&mutable, &child).is_some());
+        assert!(!index.stats().1);
+        assert!(
+            index
+                .snapshot()
+                .iter()
+                .any(|entry| entry.path() == b"home/big/")
+        );
+    }
+
+    #[test]
+    fn subtree_landing_collision_rejects_atomically() {
+        let mounts = seeded_mounts();
+        let boot: [EntrySlot; 0] = [];
+        let mut mutable = [MutableEntry::empty(); MAX_MUTABLE_ENTRIES];
+        insert(&mut mutable, b"home/big/", StorageEntryKind::Directory, 0);
+        let mut child = b"home/big/".to_vec();
+        child.resize(MAX_STORAGE_PATH, b'x');
+        insert(&mut mutable, &child, StorageEntryKind::File, 8);
+        // A static entry occupying exactly the child's landing spot under
+        // the short destination prefix (same 79-byte suffix).
+        let mut landed = b"tmp/r/".to_vec();
+        landed.resize(6 + (MAX_STORAGE_PATH - 9), b'x');
+        insert(&mut mutable, &landed, StorageEntryKind::File, 1);
+        let mut index = build_index(&boot, &mutable);
+
+        let status = try_rename_entry(
+            &mounts,
+            &boot,
+            &mut mutable,
+            &mut index,
+            b"home/big/",
+            b"tmp/r/",
+            90,
+        );
+        assert_eq!(status, StorageStatus::AlreadyExists);
+        assert!(find_mutable_entry(&mutable, b"home/big/").is_some());
+        assert!(find_mutable_entry(&mutable, &child).is_some());
+        assert!(find_mutable_entry(&mutable, &landed).is_some());
+        assert!(!index.stats().1);
+    }
+
+    #[test]
+    fn self_rename_is_a_no_op() {
+        let mounts = seeded_mounts();
+        let boot: [EntrySlot; 0] = [];
+        let mut mutable = [MutableEntry::empty(); MAX_MUTABLE_ENTRIES];
+        insert(&mut mutable, b"home/note.txt", StorageEntryKind::File, 7);
+        insert(&mut mutable, b"home/box/", StorageEntryKind::Directory, 0);
+        let mut index = build_index(&boot, &mutable);
+        let before = indexed_paths(&index);
+
+        let status = try_rename_entry(
+            &mounts,
+            &boot,
+            &mut mutable,
+            &mut index,
+            b"home/note.txt",
+            b"home/note.txt",
+            95,
+        );
+        assert_eq!(status, StorageStatus::Ok);
+        let status = try_rename_entry(
+            &mounts,
+            &boot,
+            &mut mutable,
+            &mut index,
+            b"home/box/",
+            b"home/box/",
+            95,
+        );
+        assert_eq!(status, StorageStatus::Ok);
+        assert_eq!(indexed_paths(&index), before);
+        assert!(!index.stats().1);
+        assert!(find_mutable_entry(&mutable, b"home/note.txt").is_some());
+    }
+
+    fn plan_paths_of(plan: &SearchPlan, snapshot: &[crate::index::IndexEntry]) -> Vec<Vec<u8>> {
+        (0..plan.len)
+            .map(|at| snapshot[plan.order[at]].path().to_vec())
+            .collect()
+    }
 }

@@ -160,7 +160,6 @@ impl SearchIndex {
         self.count += 1;
     }
 
-    #[allow(dead_code)]
     pub(crate) fn rename(&mut self, old: &[u8], new: &[u8], tick: u64) {
         let moved = self
             .entries
@@ -188,6 +187,49 @@ impl SearchIndex {
         slot.boot_offset = boot_offset;
         self.entries[self.count] = slot;
         self.count += 1;
+    }
+
+    /// Directory rename/move: rewrites the renamed entry and every subtree
+    /// entry under `old` to their `new`-prefixed paths in a single in-place
+    /// pass, preserving kind, size, tick, origin, and boot-offset metadata.
+    /// The renamed entry itself adopts `tick` (a rename is a namespace
+    /// write); untouched descendants keep their write ticks. An entry whose
+    /// rewritten path would overflow the path buffer is blanked and the
+    /// index flagged dirty so the next query rebuilds it from the live
+    /// entry tables (callers validate capacity up front, so this is a
+    /// safety net). Returns the number of rewritten entries.
+    pub(crate) fn rename_tree(&mut self, old: &[u8], new: &[u8], tick: u64) -> usize {
+        if !self.built {
+            self.dirty = true;
+            return 0;
+        }
+        let mut rewritten = 0usize;
+        for slot in self.entries.iter_mut().take(self.count) {
+            let path_len = slot.path_len;
+            // `old` carries the trailing slash of a directory path, so any
+            // longer path sharing that prefix lies inside the subtree.
+            let is_self = path_len == old.len() && slot.path[..path_len] == *old;
+            let under =
+                old.ends_with(b"/") && path_len > old.len() && slot.path[..old.len()] == *old;
+            if !is_self && !under {
+                continue;
+            }
+            let suffix_len = path_len - old.len();
+            let new_len = new.len() + suffix_len;
+            if new_len > MAX_STORAGE_PATH {
+                self.dirty = true;
+                slot.path_len = 0;
+                continue;
+            }
+            slot.path.copy_within(old.len()..path_len, new.len());
+            slot.path[..new.len()].copy_from_slice(new);
+            slot.path_len = new_len;
+            if is_self {
+                slot.tick = tick.max(1);
+            }
+            rewritten += 1;
+        }
+        rewritten
     }
 
     pub(crate) fn remove_path(&mut self, path: &[u8]) {
@@ -924,6 +966,138 @@ mod tests {
         let plan = plan_search(index.snapshot(), b"", &[b"new"], 0, u64::MAX, 0, 102);
         assert_eq!(plan.len, 1);
         assert!(!index.stats().1);
+    }
+
+    #[test]
+    fn rename_updates_write_tick_and_preserves_metadata() {
+        let mut index = SearchIndex::new();
+        let boot: [EntrySlot; 0] = [];
+        let mutable = [MutableEntry::empty(); MAX_MUTABLE_ENTRIES];
+        index.ensure_built(&boot, &mutable, 10);
+        index.upsert(
+            b"home/note.txt",
+            StorageEntryKind::File,
+            7,
+            15,
+            ORIGIN_MUTABLE,
+        );
+        index.rename(b"home/note.txt", b"home/renamed.txt", 102);
+        assert_eq!(index.count, 1);
+        let slot = &index.entries[0];
+        assert_eq!(slot.path(), b"home/renamed.txt");
+        assert_eq!(slot.kind, StorageEntryKind::File);
+        assert_eq!(slot.size, 7);
+        assert_eq!(slot.tick, 102);
+        assert_eq!(slot.origin, ORIGIN_MUTABLE);
+        assert!(!index.stats().1);
+    }
+
+    #[test]
+    fn rename_tree_moves_subtree_preserving_metadata() {
+        let mut index = SearchIndex::new();
+        let mut boot_slot = EntrySlot::empty();
+        boot_slot.kind = serviceos_bundle::BootStoreEntryKind::Data;
+        let boot_path = b"home/box/keep.txt";
+        boot_slot.path[..boot_path.len()].copy_from_slice(boot_path);
+        boot_slot.path_len = boot_path.len();
+        boot_slot.data_offset = 100;
+        boot_slot.data_len = 9;
+        let boot = [boot_slot];
+        let mut mutable = [MutableEntry::empty(); MAX_MUTABLE_ENTRIES];
+        for (path, kind) in [
+            (b"home/box/".as_slice(), StorageEntryKind::Directory),
+            (b"home/box/a.txt".as_slice(), StorageEntryKind::File),
+            (b"home/box/sub/".as_slice(), StorageEntryKind::Directory),
+        ] {
+            let slot = mutable.iter_mut().find(|entry| !entry.occupied).unwrap();
+            slot.kind = kind;
+            slot.path[..path.len()].copy_from_slice(path);
+            slot.path_len = path.len();
+            slot.data_len = 4;
+            slot.occupied = true;
+        }
+        assert!(index.ensure_built(&boot, &mutable, 50));
+
+        let rewritten = index.rename_tree(b"home/box/", b"tmp/moved/", 60);
+        assert_eq!(rewritten, 4);
+        assert_eq!(index.count, 4);
+        assert!(!index.stats().1);
+
+        let find = |path: &[u8]| {
+            index
+                .snapshot()
+                .iter()
+                .find(|entry| entry.path() == path)
+                .copied()
+        };
+        let self_slot = find(b"tmp/moved/").unwrap();
+        assert_eq!(self_slot.kind, StorageEntryKind::Directory);
+        assert_eq!(self_slot.tick, 60);
+        let kept = find(b"tmp/moved/keep.txt").unwrap();
+        assert_eq!(kept.kind, StorageEntryKind::File);
+        assert_eq!(kept.size, 9);
+        assert_eq!(kept.origin, ORIGIN_BOOT);
+        assert_eq!(kept.boot_offset, 100);
+        let child = find(b"tmp/moved/a.txt").unwrap();
+        assert_eq!(child.kind, StorageEntryKind::File);
+        assert_eq!(child.size, 4);
+        assert_eq!(child.tick, 50);
+        assert!(find(b"tmp/moved/sub/").is_some());
+        assert!(find(b"home/box/").is_none());
+        assert!(find(b"home/box/keep.txt").is_none());
+        assert!(find(b"home/box/a.txt").is_none());
+        assert!(find(b"home/box/sub/").is_none());
+    }
+
+    #[test]
+    fn rename_tree_marks_dirty_on_unwritable_overflow() {
+        let mut index = SearchIndex::new();
+        let boot: [EntrySlot; 0] = [];
+        let mut mutable = [MutableEntry::empty(); MAX_MUTABLE_ENTRIES];
+        for (path, kind) in [
+            (b"home/big/".as_slice(), StorageEntryKind::Directory),
+            (b"home/big/sub/".as_slice(), StorageEntryKind::Directory),
+        ] {
+            let slot = mutable.iter_mut().find(|entry| !entry.occupied).unwrap();
+            slot.kind = kind;
+            slot.path[..path.len()].copy_from_slice(path);
+            slot.path_len = path.len();
+            slot.occupied = true;
+        }
+        // Grandchild whose rewritten path would exceed the buffer: the
+        // longer destination prefix pushes it past MAX_STORAGE_PATH.
+        let mut long_child = b"home/big/sub/".to_vec();
+        long_child.resize(MAX_STORAGE_PATH, b'x');
+        {
+            let slot = mutable.iter_mut().find(|entry| !entry.occupied).unwrap();
+            slot.kind = StorageEntryKind::File;
+            slot.path.copy_from_slice(&long_child);
+            slot.path_len = MAX_STORAGE_PATH;
+            slot.occupied = true;
+        }
+        assert!(index.ensure_built(&boot, &mutable, 10));
+
+        let rewritten = index.rename_tree(b"home/big/", b"tmp/relocated/", 20);
+        // The directory itself and its direct child rewrite; the grandchild
+        // overflows, is blanked, and flags the index for rebuild.
+        assert_eq!(rewritten, 2);
+        assert!(index.stats().1);
+        assert!(
+            index
+                .snapshot()
+                .iter()
+                .any(|entry| entry.path() == b"tmp/relocated/")
+        );
+        // A rebuild from the untouched live tables restores full coverage.
+        assert!(index.ensure_built(&boot, &mutable, 30));
+        assert!(!index.stats().1);
+        assert_eq!(index.count, 3);
+        assert!(
+            index
+                .snapshot()
+                .iter()
+                .any(|entry| entry.path() == long_child)
+        );
     }
 
     #[test]

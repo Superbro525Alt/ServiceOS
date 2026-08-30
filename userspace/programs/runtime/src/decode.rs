@@ -5,9 +5,10 @@ use crate::{
     DeveloperToolchainState, DisplayOutputBackend, DisplayOutputState, DisplayPixelFormat, Error,
     GraphicsStatus, LogDomain, LogEvent, LogSeverity, ManagerAvailability, ManagerLookupPolicy,
     ManagerServicePhase, ManagerStartupMode, ManagerStatus, NetworkConfigMode, NetworkConfigState,
-    NetworkSocketKind, NetworkSocketState, NetworkStatus, PackageStatus, PacketInterfaceBackend,
-    PacketInterfaceLinkState, RuntimeEnvState, RuntimeKind, RuntimeRunState, RuntimeStatus,
-    RuntimeWorkloadKind, SecurityAuditKind, ServiceId, SessionInputSource, SessionStatus,
+    NetworkListenPortKind, NetworkSocketKind, NetworkSocketState, NetworkStatus, PackageStatus,
+    PacketInterfaceBackend, PacketInterfaceLinkState, RuntimeEnvState, RuntimeKind,
+    RuntimeRunState, RuntimeStatus, RuntimeWorkloadKind, SecurityAuditKind, ServiceId,
+    SessionInputSource, SessionStatus,
 };
 
 pub(crate) fn service_id_from_word(value: u64) -> ServiceId {
@@ -469,6 +470,15 @@ pub(crate) fn network_config_state_from_word(value: u64) -> NetworkConfigState {
 
 pub(crate) fn network_socket_kind_from_word(_value: u64) -> NetworkSocketKind {
     NetworkSocketKind::TcpStream
+}
+
+pub(crate) fn network_listen_port_kind_from_word(value: u64) -> NetworkListenPortKind {
+    match value as u32 {
+        x if x == NetworkListenPortKind::TcpListener as u32 => NetworkListenPortKind::TcpListener,
+        x if x == NetworkListenPortKind::UdpClient as u32 => NetworkListenPortKind::UdpClient,
+        x if x == NetworkListenPortKind::UdpInternal as u32 => NetworkListenPortKind::UdpInternal,
+        _ => NetworkListenPortKind::Unknown,
+    }
 }
 
 pub(crate) fn network_socket_state_from_word(value: u64) -> NetworkSocketState {

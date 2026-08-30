@@ -1,7 +1,8 @@
-#![no_std]
-#![no_main]
+#![cfg_attr(not(test), no_std)]
+#![cfg_attr(not(test), no_main)]
 
 mod control;
+mod netdiag;
 mod render;
 mod security;
 mod state;
@@ -13,7 +14,8 @@ use serviceos_userspace_runtime as rt;
 use crate::control::{ControlFlow, cleanup_audio, poll_control};
 use crate::render::render;
 use crate::state::{
-    AppState, BUFFER_BYTES, BUFFER_HEIGHT, BUFFER_WIDTH, NOTE_MAX_BYTES, SURFACE_BUFFER_SLOTS,
+    AppState, BUFFER_BYTES, BUFFER_HEIGHT, BUFFER_WIDTH, HOSTNAME_EDIT_MAX_BYTES, NOTE_MAX_BYTES,
+    SURFACE_BUFFER_SLOTS,
 };
 
 rt::entry!(main);
@@ -48,9 +50,16 @@ fn main() -> u64 {
         focused: startup.words[3] != 0,
         page: state::SettingsPage::System,
         editing_note: false,
+        editing_hostname: false,
         selected_policy_index: 0,
         note: [0; NOTE_MAX_BYTES],
         note_len: 0,
+        hostname_edit: [0; HOSTNAME_EDIT_MAX_BYTES],
+        hostname_edit_len: 0,
+        ping_stats: None,
+        ping_failed: false,
+        ping_target: [0; state::PING_TARGET_MAX_BYTES],
+        ping_target_len: 0,
     };
     let mut audio_stream_handle = rt::INVALID_HANDLE;
 

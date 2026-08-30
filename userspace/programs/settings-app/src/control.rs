@@ -4,6 +4,7 @@ use rt::PermissionPolicyState;
 use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
 
+use crate::netdiag;
 use crate::render::render;
 use crate::security::{first_actionable_runtime, security_policy_count, update_policy};
 use crate::state::*;
@@ -52,6 +53,7 @@ pub(crate) fn poll_control(
                 let y = message.words[2] as i64 as i32;
                 if matches!(action, Some(rt::AppPointerAction::Down)) {
                     changed |= handle_pointer_down(
+                        network_handle,
                         runtime_handle,
                         security_handle,
                         audio_stream_handle,
@@ -66,27 +68,16 @@ pub(crate) fn poll_control(
                     ui::decode_app_key_action(message.words[0]),
                     Some(rt::AppKeyAction::Down)
                 ) {
-                    changed |= handle_key_down(security_handle, state, message.words[1] as u32)?;
+                    changed |= handle_key_down(
+                        network_handle,
+                        security_handle,
+                        state,
+                        message.words[1] as u32,
+                    )?;
                 }
             }
             Ok(()) if message.tag == rt::AppControlTag::Text as u32 && message.word_count > 0 => {
-                if state.editing_note
-                    && let Some(ch) = char::from_u32(message.words[0] as u32)
-                {
-                    if ch == '\n' {
-                        state.editing_note = false;
-                        changed = true;
-                    } else if ch.is_ascii_graphic() || ch == ' ' {
-                        let mut scratch = [0u8; 4];
-                        let bytes = ch.encode_utf8(&mut scratch).as_bytes();
-                        if state.note_len + bytes.len() <= NOTE_MAX_BYTES {
-                            state.note[state.note_len..state.note_len + bytes.len()]
-                                .copy_from_slice(bytes);
-                            state.note_len += bytes.len();
-                            changed = true;
-                        }
-                    }
-                }
+                changed |= append_text_input(state, message.words[0]);
             }
             Ok(()) if message.tag == rt::AppControlTag::Close as u32 => {
                 return Ok(ControlFlow::Exit);
@@ -115,7 +106,9 @@ pub(crate) fn poll_control(
     Ok(ControlFlow::Continue)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_pointer_down(
+    network_handle: rt::Handle,
     runtime_handle: rt::Handle,
     security_handle: rt::Handle,
     audio_stream_handle: rt::Handle,
@@ -126,12 +119,23 @@ fn handle_pointer_down(
     if x >= TAB_SYSTEM_X0 && x < TAB_SYSTEM_X1 && y >= TAB_Y0 && y < TAB_Y1 {
         state.page = SettingsPage::System;
         state.editing_note = false;
+        state.editing_hostname = false;
         return Ok(true);
     }
     if x >= TAB_SECURITY_X0 && x < TAB_SECURITY_X1 && y >= TAB_Y0 && y < TAB_Y1 {
         state.page = SettingsPage::Security;
         state.editing_note = false;
+        state.editing_hostname = false;
         return Ok(true);
+    }
+    if x >= TAB_NETWORK_X0 && x < TAB_NETWORK_X1 && y >= TAB_Y0 && y < TAB_Y1 {
+        state.page = SettingsPage::Network;
+        state.editing_note = false;
+        return Ok(true);
+    }
+
+    if state.page == SettingsPage::Network {
+        return handle_network_pointer_down(network_handle, state, x, y);
     }
 
     if state.page == SettingsPage::System {
@@ -221,7 +225,77 @@ fn handle_pointer_down(
     Ok(true)
 }
 
+/// Feed one text event into the active editor (note field on System,
+/// hostname field on Network). Returns whether the frame changed.
+fn append_text_input(state: &mut AppState, word: u64) -> bool {
+    let Some(ch) = char::from_u32(word as u32) else {
+        return false;
+    };
+    if state.editing_note {
+        if ch == '\n' {
+            state.editing_note = false;
+            return true;
+        }
+        if ch.is_ascii_graphic() || ch == ' ' {
+            let mut scratch = [0u8; 4];
+            let bytes = ch.encode_utf8(&mut scratch).as_bytes();
+            if state.note_len + bytes.len() <= NOTE_MAX_BYTES {
+                state.note[state.note_len..state.note_len + bytes.len()].copy_from_slice(bytes);
+                state.note_len += bytes.len();
+                return true;
+            }
+        }
+        return false;
+    }
+    if state.editing_hostname && ch.is_ascii_graphic() && ch != ' ' {
+        if state.hostname_edit_len < HOSTNAME_EDIT_MAX_BYTES {
+            state.hostname_edit[state.hostname_edit_len] = ch as u8;
+            state.hostname_edit_len += 1;
+            return true;
+        }
+    }
+    false
+}
+
+fn handle_network_pointer_down(
+    network_handle: rt::Handle,
+    state: &mut AppState,
+    x: i32,
+    y: i32,
+) -> rt::Result<bool> {
+    if x >= NET_HOSTNAME_FIELD_X0
+        && x < NET_HOSTNAME_FIELD_X1
+        && y >= NET_HOSTNAME_FIELD_Y0
+        && y < NET_HOSTNAME_FIELD_Y1
+    {
+        if !state.editing_hostname {
+            state.hostname_edit = [0; HOSTNAME_EDIT_MAX_BYTES];
+            state.hostname_edit_len = 0;
+            state.editing_hostname = true;
+        }
+        return Ok(true);
+    }
+    if x >= NET_PING_RUN_X0 && x < NET_PING_RUN_X1 && y >= NET_PING_RUN_Y0 && y < NET_PING_RUN_Y1 {
+        let target = netdiag::ping_target_address(
+            rt::network_interface_status(network_handle, 0).unwrap_or(None),
+        );
+        state.editing_hostname = false;
+        match target {
+            Some(target) => netdiag::run_ping(network_handle, target, state),
+            None => {
+                state.ping_stats = None;
+                state.ping_failed = true;
+                state.ping_target_len = 0;
+            }
+        }
+        return Ok(true);
+    }
+    state.editing_hostname = false;
+    Ok(true)
+}
+
 fn handle_key_down(
+    network_handle: rt::Handle,
     security_handle: rt::Handle,
     state: &mut AppState,
     key: u32,
@@ -231,12 +305,23 @@ fn handle_key_down(
             state.note_len -= 1;
             Ok(true)
         }
+        14 if state.editing_hostname && state.hostname_edit_len > 0 => {
+            state.hostname_edit_len -= 1;
+            Ok(true)
+        }
+        28 if state.editing_hostname => {
+            netdiag::commit_hostname(network_handle, state);
+            state.editing_hostname = false;
+            Ok(true)
+        }
+        1 if state.editing_hostname => {
+            state.editing_hostname = false;
+            Ok(true)
+        }
         15 => {
-            state.page = match state.page {
-                SettingsPage::System => SettingsPage::Security,
-                SettingsPage::Security => SettingsPage::System,
-            };
+            state.page = state.page.next();
             state.editing_note = false;
+            state.editing_hostname = false;
             Ok(true)
         }
         103 if state.page == SettingsPage::Security => {
@@ -265,5 +350,137 @@ pub(crate) fn cleanup_audio(audio_stream_handle: rt::Handle, audio_handle: rt::H
     }
     if audio_handle != rt::INVALID_HANDLE {
         let _ = rt::handle_close(audio_handle);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn app_state() -> AppState {
+        AppState {
+            width: 320,
+            height: 300,
+            focused: true,
+            page: SettingsPage::System,
+            editing_note: false,
+            editing_hostname: false,
+            selected_policy_index: 0,
+            note: [0; NOTE_MAX_BYTES],
+            note_len: 0,
+            hostname_edit: [0; HOSTNAME_EDIT_MAX_BYTES],
+            hostname_edit_len: 0,
+            ping_stats: None,
+            ping_failed: false,
+            ping_target: [0; PING_TARGET_MAX_BYTES],
+            ping_target_len: 0,
+        }
+    }
+
+    #[test]
+    fn tab_key_cycles_all_three_pages() {
+        let mut state = app_state();
+        assert_eq!(state.page, SettingsPage::System);
+        let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 15);
+        assert_eq!(state.page, SettingsPage::Security);
+        let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 15);
+        assert_eq!(state.page, SettingsPage::Network);
+        let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 15);
+        assert_eq!(state.page, SettingsPage::System);
+    }
+
+    #[test]
+    fn tab_key_leaves_editing_state() {
+        let mut state = app_state();
+        state.page = SettingsPage::Network;
+        state.editing_hostname = true;
+        let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 15);
+        assert!(!state.editing_hostname);
+        assert_eq!(state.page, SettingsPage::System);
+    }
+
+    #[test]
+    fn hostname_typing_backspace_and_commit_via_invalid_handle() {
+        let mut state = app_state();
+        state.page = SettingsPage::Network;
+        state.editing_hostname = true;
+        for ch in b"gw-x" {
+            let mut message = rt::RawMessage::empty(rt::AppControlTag::Text as u32);
+            message.word_count = 1;
+            message.words[0] = *ch as u64;
+            let _ = append_text_input(&mut state, message.words[0]);
+        }
+        assert_eq!(state.hostname_edit_len, 4);
+        assert_eq!(&state.hostname_edit[..4], b"gw-x");
+
+        // Backspace then retype.
+        let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 14);
+        assert_eq!(state.hostname_edit_len, 3);
+        let _ = append_text_input(&mut state, b'9' as u64);
+        assert_eq!(&state.hostname_edit[..4], b"gw-9");
+
+        // Enter commits via the runtime wrapper; transport on INVALID_HANDLE
+        // fails so commit_hostname returns false but must not panic.
+        let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 28);
+        assert!(!state.editing_hostname);
+
+        // Esc cancels an edit without committing.
+        state.editing_hostname = true;
+        let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 1);
+        assert!(!state.editing_hostname);
+    }
+
+    #[test]
+    fn empty_hostname_commit_is_rejected_without_transport() {
+        let mut state = app_state();
+        state.page = SettingsPage::Network;
+        state.hostname_edit_len = 0;
+        assert!(!netdiag::commit_hostname(rt::INVALID_HANDLE, &mut state));
+    }
+
+    #[test]
+    fn network_tab_pointer_focuses_hostname_field() {
+        let mut state = app_state();
+        state.page = SettingsPage::Network;
+        let changed = handle_network_pointer_down(
+            rt::INVALID_HANDLE,
+            &mut state,
+            NET_HOSTNAME_FIELD_X0 + 4,
+            NET_HOSTNAME_FIELD_Y0 + 4,
+        )
+        .expect("pointer handled");
+        assert!(changed);
+        assert!(state.editing_hostname);
+
+        // Second click inside the field keeps the typed text.
+        state.hostname_edit_len = 2;
+        let _ = handle_network_pointer_down(
+            rt::INVALID_HANDLE,
+            &mut state,
+            NET_HOSTNAME_FIELD_X0 + 4,
+            NET_HOSTNAME_FIELD_Y0 + 4,
+        );
+        assert_eq!(state.hostname_edit_len, 2);
+    }
+
+    #[test]
+    fn ping_button_without_service_degrades_to_failed() {
+        let mut state = app_state();
+        state.page = SettingsPage::Network;
+        let changed = handle_network_pointer_down(
+            rt::INVALID_HANDLE,
+            &mut state,
+            NET_PING_RUN_X0 + 4,
+            NET_PING_RUN_Y0 + 4,
+        )
+        .expect("pointer handled");
+        assert!(changed);
+        assert!(state.ping_failed);
+        assert!(state.ping_stats.is_none());
+
+        // Clicking elsewhere on the page only closes the editor.
+        state.editing_hostname = true;
+        let _ = handle_network_pointer_down(rt::INVALID_HANDLE, &mut state, 4, 4);
+        assert!(!state.editing_hostname);
     }
 }

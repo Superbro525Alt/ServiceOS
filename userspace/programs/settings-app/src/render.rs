@@ -4,6 +4,7 @@ use rt::{ConfigKey, FixedLogBuffer};
 use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
 
+use crate::netdiag;
 use crate::security::{
     PermissionSummary, RuntimeCapSummary, audit_kind_name, first_actionable_runtime, image_name,
     policy_name, runtime_env_state_name, security_policy_count,
@@ -51,6 +52,7 @@ pub(crate) fn render(
             security_handle,
             state.selected_policy_index,
         )?,
+        SettingsPage::Network => draw_network_page(bytes, network_handle, state),
     }
 
     presenter.present(buffer_slot, width as u32, height as u32)
@@ -354,6 +356,308 @@ fn draw_security_page(
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
+fn draw_network_page(bytes: &mut [u8], network_handle: rt::Handle, state: &AppState) {
+    let interface = rt::network_interface_status(network_handle, 0).unwrap_or(None);
+
+    let mut eth0 = FixedLogBuffer::<48>::new();
+    match interface {
+        Some(info) => {
+            let _ = write!(
+                &mut eth0,
+                "ETH0 {} {}/{}",
+                netdiag::link_state_name(info.link_state),
+                netdiag::format_ipv4::<16>(info.address).as_str(),
+                info.prefix_len,
+            );
+        }
+        None => {
+            let _ = write!(&mut eth0, "ETH0 UNAVAILABLE");
+        }
+    }
+
+    let mut gw_dns = FixedLogBuffer::<64>::new();
+    match interface {
+        Some(info) if info.gateway != 0 => {
+            let _ = write!(
+                &mut gw_dns,
+                "GW {} DNS {}",
+                netdiag::format_ipv4::<16>(info.gateway).as_str(),
+                netdiag::format_ipv4::<16>(info.dns_server).as_str(),
+            );
+        }
+        _ => {
+            let _ = write!(&mut gw_dns, "GW UNAVAILABLE");
+        }
+    }
+
+    let mut hostname = [0u8; crate::state::HOSTNAME_EDIT_MAX_BYTES];
+    let hostname_len = rt::network_hostname_get(network_handle, &mut hostname)
+        .unwrap_or(0)
+        .min(hostname.len());
+    let hostname_text = if hostname_len > 0 {
+        core::str::from_utf8(&hostname[..hostname_len]).unwrap_or("HOSTNAME UNAVAILABLE")
+    } else {
+        "HOSTNAME UNAVAILABLE"
+    };
+
+    let firewall = rt::network_firewall_summary(network_handle).ok();
+    let mut firewall_line = FixedLogBuffer::<48>::new();
+    let mut firewall_deny = FixedLogBuffer::<48>::new();
+    if let Some(summary) = firewall {
+        let _ = write!(
+            &mut firewall_line,
+            "FW RULES {} IN {}",
+            summary.rule_count,
+            if summary.default_inbound_allow {
+                "ALLOW"
+            } else {
+                "DENY"
+            },
+        );
+        let _ = write!(
+            &mut firewall_deny,
+            "FW DENY IN {} OUT {}",
+            summary.inbound_denied_total, summary.outbound_denied_total,
+        );
+    } else {
+        let _ = write!(&mut firewall_line, "FW UNAVAILABLE");
+        let _ = write!(&mut firewall_deny, "FW DENY -");
+    }
+
+    let mut resolver_line = FixedLogBuffer::<48>::new();
+    match interface {
+        Some(info) => {
+            let _ = write!(
+                &mut resolver_line,
+                "RESOLVER HIT {} MISS {}",
+                info.resolver_hits, info.resolver_misses,
+            );
+        }
+        _ => {
+            let _ = write!(&mut resolver_line, "RESOLVER UNAVAILABLE");
+        }
+    }
+
+    let mut ping_headline = FixedLogBuffer::<56>::new();
+    let mut ping_detail = FixedLogBuffer::<56>::new();
+    let mut ping_loss = FixedLogBuffer::<32>::new();
+    match (state.ping_failed, state.ping_stats) {
+        (false, Some(stats)) => {
+            let _ = write!(
+                &mut ping_headline,
+                "PING {} {}/{} RX",
+                str::from_utf8(&state.ping_target[..state.ping_target_len]).unwrap_or("?"),
+                stats.received,
+                stats.sent,
+            );
+            let _ = write!(
+                &mut ping_detail,
+                "MIN {}MS MAX {}MS AVG {}MS",
+                stats.min_ms, stats.max_ms, stats.avg_ms,
+            );
+            let _ = write!(
+                &mut ping_loss,
+                "JIT {}MS LOSS {}",
+                stats.jitter_ms,
+                netdiag::format_loss::<16>(stats.loss_permil).as_str(),
+            );
+        }
+        (true, _) => {
+            let _ = write!(&mut ping_headline, "PING FAILED");
+            let _ = write!(&mut ping_detail, "MIN - MAX - AVG -");
+            let _ = write!(&mut ping_loss, "JIT - LOSS -");
+        }
+        (false, None) => {
+            let _ = write!(&mut ping_headline, "PING PRESS RUN");
+            let _ = write!(&mut ping_detail, "MIN - MAX - AVG -");
+            let _ = write!(&mut ping_loss, "JIT - LOSS -");
+        }
+    }
+
+    let mut neighbors = [rt::NetworkNeighborEntry {
+        address: 0,
+        mac: [0; 6],
+    }; 3];
+    let neighbor_count = rt::network_neighbor_list(network_handle, &mut neighbors).unwrap_or(0);
+    let mut neighbor_line = FixedLogBuffer::<48>::new();
+    if neighbor_count == 0 {
+        let _ = write!(&mut neighbor_line, "NEIGHBORS UNAVAILABLE");
+    } else {
+        let _ = write!(&mut neighbor_line, "NEIGHBORS {}", neighbor_count);
+    }
+
+    let mut ports = [rt::NetworkListenPort {
+        kind: rt::NetworkListenPortKind::Unknown,
+        port: 0,
+    }; 8];
+    let port_count = rt::network_listen_ports(network_handle, &mut ports).unwrap_or(0);
+    let mut ports_line = FixedLogBuffer::<64>::new();
+    if port_count == 0 {
+        let _ = write!(&mut ports_line, "PORTS UNAVAILABLE");
+    } else {
+        let _ = write!(&mut ports_line, "PORTS {}:", port_count);
+        for port in ports.iter().take(port_count) {
+            let _ = write!(
+                &mut ports_line,
+                " {} {}",
+                netdiag::listen_port_kind_name(port.kind),
+                port.port,
+            );
+        }
+    }
+
+    let mut peers = [rt::NetworkDiscoveryPeer {
+        address: 0,
+        name_len: 0,
+        name: [0; 15],
+        age_ms: 0,
+    }; 2];
+    let peer_count = rt::network_discovery_peers(network_handle, 0, &mut peers).unwrap_or(0);
+    let mut peers_line = FixedLogBuffer::<64>::new();
+    if peer_count == 0 {
+        let _ = write!(&mut peers_line, "PEERS UNAVAILABLE");
+    } else {
+        let _ = write!(&mut peers_line, "PEERS {}:", peer_count);
+        for peer in peers.iter().take(peer_count) {
+            let _ = write!(
+                &mut peers_line,
+                " {} {}",
+                str::from_utf8(&peer.name[..peer.name_len]).unwrap_or("?"),
+                netdiag::format_ipv4::<16>(peer.address).as_str(),
+            );
+        }
+    }
+
+    for (index, line) in [
+        "NETWORK STATUS",
+        str::from_utf8(eth0.as_bytes()).unwrap_or("ETH0"),
+        str::from_utf8(gw_dns.as_bytes()).unwrap_or("GW"),
+        str::from_utf8(firewall_line.as_bytes()).unwrap_or("FW"),
+        str::from_utf8(firewall_deny.as_bytes()).unwrap_or("FW DENY"),
+        str::from_utf8(resolver_line.as_bytes()).unwrap_or("RESOLVER"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        rt::draw_text_rgba8888(
+            bytes,
+            PIXEL_STRIDE,
+            12,
+            70 + (index as i32 * 12),
+            if index == 0 {
+                ui::TEXT_PRIMARY
+            } else {
+                ui::TEXT_SECONDARY
+            },
+            line,
+        );
+    }
+
+    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, 12, 144, ui::TEXT_MUTED, "PING");
+    draw_button(
+        bytes,
+        NET_PING_RUN_X0,
+        NET_PING_RUN_Y0,
+        NET_PING_RUN_X1,
+        NET_PING_RUN_Y1,
+        ui::ACCENT_DIM,
+        "RUN PING",
+        ui::TEXT_PRIMARY,
+    );
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        12,
+        182,
+        ui::TEXT_SECONDARY,
+        str::from_utf8(ping_headline.as_bytes()).unwrap_or("PING"),
+    );
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        12,
+        194,
+        ui::TEXT_SECONDARY,
+        str::from_utf8(ping_detail.as_bytes()).unwrap_or("MIN -"),
+    );
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        12,
+        206,
+        ui::TEXT_SECONDARY,
+        str::from_utf8(ping_loss.as_bytes()).unwrap_or("JIT -"),
+    );
+
+    // Neighbor rows under the ping block.
+    for (index, neighbor) in neighbors.iter().take(neighbor_count).enumerate() {
+        let mut row = FixedLogBuffer::<48>::new();
+        let _ = write!(
+            &mut row,
+            "{} {}",
+            netdiag::format_ipv4::<16>(neighbor.address).as_str(),
+            netdiag::format_mac::<18>(neighbor.mac).as_str(),
+        );
+        rt::draw_text_rgba8888(
+            bytes,
+            PIXEL_STRIDE,
+            12,
+            230 + (index as i32 * 12),
+            ui::TEXT_MUTED,
+            str::from_utf8(row.as_bytes()).unwrap_or("NEIGHBOR"),
+        );
+    }
+
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        12,
+        266,
+        ui::TEXT_MUTED,
+        str::from_utf8(ports_line.as_bytes()).unwrap_or("PORTS"),
+    );
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        12,
+        278,
+        ui::TEXT_MUTED,
+        str::from_utf8(peers_line.as_bytes()).unwrap_or("PEERS"),
+    );
+
+    // Hostname read/edit row last so the field draws over the row band.
+    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, 12, 104, ui::TEXT_MUTED, "HOSTNAME");
+    let edit_text = if state.editing_hostname {
+        str::from_utf8(&state.hostname_edit[..state.hostname_edit_len]).unwrap_or("")
+    } else {
+        hostname_text
+    };
+    ui::fill_rgba8888_rect(
+        bytes,
+        PIXEL_STRIDE,
+        BUFFER_WIDTH as usize,
+        BUFFER_HEIGHT as usize,
+        NET_HOSTNAME_FIELD_X0.max(0) as usize,
+        NET_HOSTNAME_FIELD_Y0.max(0) as usize,
+        (NET_HOSTNAME_FIELD_X1 - NET_HOSTNAME_FIELD_X0).max(0) as usize,
+        (NET_HOSTNAME_FIELD_Y1 - NET_HOSTNAME_FIELD_Y0).max(0) as usize,
+        if state.editing_hostname {
+            ui::ACCENT
+        } else {
+            ui::ACCENT_DIM
+        },
+    );
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        NET_HOSTNAME_FIELD_X0 + 8,
+        NET_HOSTNAME_FIELD_Y0 + 7,
+        ui::BG_PANEL,
+        edit_text,
+    );
+}
+
 fn draw_tabs(bytes: &mut [u8], page: SettingsPage) {
     draw_button(
         bytes,
@@ -381,6 +685,20 @@ fn draw_tabs(bytes: &mut [u8], page: SettingsPage) {
             ui::ACCENT_DIM
         },
         "SECURITY",
+        ui::TEXT_PRIMARY,
+    );
+    draw_button(
+        bytes,
+        TAB_NETWORK_X0,
+        TAB_Y0,
+        TAB_NETWORK_X1,
+        TAB_Y1,
+        if page == SettingsPage::Network {
+            ui::ACCENT
+        } else {
+            ui::ACCENT_DIM
+        },
+        "NETWORK",
         ui::TEXT_PRIMARY,
     );
 }

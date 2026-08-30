@@ -184,6 +184,65 @@ pub struct NetworkInterfaceStatusInfo {
     pub rx_packets: u64,
     pub tx_packets: u64,
     pub dropped_packets: u64,
+    /// Resolver cache hits; zero from services predating the trailing word.
+    pub resolver_hits: u32,
+    /// Resolver cache misses; zero from services predating the trailing word.
+    pub resolver_misses: u32,
+}
+
+/// Aggregate of one DiagPingStatsRequest: N sequential ICMP probes folded
+/// into min/max/avg/jitter plus permil loss.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NetworkDiagPingStats {
+    pub resolved_address: u32,
+    pub sent: u32,
+    pub received: u32,
+    pub min_ms: u64,
+    pub max_ms: u64,
+    pub avg_ms: u64,
+    pub jitter_ms: u64,
+    pub loss_permil: u64,
+}
+
+/// One ARP-snooped neighbor from the interface-observed table.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NetworkNeighborEntry {
+    pub address: u32,
+    pub mac: [u8; 6],
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NetworkListenPortKind {
+    Unknown = 0,
+    TcpListener = 1,
+    UdpClient = 2,
+    UdpInternal = 3,
+}
+
+/// One locally bound port from the network-service self port-scan.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NetworkListenPort {
+    pub kind: NetworkListenPortKind,
+    pub port: u16,
+}
+
+/// One discovery beacon peer announced within the requested window.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NetworkDiscoveryPeer {
+    pub address: u32,
+    pub name_len: usize,
+    pub name: [u8; 15],
+    pub age_ms: u32,
+}
+
+/// Read-only firewall snapshot from FirewallRulesGetRequest.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NetworkFirewallSummary {
+    pub rule_count: u32,
+    pub default_inbound_allow: bool,
+    pub inbound_denied_total: u32,
+    pub outbound_denied_total: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

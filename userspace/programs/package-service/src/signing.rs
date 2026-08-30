@@ -37,6 +37,7 @@ pub const REJECT_UNSIGNED_REQUIRED: u64 = 1;
 pub const REJECT_TAMPERED: u64 = 2;
 pub const REJECT_STALE_SIGNATURE: u64 = 3;
 pub const REJECT_UNKNOWN_KEY: u64 = 4;
+pub const REJECT_WRONG_KEY_BINDING: u64 = 5;
 
 pub fn reject_reason(verdict: FeedVerdict) -> u64 {
     match verdict {
@@ -44,6 +45,7 @@ pub fn reject_reason(verdict: FeedVerdict) -> u64 {
         FeedVerdict::RejectedTampered => REJECT_TAMPERED,
         FeedVerdict::RejectedStaleSignature => REJECT_STALE_SIGNATURE,
         FeedVerdict::UnknownKey => REJECT_UNKNOWN_KEY,
+        FeedVerdict::RejectedWrongKeyBinding => REJECT_WRONG_KEY_BINDING,
         _ => 0,
     }
 }
@@ -118,6 +120,28 @@ pub struct TrustedKey {
     pub alg: KeyAlg,
     pub state: KeyState,
     pub retired_tick: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BoundKeyIdentity {
+    pub key_id: FixedText<KEY_ID_MAX>,
+    pub fingerprint: u64,
+}
+
+impl BoundKeyIdentity {
+    pub const fn empty() -> Self {
+        Self {
+            key_id: FixedText::empty(),
+            fingerprint: 0,
+        }
+    }
+
+    pub fn matches(&self, key_id: &str, fingerprint: u64) -> bool {
+        !self.key_id.is_empty()
+            && self.key_id.as_str() == key_id
+            && self.fingerprint != 0
+            && self.fingerprint == fingerprint
+    }
 }
 
 impl TrustedKey {
@@ -503,6 +527,25 @@ pub struct FeedSignature {
     pub sig: [u8; 64],
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FeedVerification {
+    pub verdict: FeedVerdict,
+    pub key_id: FixedText<KEY_ID_MAX>,
+    pub key_alg: Option<KeyAlg>,
+    pub key_fingerprint: u64,
+}
+
+impl FeedVerification {
+    pub const fn empty(verdict: FeedVerdict) -> Self {
+        Self {
+            verdict,
+            key_id: FixedText::empty(),
+            key_alg: None,
+            key_fingerprint: 0,
+        }
+    }
+}
+
 pub fn parse_hex_u64(value: &str) -> Option<u64> {
     if value.is_empty() || value.len() > 16 {
         return None;
@@ -560,6 +603,31 @@ fn decode_hex_bytes<const N: usize>(value: &str) -> Option<[u8; N]> {
 /// Decode an Ed25519 compressed public key from its 64-hex encoding.
 pub fn decode_pubkey_hex(value: &str) -> Option<[u8; 32]> {
     decode_hex_bytes::<32>(value)
+}
+
+pub fn ed25519_key_fingerprint(public: &[u8; 32]) -> u64 {
+    let digest = serviceos_crypto::sha512::digest(&[public]);
+    u64::from_be_bytes(digest[..8].try_into().unwrap_or([0; 8]))
+}
+
+pub fn ed25519_key_fingerprint_hex(value: &str) -> Option<u64> {
+    decode_pubkey_hex(value).map(|public| ed25519_key_fingerprint(&public))
+}
+
+pub fn active_ed25519_binding(entry: &SourceKeys) -> Option<BoundKeyIdentity> {
+    entry.keys[..entry.key_count]
+        .iter()
+        .find(|key| key.state == KeyState::Active && key.alg == KeyAlg::Ed25519)
+        .and_then(|key| {
+            ed25519_key_fingerprint_hex(key.key_hex.as_str()).map(|fingerprint| {
+                let mut key_id = FixedText::empty();
+                let _ = key_id.set(key.key_id.as_str());
+                BoundKeyIdentity {
+                    key_id,
+                    fingerprint,
+                }
+            })
+        })
 }
 
 fn is_signature_line(line: &str) -> bool {
@@ -697,15 +765,14 @@ pub enum FeedVerdict {
     RejectedTampered,
     /// Signed by a retired key whose acceptance window has closed: hard fail.
     RejectedStaleSignature,
+    /// Signature verifies, but not against the repository's bound key identity.
+    RejectedWrongKeyBinding,
 }
 
 /// Rebuild the canonical content byte stream (sorted lines, each followed
 /// by '\n') that an Ed25519 signature covers. Returns `None` when the
 /// stream would exceed `ED25519_MSG_MAX`.
-pub fn canonical_message(
-    feed: &str,
-    message: &mut [u8; ED25519_MSG_MAX],
-) -> Option<usize> {
+pub fn canonical_message(feed: &str, message: &mut [u8; ED25519_MSG_MAX]) -> Option<usize> {
     let mut lines = [""; MAX_CANON_LINES];
     let count = canonical_lines(feed, &mut lines);
     let mut len = 0usize;
@@ -748,37 +815,49 @@ pub fn sign_feed_text_ed25519(
 
 /// Verify a feed against the keys pinned for its source (`None` when the
 /// keystore holds no entry for the source).
-pub fn verify_signed_feed(feed: &str, entry: Option<&SourceKeys>, now: u64) -> FeedVerdict {
+pub fn verify_signed_feed_report(
+    feed: &str,
+    entry: Option<&SourceKeys>,
+    now: u64,
+) -> FeedVerification {
     let entry = match entry {
         Some(entry) if entry.key_count > 0 => entry,
-        _ => return FeedVerdict::UnsignedNoKeysPinned,
+        _ => return FeedVerification::empty(FeedVerdict::UnsignedNoKeysPinned),
     };
     let Some(signature) = parse_feed_signature(feed) else {
-        return FeedVerdict::RejectedUnsignedRequired;
+        return FeedVerification::empty(FeedVerdict::RejectedUnsignedRequired);
     };
+    let mut report = FeedVerification::empty(FeedVerdict::UnknownKey);
+    report.key_id = signature.key_id;
     let Some(key) = entry.find_key(signature.key_id.as_str()) else {
-        return FeedVerdict::UnknownKey;
+        return report;
+    };
+    report.key_alg = Some(key.alg);
+    report.key_fingerprint = if key.alg == KeyAlg::Ed25519 {
+        ed25519_key_fingerprint_hex(key.key_hex.as_str()).unwrap_or(0)
+    } else {
+        0
     };
     let accepted = match key.state {
         KeyState::Active => true,
         KeyState::Retired => entry.retired_within_window(key, now),
     };
     if !accepted {
-        return FeedVerdict::RejectedStaleSignature;
+        report.verdict = FeedVerdict::RejectedStaleSignature;
+        return report;
     }
     let verified = match signature.kind {
         SigKind::FnvDigest => {
             let alg_ok = key.alg == KeyAlg::Fnv;
             let mut lines = [""; MAX_CANON_LINES];
             let count = canonical_lines(feed, &mut lines);
-            alg_ok
-                && compute_feed_digest(key.key_hex.as_str(), &lines, count) == signature.digest
+            alg_ok && compute_feed_digest(key.key_hex.as_str(), &lines, count) == signature.digest
         }
         SigKind::Ed25519 => {
             if key.alg != KeyAlg::Ed25519 {
                 false
             } else {
-                match (decode_pubkey_hex(key.key_hex.as_str()), () ) {
+                match (decode_pubkey_hex(key.key_hex.as_str()), ()) {
                     (Some(public), ()) => {
                         let mut message = [0u8; ED25519_MSG_MAX];
                         match canonical_message(feed, &mut message) {
@@ -795,7 +874,7 @@ pub fn verify_signed_feed(feed: &str, entry: Option<&SourceKeys>, now: u64) -> F
             }
         }
     };
-    if verified {
+    report.verdict = if verified {
         if key.state == KeyState::Active {
             FeedVerdict::Accepted
         } else {
@@ -803,7 +882,33 @@ pub fn verify_signed_feed(feed: &str, entry: Option<&SourceKeys>, now: u64) -> F
         }
     } else {
         FeedVerdict::RejectedTampered
+    };
+    report
+}
+
+pub fn verify_bound_feed(
+    feed: &str,
+    entry: Option<&SourceKeys>,
+    binding: BoundKeyIdentity,
+    now: u64,
+) -> FeedVerification {
+    let mut report = verify_signed_feed_report(feed, entry, now);
+    if !matches!(
+        report.verdict,
+        FeedVerdict::Accepted | FeedVerdict::AcceptedRetired
+    ) {
+        return report;
     }
+    if report.key_alg != Some(KeyAlg::Ed25519)
+        || !binding.matches(report.key_id.as_str(), report.key_fingerprint)
+    {
+        report.verdict = FeedVerdict::RejectedWrongKeyBinding;
+    }
+    report
+}
+
+pub fn verify_signed_feed(feed: &str, entry: Option<&SourceKeys>, now: u64) -> FeedVerdict {
+    verify_signed_feed_report(feed, entry, now).verdict
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1117,8 +1222,7 @@ mod tests {
         entry
     }
 
-    const ED_SEED_HEX: &str =
-        "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60";
+    const ED_SEED_HEX: &str = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60";
 
     fn ed_seed() -> [u8; 32] {
         decode_pubkey_hex(ED_SEED_HEX).unwrap().into()
@@ -1134,13 +1238,42 @@ mod tests {
         .expect("fixture")
     }
 
+    fn ed_pair_for(byte: u8) -> serviceos_crypto::host::KeyPair {
+        let mut seed = [byte; 32];
+        seed[0] = byte.wrapping_add(1);
+        seed[31] = byte.wrapping_mul(7).wrapping_add(3);
+        serviceos_crypto::host::KeyPair::from_seed(seed)
+    }
+
+    fn ed_feed_with_pair(pair: &serviceos_crypto::host::KeyPair, key_id: &str) -> String {
+        serviceos_crypto::host::sign_feed_fixture(pair, key_id, &[
+            "version=1",
+            "entry=alpha|storage-service|1.2.0|serviceos.bootstore.v1|m/alpha.manifest|tool|Alpha package",
+            "entry=beta|network-service|0.9.1|serviceos.bootstore.v1|m/beta.manifest|net|Beta package",
+        ])
+        .expect("fixture")
+    }
+
+    fn bound_identity_for(key_id: &str, pubkey_hex: &str) -> BoundKeyIdentity {
+        let mut bound = BoundKeyIdentity::empty();
+        let _ = bound.key_id.set(key_id);
+        bound.fingerprint = ed25519_key_fingerprint_hex(pubkey_hex).expect("fingerprint");
+        bound
+    }
+
     #[test]
     fn ed25519_signature_roundtrip_verifies_and_rejects_tamper() {
         let feed = ed_feed();
-        assert_eq!(parse_feed_signature(&feed).map(|s| s.kind), Some(SigKind::Ed25519));
+        assert_eq!(
+            parse_feed_signature(&feed).map(|s| s.kind),
+            Some(SigKind::Ed25519)
+        );
         let pk_hex = hex_of(&serviceos_crypto::host::KeyPair::from_seed(ed_seed()).public);
         let entry = ed_source_with("ed1", &pk_hex, 0);
-        assert_eq!(verify_signed_feed(&feed, Some(&entry), 0), FeedVerdict::Accepted);
+        assert_eq!(
+            verify_signed_feed(&feed, Some(&entry), 0),
+            FeedVerdict::Accepted
+        );
 
         // Content tamper must invalidate the signature even if order matches.
         let mut tampered = feed.clone();
@@ -1161,9 +1294,15 @@ mod tests {
             let joined = lines.join("\n");
             format!("{}\n", joined.trim_end())
                 + "\nsig-alg=ed25519\nsig-key=ed1\n"
-                + &feed.rsplit_once("sig-sig=").map(|(_, rest)| format!("sig-sig={}", rest)).expect("trailer")
+                + &feed
+                    .rsplit_once("sig-sig=")
+                    .map(|(_, rest)| format!("sig-sig={}", rest))
+                    .expect("trailer")
         };
-        assert_eq!(verify_signed_feed(&reordered, Some(&entry), 0), FeedVerdict::Accepted);
+        assert_eq!(
+            verify_signed_feed(&reordered, Some(&entry), 0),
+            FeedVerdict::Accepted
+        );
     }
 
     fn hex_of(bytes: &[u8]) -> String {
@@ -1181,12 +1320,91 @@ mod tests {
             seed
         });
         let entry = ed_source_with("ed1", &hex_of(&other_pair.public), 0);
-        assert_eq!(verify_signed_feed(&feed, Some(&entry), 0), FeedVerdict::RejectedTampered);
+        assert_eq!(
+            verify_signed_feed(&feed, Some(&entry), 0),
+            FeedVerdict::RejectedTampered
+        );
 
         // Same key id but pinned through the FNV path -> alg mismatch is Tampered.
         let mut legacy = source_with(&[("ed1", KEY_A)], 0);
         let _ = &mut legacy;
-        assert_eq!(verify_signed_feed(&feed, Some(&legacy), 0), FeedVerdict::RejectedTampered);
+        assert_eq!(
+            verify_signed_feed(&feed, Some(&legacy), 0),
+            FeedVerdict::RejectedTampered
+        );
+    }
+
+    #[test]
+    fn bound_ed25519_trust_accepts_only_the_bound_identity() {
+        let active = serviceos_crypto::host::KeyPair::from_seed(ed_seed());
+        let active_hex = hex_of(&active.public);
+        let other = ed_pair_for(7);
+        let other_hex = hex_of(&other.public);
+
+        let mut entry = SourceKeys::empty();
+        entry.source.set("extra");
+        let _ = entry.enroll_ed25519("ed1", &active_hex);
+        let _ = entry.enroll_ed25519("ed2", &other_hex);
+
+        let accepted = verify_bound_feed(
+            &ed_feed(),
+            Some(&entry),
+            bound_identity_for("ed1", &active_hex),
+            0,
+        );
+        assert_eq!(accepted.verdict, FeedVerdict::Accepted);
+        assert_eq!(
+            accepted.key_fingerprint,
+            ed25519_key_fingerprint_hex(&active_hex).unwrap()
+        );
+
+        let wrong = verify_bound_feed(
+            &ed_feed(),
+            Some(&entry),
+            bound_identity_for("ed2", &other_hex),
+            0,
+        );
+        assert_eq!(wrong.verdict, FeedVerdict::RejectedWrongKeyBinding);
+
+        let unknown = verify_bound_feed(
+            &ed_feed_with_pair(&ed_pair_for(9), "ed9"),
+            Some(&entry),
+            bound_identity_for("ed1", &active_hex),
+            0,
+        );
+        assert_eq!(unknown.verdict, FeedVerdict::UnknownKey);
+
+        let tampered = verify_bound_feed(
+            &ed_feed().replace("1.2.0", "9.9.9"),
+            Some(&entry),
+            bound_identity_for("ed1", &active_hex),
+            0,
+        );
+        assert_eq!(tampered.verdict, FeedVerdict::RejectedTampered);
+    }
+
+    #[test]
+    fn bound_ed25519_respects_retired_key_window() {
+        let first = serviceos_crypto::host::KeyPair::from_seed(ed_seed());
+        let first_hex = hex_of(&first.public);
+        let second = ed_pair_for(11);
+        let second_hex = hex_of(&second.public);
+        let mut entry = SourceKeys::empty();
+        entry.source.set("extra");
+        let _ = entry.enroll_ed25519("ed1", &first_hex);
+        let _ = entry.enroll_ed25519("ed2", &second_hex);
+        entry.accept_retired_ticks = 500;
+        let _ = entry.rotate_active("ed2", 1_000);
+
+        let bound = bound_identity_for("ed1", &first_hex);
+        assert_eq!(
+            verify_bound_feed(&ed_feed(), Some(&entry), bound, 1_400).verdict,
+            FeedVerdict::AcceptedRetired
+        );
+        assert_eq!(
+            verify_bound_feed(&ed_feed(), Some(&entry), bound, 1_501).verdict,
+            FeedVerdict::RejectedStaleSignature
+        );
     }
 
     #[test]
@@ -1222,7 +1440,10 @@ mod tests {
 
         // The reparsed Ed25519 entry verifies a freshly signed fixture too.
         let feed = ed_feed();
-        assert_eq!(verify_signed_feed(&feed, Some(back), 0), FeedVerdict::Accepted);
+        assert_eq!(
+            verify_signed_feed(&feed, Some(back), 0),
+            FeedVerdict::Accepted
+        );
     }
 
     #[test]

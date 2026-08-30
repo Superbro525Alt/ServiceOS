@@ -115,6 +115,9 @@ pub(crate) fn trust_meaning(mode: PackageRepositoryTrustMode) -> &'static str {
         PackageRepositoryTrustMode::PinnedDigest => {
             "feed digest must equal your pinned digest on every sync"
         }
+        PackageRepositoryTrustMode::SignedKey => {
+            "feed must verify against the source key bound at repo add time"
+        }
     }
 }
 
@@ -128,6 +131,9 @@ pub(crate) fn trust_onboarding_impact(mode: PackageRepositoryTrustMode) -> &'sta
         }
         PackageRepositoryTrustMode::PinnedDigest => {
             "sync fails closed when the fetched digest differs from the pin"
+        }
+        PackageRepositoryTrustMode::SignedKey => {
+            "sync fails closed unless the feed verifies under the bound active ed25519 key"
         }
     }
 }
@@ -515,11 +521,20 @@ mod tests {
             PackageRepositoryTrustMode::Boot,
             PackageRepositoryTrustMode::Unsigned,
             PackageRepositoryTrustMode::PinnedDigest,
+            PackageRepositoryTrustMode::SignedKey,
         ] {
             assert!(!trust_meaning(mode).is_empty());
             assert!(!trust_onboarding_impact(mode).is_empty());
         }
         assert_eq!(trust_mode_name(PackageRepositoryTrustMode::Boot), "boot");
+        assert_eq!(
+            trust_meaning(PackageRepositoryTrustMode::SignedKey),
+            "feed must verify against the source key bound at repo add time"
+        );
+        assert_eq!(
+            trust_onboarding_impact(PackageRepositoryTrustMode::SignedKey),
+            "sync fails closed unless the feed verifies under the bound active ed25519 key"
+        );
     }
 
     #[test]

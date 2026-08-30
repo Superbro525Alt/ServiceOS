@@ -328,6 +328,7 @@ pub(crate) fn trust_badge(value: rt::PackageTrustState) -> &'static str {
         rt::PackageTrustState::BootTrusted => "boot-trusted",
         rt::PackageTrustState::Unverified => "unverified",
         rt::PackageTrustState::DigestPinned => "digest-pinned",
+        rt::PackageTrustState::SignedKeyTrusted => "signed-key-trusted",
         rt::PackageTrustState::VerificationFailed => "verification-failed",
     }
 }

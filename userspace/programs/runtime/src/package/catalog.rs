@@ -238,13 +238,12 @@ pub fn package_provenance(
     let source_len = response.words[7] as usize;
     let total_bytes = installed_len + active_len + rollback_len + latest_len + source_len;
     let total_words = total_bytes.div_ceil(8);
-    if response.word_count as usize != 8 + total_words {
-        return Err(Error::InvalidArgument);
-    }
+    let (header_words, signed_key_fingerprint) =
+        super::common::package_provenance_layout(&response, total_words)?;
 
     let mut combined = [0u8; IPC_MAX_WORDS * 8];
     unpack_bytes(
-        &response.words[8..response.word_count as usize],
+        &response.words[header_words..response.word_count as usize],
         total_bytes,
         &mut combined,
     )?;
@@ -265,6 +264,7 @@ pub fn package_provenance(
     Ok(PackageProvenanceInfo {
         repo_index: response.words[1] as u32,
         trust_state: super::common::package_trust_state_from_word((flags & 0xff) as u64),
+        signed_key_fingerprint,
         channel: super::common::package_channel_from_word(((flags >> 8) & 0xff) as u64),
         ring: super::common::package_ring_from_word(((flags >> 16) & 0xff) as u64),
         installed: package_flags & 1 != 0,

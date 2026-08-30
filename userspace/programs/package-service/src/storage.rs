@@ -8,6 +8,87 @@ pub(crate) fn initialize_state_directories(storage_handle: rt::Handle) -> rt::Re
     Ok(())
 }
 
+fn write_repo_record(text: &mut rt::FixedLogBuffer<MAX_STATE_BYTES>, repo: RepositorySlot) {
+    let _ = write!(
+        text,
+        "repo={}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{:016x}\n",
+        repo.name.as_str().unwrap_or("repo"),
+        repo.url.as_str().unwrap_or(""),
+        repo.trust_mode as u32,
+        repo.pinned_digest,
+        repo.channel as u32,
+        repo.ring as u32,
+        u32::from(repo.enabled),
+        repo.last_digest,
+        repo.sync_state as u32,
+        repo.bound_key_id.as_str(),
+        repo.bound_key_fingerprint,
+    );
+}
+
+fn parse_repo_record(payload: &str) -> Option<RepositorySlot> {
+    let mut parts = payload.split('|');
+    let name = parts.next()?;
+    let url = parts.next()?;
+    let trust_mode = parts
+        .next()
+        .and_then(|value| value.parse::<u32>().ok())
+        .map(|value| trust_mode_from_word(value as u64))
+        .unwrap_or(PackageRepositoryTrustMode::Unsigned);
+    let pinned_digest = parts
+        .next()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    let channel = parts
+        .next()
+        .and_then(|value| value.parse::<u32>().ok())
+        .map(|value| package_channel_from_word(value as u64))
+        .unwrap_or(PackageChannel::Stable);
+    let ring = parts
+        .next()
+        .and_then(|value| value.parse::<u32>().ok())
+        .map(|value| package_ring_from_word(value as u64))
+        .unwrap_or(PackageRing::Production);
+    let enabled = parts.next().map(|value| value == "1").unwrap_or(true);
+    let last_digest = parts
+        .next()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    let sync_state = parts
+        .next()
+        .and_then(|value| value.parse::<u32>().ok())
+        .map(|value| match value {
+            x if x == PackageRepositorySyncState::Ready as u32 => PackageRepositorySyncState::Ready,
+            x if x == PackageRepositorySyncState::Offline as u32 => {
+                PackageRepositorySyncState::Offline
+            }
+            x if x == PackageRepositorySyncState::Failed as u32 => {
+                PackageRepositorySyncState::Failed
+            }
+            _ => PackageRepositorySyncState::Idle,
+        })
+        .unwrap_or(PackageRepositorySyncState::Idle);
+    let bound_key_id = parts.next().unwrap_or("");
+    let bound_key_fingerprint = parts
+        .next()
+        .and_then(crate::signing::parse_hex_u64)
+        .unwrap_or(0);
+    let mut repo = RepositorySlot::empty();
+    let _ = repo.name.set(name);
+    let _ = repo.url.set(url);
+    repo.trust_mode = trust_mode;
+    repo.channel = channel;
+    repo.ring = ring;
+    repo.enabled = enabled;
+    repo.last_digest = last_digest;
+    repo.pinned_digest = pinned_digest;
+    repo.sync_state = sync_state;
+    let _ = repo.bound_key_id.set(bound_key_id);
+    repo.bound_key_fingerprint = bound_key_fingerprint;
+    repo.occupied = true;
+    Some(repo)
+}
+
 pub(crate) fn persist_repositories(
     storage_handle: rt::Handle,
     repos: &[RepositorySlot; MAX_REPOSITORIES],
@@ -20,19 +101,7 @@ pub(crate) fn persist_repositories(
         .copied()
         .filter(|repo| repo.occupied && !repo.builtin)
     {
-        let _ = write!(
-            &mut text,
-            "repo={}|{}|{}|{}|{}|{}|{}|{}|{}\n",
-            repo.name.as_str().unwrap_or("repo"),
-            repo.url.as_str().unwrap_or(""),
-            repo.trust_mode as u32,
-            repo.pinned_digest,
-            repo.channel as u32,
-            repo.ring as u32,
-            u32::from(repo.enabled),
-            repo.last_digest,
-            repo.sync_state as u32,
-        );
+        write_repo_record(&mut text, repo);
     }
     write_storage_file(storage_handle, "state/packages/repos.cfg", text.as_bytes())
 }
@@ -59,61 +128,10 @@ pub(crate) fn load_persisted_repositories(
         let Some(payload) = line.strip_prefix("repo=") else {
             continue;
         };
-        let mut parts = payload.split('|');
-        let Some(name) = parts.next() else { continue };
-        let Some(url) = parts.next() else { continue };
-        let trust_mode = parts
-            .next()
-            .and_then(|value| value.parse::<u32>().ok())
-            .map(|value| trust_mode_from_word(value as u64))
-            .unwrap_or(PackageRepositoryTrustMode::Unsigned);
-        let pinned_digest = parts
-            .next()
-            .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(0);
-        let channel = parts
-            .next()
-            .and_then(|value| value.parse::<u32>().ok())
-            .map(|value| package_channel_from_word(value as u64))
-            .unwrap_or(PackageChannel::Stable);
-        let ring = parts
-            .next()
-            .and_then(|value| value.parse::<u32>().ok())
-            .map(|value| package_ring_from_word(value as u64))
-            .unwrap_or(PackageRing::Production);
-        let enabled = parts.next().map(|value| value == "1").unwrap_or(true);
-        let last_digest = parts
-            .next()
-            .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(0);
-        let sync_state = parts
-            .next()
-            .and_then(|value| value.parse::<u32>().ok())
-            .map(|value| match value {
-                x if x == PackageRepositorySyncState::Ready as u32 => {
-                    PackageRepositorySyncState::Ready
-                }
-                x if x == PackageRepositorySyncState::Offline as u32 => {
-                    PackageRepositorySyncState::Offline
-                }
-                x if x == PackageRepositorySyncState::Failed as u32 => {
-                    PackageRepositorySyncState::Failed
-                }
-                _ => PackageRepositorySyncState::Idle,
-            })
-            .unwrap_or(PackageRepositorySyncState::Idle);
+        let Some(repo) = parse_repo_record(payload) else {
+            continue;
+        };
         if *repo_count < repos.len() {
-            let mut repo = RepositorySlot::empty();
-            let _ = repo.name.set(name);
-            let _ = repo.url.set(url);
-            repo.trust_mode = trust_mode;
-            repo.channel = channel;
-            repo.ring = ring;
-            repo.enabled = enabled;
-            repo.last_digest = last_digest;
-            repo.pinned_digest = pinned_digest;
-            repo.sync_state = sync_state;
-            repo.occupied = true;
             repos[*repo_count] = repo;
             *repo_count += 1;
         }
@@ -162,20 +180,16 @@ pub(crate) fn load_repo_feed_cache(
     let now = rt::monotonic_now().unwrap_or(0);
     let source_name = repos[repo_index].name.as_str().unwrap_or("");
     let feed_text = core::str::from_utf8(&bytes[..loaded]).ok();
-    let signed_verdict = feed_text.and_then(|text| {
-        crate::state::feed_keys_for(source_name)
-            .map(|entry| crate::signing::verify_signed_feed(text, Some(entry), now))
-    });
-    let trust_state = match signed_verdict {
-        Some(
-            crate::signing::FeedVerdict::Accepted | crate::signing::FeedVerdict::AcceptedRetired,
-        ) => PackageTrustState::DigestPinned,
-        Some(crate::signing::FeedVerdict::UnknownKey) => PackageTrustState::Unverified,
-        Some(
-            verdict @ (crate::signing::FeedVerdict::RejectedUnsignedRequired
-            | crate::signing::FeedVerdict::RejectedTampered
-            | crate::signing::FeedVerdict::RejectedStaleSignature),
-        ) => {
+    let trust_state = match feed_text.map(|text| {
+        crate::repositories::remote_feed_trust_state(
+            &repos[repo_index],
+            text,
+            crate::operations::compute_fnv64(&bytes[..loaded]),
+            now,
+        )
+    }) {
+        Some(Ok(trust_state)) => trust_state,
+        Some(Err(verdict)) => {
             repos[repo_index].sync_state = PackageRepositorySyncState::Failed;
             let _ = crate::repositories::record_feed_rejection(
                 storage_handle,
@@ -198,6 +212,7 @@ pub(crate) fn load_repo_feed_cache(
                     PackageTrustState::VerificationFailed
                 }
             }
+            PackageRepositoryTrustMode::SignedKey => PackageTrustState::VerificationFailed,
         },
     };
     let base_path =
@@ -345,19 +360,30 @@ fn load_local_manifest_slot(
     let manifest =
         crate::operations::load_manifest_from_storage_path(storage_handle, manifest_path)?;
     let version = manifest.version.as_str().unwrap_or("0.0.0");
-    let index = if let Some(existing) = find_version_by_name(slot, version) {
-        existing
-    } else {
-        if slot.version_count == slot.versions.len() {
-            return Err(rt::Error::CapacityExceeded);
-        }
-        slot.version_count += 1;
-        slot.version_count - 1
-    };
+    let (index, inherited_repo_index, inherited_trust_state) =
+        if let Some(existing) = find_version_by_name(slot, version) {
+            (
+                existing,
+                slot.versions[existing].repo_index,
+                slot.versions[existing].trust_state,
+            )
+        } else {
+            (
+                {
+                    if slot.version_count == slot.versions.len() {
+                        return Err(rt::Error::CapacityExceeded);
+                    }
+                    slot.version_count += 1;
+                    slot.version_count - 1
+                },
+                BUILTIN_REPOSITORY_INDEX,
+                trust_state,
+            )
+        };
     slot.versions[index] = PackageVersionSlot::empty();
     slot.versions[index].manifest = manifest;
     slot.versions[index].manifest_loaded = true;
-    slot.versions[index].repo_index = BUILTIN_REPOSITORY_INDEX;
+    slot.versions[index].repo_index = inherited_repo_index;
     let _ = slot.versions[index].repo_manifest_path.set(manifest_path);
     let _ = slot.versions[index].local_manifest_path.set(manifest_path);
     let _ = slot.versions[index].version.set(version);
@@ -373,7 +399,7 @@ fn load_local_manifest_slot(
     let _ = slot.versions[index]
         .summary
         .set(slot.package_name.as_str().unwrap_or("PACKAGE"));
-    slot.versions[index].trust_state = trust_state;
+    slot.versions[index].trust_state = inherited_trust_state;
     slot.versions[index].occupied = true;
     sort_package_versions(slot);
     Ok(())
@@ -452,7 +478,9 @@ pub(crate) fn persist_sysupdate_txn(
 ) -> rt::Result<()> {
     let mut text = crate::sysupdate_model::ModelTextBuffer::<512>::new();
     if txn.count > 0 || txn.state != crate::sysupdate_model::TXN_STATE_PLANNING {
-        crate::sysupdate_model::encode_txn_file(txn.state, txn.done, &txn.ids, txn.count, &mut text);
+        crate::sysupdate_model::encode_txn_file(
+            txn.state, txn.done, &txn.ids, txn.count, &mut text,
+        );
     } else {
         let _ = write!(&mut text, "version=1\n");
     }
@@ -460,10 +488,7 @@ pub(crate) fn persist_sysupdate_txn(
 }
 
 pub(crate) fn clear_sysupdate_txn(storage_handle: rt::Handle) -> rt::Result<()> {
-    persist_sysupdate_txn(
-        storage_handle,
-        &crate::sysupdate_model::ParsedTxn::empty(),
-    )
+    persist_sysupdate_txn(storage_handle, &crate::sysupdate_model::ParsedTxn::empty())
 }
 
 pub(crate) fn load_sysupdate_txn(
@@ -571,6 +596,48 @@ pub(crate) fn load_feed_keystore(storage_handle: rt::Handle) -> rt::Result<()> {
         FEED_KEYSTORE = parsed;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use super::*;
+
+    #[test]
+    fn repo_record_parser_preserves_legacy_rows() {
+        let repo = parse_repo_record("edge|http://example.test/feed|3|77|2|3|1|99|4")
+            .expect("legacy repo");
+        assert_eq!(repo.trust_mode, PackageRepositoryTrustMode::PinnedDigest);
+        assert_eq!(repo.pinned_digest, 77);
+        assert_eq!(repo.last_digest, 99);
+        assert_eq!(repo.sync_state, PackageRepositorySyncState::Failed);
+        assert!(repo.bound_key_id.is_empty());
+        assert_eq!(repo.bound_key_fingerprint, 0);
+    }
+
+    #[test]
+    fn repo_record_parser_roundtrips_signed_key_binding() {
+        let mut repo = RepositorySlot::empty();
+        let _ = repo.name.set("edge");
+        let _ = repo.url.set("http://example.test/feed");
+        repo.trust_mode = PackageRepositoryTrustMode::SignedKey;
+        repo.channel = PackageChannel::Beta;
+        repo.ring = PackageRing::Preview;
+        repo.enabled = true;
+        repo.last_digest = 42;
+        repo.bound_key_fingerprint = 0x0123_4567_89ab_cdef;
+        let _ = repo.bound_key_id.set("k-0123456789abcdef");
+
+        let mut text = rt::FixedLogBuffer::<MAX_STATE_BYTES>::new();
+        write_repo_record(&mut text, repo);
+        let payload = text.as_str().trim().trim_start_matches("repo=");
+        let parsed = parse_repo_record(payload).expect("signed repo");
+        assert_eq!(parsed.trust_mode, PackageRepositoryTrustMode::SignedKey);
+        assert_eq!(parsed.bound_key_id.as_str(), "k-0123456789abcdef");
+        assert_eq!(parsed.bound_key_fingerprint, 0x0123_4567_89ab_cdef);
+        assert_eq!(parsed.last_digest, 42);
+    }
 }
 
 pub(crate) fn persist_reject_journal(storage_handle: rt::Handle) -> rt::Result<()> {

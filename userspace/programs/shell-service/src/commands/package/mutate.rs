@@ -178,6 +178,7 @@ fn trust_explanation(mode: rt::PackageRepositoryTrustMode) -> &'static str {
         rt::PackageRepositoryTrustMode::Boot => "verified against the boot image",
         rt::PackageRepositoryTrustMode::PinnedDigest => "contents checked against a pinned digest",
         rt::PackageRepositoryTrustMode::Unsigned => "UNSIGNED - contents are not verified",
+        rt::PackageRepositoryTrustMode::SignedKey => "signed by the bound ed25519 source key",
     }
 }
 
@@ -898,5 +899,18 @@ fn journal_action_label(action: u32) -> &'static str {
         3 => "remove",
         4 => "rollback",
         _ => "none",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trust_explanation_covers_signed_key_mode() {
+        assert_eq!(
+            trust_explanation(rt::PackageRepositoryTrustMode::SignedKey),
+            "signed by the bound ed25519 source key"
+        );
     }
 }

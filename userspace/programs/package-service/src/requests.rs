@@ -348,7 +348,21 @@ fn handle_provenance_request(
     if let Some(index) = find_package_slot(packages, service_id, package_count) {
         let slot = packages[index];
         let latest = latest_version_index(&slot);
-        let repo_index = latest.map(|i| slot.versions[i].repo_index).unwrap_or(0);
+        let provenance_index = slot.active.or(latest);
+        let repo_index = provenance_index
+            .map(|i| slot.versions[i].repo_index)
+            .unwrap_or(0);
+        let trust_state = provenance_index
+            .map(|version_index| slot.versions[version_index].trust_state)
+            .unwrap_or(PackageTrustState::Unverified);
+        let signed_key_fingerprint = if trust_state == PackageTrustState::SignedKeyTrusted {
+            repos
+                .get(repo_index)
+                .map(|repo| repo.bound_key_fingerprint)
+                .unwrap_or(0)
+        } else {
+            0
+        };
         let source = if let Some(version_index) = slot.active {
             active_manifest_path(&slot.versions[version_index])
         } else {
@@ -363,14 +377,9 @@ fn handle_provenance_request(
         };
         reply.words[0] = PackageStatus::Ok as u32 as u64;
         reply.words[1] = repo_index as u64;
-        reply.words[2] = pack_provenance_flags(
-            latest
-                .map(|version_index| slot.versions[version_index].trust_state)
-                .unwrap_or(PackageTrustState::Unverified),
-            slot.channel,
-            slot.ring,
-            package_flags(&slot),
-        ) as u64;
+        reply.words[2] =
+            pack_provenance_flags(trust_state, slot.channel, slot.ring, package_flags(&slot))
+                as u64;
         reply.words[3] = version_bytes(&slot, slot.installed).len() as u64;
         reply.words[4] = version_bytes(&slot, slot.active).len() as u64;
         reply.words[5] = version_bytes(&slot, slot.rollback).len() as u64;
@@ -383,8 +392,14 @@ fn handle_provenance_request(
         total += copy_into(&mut combined[total..], version_bytes(&slot, slot.rollback))?;
         total += copy_into(&mut combined[total..], version_bytes(&slot, latest))?;
         total += copy_into(&mut combined[total..], source.as_bytes())?;
-        reply.word_count += pack_bytes(&combined[..total], &mut reply.words[8..])?;
-        let _ = repos;
+        let extended = signed_key_fingerprint != 0 && total <= (IPC_MAX_WORDS - 9) * 8;
+        if extended {
+            reply.words[8] = signed_key_fingerprint;
+            reply.word_count = 9;
+            reply.word_count += pack_bytes(&combined[..total], &mut reply.words[9..])?;
+        } else {
+            reply.word_count += pack_bytes(&combined[..total], &mut reply.words[8..])?;
+        }
     }
     let _ = rt::channel_send(reply_handle, &reply);
     let _ = rt::handle_close(reply_handle);
@@ -539,7 +554,8 @@ fn handle_maintenance_request(
         ops_model::RECOVERY_OUTCOME_NONE,
     );
     let mut handled = false;
-    if raw_action == ops_model::MAINTENANCE_ACTION_RECOVER {        handled = true;
+    if raw_action == ops_model::MAINTENANCE_ACTION_RECOVER {
+        handled = true;
         let (recover_status, recover_outcome) = recover_interrupted_operation(
             bootstrap,
             storage_handle,
@@ -809,10 +825,7 @@ fn keys_reject(reply_handle: rt::Handle, reply_tag: PackageTag, status: PackageS
 
 /// Unpack `[len_a][len_b][a bytes][b bytes]` starting at `words[0]` into
 /// `combined`, returning borrowed UTF-8 slices valid as long as it lives.
-fn keys_read_two_fields<'a>(
-    words: &[u64],
-    combined: &'a mut [u8],
-) -> Option<(&'a str, &'a str)> {
+fn keys_read_two_fields<'a>(words: &[u64], combined: &'a mut [u8]) -> Option<(&'a str, &'a str)> {
     use crate::signing::{KEY_HEX_MAX, SOURCE_NAME_MAX};
     if words.len() < 2 || combined.len() < SOURCE_NAME_MAX + KEY_HEX_MAX {
         return None;
@@ -856,9 +869,8 @@ fn handle_keys_list_request(message: &RawMessage) -> rt::Result<()> {
 
     let mut flat = 0usize;
     let mut hit: Option<(usize, usize)> = None;
-    'outer: for (source_index, entry) in keystore.sources[..keystore.source_count]
-        .iter()
-        .enumerate()
+    'outer: for (source_index, entry) in
+        keystore.sources[..keystore.source_count].iter().enumerate()
     {
         for key_index in 0..entry.key_count {
             if flat == target_index {
@@ -958,8 +970,7 @@ fn handle_keys_enroll_request(storage_handle: rt::Handle, message: &RawMessage) 
     }
     let reply_handle = message.handles[0];
     let fields_words = &message.words[HEADER_WORDS as usize - 2..message.word_count as usize];
-    let mut field_bytes =
-        [0u8; crate::signing::SOURCE_NAME_MAX + crate::signing::KEY_HEX_MAX];
+    let mut field_bytes = [0u8; crate::signing::SOURCE_NAME_MAX + crate::signing::KEY_HEX_MAX];
     let Some((source, key_hex)) = keys_read_two_fields(fields_words, &mut field_bytes) else {
         keys_reject(
             reply_handle,
@@ -1022,7 +1033,10 @@ fn handle_keys_enroll_request(storage_handle: rt::Handle, message: &RawMessage) 
 /// KeysActivateRequest: words[0]=now_tick, words[1]=source_len,
 /// words[2]=id_len, then packed (source, key-id). Promotes the named key to
 /// active, retiring the current active key at `now`. Reply: [status].
-fn handle_keys_activate_request(storage_handle: rt::Handle, message: &RawMessage) -> rt::Result<()> {
+fn handle_keys_activate_request(
+    storage_handle: rt::Handle,
+    message: &RawMessage,
+) -> rt::Result<()> {
     const HEADER_WORDS: u32 = 3; // now tick + two length words
     if message.word_count < HEADER_WORDS || message.handle_count < 1 {
         return Ok(());
@@ -1030,8 +1044,7 @@ fn handle_keys_activate_request(storage_handle: rt::Handle, message: &RawMessage
     let reply_handle = message.handles[0];
     let now = message.words[0];
     let fields_words = &message.words[HEADER_WORDS as usize - 2..message.word_count as usize];
-    let mut field_bytes =
-        [0u8; crate::signing::SOURCE_NAME_MAX + crate::signing::KEY_HEX_MAX];
+    let mut field_bytes = [0u8; crate::signing::SOURCE_NAME_MAX + crate::signing::KEY_HEX_MAX];
     let Some((source, key_id)) = keys_read_two_fields(fields_words, &mut field_bytes) else {
         keys_reject(
             reply_handle,
@@ -1077,9 +1090,10 @@ fn handle_keys_rotate_request(storage_handle: rt::Handle, message: &RawMessage) 
     let reply_handle = message.handles[0];
     let now = message.words[0];
     let mut field_bytes = [0u8; crate::signing::SOURCE_NAME_MAX];
-    let Some(source) =
-        keys_read_one_field(&message.words[HEADER_WORDS as usize - 1..message.word_count as usize], &mut field_bytes)
-    else {
+    let Some(source) = keys_read_one_field(
+        &message.words[HEADER_WORDS as usize - 1..message.word_count as usize],
+        &mut field_bytes,
+    ) else {
         keys_reject(
             reply_handle,
             PackageTag::KeysRotateReply,
@@ -1096,7 +1110,9 @@ fn handle_keys_rotate_request(storage_handle: rt::Handle, message: &RawMessage) 
         let keystore = &mut *core::ptr::addr_of_mut!(FEED_KEYSTORE);
         match keystore.source_keys_mut(source) {
             None => {
-                fail_word = Some(keystore_error_word(crate::signing::KeystoreError::UnknownSource))
+                fail_word = Some(keystore_error_word(
+                    crate::signing::KeystoreError::UnknownSource,
+                ))
             }
             Some(entry) => match entry.rotate_source(now) {
                 Ok(slot_index) => {
@@ -1155,9 +1171,10 @@ fn handle_keys_gen_request(storage_handle: rt::Handle, message: &RawMessage) -> 
     let reply_handle = message.handles[0];
     let show_seed = message.words[0] & KEYS_GEN_FLAG_SHOW_SEED != 0;
     let mut field_bytes = [0u8; crate::signing::SOURCE_NAME_MAX];
-    let Some(source) =
-        keys_read_one_field(&message.words[HEADER_WORDS as usize - 1..message.word_count as usize], &mut field_bytes)
-    else {
+    let Some(source) = keys_read_one_field(
+        &message.words[HEADER_WORDS as usize - 1..message.word_count as usize],
+        &mut field_bytes,
+    ) else {
         keys_reject(
             reply_handle,
             PackageTag::KeysGenReply,
@@ -1177,7 +1194,11 @@ fn handle_keys_gen_request(storage_handle: rt::Handle, message: &RawMessage) -> 
         )
     };
     let Some(id_text) = identity.id_str() else {
-        keys_reject(reply_handle, PackageTag::KeysGenReply, PackageStatus::Unsupported);
+        keys_reject(
+            reply_handle,
+            PackageTag::KeysGenReply,
+            PackageStatus::Unsupported,
+        );
         return Ok(());
     };
     let pub_hex_array = identity.public_hex();

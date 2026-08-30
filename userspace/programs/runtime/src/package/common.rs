@@ -44,6 +44,9 @@ pub(crate) fn package_trust_mode_from_word(value: u64) -> PackageRepositoryTrust
         x if x == PackageRepositoryTrustMode::PinnedDigest as u32 => {
             PackageRepositoryTrustMode::PinnedDigest
         }
+        x if x == PackageRepositoryTrustMode::SignedKey as u32 => {
+            PackageRepositoryTrustMode::SignedKey
+        }
         _ => PackageRepositoryTrustMode::Unsigned,
     }
 }
@@ -61,10 +64,43 @@ pub(crate) fn package_trust_state_from_word(value: u64) -> PackageTrustState {
     match value as u32 {
         x if x == PackageTrustState::BootTrusted as u32 => PackageTrustState::BootTrusted,
         x if x == PackageTrustState::DigestPinned as u32 => PackageTrustState::DigestPinned,
+        x if x == PackageTrustState::SignedKeyTrusted as u32 => PackageTrustState::SignedKeyTrusted,
         x if x == PackageTrustState::VerificationFailed as u32 => {
             PackageTrustState::VerificationFailed
         }
         _ => PackageTrustState::Unverified,
+    }
+}
+
+pub(crate) fn package_provenance_layout(
+    response: &RawMessage,
+    total_words: usize,
+) -> Result<(usize, u64)> {
+    if response.word_count as usize == 8 + total_words {
+        Ok((8, 0))
+    } else if response.word_count as usize == 9 + total_words {
+        Ok((9, response.words[8]))
+    } else {
+        Err(Error::InvalidArgument)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use super::*;
+
+    #[test]
+    fn provenance_layout_accepts_legacy_and_signed_key_forms() {
+        let mut legacy = RawMessage::empty(0);
+        legacy.word_count = 10;
+        assert_eq!(package_provenance_layout(&legacy, 2), Ok((8, 0)));
+
+        let mut signed = RawMessage::empty(0);
+        signed.word_count = 11;
+        signed.words[8] = 0xfeed_beef;
+        assert_eq!(package_provenance_layout(&signed, 2), Ok((9, 0xfeed_beef)));
     }
 }
 

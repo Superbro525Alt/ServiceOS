@@ -427,6 +427,9 @@ pub(crate) fn trust_mode_from_word(value: u64) -> PackageRepositoryTrustMode {
         x if x == PackageRepositoryTrustMode::PinnedDigest as u32 => {
             PackageRepositoryTrustMode::PinnedDigest
         }
+        x if x == PackageRepositoryTrustMode::SignedKey as u32 => {
+            PackageRepositoryTrustMode::SignedKey
+        }
         _ => PackageRepositoryTrustMode::Unsigned,
     }
 }

@@ -26,6 +26,8 @@ pub(super) fn parse_repo_trust(value: &str) -> Option<(PackageRepositoryTrustMod
         Some((PackageRepositoryTrustMode::Unsigned, 0))
     } else if let Some(hex) = value.strip_prefix("pinned:") {
         parse_hex_u64(hex).map(|digest| (PackageRepositoryTrustMode::PinnedDigest, digest))
+    } else if value == "signed-key" {
+        Some((PackageRepositoryTrustMode::SignedKey, 0))
     } else {
         None
     }
@@ -45,6 +47,7 @@ pub(super) fn trust_mode_name(value: PackageRepositoryTrustMode) -> &'static str
         PackageRepositoryTrustMode::Boot => "boot",
         PackageRepositoryTrustMode::Unsigned => "unsigned",
         PackageRepositoryTrustMode::PinnedDigest => "pinned",
+        PackageRepositoryTrustMode::SignedKey => "signed-key",
     }
 }
 
@@ -62,6 +65,7 @@ pub(super) fn trust_state_name(value: rt::PackageTrustState) -> &'static str {
         rt::PackageTrustState::BootTrusted => "boot-trusted",
         rt::PackageTrustState::Unverified => "unverified",
         rt::PackageTrustState::DigestPinned => "digest-pinned",
+        rt::PackageTrustState::SignedKeyTrusted => "signed-key-trusted",
         rt::PackageTrustState::VerificationFailed => "verification-failed",
     }
 }
@@ -75,6 +79,7 @@ pub(super) fn signing_state_name(value: rt::PackageTrustState) -> &'static str {
         rt::PackageTrustState::BootTrusted => "trust-root",
         rt::PackageTrustState::Unverified => "unsigned",
         rt::PackageTrustState::DigestPinned => "digest-signed",
+        rt::PackageTrustState::SignedKeyTrusted => "ed25519-signed",
         rt::PackageTrustState::VerificationFailed => "verification-failed",
     }
 }
@@ -118,6 +123,10 @@ mod tests {
             "digest-signed"
         );
         assert_eq!(
+            signing_state_name(rt::PackageTrustState::SignedKeyTrusted),
+            "ed25519-signed"
+        );
+        assert_eq!(
             signing_state_name(rt::PackageTrustState::Unverified),
             "unsigned"
         );
@@ -125,5 +134,23 @@ mod tests {
             signing_state_name(rt::PackageTrustState::VerificationFailed),
             "verification-failed"
         );
+    }
+
+    #[test]
+    fn signed_key_trust_mode_parses_and_names_roundtrip() {
+        assert_eq!(
+            parse_repo_trust("signed-key"),
+            Some((PackageRepositoryTrustMode::SignedKey, 0))
+        );
+        assert_eq!(PackageRepositoryTrustMode::SignedKey as u64, 4);
+        assert_eq!(
+            trust_mode_name(PackageRepositoryTrustMode::SignedKey),
+            "signed-key"
+        );
+        assert_eq!(
+            trust_state_name(rt::PackageTrustState::SignedKeyTrusted),
+            "signed-key-trusted"
+        );
+        assert_eq!(parse_repo_trust("bogus"), None);
     }
 }

@@ -33,6 +33,68 @@ pub(crate) fn initialize_builtin_repository(repo: &mut RepositorySlot) {
     repo.occupied = true;
 }
 
+fn repo_bound_identity(repo: &RepositorySlot) -> Option<signing::BoundKeyIdentity> {
+    if repo.bound_key_id.is_empty() || repo.bound_key_fingerprint == 0 {
+        return None;
+    }
+    Some(signing::BoundKeyIdentity {
+        key_id: repo.bound_key_id,
+        fingerprint: repo.bound_key_fingerprint,
+    })
+}
+
+fn resolve_signed_key_binding(source: &str) -> Option<signing::BoundKeyIdentity> {
+    let keystore = unsafe { &*core::ptr::addr_of!(FEED_KEYSTORE) };
+    keystore
+        .source_keys(source)
+        .and_then(signing::active_ed25519_binding)
+}
+
+pub(crate) fn remote_feed_trust_state(
+    repo: &RepositorySlot,
+    feed_text: &str,
+    digest: u64,
+    now: u64,
+) -> Result<PackageTrustState, signing::FeedVerdict> {
+    let source_name = repo.name.as_str().unwrap_or("");
+    let source_keys = feed_keys_for(source_name);
+    let report = match repo.trust_mode {
+        PackageRepositoryTrustMode::SignedKey => match repo_bound_identity(repo) {
+            Some(binding) => signing::verify_bound_feed(feed_text, source_keys, binding, now),
+            None => signing::FeedVerification::empty(signing::FeedVerdict::RejectedWrongKeyBinding),
+        },
+        _ => signing::verify_signed_feed_report(feed_text, source_keys, now),
+    };
+    match report.verdict {
+        signing::FeedVerdict::Accepted | signing::FeedVerdict::AcceptedRetired => {
+            Ok(match repo.trust_mode {
+                PackageRepositoryTrustMode::SignedKey => PackageTrustState::SignedKeyTrusted,
+                _ => PackageTrustState::DigestPinned,
+            })
+        }
+        signing::FeedVerdict::UnknownKey
+            if repo.trust_mode != PackageRepositoryTrustMode::SignedKey =>
+        {
+            Ok(PackageTrustState::Unverified)
+        }
+        signing::FeedVerdict::UnsignedNoKeysPinned => match repo.trust_mode {
+            PackageRepositoryTrustMode::Boot => Ok(PackageTrustState::BootTrusted),
+            PackageRepositoryTrustMode::Unsigned => Ok(PackageTrustState::Unverified),
+            PackageRepositoryTrustMode::PinnedDigest => {
+                if repo.pinned_digest == digest {
+                    Ok(PackageTrustState::DigestPinned)
+                } else {
+                    Err(signing::FeedVerdict::RejectedTampered)
+                }
+            }
+            PackageRepositoryTrustMode::SignedKey => {
+                Err(signing::FeedVerdict::RejectedWrongKeyBinding)
+            }
+        },
+        verdict => Err(verdict),
+    }
+}
+
 pub(crate) fn load_boot_catalog(
     storage_handle: rt::Handle,
     log_handle: rt::Handle,
@@ -230,11 +292,23 @@ fn add_repository(
     if parse_http_url(url).is_err() {
         return Ok(PackageStatus::Unsupported);
     }
+    let binding = if trust_mode == PackageRepositoryTrustMode::SignedKey {
+        match resolve_signed_key_binding(name) {
+            Some(binding) => Some(binding),
+            None => return Ok(PackageStatus::Denied),
+        }
+    } else {
+        None
+    };
     let index = *repo_count;
     let mut repo = RepositorySlot::empty();
     let _ = repo.name.set(name);
     let _ = repo.url.set(url);
     repo.trust_mode = trust_mode;
+    if let Some(binding) = binding {
+        repo.bound_key_id = binding.key_id;
+        repo.bound_key_fingerprint = binding.fingerprint;
+    }
     repo.sync_state = PackageRepositorySyncState::Idle;
     repo.channel = channel;
     repo.ring = ring;
@@ -296,15 +370,8 @@ pub(crate) fn sync_repository(
     };
     let now = rt::monotonic_now().unwrap_or(0);
     let source_name = repos[repo_index].name.as_str().unwrap_or("");
-    let trust_state = match signing::verify_signed_feed(feed_text, feed_keys_for(source_name), now)
-    {
-        signing::FeedVerdict::Accepted | signing::FeedVerdict::AcceptedRetired => {
-            PackageTrustState::DigestPinned
-        }
-        signing::FeedVerdict::UnknownKey => {
-            // Signed by a key we do not pin: packages stay unverified until
-            // an operator explicitly accepts the source through the existing
-            // trust-review flow.
+    let trust_state = match remote_feed_trust_state(&repos[repo_index], feed_text, digest, now) {
+        Ok(PackageTrustState::Unverified) => {
             let _ = emit_package_event(
                 log_handle,
                 LogSeverity::Warn,
@@ -314,33 +381,8 @@ pub(crate) fn sync_repository(
             );
             PackageTrustState::Unverified
         }
-        signing::FeedVerdict::UnsignedNoKeysPinned => match repos[repo_index].trust_mode {
-            PackageRepositoryTrustMode::Boot => PackageTrustState::BootTrusted,
-            PackageRepositoryTrustMode::Unsigned => PackageTrustState::Unverified,
-            PackageRepositoryTrustMode::PinnedDigest => {
-                if repos[repo_index].pinned_digest == digest {
-                    PackageTrustState::DigestPinned
-                } else {
-                    repos[repo_index].sync_state = PackageRepositorySyncState::Failed;
-                    let _ = emit_package_event(
-                        log_handle,
-                        LogSeverity::Error,
-                        LogEvent::PackageRepositorySyncFailed,
-                        repo_index as u64,
-                        digest,
-                    );
-                    crate::storage::persist_repositories(
-                        storage_handle,
-                        repos,
-                        count_repositories(repos),
-                    )?;
-                    return Ok(PackageStatus::VerificationFailed);
-                }
-            }
-        },
-        verdict @ (signing::FeedVerdict::RejectedUnsignedRequired
-        | signing::FeedVerdict::RejectedTampered
-        | signing::FeedVerdict::RejectedStaleSignature) => {
+        Ok(trust_state) => trust_state,
+        Err(verdict) => {
             let reason = reject_reason(verdict);
             record_feed_rejection(storage_handle, source_name, reason, digest, now);
             repos[repo_index].sync_state = PackageRepositorySyncState::Failed;

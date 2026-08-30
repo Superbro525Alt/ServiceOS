@@ -503,6 +503,7 @@ fn package_trust_name(value: rt::PackageTrustState) -> &'static str {
     match value {
         rt::PackageTrustState::BootTrusted => "boot-trusted",
         rt::PackageTrustState::DigestPinned => "digest-pinned",
+        rt::PackageTrustState::SignedKeyTrusted => "signed-key-trusted",
         rt::PackageTrustState::Unverified => "unverified",
         rt::PackageTrustState::VerificationFailed => "verification-failed",
     }
@@ -513,6 +514,7 @@ fn repo_trust_name(value: rt::PackageRepositoryTrustMode) -> &'static str {
         rt::PackageRepositoryTrustMode::Boot => "boot",
         rt::PackageRepositoryTrustMode::Unsigned => "unsigned",
         rt::PackageRepositoryTrustMode::PinnedDigest => "pinned-digest",
+        rt::PackageRepositoryTrustMode::SignedKey => "signed-key",
     }
 }
 
@@ -538,5 +540,22 @@ fn ring_name(value: rt::PackageRing) -> &'static str {
         rt::PackageRing::Production => "production",
         rt::PackageRing::Preview => "preview",
         rt::PackageRing::Testing => "testing",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn package_trust_names_cover_signed_key_mode() {
+        assert_eq!(
+            package_trust_name(rt::PackageTrustState::SignedKeyTrusted),
+            "signed-key-trusted"
+        );
+        assert_eq!(
+            repo_trust_name(rt::PackageRepositoryTrustMode::SignedKey),
+            "signed-key"
+        );
     }
 }

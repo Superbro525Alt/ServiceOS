@@ -75,6 +75,7 @@ pub enum PackageTrustState {
     DigestPinned = 2,
     Unverified = 3,
     VerificationFailed = 4,
+    SignedKeyTrusted = 5,
 }
 
 #[repr(u32)]
@@ -92,6 +93,7 @@ pub enum PackageRepositoryTrustMode {
     Boot = 1,
     Unsigned = 2,
     PinnedDigest = 3,
+    SignedKey = 4,
 }
 
 #[repr(u32)]

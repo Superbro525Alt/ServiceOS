@@ -141,6 +141,7 @@ pub struct PackageRepositorySyncInfo {
 pub struct PackageProvenanceInfo {
     pub repo_index: u32,
     pub trust_state: PackageTrustState,
+    pub signed_key_fingerprint: u64,
     pub channel: PackageChannel,
     pub ring: PackageRing,
     pub installed: bool,

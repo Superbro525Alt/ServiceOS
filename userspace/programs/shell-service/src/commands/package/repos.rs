@@ -68,7 +68,7 @@ where
                 return write_output_linef(
                     output,
                     format_args!(
-                        "usage: pkg repo add <name> <url> [unsigned|pinned:<hex>] [stable|beta|canary] [production|preview|testing] [--yes]"
+                        "usage: pkg repo add <name> <url> [unsigned|pinned:<hex>|signed-key] [stable|beta|canary] [production|preview|testing] [--yes]"
                     ),
                 );
             };
@@ -76,7 +76,7 @@ where
                 return write_output_linef(
                     output,
                     format_args!(
-                        "usage: pkg repo add <name> <url> [unsigned|pinned:<hex>] [stable|beta|canary] [production|preview|testing] [--yes]"
+                        "usage: pkg repo add <name> <url> [unsigned|pinned:<hex>|signed-key] [stable|beta|canary] [production|preview|testing] [--yes]"
                     ),
                 );
             };
@@ -147,7 +147,7 @@ fn cmd_pkg_repo_add(
     let Some((trust_mode, digest)) = parse_repo_trust(trust_text) else {
         return write_output_linef(
             output,
-            format_args!("trust must be unsigned or pinned:<hex-digest>"),
+            format_args!("trust must be unsigned, pinned:<hex-digest>, or signed-key"),
         );
     };
     let Some(channel) = parse_channel(channel_text) else {

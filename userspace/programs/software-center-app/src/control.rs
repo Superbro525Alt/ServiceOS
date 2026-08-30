@@ -2,15 +2,16 @@ use rt::{AppControlTag, RawMessage};
 use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
 
-use crate::actions::{
-    PackageAction, apply_selected_package_action, launch_guidance, sync_repositories,
-};
+use crate::actions::{PackageAction, apply_selected_package_action, launch_guidance, set_statusf, sync_repositories};
 use crate::catalog_meta::keycode_to_char;
+use crate::repositories::{
+    self, SourcesClick, SourcesKey, execute_add, refresh_sources, sync_selected,
+};
 use crate::render::render;
 use crate::state::{
     AppState, KEY_BACKSPACE, KEY_DELETE, KEY_DOWN, KEY_ENTER, KEY_ESC, KEY_L, KEY_PAGE_DOWN,
-    KEY_PAGE_UP, KEY_R, KEY_TAB, KEY_UP, ROW_HEIGHT, SURFACE_BUFFER_SLOTS, clamp_view, clear_query,
-    compute_layout, cycle_category_filter, ensure_selected_visible, pop_query_char,
+    KEY_PAGE_UP, KEY_R, KEY_S, KEY_TAB, KEY_UP, ROW_HEIGHT, SURFACE_BUFFER_SLOTS, clamp_view,
+    clear_query, compute_layout, cycle_category_filter, ensure_selected_visible, pop_query_char,
     push_query_char, scroll_down, scroll_up, selected_entry, visible_row_count,
 };
 
@@ -108,6 +109,11 @@ fn handle_pointer_down(
         sync_repositories(package_handle, state);
         return Ok(true);
     }
+
+    if state.sources.open {
+        return Ok(handle_sources_pointer(package_handle, state, x, y, layout));
+    }
+
     if y >= layout.install_y0
         && y < layout.install_y1
         && x >= layout.install_x0
@@ -149,7 +155,96 @@ fn handle_pointer_down(
     Ok(false)
 }
 
+/// Sources-view pointer handling: routing decisions come from
+/// `repositories::handle_pointer` (pure, host-tested); only the effects that
+/// need the package channel run here.
+fn handle_sources_pointer(
+    package_handle: rt::Handle,
+    state: &mut AppState,
+    x: i32,
+    y: i32,
+    layout: crate::state::Layout,
+) -> bool {
+    match repositories::handle_pointer(&state.sources, layout, x, y) {
+        SourcesClick::None => false,
+        SourcesClick::SelectRepo(position) => {
+            state.sources.selected = position;
+            state.sources.ensure_visible(layout.visible_rows());
+            true
+        }
+        SourcesClick::Field(field) => {
+            state.sources.field = field;
+            true
+        }
+        SourcesClick::CycleTrust => {
+            state.sources.cycle_trust();
+            true
+        }
+        SourcesClick::BeginReview => {
+            if state.sources.begin_review() {
+                true
+            } else {
+                set_statusf(
+                    state,
+                    format_args!("add needs name, url (and hex digest when pinned)"),
+                );
+                true
+            }
+        }
+        SourcesClick::ConfirmAdd => {
+            execute_add(package_handle, state);
+            true
+        }
+        SourcesClick::CancelReview => {
+            state.sources.cancel_review();
+            true
+        }
+        SourcesClick::SyncThis => {
+            sync_selected(package_handle, state);
+            true
+        }
+    }
+}
+
+fn handle_sources_key(package_handle: rt::Handle, state: &mut AppState, key: u32) -> bool {
+    match repositories::handle_key(&mut state.sources, key) {
+        SourcesKey::None => {}
+        SourcesKey::BeginReview => {
+            if !state.sources.begin_review() {
+                set_statusf(
+                    state,
+                    format_args!("add needs name, url (and hex digest when pinned)"),
+                );
+            }
+            return true;
+        }
+        SourcesKey::ConfirmAdd => {
+            execute_add(package_handle, state);
+            return true;
+        }
+        SourcesKey::Back => {
+            if state.sources.in_review() {
+                state.sources.cancel_review();
+            } else {
+                state.sources.open = false;
+                set_statusf(state, format_args!("sources closed"));
+            }
+            return true;
+        }
+    }
+    let mut changed = false;
+    if let Some(byte) = keycode_to_char(key) {
+        if state.sources.push_field_char(byte) {
+            changed = true;
+        }
+    }
+    changed
+}
+
 fn handle_key_down(package_handle: rt::Handle, state: &mut AppState, key: u32) -> rt::Result<bool> {
+    if state.sources.open {
+        return Ok(handle_sources_key(package_handle, state, key));
+    }
     match key {
         KEY_UP => {
             if state.selected_index > 0 {
@@ -209,6 +304,11 @@ fn handle_key_down(package_handle: rt::Handle, state: &mut AppState, key: u32) -
         }
         KEY_R if state.query_len == 0 => {
             sync_repositories(package_handle, state);
+            return Ok(true);
+        }
+        KEY_S if state.query_len == 0 => {
+            state.sources.open = true;
+            refresh_sources(package_handle, state);
             return Ok(true);
         }
         KEY_L if state.query_len == 0 => {

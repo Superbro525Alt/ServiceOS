@@ -5,6 +5,7 @@ mod actions;
 mod catalog_meta;
 mod control;
 mod render;
+mod repositories;
 mod state;
 
 use rt::{ControlTag, RawMessage};

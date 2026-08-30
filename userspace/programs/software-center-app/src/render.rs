@@ -6,6 +6,7 @@ use serviceos_userspace_runtime as rt;
 
 use crate::actions::{action_label, channel_label, ring_label, text_or_dash, trust_badge};
 use crate::catalog_meta::{self, MAX_QUERY_BYTES};
+use crate::repositories::{self, AddField, LEDGER_NOTE, SIDELOAD_NOTE};
 use crate::state::{
     AppState, BUFFER_BYTES, BUFFER_HEIGHT, BUFFER_WIDTH, CATEGORY_FILTERS, CatalogEntry,
     HEADER_HEIGHT, Layout, MAX_SOURCE_BYTES, PIXEL_STRIDE, ROW_HEIGHT, STATUS_BAR_HEIGHT,
@@ -23,6 +24,9 @@ pub(crate) fn render(
     let width = state.width.min(BUFFER_WIDTH) as usize;
     let height = state.height.min(BUFFER_HEIGHT) as usize;
     let bytes = &mut buffer.as_slice_mut()[..BUFFER_BYTES];
+    if state.sources.open {
+        return draw_sources(presenter, buffer_slot, bytes, layout, state);
+    }
     let mut detail0 = FixedLogBuffer::<64>::new();
     let mut detail1 = FixedLogBuffer::<80>::new();
     let mut detail2 = FixedLogBuffer::<80>::new();
@@ -315,7 +319,7 @@ fn draw_header(bytes: &mut [u8], layout: Layout, state: &AppState) {
     if query_text(state).is_empty() {
         let _ = write!(
             &mut search,
-            "find: type to search   cat:{}  tab=next",
+            "find: type to search   cat:{}  tab=next  s=sources",
             filter
         );
     } else {
@@ -703,4 +707,571 @@ fn draw_status_bar(bytes: &mut [u8], x: i32, y: i32, width: i32, status: &str) {
         ui::BG_WINDOW,
     );
     rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, x + 8, y + 8, ui::TEXT_MUTED, status);
+}
+
+/// Repository/sources management surface (roadmap 15): list + trust details
+/// + two-phase add review. Ledger flows (enable/disable/remove, sideload
+/// policy) live in the shell's in-process onboarding ledger with no IPC
+/// surface, so the panel shows an honest pointer instead of fake toggles.
+fn draw_sources(
+    presenter: &mut ui::FirstPresentSurface,
+    buffer_slot: u32,
+    bytes: &mut [u8],
+    layout: Layout,
+    state: &AppState,
+) -> rt::Result<()> {
+    let width = state.width.min(BUFFER_WIDTH) as usize;
+    let height = state.height.min(BUFFER_HEIGHT) as usize;
+    ui::draw_window_frame_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        width,
+        height,
+        state.focused,
+        ui::BG_WINDOW_ALT,
+        "SOFTWARE CENTER",
+    );
+    draw_panel(
+        bytes,
+        layout.header_x,
+        layout.header_y,
+        layout.header_w,
+        HEADER_HEIGHT,
+        ui::BG_PANEL,
+    );
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        layout.header_x + 14,
+        layout.header_y + 12,
+        ui::TEXT_PRIMARY,
+        "PACKAGE SOURCES",
+    );
+    let mut summary = FixedLogBuffer::<64>::new();
+    let _ = write!(
+        &mut summary,
+        "{} sources  S closes  esc cancels",
+        state.sources.repo_count,
+    );
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        layout.header_x + 14,
+        layout.header_y + 28,
+        ui::TEXT_SECONDARY,
+        str::from_utf8(summary.as_bytes()).unwrap_or(""),
+    );
+    draw_button(
+        bytes,
+        layout.sync_x0,
+        layout.sync_y0,
+        layout.sync_x1,
+        layout.sync_y1,
+        ui::ACCENT_DIM,
+        "SYNC ALL",
+        ui::TEXT_PRIMARY,
+    );
+    draw_panel(
+        bytes,
+        layout.left_x,
+        layout.left_y,
+        layout.left_w,
+        layout.left_h,
+        ui::BG_PANEL,
+    );
+    draw_panel(
+        bytes,
+        layout.right_x,
+        layout.right_y,
+        layout.right_w,
+        layout.right_h,
+        ui::BG_PANEL,
+    );
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        layout.left_x + 12,
+        layout.left_y + 10,
+        ui::TEXT_PRIMARY,
+        "SOURCES",
+    );
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        layout.right_x + 12,
+        layout.right_y + 10,
+        ui::TEXT_PRIMARY,
+        if state.sources.in_review() {
+            "TRUST REVIEW"
+        } else {
+            "SOURCE DETAILS"
+        },
+    );
+
+    draw_source_list(bytes, layout, state);
+    if !state.sources.available {
+        draw_sources_unavailable(bytes, layout);
+    } else if state.sources.in_review() {
+        draw_add_review(bytes, layout, state);
+    } else {
+        draw_source_details(bytes, layout, state);
+        draw_add_form(bytes, layout, state);
+    }
+    draw_status_bar(
+        bytes,
+        layout.right_x + 12,
+        layout.status_y,
+        layout.right_w - 24,
+        str::from_utf8(&state.status[..state.status_len]).unwrap_or(""),
+    );
+    presenter.present(
+        buffer_slot,
+        state.width.min(BUFFER_WIDTH),
+        state.height.min(BUFFER_HEIGHT),
+    )
+}
+
+fn draw_source_list(bytes: &mut [u8], layout: Layout, state: &AppState) {
+    let visible_rows = layout.visible_rows();
+    for row in 0..visible_rows {
+        let position = state.sources.scroll + row;
+        if position >= state.sources.repo_count {
+            break;
+        }
+        let entry = &state.sources.repos[position];
+        let row_y = layout.list_rows_y as usize + row * ROW_HEIGHT as usize;
+        let selected = position == state.sources.selected;
+        ui::fill_rgba8888_rect(
+            bytes,
+            PIXEL_STRIDE,
+            BUFFER_WIDTH as usize,
+            BUFFER_HEIGHT as usize,
+            (layout.left_x + 8) as usize,
+            row_y,
+            (layout.left_w - 16).max(0) as usize,
+            (ROW_HEIGHT - 4).max(0) as usize,
+            if selected {
+                ui::ACCENT_DIM
+            } else {
+                ui::BG_WINDOW
+            },
+        );
+        let mut title = FixedLogBuffer::<64>::new();
+        let _ = write!(
+            &mut title,
+            "#{} {}",
+            entry.info.repo_index,
+            entry.name_text(),
+        );
+        rt::draw_text_rgba8888(
+            bytes,
+            PIXEL_STRIDE,
+            layout.left_x + 14,
+            row_y as i32 + 4,
+            if selected {
+                ui::TEXT_PRIMARY
+            } else {
+                ui::TEXT_SECONDARY
+            },
+            str::from_utf8(title.as_bytes()).unwrap_or(""),
+        );
+        rt::draw_text_rgba8888(
+            bytes,
+            PIXEL_STRIDE,
+            layout.left_x + 14,
+            row_y as i32 + 16,
+            ui::TEXT_MUTED,
+            repositories::source_row_meta(entry).as_str(),
+        );
+    }
+    if state.sources.repo_count == 0 {
+        rt::draw_text_rgba8888(
+            bytes,
+            PIXEL_STRIDE,
+            layout.left_x + 14,
+            layout.list_rows_y + 6,
+            ui::TEXT_MUTED,
+            if state.sources.available {
+                "no repositories"
+            } else {
+                "list unavailable"
+            },
+        );
+    }
+}
+
+fn draw_sources_unavailable(bytes: &mut [u8], layout: Layout) {
+    let x = layout.right_x + 12;
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        x,
+        layout.detail_title_y,
+        ui::STATUS_WARN,
+        "SOURCES UNAVAILABLE",
+    );
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        x,
+        layout.detail_title_y + 16,
+        ui::TEXT_SECONDARY,
+        "package-service did not answer the repository list request.",
+    );
+    draw_text_fit(
+        bytes,
+        x,
+        layout.detail_body_y,
+        ui::TEXT_MUTED,
+        repositories::LEDGER_NOTE,
+        layout.detail_text_w,
+    );
+    draw_text_fit(
+        bytes,
+        x,
+        layout.detail_body_y + 14,
+        ui::TEXT_MUTED,
+        repositories::SIDELOAD_NOTE,
+        layout.detail_text_w,
+    );
+}
+
+fn draw_source_details(bytes: &mut [u8], layout: Layout, state: &AppState) {
+    let x = layout.right_x + 12;
+    let Some(entry) = state.sources.selected_repo() else {
+        rt::draw_text_rgba8888(
+            bytes,
+            PIXEL_STRIDE,
+            x,
+            layout.detail_title_y,
+            ui::TEXT_PRIMARY,
+            "Select a source",
+        );
+        rt::draw_text_rgba8888(
+            bytes,
+            PIXEL_STRIDE,
+            x,
+            layout.detail_title_y + 16,
+            ui::TEXT_SECONDARY,
+            "Browse the package feed sources and their trust stance.",
+        );
+        draw_text_fit(
+            bytes,
+            x,
+            layout.detail_body_y,
+            ui::TEXT_MUTED,
+            LEDGER_NOTE,
+            layout.detail_text_w,
+        );
+        draw_text_fit(
+            bytes,
+            x,
+            layout.detail_body_y + 14,
+            ui::TEXT_MUTED,
+            SIDELOAD_NOTE,
+            layout.detail_text_w,
+        );
+        return;
+    };
+    let mut title = FixedLogBuffer::<64>::new();
+    let _ = write!(&mut title, "#{} {}", entry.info.repo_index, entry.name_text());
+    draw_text_fit(
+        bytes,
+        x,
+        layout.detail_title_y,
+        ui::TEXT_PRIMARY,
+        str::from_utf8(title.as_bytes()).unwrap_or("SOURCE"),
+        layout.detail_text_w,
+    );
+    draw_text_fit(
+        bytes,
+        x,
+        layout.detail_title_y + 16,
+        ui::TEXT_SECONDARY,
+        entry.url_text(),
+        layout.detail_text_w,
+    );
+    let mut trust_line = FixedLogBuffer::<128>::new();
+    let _ = write!(
+        &mut trust_line,
+        "trust={} meaning: {}",
+        repositories::trust_mode_name(entry.info.trust_mode),
+        repositories::trust_meaning(entry.info.trust_mode),
+    );
+    draw_text_fit(
+        bytes,
+        x,
+        layout.detail_body_y,
+        ui::TEXT_SECONDARY,
+        str::from_utf8(trust_line.as_bytes()).unwrap_or(""),
+        layout.detail_text_w,
+    );
+    let mut impact_line = FixedLogBuffer::<128>::new();
+    let _ = write!(
+        &mut impact_line,
+        "effect: {}",
+        repositories::trust_onboarding_impact(entry.info.trust_mode),
+    );
+    draw_text_fit(
+        bytes,
+        x,
+        layout.detail_body_y + 14,
+        ui::TEXT_SECONDARY,
+        str::from_utf8(impact_line.as_bytes()).unwrap_or(""),
+        layout.detail_text_w,
+    );
+    let mut meta = FixedLogBuffer::<96>::new();
+    let _ = write!(
+        &mut meta,
+        "sync={} ch={} ring={} enabled={} pkgs={}",
+        repositories::sync_state_name(entry.info.sync_state),
+        repositories::repo_channel_name(entry.info.channel),
+        repositories::repo_ring_name(entry.info.ring),
+        if entry.info.enabled { "yes" } else { "no" },
+        entry.info.package_count,
+    );
+    draw_text_fit(
+        bytes,
+        x,
+        layout.detail_body_y + 28,
+        ui::TEXT_SECONDARY,
+        str::from_utf8(meta.as_bytes()).unwrap_or(""),
+        layout.detail_text_w,
+    );
+    let mut digests = FixedLogBuffer::<64>::new();
+    let _ = write!(
+        &mut digests,
+        "last={:016x}",
+        entry.info.last_digest,
+    );
+    if entry.info.trust_mode == rt::PackageRepositoryTrustMode::PinnedDigest {
+        let _ = write!(&mut digests, "  pinned={:016x}", entry.info.pinned_digest);
+    }
+    draw_text_fit(
+        bytes,
+        x,
+        layout.detail_body_y + 42,
+        ui::TEXT_MUTED,
+        str::from_utf8(digests.as_bytes()).unwrap_or(""),
+        layout.detail_text_w,
+    );
+    draw_text_fit(
+        bytes,
+        x,
+        layout.detail_body_y + 58,
+        ui::TEXT_MUTED,
+        LEDGER_NOTE,
+        layout.detail_text_w,
+    );
+}
+
+fn draw_add_form(bytes: &mut [u8], layout: Layout, state: &AppState) {
+    let area = repositories::rects(
+        layout,
+        state.sources.trust == rt::PackageRepositoryTrustMode::PinnedDigest,
+    );
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        area.field_x0,
+        area.name_y - 16,
+        ui::TEXT_PRIMARY,
+        "ADD SOURCE",
+    );
+    draw_field(bytes, area.field_x0, area.field_x1, area.name_y, "name", AddField::Name, state);
+    draw_field(bytes, area.field_x0, area.field_x1, area.url_y, "url", AddField::Url, state);
+    let mut trust_value = FixedLogBuffer::<64>::new();
+    let _ = write!(
+        &mut trust_value,
+        "{}  (tab cycles)",
+        repositories::trust_mode_name(state.sources.trust),
+    );
+    draw_field_value(
+        bytes,
+        area.field_x0,
+        area.field_x1,
+        area.trust_y,
+        "trust",
+        str::from_utf8(trust_value.as_bytes()).unwrap_or(""),
+        false,
+    );
+    if state.sources.trust == rt::PackageRepositoryTrustMode::PinnedDigest {
+        draw_field(bytes, area.field_x0, area.field_x1, area.digest_y, "digest", AddField::Digest, state);
+    }
+    draw_button(
+        bytes,
+        area.primary_x0,
+        area.button_y0,
+        area.primary_x1,
+        area.button_y1,
+        ui::ACCENT,
+        "ADD REVIEW",
+        ui::BG_PANEL,
+    );
+    draw_button(
+        bytes,
+        area.secondary_x0,
+        area.button_y0,
+        area.secondary_x1,
+        area.button_y1,
+        ui::ACCENT_DIM,
+        "SYNC THIS",
+        ui::TEXT_PRIMARY,
+    );
+}
+
+fn draw_field(
+    bytes: &mut [u8],
+    x0: i32,
+    x1: i32,
+    y: i32,
+    label: &str,
+    field: AddField,
+    state: &AppState,
+) {
+    let focused = state.sources.field == field;
+    draw_field_value(bytes, x0, x1, y, label, state.sources.field_text(field), focused);
+}
+
+fn draw_field_value(
+    bytes: &mut [u8],
+    x0: i32,
+    x1: i32,
+    y: i32,
+    label: &str,
+    value: &str,
+    focused: bool,
+) {
+    ui::fill_rgba8888_rect(
+        bytes,
+        PIXEL_STRIDE,
+        BUFFER_WIDTH as usize,
+        BUFFER_HEIGHT as usize,
+        x0.max(0) as usize,
+        y.max(0) as usize,
+        (x1 - x0).max(0) as usize,
+        20,
+        if focused {
+            ui::BG_WINDOW_ALT
+        } else {
+            ui::BG_WINDOW
+        },
+    );
+    let mut row = FixedLogBuffer::<128>::new();
+    let _ = write!(
+        &mut row,
+        "{}{}: {}",
+        if focused { "> " } else { "  " },
+        label,
+        value,
+    );
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        x0 + 4,
+        y + 4,
+        if focused {
+            ui::ACCENT
+        } else {
+            ui::TEXT_SECONDARY
+        },
+        str::from_utf8(row.as_bytes()).unwrap_or(""),
+    );
+}
+
+/// Two-phase add, step 2: the shell's trust-review text rendered verbatim so
+/// the GUI confirmation carries the same meaning as `pkg repo add` review.
+fn draw_add_review(bytes: &mut [u8], layout: Layout, state: &AppState) {
+    let area = repositories::rects(
+        layout,
+        state.sources.trust == rt::PackageRepositoryTrustMode::PinnedDigest,
+    );
+    let x = layout.right_x + 12;
+    let name = state.sources.field_text(AddField::Name);
+    let url = state.sources.field_text(AddField::Url);
+    let trust = state.sources.trust;
+    let mut lines: [FixedLogBuffer::<128>; 8] = [
+        FixedLogBuffer::<128>::new(),
+        FixedLogBuffer::<128>::new(),
+        FixedLogBuffer::<128>::new(),
+        FixedLogBuffer::<128>::new(),
+        FixedLogBuffer::<128>::new(),
+        FixedLogBuffer::<128>::new(),
+        FixedLogBuffer::<128>::new(),
+        FixedLogBuffer::<128>::new(),
+    ];
+    let _ = write!(&mut lines[0], "trust review for third-party repository {}", name);
+    let _ = write!(&mut lines[1], "endpoint {}", url);
+    let _ = write!(
+        &mut lines[2],
+        "trust={} meaning: {}",
+        repositories::trust_mode_name(trust),
+        repositories::trust_meaning(trust),
+    );
+    let mut used = 3usize;
+    if trust == rt::PackageRepositoryTrustMode::PinnedDigest {
+        let _ = write!(
+            &mut lines[used],
+            "pinned digest {:016x}",
+            state.sources.parse_digest().unwrap_or(0),
+        );
+        used += 1;
+    }
+    let _ = write!(
+        &mut lines[used],
+        "effect once added: {}",
+        repositories::trust_onboarding_impact(trust),
+    );
+    used += 1;
+    let _ = write!(
+        &mut lines[used],
+        "adds as: channel=stable ring=production enabled=yes",
+    );
+    used += 1;
+    let _ = write!(
+        &mut lines[used],
+        "packages from this source become installable and update-visible;",
+    );
+    used += 1;
+    let _ = write!(
+        &mut lines[used],
+        "manage it with pkg repo <enable|disable|remove|status>",
+    );
+    used += 1;
+
+    let mut y = area.review_y0;
+    for line in lines.iter().take(used) {
+        if y + 16 > area.review_y1 {
+            break;
+        }
+        draw_text_fit(
+            bytes,
+            x,
+            y,
+            ui::TEXT_SECONDARY,
+            str::from_utf8(line.as_bytes()).unwrap_or(""),
+            layout.detail_text_w,
+        );
+        y += 16;
+    }
+    draw_button(
+        bytes,
+        area.primary_x0,
+        area.button_y0,
+        area.primary_x1,
+        area.button_y1,
+        ui::STATUS_OK,
+        "CONFIRM ADD",
+        ui::BG_PANEL,
+    );
+    draw_button(
+        bytes,
+        area.secondary_x0,
+        area.button_y0,
+        area.secondary_x1,
+        area.button_y1,
+        ui::STATUS_WARN,
+        "CANCEL",
+        ui::BG_PANEL,
+    );
 }

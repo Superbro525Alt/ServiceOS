@@ -2,6 +2,7 @@ use rt::ServiceId;
 use serviceos_userspace_runtime as rt;
 
 use crate::catalog_meta::{self, MAX_QUERY_BYTES};
+use crate::repositories::SourcesState;
 
 pub(crate) const MAX_ENTRIES: usize = 24;
 pub(crate) const MAX_CATEGORY_BYTES: usize = 24;
@@ -27,6 +28,7 @@ pub(crate) const KEY_BACKSPACE: u32 = 14;
 pub(crate) const KEY_DELETE: u32 = 111;
 pub(crate) const KEY_ESC: u32 = 1;
 pub(crate) const KEY_R: u32 = 19;
+pub(crate) const KEY_S: u32 = 31;
 pub(crate) const KEY_L: u32 = 38;
 pub(crate) const KEY_TAB: u32 = 15;
 pub(crate) const KEY_UP: u32 = 103;
@@ -129,6 +131,9 @@ pub(crate) struct AppState {
     /// shown only where actually observed.
     pub(crate) session_updates: [(ServiceId, u64); MAX_ENTRIES],
     pub(crate) session_update_count: usize,
+    /// Repository/sources management surface (toggled with S; kept out of
+    /// the default view so plain boots stay untouched).
+    pub(crate) sources: SourcesState,
 }
 
 pub(crate) const CATEGORY_FILTERS: [&str; 5] =
@@ -153,6 +158,7 @@ impl AppState {
             status_len: 0,
             session_updates: [(ServiceId::RootManager, 0); MAX_ENTRIES],
             session_update_count: 0,
+            sources: SourcesState::new(),
         }
     }
 
@@ -391,7 +397,7 @@ pub(crate) fn compute_layout(state: &AppState) -> Layout {
     )
 }
 
-fn compute_layout_for_height(height: u32) -> Layout {
+pub(crate) fn compute_layout_for_height(height: u32) -> Layout {
     compute_layout_for_dims(
         BUFFER_WIDTH as i32,
         height.min(BUFFER_HEIGHT) as i32,

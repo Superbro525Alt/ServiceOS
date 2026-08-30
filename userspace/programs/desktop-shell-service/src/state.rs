@@ -47,6 +47,13 @@ pub(crate) const PALETTE_BUFFER_SLOTS: usize = 2;
 pub(crate) const PALETTE_BUFFER_BYTES: usize = PALETTE_WIDTH as usize * PALETTE_HEIGHT as usize * 4;
 pub(crate) const HISTORY_WIDTH: u32 = 360;
 pub(crate) const HISTORY_HEIGHT: u32 = 188;
+pub(crate) const APPROVAL_WIDTH: u32 = 360;
+pub(crate) const APPROVAL_HEIGHT: u32 = 170;
+pub(crate) const APPROVAL_CARDS_MAX: usize = 4;
+pub(crate) const APPROVAL_PROMPT_TIMEOUT_TICKS: u64 = 600;
+pub(crate) const APPROVAL_REFRESH_TICKS: u64 = 10;
+pub(crate) const APPROVAL_QA_LOCAL_Y: i32 = 138;
+pub(crate) const APPROVAL_QA_HEIGHT: i32 = 16;
 pub(crate) const WORKSPACE_OVERVIEW_WIDTH: u32 = 480;
 pub(crate) const WORKSPACE_OVERVIEW_HEIGHT: u32 = 170;
 pub(crate) const MOD_SHIFT: u32 = 1 << 0;
@@ -102,6 +109,7 @@ pub(crate) struct Chrome {
     pub(crate) gesture_handle: rt::Handle,
     pub(crate) workspace_handle: rt::Handle,
     pub(crate) login_handle: rt::Handle,
+    pub(crate) approvals_handle: rt::Handle,
     pub(crate) cursor_handle: rt::Handle,
     pub(crate) output_width: u32,
     pub(crate) output_height: u32,
@@ -198,6 +206,7 @@ pub(crate) enum OverlayMode {
     Media,
     WorkspaceOverview,
     Login,
+    Approval,
 }
 
 #[derive(Clone, Copy)]
@@ -347,6 +356,9 @@ pub(crate) struct DesktopState {
     pub(crate) notification_history: [NotificationEntry; NOTIFICATION_HISTORY_MAX],
     pub(crate) notification_history_len: usize,
     pub(crate) next_notification_sequence: u32,
+    pub(crate) runtime_handle: rt::Handle,
+    pub(crate) approvals: crate::approvals::ApprovalState,
+    pub(crate) next_runtime_refresh: u64,
     pub(crate) overlay_mode: OverlayMode,
     pub(crate) overlay_selection: usize,
     pub(crate) switcher_selection: usize,

@@ -43,6 +43,9 @@ pub(super) fn handle_key_input(
             if state.overlay_mode == OverlayMode::Login {
                 crate::login::reset_login(state);
             }
+            if state.overlay_mode == OverlayMode::Approval {
+                crate::approvals::note_overlay_closed(&mut state.approvals);
+            }
             state.overlay_mode = OverlayMode::None;
             state.overlay_selection = 0;
             state.switcher_selection = 0;
@@ -75,6 +78,9 @@ pub(super) fn handle_key_input(
         }
         if state.overlay_mode == OverlayMode::Login {
             return crate::login::handle_login_key(state, key_code, modifiers);
+        }
+        if state.overlay_mode == OverlayMode::Approval {
+            return overlays::handle_approval_overlay_key(state, key_code);
         }
     }
 

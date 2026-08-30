@@ -3,6 +3,7 @@
 
 mod access;
 mod actions;
+mod approvals;
 mod chrome;
 mod crash;
 mod input;
@@ -62,6 +63,10 @@ fn main() -> u64 {
         rt::lookup_service(bootstrap, ServiceId::Audio).unwrap_or(rt::INVALID_HANDLE);
     let storage_handle =
         rt::lookup_service(bootstrap, ServiceId::Storage).unwrap_or(rt::INVALID_HANDLE);
+    // Runtime-service channel drives the desktop approval prompts; optional
+    // so runtime-less bundles (raspi5) boot without it.
+    let runtime_handle =
+        rt::lookup_service(bootstrap, ServiceId::Runtime).unwrap_or(rt::INVALID_HANDLE);
     let access_store_dir = access::ensure_access_store_dir(storage_handle);
     let access_settings = access::load_access_settings(access_store_dir);
 
@@ -146,6 +151,9 @@ fn main() -> u64 {
         notification_history: [NotificationEntry::empty(); NOTIFICATION_HISTORY_MAX],
         notification_history_len: 0,
         next_notification_sequence: 1,
+        runtime_handle,
+        approvals: approvals::ApprovalState::new(),
+        next_runtime_refresh: 0,
         overlay_mode: OverlayMode::None,
         overlay_selection: 0,
         switcher_selection: 0,
@@ -361,6 +369,12 @@ fn main() -> u64 {
                     && render::render_desktop(&mut state).is_err()
                 {
                     return 0xfe1e;
+                }
+            }
+            if now >= state.next_runtime_refresh {
+                state.next_runtime_refresh = now.saturating_add(APPROVAL_REFRESH_TICKS);
+                if approvals::refresh_runtime_approvals(&mut state, now).is_err() {
+                    return 0xfe1f;
                 }
             }
         }

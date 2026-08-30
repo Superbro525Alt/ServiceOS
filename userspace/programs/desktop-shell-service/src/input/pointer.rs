@@ -385,8 +385,26 @@ fn overlay_click(state: &mut DesktopState, x: i32, y: i32) -> rt::Result<Option<
         OverlayMode::Notifications => notification_click(state, local_x, local_y),
         OverlayMode::CommandPalette => palette_click(state, local_y),
         OverlayMode::WorkspaceOverview => overview_tile_click(state, local_x, local_y),
+        OverlayMode::Approval => approval_click(state, local_x, local_y),
         _ => Ok(None),
     }
+}
+
+/// Approval card quick-action strip: approve on the left half, deny on the
+/// right — the pointer equivalent of the A/D keys.
+fn approval_click(state: &mut DesktopState, local_x: i32, local_y: i32) -> rt::Result<Option<u32>> {
+    if local_y >= crate::APPROVAL_QA_LOCAL_Y
+        && local_y < crate::APPROVAL_QA_LOCAL_Y + crate::APPROVAL_QA_HEIGHT
+    {
+        let policy = if local_x < crate::APPROVAL_WIDTH as i32 / 2 {
+            rt::PermissionPolicyState::Allowed
+        } else {
+            rt::PermissionPolicyState::Blocked
+        };
+        crate::approvals::decide_first_card(state, policy)?;
+        return Ok(Some(focused_surface_id(state)));
+    }
+    Ok(None)
 }
 
 fn overview_tile_click(

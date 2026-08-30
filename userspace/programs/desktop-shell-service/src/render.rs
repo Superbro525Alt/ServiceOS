@@ -457,6 +457,7 @@ fn render_overlays(state: &mut DesktopState) -> rt::Result<()> {
     let show_media = state.overlay_mode == OverlayMode::Media;
     let show_workspace = state.overlay_mode == OverlayMode::WorkspaceOverview;
     let show_login = state.overlay_mode == OverlayMode::Login;
+    let show_approval = state.overlay_mode == OverlayMode::Approval;
 
     rt::surface_set_visibility(state.chrome.switcher_handle, show_switcher)?;
     rt::surface_set_visibility(state.chrome.palette_handle, show_palette)?;
@@ -465,6 +466,7 @@ fn render_overlays(state: &mut DesktopState) -> rt::Result<()> {
     rt::surface_set_visibility(state.chrome.media_handle, show_media)?;
     rt::surface_set_visibility(state.chrome.workspace_handle, show_workspace)?;
     rt::surface_set_visibility(state.chrome.login_handle, show_login)?;
+    rt::surface_set_visibility(state.chrome.approvals_handle, show_approval)?;
 
     if show_switcher {
         render_switcher_overlay(state)?;
@@ -486,6 +488,9 @@ fn render_overlays(state: &mut DesktopState) -> rt::Result<()> {
     }
     if show_login {
         render_login_overlay(state)?;
+    }
+    if show_approval {
+        render_approval_overlay(state)?;
     }
     Ok(())
 }
@@ -888,6 +893,42 @@ fn render_notification_overlay(state: &DesktopState) -> rt::Result<()> {
         HISTORY_WIDTH,
         HISTORY_HEIGHT,
         "NOTIFICATION HISTORY",
+        &lines[..count + 1],
+    )
+}
+
+/// Runtime-approval prompt card: pending env id, decoded capability names,
+/// and the A/D decision contract shared with the settings security page.
+fn render_approval_overlay(state: &DesktopState) -> rt::Result<()> {
+    let mut lines: [FixedLogBuffer<80>; 6] = array::from_fn(|_| FixedLogBuffer::new());
+    let mut count = 0usize;
+    if let Some(card) = state.approvals.first_card() {
+        let _ = write!(
+            &mut lines[count],
+            "ENV {} ({}) NEEDS APPROVAL",
+            card.env_id,
+            crate::approvals::runtime_kind_name(card.kind)
+        );
+        count += 1;
+        let caps = crate::approvals::capability_names(card.capabilities);
+        let _ = write!(&mut lines[count], "CAPS: {}", caps.as_str());
+        count += 1;
+        let extra = state.approvals.pending_beyond_first();
+        if extra != 0 {
+            let _ = write!(&mut lines[count], "+{} MORE PENDING", extra);
+            count += 1;
+        }
+    } else {
+        let _ = write!(&mut lines[0], "NO PENDING APPROVALS");
+        count = 1;
+    }
+    let _ = write!(&mut lines[count], "[A] APPROVE   [D] DENY   [ESC] LATER");
+    render_overlay_panel(
+        state,
+        state.chrome.approvals_handle,
+        crate::APPROVAL_WIDTH,
+        crate::APPROVAL_HEIGHT,
+        "RUNTIME APPROVAL",
         &lines[..count + 1],
     )
 }

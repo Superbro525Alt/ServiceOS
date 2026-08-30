@@ -194,6 +194,16 @@ pub(super) fn handle_notification_overlay_key(
     }
 }
 
+pub(super) fn handle_approval_overlay_key(
+    state: &mut DesktopState,
+    key_code: u32,
+) -> rt::Result<u32> {
+    if let Some(policy) = crate::approvals::decision_policy(key_code) {
+        crate::approvals::decide_first_card(state, policy)?;
+    }
+    Ok(focused_surface_id(state))
+}
+
 pub(super) fn handle_clipboard_overlay_key(
     state: &mut DesktopState,
     key_code: u32,

@@ -151,6 +151,17 @@ pub(crate) fn create_chrome(
         theme.panel,
         false,
     )?;
+    let (_, approvals_handle) = rt::graphics_surface_create(
+        graphics_handle,
+        SESSION_ID,
+        ((output_width.saturating_sub(crate::APPROVAL_WIDTH)) / 2) as i32,
+        ((output_height.saturating_sub(crate::APPROVAL_HEIGHT)) / 2) as i32,
+        crate::APPROVAL_WIDTH,
+        crate::APPROVAL_HEIGHT,
+        CURSOR_Z_ORDER - 3,
+        theme.panel,
+        false,
+    )?;
     let (_, cursor_handle) = rt::graphics_surface_create(
         graphics_handle,
         SESSION_ID,
@@ -177,6 +188,7 @@ pub(crate) fn create_chrome(
         gesture_handle,
         workspace_handle,
         login_handle,
+        approvals_handle,
         cursor_handle,
         output_width,
         output_height,
@@ -253,6 +265,12 @@ pub(crate) fn overlay_rect(
             crate::LOGIN_WIDTH as i32,
             crate::LOGIN_HEIGHT as i32,
         )),
+        crate::OverlayMode::Approval => Some((
+            ((output_width.saturating_sub(crate::APPROVAL_WIDTH)) / 2) as i32,
+            ((output_height.saturating_sub(crate::APPROVAL_HEIGHT)) / 2) as i32,
+            crate::APPROVAL_WIDTH as i32,
+            crate::APPROVAL_HEIGHT as i32,
+        )),
     }
 }
 
@@ -286,6 +304,7 @@ mod tests {
             gesture_handle: 0,
             workspace_handle: 0,
             login_handle: 0,
+            approvals_handle: 0,
             cursor_handle: 0,
             output_width: 1280,
             output_height: 800,

@@ -42,6 +42,10 @@ peripheral [status]: show attached peripheral summary\r\n\
 peripheral list [class]: list registry devices (keyboard|pointer|tablet|block|display|audio|printer)\r\n\
 peripheral events [n]: show recent attach/detach events\r\n\
 peripheral printer: printer class query (unimplemented stub)\r\n\
+backup list: list stored snapshots (backups/)\r\n\
+backup export [scope]: snapshot config|accounts|packages|all state now\r\n\
+backup restore <name> [--yes]: dry-run report, then apply with --yes\r\n\
+backup delete <name> [--yes]: remove one snapshot (destructive, needs --yes)\r\n\
 console grid: render the kernel console VT grid snapshot\r\n\
 console follow: stream live kernel console records until idle timeout\r\n\
 services: list managed services\r\n\

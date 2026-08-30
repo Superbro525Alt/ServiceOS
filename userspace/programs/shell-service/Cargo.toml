@@ -13,5 +13,6 @@ path = "src/main.rs"
 [dependencies]
 serviceos-abi = { path = "../../../shared/abi" }
 serviceos-account-service = { path = "../account-service" }
+serviceos-backup-service = { path = "../backup-service" }
 serviceos-peripheral-service = { path = "../peripheral-service" }
 serviceos-userspace-runtime = { path = "../runtime" }

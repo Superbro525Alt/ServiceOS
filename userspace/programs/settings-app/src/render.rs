@@ -962,7 +962,7 @@ fn draw_backup_page(bytes: &mut [u8], state: &AppState) {
     for (index, line) in [
         "IMAGE  services/backup-service/program.img",
         "SPAWN ON DEMAND VIA STORED-IMAGE LAUNCH",
-        "NO NAMED SERVICE ID; NO PUBLIC CHANNEL YET",
+        "NO NAMED SERVICE ID; PUBLISHES VIA LAUNCH HANDSHAKE",
         "SETTINGS APP HAS NO BACKUP ROUTE THIS BOOT",
     ]
     .into_iter()
@@ -979,9 +979,9 @@ fn draw_backup_page(bytes: &mut [u8], state: &AppState) {
     }
 
     for (index, line) in [
-        "SHELL: services | service backup-service",
-        "SHELL: run services/backup-service/program.img",
-        "  STANDALONE RUN EXITS (NEEDS STORAGE HANDLE)",
+        "SHELL: backup list | backup export [scope]",
+        "SHELL: backup restore <name> [--yes]",
+        "SHELL: backup delete <name> [--yes]",
     ]
     .into_iter()
     .enumerate()

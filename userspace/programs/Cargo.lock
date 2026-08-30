@@ -276,6 +276,7 @@ version = "0.1.0"
 dependencies = [
  "serviceos-abi",
  "serviceos-account-service",
+ "serviceos-backup-service",
  "serviceos-peripheral-service",
  "serviceos-userspace-runtime",
 ]

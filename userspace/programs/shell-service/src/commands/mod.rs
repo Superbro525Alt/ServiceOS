@@ -1,5 +1,6 @@
 mod account;
 mod audio;
+mod backup;
 mod console;
 mod core;
 mod deny;
@@ -212,6 +213,7 @@ pub(crate) fn execute_command(
             (name, secret) => identity::cmd_su(bootstrap, output, name, secret),
         },
         "peripheral" => peripheral::cmd_peripheral(bootstrap, output, parts),
+        "backup" => backup::cmd_backup(bootstrap, output, parts),
         "console" => console::cmd_console(bootstrap, output, parts.next()),
         _ => write_output_linef(output, format_args!("unknown command: {command}")),
     }
@@ -230,10 +232,9 @@ pub(crate) fn execute_line(
     }
     if let Some(background) = strip_background(trimmed) {
         return match jobs::spawn_job(background) {
-            Ok(job_id) => write_output_linef(
-                output,
-                format_args!("[{job_id}] background: {background}"),
-            ),
+            Ok(job_id) => {
+                write_output_linef(output, format_args!("[{job_id}] background: {background}"))
+            }
             Err(_) => write_output_linef(
                 output,
                 format_args!("job table full; use jobs/fg to reclaim slots"),
@@ -247,27 +248,16 @@ pub(crate) fn execute_line(
 /// intentionally unsupported and stay foreground).
 fn strip_background(line: &str) -> Option<&str> {
     let body = line.strip_suffix('&')?.trim_end();
-    if body.is_empty() {
-        None
-    } else {
-        Some(body)
-    }
+    if body.is_empty() { None } else { Some(body) }
 }
 
 /// Synchronous execution with shell-mediated pipeline support.
-pub(crate) fn run_sync(
-    bootstrap: rt::Handle,
-    output: ShellOutput,
-    line: &str,
-) -> rt::Result<()> {
+pub(crate) fn run_sync(bootstrap: rt::Handle, output: ShellOutput, line: &str) -> rt::Result<()> {
     pipeline::clear_input();
     let plan = match pipeline::split_pipeline(line) {
         Ok(plan) => plan,
         Err(pipeline::SplitError::EmptyStage) => {
-            return write_output_linef(
-                output,
-                format_args!("pipeline: empty stage between '|'"),
-            );
+            return write_output_linef(output, format_args!("pipeline: empty stage between '|'"));
         }
         Err(pipeline::SplitError::TooManyStages) => {
             return write_output_linef(

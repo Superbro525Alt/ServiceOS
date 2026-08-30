@@ -1,10 +1,12 @@
 //! Backup page machinery. The backup service is a manual-activation image
-//! (`services/backup-service/program.img`) with no named `ServiceId`, and it
-//! publishes no public control channel yet, so this page has no transport
-//! route today: the runtime surface is an honest manual-activation explainer
-//! and the request/reply state machine below is exercised by host tests only,
-//! ready for the future register/lookup route. Wire shapes mirror
-//! backup-service `protocol.rs` exactly (status-first replies, 0 = Ok).
+//! (`services/backup-service/program.img`) with no named `ServiceId`; it
+//! publishes its public channel only over the launcher handshake, which the
+//! settings app does not receive, so this page has no transport route today:
+//! the runtime surface is an honest manual-activation explainer pointing at
+//! the shell's `backup` command family, and the request/reply state machine
+//! below is exercised by host tests only, ready for the future register/
+//! lookup route. Wire shapes mirror backup-service `protocol.rs` exactly
+//! (status-first replies, 0 = Ok).
 //!
 //! The unused-code allowance is deliberate: the request builders and reply
 //! decoders are dormant until a route exists, and host tests keep them

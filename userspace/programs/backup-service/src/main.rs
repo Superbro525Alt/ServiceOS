@@ -8,8 +8,14 @@
 //! on demand via the manager's stored-image launch path. The service is NOT
 //! registered under a named `ServiceId`, mirroring account-service.
 //!
-//! Startup handle convention: handles[0] = storage-service channel. Without
-//! it the service cannot reach persistent state and exits at startup.
+//! Startup handle convention (positional): handles[0] = storage-service
+//! channel (required: without it the service cannot reach persistent state
+//! and exits at startup); handles[1] = launcher announcer channel when the
+//! spawner provided one (shell-driven launches do). With an announcer the
+//! service publishes its public channel's send-half back to the launcher
+//! (peripheral-service handshake shape: protocol-version word plus the
+//! handle); with storage only it degrades honestly to a startup log line
+//! and stays unreachable through the launcher route.
 //!
 //! Scopes snapshot these persistent files:
 //! - config   -> state/config/<namespace>/settings.cfg (each namespace)
@@ -58,12 +64,21 @@ fn main() -> u64 {
     }
     let storage_handle = startup.handles[0];
 
-    // Public control channel; handed to clients by whoever spawns us.
+    // Public control channel; handed to clients by whoever spawns us. When
+    // the launcher passed an announcer (handles[1], account-service's
+    // positional contract with storage first), its send-half receives our
+    // public channel's send-half; bare storage-only launches stay
+    // unreachable through that route and say so.
     let public = match rt::channel_create() {
         Ok(pair) => pair,
         Err(_) => return EXIT_STARTUP,
     };
-    let _ = public.second;
+    if let Some(announcer) = announcer_index(startup.handle_count as usize) {
+        let announce = announce_message(public.second);
+        let _ = rt::channel_send(startup.handles[announcer], &announce);
+    } else {
+        let _ = rt::debug_log(b"backup-service: no announcer handle; public channel not published");
+    }
 
     loop {
         if lifecycle_stop_requested(bootstrap) {
@@ -91,6 +106,29 @@ fn main() -> u64 {
             return EXIT_LOOP;
         }
     }
+}
+
+/// Startup handle convention: handles[0] = storage (required), handles[1] =
+/// launcher announcer when present. Returns the announcer's index, or None
+/// for bare storage-only launches (no publish route) or missing storage
+/// (caller already exits before this).
+fn announcer_index(handle_count: usize) -> Option<usize> {
+    match handle_count {
+        0 | 1 => None,
+        _ => Some(1),
+    }
+}
+
+/// The launch handshake reply (peripheral-service shape): protocol-version
+/// word plus our public channel's send-half with relay-capable rights.
+fn announce_message(public_send: rt::Handle) -> RawMessage {
+    let mut announce = RawMessage::empty(0);
+    announce.word_count = 1;
+    announce.words[0] = 1; // protocol version
+    announce.handle_count = 1;
+    announce.handles[0] = public_send;
+    announce.handle_rights[0] = rt::rights::SEND | rt::rights::DUPLICATE | rt::rights::TRANSFER;
+    announce
 }
 
 fn lifecycle_stop_requested(bootstrap: rt::Handle) -> bool {
@@ -600,5 +638,34 @@ fn split_parent(path: &str) -> (&str, &str) {
     match path.rfind('/') {
         Some(position) => (&path[..position], &path[position + 1..]),
         None => ("", path),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn announcer_index_follows_positional_storage_first_contract() {
+        // Missing storage: main exits before reaching the publish decision.
+        assert_eq!(announcer_index(0), None);
+        // Storage only: bare launch, no publish route (honest degrade).
+        assert_eq!(announcer_index(1), None);
+        // Shell-driven launch: storage at [0], announcer at [1].
+        assert_eq!(announcer_index(2), Some(1));
+        assert_eq!(announcer_index(3), Some(1));
+    }
+
+    #[test]
+    fn announce_message_carries_version_and_relay_capable_rights() {
+        let announce = announce_message(7);
+        assert_eq!(announce.word_count, 1);
+        assert_eq!(announce.words[0], 1);
+        assert_eq!(announce.handle_count, 1);
+        assert_eq!(announce.handles[0], 7);
+        assert_eq!(
+            announce.handle_rights[0],
+            rt::rights::SEND | rt::rights::DUPLICATE | rt::rights::TRANSFER
+        );
     }
 }

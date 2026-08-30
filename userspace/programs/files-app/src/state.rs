@@ -33,6 +33,13 @@ pub(crate) const MOD_CTRL: u32 = 1 << 2;
 /// Pointer travel (px, either axis) that turns a press on a file row into a
 /// drag gesture.
 pub(crate) const DRAG_THRESHOLD_PX: i32 = 8;
+pub(crate) const KEY_LEFT_CTRL: u32 = 29;
+pub(crate) const KEY_RIGHT_CTRL: u32 = 97;
+pub(crate) const KEY_LEFT_SHIFT: u32 = 42;
+pub(crate) const KEY_RIGHT_SHIFT: u32 = 54;
+/// Multi-file drag fan-out cap; the 96-byte notify payload budget bounds
+/// the practical maximum to four short paths.
+pub(crate) const MULTI_DRAG_MAX: usize = 4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum EntryKind {
@@ -83,6 +90,13 @@ pub(crate) struct ExplorerState {
     pub(crate) entries: [ExplorerEntry; MAX_ENTRIES],
     pub(crate) entry_count: usize,
     pub(crate) selected_index: usize,
+    /// Multi-selection bitset over entry rows (2 words cover MAX_ENTRIES).
+    pub(crate) selected_set: [u32; 2],
+    /// Row a shift-range selection extends from.
+    pub(crate) anchor_index: usize,
+    /// Ctrl/Shift state tracked from forwarded key events (the pointer
+    /// channel carries no modifier word).
+    pub(crate) held_mods: u32,
     pub(crate) scroll_offset: usize,
     pub(crate) load_failed: bool,
     /// Recent-files view toggle.
@@ -109,6 +123,72 @@ pub(crate) struct ExplorerState {
     pub(crate) menu: Option<(usize, usize)>,
     /// Row awaiting a second click that would open its context menu.
     pub(crate) await_context: Option<usize>,
+}
+
+impl ExplorerState {
+    pub(crate) fn is_selected(&self, index: usize) -> bool {
+        let word = index / 32;
+        let bit = index % 32;
+        self.selected_set
+            .get(word)
+            .is_some_and(|value| value & (1 << bit) != 0)
+    }
+
+    pub(crate) fn selection_count(&self) -> usize {
+        self.selected_set
+            .iter()
+            .map(|word| word.count_ones() as usize)
+            .sum()
+    }
+
+    fn set_bit(&mut self, index: usize, on: bool) {
+        if let Some(word) = self.selected_set.get_mut(index / 32) {
+            let mask = 1u32 << (index % 32);
+            if on {
+                *word |= mask;
+            } else {
+                *word &= !mask;
+            }
+        }
+    }
+
+    /// Plain click: exactly one selected row, and the shift anchor.
+    pub(crate) fn select_only(&mut self, index: usize) {
+        self.selected_set = [0, 0];
+        self.set_bit(index, true);
+        self.anchor_index = index;
+        self.selected_index = index;
+    }
+
+    /// Ctrl+click: toggle one row in the set; the anchor follows.
+    pub(crate) fn toggle_select(&mut self, index: usize) {
+        let on = !self.is_selected(index);
+        self.set_bit(index, on);
+        self.anchor_index = index;
+        self.selected_index = index;
+    }
+
+    /// Shift+click: replace the set with the anchor..=index range (clamped
+    /// to the populated entry rows).
+    pub(crate) fn range_select(&mut self, index: usize) {
+        let end = index.min(self.entry_count.saturating_sub(1));
+        let (start, end) = if self.anchor_index <= end {
+            (self.anchor_index, end)
+        } else {
+            (end, self.anchor_index)
+        };
+        self.selected_set = [0, 0];
+        for row in start..=end.min(MAX_ENTRIES.saturating_sub(1)) {
+            self.set_bit(row, true);
+        }
+        self.selected_index = index;
+    }
+
+    /// Entry listings replace the whole set (bits name rows, not paths).
+    pub(crate) fn clear_selection(&mut self) {
+        self.selected_set = [0, 0];
+        self.anchor_index = self.selected_index;
+    }
 }
 
 /// What the typed prompt will do when committed.
@@ -199,6 +279,91 @@ pub(crate) fn menu_hit(x: i32, y: i32) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn explorer() -> ExplorerState {
+        ExplorerState {
+            width: 800,
+            height: 600,
+            focused: true,
+            loading_initial_directory: false,
+            current_directory_handle: rt::INVALID_HANDLE,
+            current_path: [0; MAX_STORAGE_PATH],
+            current_path_len: 0,
+            entries: [ExplorerEntry::empty(); MAX_ENTRIES],
+            entry_count: 8,
+            selected_index: 0,
+            selected_set: [0, 0],
+            anchor_index: 0,
+            held_mods: 0,
+            scroll_offset: 0,
+            load_failed: false,
+            view_mode: ViewMode::Directory,
+            search_query: [0; MAX_SEARCH_QUERY],
+            search_query_len: 0,
+            recent_sel: 0,
+            press: None,
+            dragging: false,
+            open_with_pick: None,
+            assoc: crate::assoc::AssocTable::empty(),
+            recent: crate::recent::RecentRing::empty(),
+            persist_dir: rt::INVALID_HANDLE,
+            dialog: None,
+            prompt_input: [0; crate::ops::NAME_MAX],
+            prompt_len: 0,
+            menu: None,
+            await_context: None,
+        }
+    }
+
+    #[test]
+    fn select_only_replaces_set_and_moves_anchor() {
+        let mut state = explorer();
+        state.toggle_select(3);
+        state.toggle_select(5);
+        assert_eq!(state.selection_count(), 2);
+        state.select_only(1);
+        assert_eq!(state.selection_count(), 1);
+        assert!(state.is_selected(1));
+        assert!(!state.is_selected(3));
+        assert_eq!(state.anchor_index, 1);
+        assert_eq!(state.selected_index, 1);
+    }
+
+    #[test]
+    fn ctrl_toggle_flips_single_row() {
+        let mut state = explorer();
+        state.toggle_select(2);
+        assert!(state.is_selected(2));
+        state.toggle_select(2);
+        assert!(!state.is_selected(2));
+        assert_eq!(state.selection_count(), 0);
+    }
+
+    #[test]
+    fn shift_range_covers_anchor_both_directions_and_replaces() {
+        let mut state = explorer();
+        state.select_only(2);
+        state.range_select(5);
+        assert_eq!(state.selection_count(), 4);
+        for row in 2..=5 {
+            assert!(state.is_selected(row));
+        }
+        state.range_select(0);
+        assert_eq!(state.selection_count(), 3);
+        assert!(state.is_selected(0) && !state.is_selected(5));
+    }
+
+    #[test]
+    fn range_clamps_to_entry_capacity_and_clear_resets() {
+        let mut state = explorer();
+        state.entry_count = 4;
+        state.select_only(1);
+        state.range_select(70);
+        assert_eq!(state.selection_count(), 3, "clamped to populated rows");
+        state.clear_selection();
+        assert_eq!(state.selection_count(), 0);
+        assert_eq!(state.anchor_index, state.selected_index);
+    }
 
     #[test]
     fn menu_hit_maps_rows_and_rejects_outside() {

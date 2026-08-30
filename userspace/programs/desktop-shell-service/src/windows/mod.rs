@@ -31,8 +31,8 @@ pub(crate) use drag::{
 };
 pub(crate) use encode::{encode_window_page, pack_i32_pair};
 pub(crate) use gestures::{
-    SnapZone, hide_snap_preview, overview_tile_at, overview_tile_rect, snap_zone_at,
-    step_workspace_selection, update_snap_preview,
+    SnapZone, hide_drag_ghost, hide_snap_preview, overview_tile_at, overview_tile_rect,
+    snap_zone_at, step_workspace_selection, update_drag_ghost, update_snap_preview,
 };
 pub(crate) use layout::{
     allocate_z_order, app_slot_index, app_title, apply_window_geometry,

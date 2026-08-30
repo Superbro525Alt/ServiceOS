@@ -339,6 +339,7 @@ fn main() -> u64 {
                 .is_some_and(|drag| drag.expired(now))
             {
                 state.content_drag = None;
+                let _ = windows::hide_drag_ghost(&mut state);
                 if render::render_desktop(&mut state).is_err() {
                     return 0xfe1b;
                 }

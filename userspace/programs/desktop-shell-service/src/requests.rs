@@ -469,6 +469,7 @@ fn handle_content_intent_or_notify(state: &mut DesktopState, text: &[u8]) -> Con
             state.content_drag = Some(crate::windows::ContentDrag {
                 path_len: intent.path_len,
                 path: intent.path,
+                count: intent.count,
                 deadline: now.saturating_add(crate::windows::CONTENT_DRAG_TIMEOUT_TICKS),
             });
             state.pending_shell_refresh.set();

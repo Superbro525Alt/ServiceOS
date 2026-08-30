@@ -93,7 +93,7 @@ pub(crate) fn poll_control(
                         changed |= handle_pointer_move(state, x, y);
                     }
                     Some(AppPointerAction::Up) => {
-                        changed |= handle_pointer_up(state, storage_handle)?;
+                        changed |= handle_pointer_up(state, storage_handle, desktop_handle)?;
                     }
                     Some(AppPointerAction::Scroll) => {
                         if detail > 0 {
@@ -109,19 +109,31 @@ pub(crate) fn poll_control(
             }
             Ok(()) if message.tag == AppControlTag::Key as u32 && message.word_count >= 2 => {
                 did_work = true;
-                if matches!(
-                    ui::decode_app_key_action(message.words[0]),
-                    Some(AppKeyAction::Down)
-                ) {
-                    let mut ui_out = UiOut { buffers, presenter };
-                    changed |= handle_key_down(
-                        state,
-                        storage_handle,
-                        desktop_handle,
-                        message.words[1] as u32,
-                        message.words.get(2).copied().unwrap_or(0) as u32,
-                        Some(&mut ui_out),
-                    )?;
+                let key_code = message.words[1] as u32;
+                let modifiers = message.words.get(2).copied().unwrap_or(0) as u32;
+                match ui::decode_app_key_action(message.words[0]) {
+                    Some(AppKeyAction::Down) => {
+                        // Key-down modifiers are the authoritative snapshot;
+                        // the scancode bit is OR-ed in case the shell's
+                        // modifiers word lags the key itself.
+                        state.held_mods = modifiers;
+                        sync_mod_key(state, key_code, true);
+                        let mut ui_out = UiOut { buffers, presenter };
+                        changed |= handle_key_down(
+                            state,
+                            storage_handle,
+                            desktop_handle,
+                            key_code,
+                            modifiers,
+                            Some(&mut ui_out),
+                        )?;
+                    }
+                    Some(AppKeyAction::Up) => {
+                        // Key-up events only maintain the modifier mask;
+                        // no other action keyed on release today.
+                        sync_mod_key(state, key_code, false);
+                    }
+                    None => {}
                 }
             }
             Ok(()) if message.tag == AppControlTag::OpenPath as u32 && message.word_count >= 1 => {
@@ -196,8 +208,15 @@ fn handle_pointer_down(
 
     // Files and directories arm a press: quick release clicks, pointer
     // travel on files becomes a drag, and a second click on the same row
-    // opens its context menu.
-    state.selected_index = index;
+    // opens its context menu. Ctrl toggles a row in the multi-selection
+    // set, Shift replaces the set with the anchor range.
+    if state.held_mods & MOD_CTRL != 0 {
+        state.toggle_select(index);
+    } else if state.held_mods & MOD_SHIFT != 0 {
+        state.range_select(index);
+    } else {
+        state.select_only(index);
+    }
     ensure_selected_visible(state);
     state.press = Some(Press { index, x, y });
     Ok(true)
@@ -238,16 +257,37 @@ fn end_press(state: &mut ExplorerState) -> bool {
     was_dragging
 }
 
+/// Ctrl/Shift scancodes maintain the modifier mask the pointer channel
+/// cannot carry; other scancodes leave the mask untouched.
+fn sync_mod_key(state: &mut ExplorerState, key_code: u32, down: bool) {
+    let bit = match key_code {
+        crate::state::KEY_LEFT_CTRL | crate::state::KEY_RIGHT_CTRL => MOD_CTRL,
+        crate::state::KEY_LEFT_SHIFT | crate::state::KEY_RIGHT_SHIFT => MOD_SHIFT,
+        _ => return,
+    };
+    if down {
+        state.held_mods |= bit;
+    } else {
+        state.held_mods &= !bit;
+    }
+}
+
 /// Pointer-up resolves a press into a click: navigation for directories,
 /// selection for files, and a context menu when the click lands on the
-/// row that was already awaiting a second click.
-fn handle_pointer_up(state: &mut ExplorerState, storage_handle: rt::Handle) -> rt::Result<bool> {
+/// row that was already awaiting a second click. A drag release arms the
+/// shell-side content drag with the selected file paths.
+fn handle_pointer_up(
+    state: &mut ExplorerState,
+    storage_handle: rt::Handle,
+    desktop_handle: rt::Handle,
+) -> rt::Result<bool> {
     let Some(press) = state.press.take() else {
         return Ok(false);
     };
     if state.dragging {
         state.dragging = false;
         state.await_context = None;
+        send_drag_payload(state, desktop_handle, press.index);
         return Ok(false);
     }
     if press.index >= state.entry_count {
@@ -275,6 +315,62 @@ fn handle_pointer_up(state: &mut ExplorerState, storage_handle: rt::Handle) -> r
         EntryKind::File => {
             state.await_context = Some(press.index);
             Ok(true)
+        }
+    }
+}
+
+/// Rows a drag would carry: selected File entries in row order, bounded to
+/// MULTI_DRAG_MAX; directories and unselected rows never ride the payload.
+fn drag_payload_indices(state: &ExplorerState) -> ([usize; crate::state::MULTI_DRAG_MAX], usize) {
+    let mut indices = [0usize; crate::state::MULTI_DRAG_MAX];
+    let mut count = 0usize;
+    if state.selection_count() == 0 {
+        return (indices, 0);
+    }
+    for index in 0..state.entry_count {
+        if count >= indices.len() {
+            break;
+        }
+        if !state.is_selected(index) || state.entries[index].kind != EntryKind::File {
+            continue;
+        }
+        indices[count] = index;
+        count += 1;
+    }
+    (indices, count)
+}
+
+/// Arms the shell-side content drag on drag release: the multi-selection
+/// file paths ride the notify channel (bounded four); a lone selection
+/// keeps the legacy single-file framing so old shells parse it unchanged.
+fn send_drag_payload(state: &ExplorerState, desktop: rt::Handle, pressed: usize) {
+    if desktop == rt::INVALID_HANDLE {
+        return;
+    }
+    let (indices, count) = drag_payload_indices(state);
+    match count {
+        1 => {
+            let entry = &state.entries[indices[0]];
+            let _ = send_content_intent(desktop, b'0', &entry.path[..entry.path_len]);
+        }
+        0 => {
+            // No rows in the set: the pressed row drags alone.
+            if pressed < state.entry_count && state.entries[pressed].kind == EntryKind::File {
+                let entry = &state.entries[pressed];
+                let _ = send_content_intent(desktop, b'0', &entry.path[..entry.path_len]);
+            }
+        }
+        _ => {
+            let paths: [&[u8]; crate::state::MULTI_DRAG_MAX] = core::array::from_fn(|slot| {
+                let entry = &state.entries[indices[slot]];
+                &entry.path[..entry.path_len]
+            });
+            if crate::bridge::send_multi_content_intent(desktop, &paths[..count]).is_err() {
+                // A too-long path overflowed the payload budget; fall back
+                // to the legacy single-file framing for the first path.
+                let entry = &state.entries[indices[0]];
+                let _ = send_content_intent(desktop, b'0', &entry.path[..entry.path_len]);
+            }
         }
     }
 }
@@ -1138,6 +1234,9 @@ mod tests {
             entries: [crate::state::ExplorerEntry::empty(); crate::state::MAX_ENTRIES],
             entry_count: 1,
             selected_index: 0,
+            selected_set: [0, 0],
+            anchor_index: 0,
+            held_mods: 0,
             scroll_offset: 0,
             load_failed: false,
             view_mode: ViewMode::Directory,
@@ -1215,6 +1314,102 @@ mod tests {
         assert!(state.press.is_some(), "directories arm presses for clicks");
         assert!(!handle_pointer_move(&mut state, 90, 90), "but never drag");
         assert!(!state.dragging);
+    }
+
+    fn multi_file_state(count: usize) -> ExplorerState {
+        let mut state = file_state(b"home/a.txt");
+        state.entry_count = count;
+        for index in 0..count {
+            let path = [
+                b'/',
+                b'h',
+                b'o',
+                b'm',
+                b'e',
+                b'/',
+                b'a' + index as u8,
+                b'.',
+                b't',
+                b'x',
+                b't',
+            ];
+            state.entries[index].kind = EntryKind::File;
+            state.entries[index].path_len = path.len();
+            state.entries[index].path[..path.len()].copy_from_slice(&path);
+        }
+        state
+    }
+
+    #[test]
+    fn ctrl_click_toggles_and_plain_click_collapses_selection() {
+        let mut state = multi_file_state(3);
+        assert!(handle_pointer_down(&mut state, rt::INVALID_HANDLE, 40, 70).unwrap());
+        assert_eq!(state.selection_count(), 1);
+        state.held_mods = MOD_CTRL;
+        assert!(handle_pointer_down(&mut state, rt::INVALID_HANDLE, 40, 70 + 2 * 14).unwrap());
+        state.held_mods = 0;
+        assert_eq!(state.selection_count(), 2);
+        assert!(state.is_selected(0) && state.is_selected(2));
+        assert!(handle_pointer_down(&mut state, rt::INVALID_HANDLE, 40, 70 + 14).unwrap());
+        assert_eq!(state.selection_count(), 1);
+        assert!(state.is_selected(1));
+    }
+
+    #[test]
+    fn shift_click_extends_range_from_anchor_and_plain_click_resets() {
+        let mut state = multi_file_state(5);
+        assert!(handle_pointer_down(&mut state, rt::INVALID_HANDLE, 40, 70).unwrap());
+        state.held_mods = MOD_SHIFT;
+        assert!(handle_pointer_down(&mut state, rt::INVALID_HANDLE, 40, 70 + 3 * 14).unwrap());
+        state.held_mods = 0;
+        assert_eq!(state.selection_count(), 4);
+        for row in 0..=3 {
+            assert!(state.is_selected(row));
+        }
+        assert!(handle_pointer_down(&mut state, rt::INVALID_HANDLE, 40, 70 + 4 * 14).unwrap());
+        assert_eq!(state.selection_count(), 1);
+    }
+
+    #[test]
+    fn mod_key_events_track_ctrl_and_shift_mask() {
+        let mut state = multi_file_state(2);
+        sync_mod_key(&mut state, crate::state::KEY_LEFT_CTRL, true);
+        assert_eq!(state.held_mods & MOD_CTRL, MOD_CTRL);
+        sync_mod_key(&mut state, crate::state::KEY_LEFT_SHIFT, true);
+        assert_eq!(state.held_mods & MOD_SHIFT, MOD_SHIFT);
+        sync_mod_key(&mut state, crate::state::KEY_RIGHT_SHIFT, false);
+        assert_eq!(state.held_mods & MOD_SHIFT, 0);
+        sync_mod_key(&mut state, crate::state::KEY_RIGHT_CTRL, false);
+        assert_eq!(state.held_mods, 0);
+        // Unrelated scancodes leave the mask untouched.
+        sync_mod_key(&mut state, KEY_ENTER, true);
+        assert_eq!(state.held_mods, 0);
+    }
+
+    #[test]
+    fn drag_payload_collects_selected_files_only_bounded_four() {
+        let mut state = multi_file_state(6);
+        state.toggle_select(0);
+        state.toggle_select(1);
+        state.toggle_select(3);
+        state.entries[2].kind = EntryKind::Directory;
+        state.toggle_select(2);
+        let (indices, count) = drag_payload_indices(&state);
+        assert_eq!(count, 3, "directories never ride the payload");
+        assert_eq!(indices[..count], [0, 1, 3]);
+        // Fan-out is capped at MULTI_DRAG_MAX even with more selected.
+        let mut state = multi_file_state(6);
+        for row in 0..6 {
+            state.toggle_select(row);
+        }
+        let (indices, count) = drag_payload_indices(&state);
+        assert_eq!(count, crate::state::MULTI_DRAG_MAX);
+        assert_eq!(indices[..count], [0, 1, 2, 3]);
+        // Empty set drags the pressed row alone.
+        let mut state = multi_file_state(2);
+        let (indices, count) = drag_payload_indices(&state);
+        assert_eq!(count, 0);
+        assert_eq!(indices[0], 0);
     }
 
     #[test]
@@ -1494,11 +1689,11 @@ mod tests {
         let mut state = file_state(b"home/notes.txt");
         assert!(handle_pointer_down(&mut state, rt::INVALID_HANDLE, 40, 70).unwrap());
         assert!(state.menu.is_none());
-        assert!(handle_pointer_up(&mut state, rt::INVALID_HANDLE).unwrap());
+        assert!(handle_pointer_up(&mut state, rt::INVALID_HANDLE, rt::INVALID_HANDLE).unwrap());
         assert_eq!(state.await_context, Some(0));
         // Second press+up on the same row opens the context menu.
         assert!(handle_pointer_down(&mut state, rt::INVALID_HANDLE, 40, 70).unwrap());
-        handle_pointer_up(&mut state, rt::INVALID_HANDLE).unwrap();
+        handle_pointer_up(&mut state, rt::INVALID_HANDLE, rt::INVALID_HANDLE).unwrap();
         assert_eq!(state.menu, Some((0, 0)));
         assert!(key(&mut state, KEY_ESC, 0));
         assert_eq!(state.menu, None);

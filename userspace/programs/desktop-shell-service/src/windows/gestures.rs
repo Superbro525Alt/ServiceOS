@@ -201,8 +201,155 @@ pub(crate) fn hide_snap_preview(state: &mut crate::DesktopState) -> rt::Result<(
     update_snap_preview(state, SnapZone::None)
 }
 
+/// Content-drag ghost chip: a bounded label ("[/]"/"[]" kind icon + file
+/// name, palette doc-row style) on the gesture overlay surface that follows
+/// the cursor while a drag is armed. Slot 4 keeps the snap-preview rect
+/// slots 0..3 untouched; label slot 0 is unused on this surface otherwise.
+pub(crate) const GHOST_RECT_SLOT: u32 = 4;
+pub(crate) const GHOST_LABEL_SLOT: u32 = 0;
+pub(crate) const GHOST_CHIP_HEIGHT: u32 = 15;
+pub(crate) const GHOST_CHIP_PAD_X: i32 = 5;
+pub(crate) const GHOST_CHIP_PAD_Y: i32 = 4;
+pub(crate) const GHOST_TEXT_MAX: usize = 56;
+pub(crate) const GHOST_ADVANCE: i32 = 6;
+const GHOST_ICON_DIR: &[u8] = b"[/]";
+const GHOST_ICON_FILE: &[u8] = b"[]";
+
+/// Geometry + text of the ghost chip for a drag over `pointer`. The chip
+/// hangs below-right of the cursor, clamped inside the output so the chip
+/// is always fully visible; integer geometry only (1:1 blit, no
+/// resampling), consistent with the magnifier precedent.
+pub(crate) struct GhostChip {
+    pub(crate) x: i32,
+    pub(crate) y: i32,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) text: [u8; GHOST_TEXT_MAX],
+    pub(crate) text_len: usize,
+}
+
+/// File name within a drag path: the segment after the last `/`, with a
+/// trailing `/` (directory drag marker) stripped first.
+pub(crate) fn ghost_file_name(path: &[u8]) -> &[u8] {
+    let trimmed = if let Some((&b'/', head)) = path.split_last() {
+        head
+    } else {
+        path
+    };
+    let start = trimmed
+        .iter()
+        .rposition(|byte| *byte == b'/')
+        .map_or(0, |pos| pos + 1);
+    &trimmed[start..]
+}
+
+/// Chip label: kind icon, space, file name, and a " +N" suffix naming the
+/// additional files when a drag carries more than one. Never exceeds
+/// `GHOST_TEXT_MAX` bytes (the graphics-service label budget).
+pub(crate) fn ghost_chip_text(path: &[u8], count: usize) -> ([u8; GHOST_TEXT_MAX], usize) {
+    let mut text = [0u8; GHOST_TEXT_MAX];
+    let icon = if path.ends_with(b"/") {
+        GHOST_ICON_DIR
+    } else {
+        GHOST_ICON_FILE
+    };
+    let mut len = 0usize;
+    let push = |bytes: &[u8], text: &mut [u8], len: &mut usize| {
+        for byte in bytes {
+            if *len < text.len() {
+                text[*len] = *byte;
+                *len += 1;
+            }
+        }
+    };
+    push(icon, &mut text, &mut len);
+    push(b" ", &mut text, &mut len);
+    let name = ghost_file_name(path);
+    let room_for_name = text.len().saturating_sub(len + 6);
+    push(&name[..room_for_name.min(name.len())], &mut text, &mut len);
+    if count > 1 {
+        push(b" +", &mut text, &mut len);
+        let extra = (count - 1).min(9) as u8;
+        push(&[b'0' + extra], &mut text, &mut len);
+    }
+    (text, len)
+}
+
+pub(crate) fn ghost_chip(
+    path: &[u8],
+    count: usize,
+    pointer_x: i32,
+    pointer_y: i32,
+    output_width: u32,
+    output_height: u32,
+) -> GhostChip {
+    let (text, text_len) = ghost_chip_text(path, count);
+    let width = (text_len as i32 * GHOST_ADVANCE + GHOST_CHIP_PAD_X * 2 + 1).max(1) as u32;
+    let height = GHOST_CHIP_HEIGHT;
+    let raw_x = pointer_x + 10;
+    let raw_y = pointer_y + 12;
+    let x = raw_x.clamp(0, (output_width.saturating_sub(width)) as i32);
+    let y = raw_y.clamp(0, (output_height.saturating_sub(height)) as i32);
+    GhostChip {
+        x,
+        y,
+        width,
+        height,
+        text,
+        text_len,
+    }
+}
+
+/// Renders/moves the ghost chip under the pointer while a content drag is
+/// armed; no-op when no drag is live.
+pub(crate) fn update_drag_ghost(state: &mut crate::DesktopState, x: i32, y: i32) -> rt::Result<()> {
+    let Some(drag) = state.content_drag.as_ref() else {
+        return Ok(());
+    };
+    let chip = ghost_chip(
+        &drag.path[..drag.path_len],
+        drag.count,
+        x,
+        y,
+        state.chrome.output_width,
+        state.chrome.output_height,
+    );
+    let Ok(text) = core::str::from_utf8(&chip.text[..chip.text_len]) else {
+        return Ok(());
+    };
+    let surface = state.chrome.gesture_handle;
+    rt::surface_set_rect(
+        surface,
+        GHOST_RECT_SLOT,
+        chip.x,
+        chip.y,
+        chip.width,
+        chip.height,
+        ui::BG_PANEL,
+        true,
+    )?;
+    rt::surface_set_label(
+        surface,
+        GHOST_LABEL_SLOT,
+        chip.x + GHOST_CHIP_PAD_X,
+        chip.y + GHOST_CHIP_PAD_Y,
+        ui::TEXT_PRIMARY,
+        text,
+    )?;
+    rt::surface_set_visibility(surface, true)
+}
+
+/// Clears the ghost chip (drop, cancel, expiry, or source-app exit).
+pub(crate) fn hide_drag_ghost(state: &mut crate::DesktopState) -> rt::Result<()> {
+    let surface = state.chrome.gesture_handle;
+    rt::surface_set_rect(surface, GHOST_RECT_SLOT, 0, 0, 0, 0, 0, false)?;
+    rt::surface_set_label(surface, GHOST_LABEL_SLOT, 0, 0, 0, "")?;
+    rt::surface_set_visibility(surface, false)
+}
+
 #[cfg(test)]
 mod tests {
+    use super::super::drag::{CONTENT_DRAG_MAX_FILES, CONTENT_PAYLOAD_MAX};
     use super::*;
 
     const W: u32 = 1280;
@@ -332,5 +479,41 @@ mod tests {
         assert_eq!(step_workspace_selection(2, 0), 2);
         assert_eq!(step_workspace_selection(1, -100), 1);
         assert_eq!(step_workspace_selection(4, 100), WORKSPACE_COUNT);
+    }
+
+    #[test]
+    fn ghost_names_take_last_segment_and_strip_dir_slash() {
+        assert_eq!(ghost_file_name(b"home/notes.txt"), b"notes.txt");
+        assert_eq!(ghost_file_name(b"home/docs/"), b"docs");
+        assert_eq!(ghost_file_name(b"lonely.txt"), b"lonely.txt");
+        assert_eq!(ghost_file_name(b"/"), b"");
+    }
+
+    #[test]
+    fn ghost_chip_text_shows_kind_icon_and_extra_count() {
+        let (text, len) = ghost_chip_text(b"home/notes.txt", 1);
+        assert_eq!(&text[..len], b"[] notes.txt");
+        let (text, len) = ghost_chip_text(b"home/docs/", 3);
+        assert_eq!(&text[..len], b"[/] docs +2");
+    }
+
+    #[test]
+    fn ghost_chip_text_never_exceeds_label_budget() {
+        let long_path = [b'a'; CONTENT_PAYLOAD_MAX];
+        let (text, len) = ghost_chip_text(&long_path, CONTENT_DRAG_MAX_FILES);
+        assert!(len <= GHOST_TEXT_MAX);
+        assert!(text[..len].starts_with(b"[] "));
+        assert!(text[len - 2..len] == *b"+3");
+    }
+
+    #[test]
+    fn ghost_chip_hangs_below_right_and_clamps_inside_output() {
+        let chip = ghost_chip(b"home/notes.txt", 1, 100, 100, W, H);
+        assert_eq!((chip.x, chip.y), (110, 112));
+        assert_eq!(chip.width, "[] notes.txt".len() as u32 * 6 + 11);
+        let corner = ghost_chip(b"home/n.txt", 1, W as i32 - 2, H as i32 - 2, W, H);
+        assert!(corner.x + corner.width as i32 <= W as i32);
+        assert!(corner.y + corner.height as i32 <= H as i32);
+        assert!(corner.x >= 0 && corner.y >= 0);
     }
 }

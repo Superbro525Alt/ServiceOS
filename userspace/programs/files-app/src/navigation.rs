@@ -34,6 +34,8 @@ fn reset_listing(state: &mut ExplorerState) {
     state.entry_count = 0;
     state.scroll_offset = 0;
     state.selected_index = 0;
+    // Selection bits name rows, not paths: a fresh listing clears them.
+    state.clear_selection();
     state.load_failed = false;
 }
 
@@ -361,6 +363,9 @@ mod tests {
             entries: [ExplorerEntry::empty(); MAX_ENTRIES],
             entry_count: 0,
             selected_index: 0,
+            selected_set: [0, 0],
+            anchor_index: 0,
+            held_mods: 0,
             scroll_offset: 0,
             load_failed: false,
             view_mode: ViewMode::Directory,

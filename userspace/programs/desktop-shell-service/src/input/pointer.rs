@@ -145,6 +145,9 @@ pub(super) fn handle_pointer_move(state: &mut DesktopState, x: i32, y: i32) -> r
                     0,
                 )?;
             }
+            if state.content_drag.is_some() {
+                let _ = crate::windows::update_drag_ghost(state, x, y);
+            }
             Ok(focused_surface_id(state))
         }
     }
@@ -198,12 +201,19 @@ fn complete_content_drop(state: &mut DesktopState, x: i32, y: i32) -> rt::Result
     let Some(drag) = state.content_drag.take() else {
         return Ok(());
     };
+    let _ = crate::windows::hide_drag_ghost(state);
     let Ok(path) = core::str::from_utf8(&drag.path[..drag.path_len]) else {
         return Ok(());
     };
     match crate::windows::drop_decision(&hit_test::hit_test(state, x, y)) {
         crate::windows::DropDecision::Deliver(app_id) => {
             crate::windows::deliver_open_intent(state, app_id, path)?;
+            if drag.count > 1 {
+                let mut notice = [0u8; 19];
+                notice.copy_from_slice(b"OPENED 1 OF ? FILES");
+                notice[11] = b'0' + drag.count.min(9) as u8;
+                crate::windows::post_notification(state, Some(app_id), false, false, &notice)?;
+            }
             state.pending_shell_refresh.set();
         }
         crate::windows::DropDecision::Cancel => {

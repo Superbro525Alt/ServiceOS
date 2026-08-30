@@ -444,6 +444,7 @@ pub(crate) fn refresh_apps(state: &mut DesktopState) -> rt::Result<()> {
         if state.content_drag.is_some() && exited_app == DesktopAppId::Files {
             // The drag source died; the pending drop has nothing to deliver.
             state.content_drag = None;
+            let _ = hide_drag_ghost(state);
         }
         cancel_animations(&mut state.animations, exited_app);
         if state.apps[index].window.surface_handle != rt::INVALID_HANDLE {

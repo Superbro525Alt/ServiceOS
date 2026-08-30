@@ -129,7 +129,7 @@ fn draw_list(bytes: &mut [u8], state: &ExplorerState) {
             break;
         }
         let y = LIST_Y + row * ROW_HEIGHT;
-        let selected = index == state.selected_index;
+        let selected = index == state.selected_index || state.is_selected(index);
         let drag_source = state.dragging && state.press.is_some_and(|press| press.index == index);
         if selected || drag_source {
             ui::fill_rgba8888_rect(
@@ -163,7 +163,14 @@ fn draw_list(bytes: &mut [u8], state: &ExplorerState) {
                 }
             }
         };
-        draw_entry_label(bytes, entry, (LIST_X + 8) as i32, (y + 4) as i32, color);
+        draw_entry_label(
+            bytes,
+            entry,
+            (LIST_X + 8) as i32,
+            (y + 4) as i32,
+            color,
+            state.is_selected(index) && index != state.selected_index,
+        );
     }
 }
 
@@ -511,7 +518,14 @@ fn text_at(bytes: &mut [u8], x: usize, y: usize, text: &str, color: u32) {
     rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, x as i32, y as i32, color, text);
 }
 
-fn draw_entry_label(bytes: &mut [u8], entry: ExplorerEntry, x: i32, y: i32, color: u32) {
+fn draw_entry_label(
+    bytes: &mut [u8],
+    entry: ExplorerEntry,
+    x: i32,
+    y: i32,
+    color: u32,
+    marked: bool,
+) {
     let mut label = FixedLogBuffer::<96>::new();
     if entry.kind == EntryKind::Parent {
         let _ = write!(label, "UP   ..");
@@ -524,6 +538,9 @@ fn draw_entry_label(bytes: &mut [u8], entry: ExplorerEntry, x: i32, y: i32, colo
                 let _ = write!(label, "FILE ");
             }
             EntryKind::Parent => {}
+        }
+        if marked {
+            let _ = write!(label, "[x] ");
         }
         if let Ok(name) = str::from_utf8(entry_name_bytes(&entry)) {
             let _ = write!(label, "{name}");

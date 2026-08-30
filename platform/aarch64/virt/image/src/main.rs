@@ -69,8 +69,9 @@ fn register_device_irq_base(intid: u16, mmio_base: u64) {
 fn virtio_device_irq_hook(intid: u16) {
     let table = DEVICE_IRQ_BASES.lock();
     if let Some((_, base)) = table.iter().find(|entry| entry.0 == intid && entry.1 != 0) {
-        let status =
-            unsafe { core::ptr::read_volatile((base + VIRTIO_MMIO_INTERRUPT_STATUS) as *const u32) };
+        let status = unsafe {
+            core::ptr::read_volatile((base + VIRTIO_MMIO_INTERRUPT_STATUS) as *const u32)
+        };
         // Ack every bit the device reports: the ISR can carry more than the
         // two standard used/config bits under QEMU, and leftover bits keep a
         // level line asserted forever.

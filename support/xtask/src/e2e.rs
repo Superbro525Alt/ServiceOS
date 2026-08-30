@@ -73,7 +73,8 @@ fn parse_options(args: &[String]) -> TestE2eOptions {
                     options.filter = Some(value.to_owned());
                 } else if let Some(value) = other.strip_prefix("--tag=") {
                     options.tag = Some(value.to_owned());
-                } else if let Some(value) = other.strip_prefix("-j").filter(|rest| !rest.is_empty()) {
+                } else if let Some(value) = other.strip_prefix("-j").filter(|rest| !rest.is_empty())
+                {
                     options.jobs = Some(parse_jobs(value));
                 } else if let Some(value) = other.strip_prefix("--jobs=") {
                     options.jobs = Some(parse_jobs(value));
@@ -226,7 +227,11 @@ fn execute(options: TestE2eOptions, cli_release: bool) -> Result<i32, Box<dyn Er
 
     let mut rows: Vec<(&CaseDef, String)> = ordered
         .iter()
-        .flat_map(|case| case.platforms.iter().map(move |platform| (*case, platform.clone())))
+        .flat_map(|case| {
+            case.platforms
+                .iter()
+                .map(move |platform| (*case, platform.clone()))
+        })
         .collect();
     // Serial pre-build phase: hydrate every needed platform+tuple build
     // before any worker thread starts (cargo, the gate env guard, and the
@@ -253,8 +258,9 @@ fn execute(options: TestE2eOptions, cli_release: bool) -> Result<i32, Box<dyn Er
     // Deterministic result buffer: one slot per scheduled row, filled by
     // whichever worker finishes it; summaries re-sort by case name below so
     // completion order never leaks into the report.
-    let results: Vec<std::sync::Mutex<Option<CaseResult>>> =
-        (0..rows.len()).map(|_| std::sync::Mutex::new(None)).collect();
+    let results: Vec<std::sync::Mutex<Option<CaseResult>>> = (0..rows.len())
+        .map(|_| std::sync::Mutex::new(None))
+        .collect();
     let next_row = std::sync::atomic::AtomicUsize::new(0);
     let workers = jobs.min(rows.len()).max(1);
     println!(
@@ -263,32 +269,34 @@ fn execute(options: TestE2eOptions, cli_release: bool) -> Result<i32, Box<dyn Er
     );
     std::thread::scope(|scope| {
         for _ in 0..workers {
-            scope.spawn(|| loop {
-                let index = next_row.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                if index >= rows.len() {
-                    break;
+            scope.spawn(|| {
+                loop {
+                    let index = next_row.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if index >= rows.len() {
+                        break;
+                    }
+                    let (case, platform) = &rows[index];
+                    let (case, platform) = (*case, platform.as_str());
+                    println!(
+                        "\n=== case {}: T{} targets {:?} ===",
+                        case.name, case.tier, case.platforms
+                    );
+                    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        e2e::run_case(case, &ctx, platform)
+                    }));
+                    let row = outcome.unwrap_or_else(|panic| {
+                        CaseResult::infra_failed(
+                            case,
+                            platform,
+                            Instant::now(),
+                            format!("worker thread panicked: {panic:?}"),
+                        )
+                    });
+                    let mut slot = results[index]
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    *slot = Some(row);
                 }
-                let (case, platform) = &rows[index];
-                let (case, platform) = (*case, platform.as_str());
-                println!(
-                    "\n=== case {}: T{} targets {:?} ===",
-                    case.name, case.tier, case.platforms
-                );
-                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    e2e::run_case(case, &ctx, platform)
-                }));
-                let row = outcome.unwrap_or_else(|panic| {
-                    CaseResult::infra_failed(
-                        case,
-                        platform,
-                        Instant::now(),
-                        format!("worker thread panicked: {panic:?}"),
-                    )
-                });
-                let mut slot = results[index]
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                *slot = Some(row);
             });
         }
     });
@@ -301,20 +309,22 @@ fn execute(options: TestE2eOptions, cli_release: bool) -> Result<i32, Box<dyn Er
         .map(|filled| filled.expect("every scheduled row produced a result"))
         .collect();
     // Deterministic summary + TAP ordering regardless of completion order.
-    results.sort_by(|a, b| a.case.cmp(&b.case).then_with(|| a.platform.cmp(&b.platform)));
+    results.sort_by(|a, b| {
+        a.case
+            .cmp(&b.case)
+            .then_with(|| a.platform.cmp(&b.platform))
+    });
 
     e2e::print_summary_table(&mut std::io::stdout().lock(), &results)?;
 
     if let Some(report_path) = &options.report {
-        e2e::write_tap(
-            report_path,
-            &results,
-            started_at.elapsed(),
-        )?;
+        e2e::write_tap(report_path, &results, started_at.elapsed())?;
         println!("wrote TAP report: {}", report_path.display());
     }
 
-    let any_fail = results.iter().any(|row| matches!(row.outcome, Outcome::Failed { .. }));
+    let any_fail = results
+        .iter()
+        .any(|row| matches!(row.outcome, Outcome::Failed { .. }));
     let code = e2e::aggregate(&results);
     if code == 2 && !any_fail {
         println!("infrastructure failure (exit 2): see rows above");
@@ -323,7 +333,10 @@ fn execute(options: TestE2eOptions, cli_release: bool) -> Result<i32, Box<dyn Er
 }
 
 fn write_build_fingerprint(active: &[&CaseDef]) -> Result<(), Box<dyn Error>> {
-    let path = workspace_root().join("target").join("e2e").join("build-fingerprint.json");
+    let path = workspace_root()
+        .join("target")
+        .join("e2e")
+        .join("build-fingerprint.json");
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }

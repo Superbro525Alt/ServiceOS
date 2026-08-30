@@ -64,7 +64,7 @@ impl Error for InvalidBootMode {}
 
 #[cfg(test)]
 mod tests {
-    use super::{selected_boot_mode, BootMode, BOOT_MODE_ENV};
+    use super::{BOOT_MODE_ENV, BootMode, selected_boot_mode};
     use std::sync::Mutex;
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());

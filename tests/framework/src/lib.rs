@@ -26,14 +26,14 @@ use std::{
 };
 
 use xtask_core::{
-    build::{build_for_platform, BuildArtifacts},
+    build::{BuildArtifacts, build_for_platform},
     image::create_platform_image,
     platform::PlatformSpec,
 };
 
-pub use case::{load_cases, CaseDef, WitnessMode};
-pub use report::{aggregate, print_summary_table, write_tap, CaseResult, Outcome};
-pub use script::{run_script, SerialScript};
+pub use case::{CaseDef, WitnessMode, load_cases};
+pub use report::{CaseResult, Outcome, aggregate, print_summary_table, write_tap};
+pub use script::{SerialScript, run_script};
 pub use session::{SerialSession, WaitOutcome};
 pub use witness::Pattern;
 
@@ -188,10 +188,8 @@ impl RunCtx {
                 .join(",")
         );
         self.builds.get(&cache_key).ok_or_else(|| {
-            format!(
-                "pre-build phase did not hydrate platform {platform:?} tuple {cache_key:?}"
-            )
-            .into()
+            format!("pre-build phase did not hydrate platform {platform:?} tuple {cache_key:?}")
+                .into()
         })
     }
 
@@ -265,7 +263,12 @@ fn execute_row(
     }
 
     if let Some(reason) = qemu::missing_emulator_reason(platform) {
-        return Ok(CaseResult::skipped(case, platform, started, reason.to_owned()));
+        return Ok(CaseResult::skipped(
+            case,
+            platform,
+            started,
+            reason.to_owned(),
+        ));
     }
 
     // Only UEFI (qemu-virtio) boots consume a slot disk copy; the kernel-ELF /
@@ -338,7 +341,9 @@ fn execute_row(
             // boot B.
             println!(
                 "=== e2e boot B: {} @ {} (slot {}, reused volume) ===",
-                case.name, platform, paths.dir.display()
+                case.name,
+                platform,
+                paths.dir.display()
             );
             let deadline_b = Instant::now() + ctx.case_timeout(case);
             let boot_b = second_boot_verdict(case, &spec, deadline_b, idle_budget(case, ctx));
@@ -362,7 +367,7 @@ fn execute_row(
                 started,
                 reason,
                 tail_of(&text),
-            ))
+            ));
         }
         BootOutcome::Failed(reason, None) => {
             return Ok(CaseResult::failed(
@@ -371,10 +376,10 @@ fn execute_row(
                 started,
                 reason,
                 String::new(),
-            ))
+            ));
         }
         BootOutcome::Infra(reason) => {
-            return Ok(CaseResult::infra_failed(case, platform, started, reason))
+            return Ok(CaseResult::infra_failed(case, platform, started, reason));
         }
     }
 }
@@ -398,10 +403,7 @@ fn run_single_boot(
         let remaining = deadline.saturating_duration_since(Instant::now());
         if let Err(error) = run_script(script_path, &mut session, remaining) {
             let output = session.kill();
-            return BootOutcome::Failed(
-                format!("serial script failed: {error}"),
-                Some(output),
-            );
+            return BootOutcome::Failed(format!("serial script failed: {error}"), Some(output));
         }
     }
 
@@ -477,9 +479,7 @@ fn invalidate_guest_build_for_gates(
         .join("userspace-programs")
         .join(user_target_triple);
     if guest_dir.exists() {
-        println!(
-            "=== e2e gate switch ({cache_key}): purge stale guest artifacts ==="
-        );
+        println!("=== e2e gate switch ({cache_key}): purge stale guest artifacts ===");
         std::fs::remove_dir_all(&guest_dir)?;
     } else {
         println!("=== e2e gate switch ({cache_key}): fresh guest artifacts ===");
@@ -549,7 +549,6 @@ fn idle_budget(case: &CaseDef, ctx: &RunCtx) -> Duration {
     Duration::from_secs(secs.max(1))
 }
 
-
 fn tail_of(output: &str) -> String {
     let lines: Vec<&str> = output.lines().collect();
     let start = lines.len().saturating_sub(session::DEFAULT_TAIL_LINES);
@@ -565,16 +564,15 @@ enum StepVerdict {
 /// Per-phase outcome for the two-boot regression chain helper.
 enum BootOutcome {
     /// Output text kept so failure rows can still dump a tail.
-    Passed { #[allow(dead_code)] text: String },
+    Passed {
+        #[allow(dead_code)]
+        text: String,
+    },
     Failed(String, Option<String>),
     Infra(String),
 }
 
-fn drive_witnesses(
-    case: &CaseDef,
-    session: &mut SerialSession,
-    deadline: Instant,
-) -> StepVerdict {
+fn drive_witnesses(case: &CaseDef, session: &mut SerialSession, deadline: Instant) -> StepVerdict {
     let mut witnesses = Vec::with_capacity(case.witnesses.len());
     for raw in &case.witnesses {
         match Pattern::new(raw) {
@@ -613,16 +611,11 @@ fn drive_pattern_sets(
 
         for pattern in fail_on {
             if pattern.matches(&text) {
-                return StepVerdict::Failed(format!(
-                    "fail_on matched early: {}",
-                    pattern.raw()
-                ));
+                return StepVerdict::Failed(format!("fail_on matched early: {}", pattern.raw()));
             }
         }
         for (index, pattern) in witnesses.iter().enumerate() {
-            if !satisfied[index]
-                && pattern.satisfied(&text)
-            {
+            if !satisfied[index] && pattern.satisfied(&text) {
                 satisfied[index] = true;
                 println!("    witness observed: {}", pattern.raw());
             }
@@ -645,7 +638,7 @@ fn drive_pattern_sets(
                     "{}; still missing: {}",
                     signal.to_string(),
                     missing.join(", ")
-                ))
+                ));
             }
         }
     }
@@ -664,7 +657,9 @@ fn execute_raspi_image_assertion(
         if !candidate.exists() {
             missing.push(rel.to_owned());
         } else {
-            let size = std::fs::metadata(&candidate).map(|meta| meta.len()).unwrap_or(0);
+            let size = std::fs::metadata(&candidate)
+                .map(|meta| meta.len())
+                .unwrap_or(0);
             println!("    staged {rel}: {} bytes", size);
         }
     }

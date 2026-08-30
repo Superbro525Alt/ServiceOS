@@ -4,8 +4,7 @@
 
 use std::{
     collections::BTreeSet,
-    fmt,
-    fs,
+    fmt, fs,
     path::{Path, PathBuf},
 };
 
@@ -124,7 +123,10 @@ impl Value {
 /// Parse a case document. Returns ordered key/value pairs with line numbers.
 /// Physical lines are first joined into logical statements while square
 /// brackets stay open, so multi-line arrays parse like the canonical sample.
-fn parse_document(file: &Path, text: &str) -> Result<Vec<(String, Value, usize)>, Box<dyn std::error::Error>> {
+fn parse_document(
+    file: &Path,
+    text: &str,
+) -> Result<Vec<(String, Value, usize)>, Box<dyn std::error::Error>> {
     let mut entries = Vec::new();
     let mut seen_keys: BTreeSet<String> = BTreeSet::new();
     for (line_no, logical) in logical_lines(text) {
@@ -199,33 +201,33 @@ fn process_entry_line(
     entries: &mut Vec<(String, Value, usize)>,
     seen_keys: &mut BTreeSet<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-        if line.starts_with('[') {
-            // Bracket-balanced joining guarantees headers stay standalone.
-            if line != "[case]" {
-                return Err(err(
-                    file,
-                    line_no,
-                    format!("unsupported table header {line}; only [case] exists"),
-                ));
-            }
-            return Ok(());
+    if line.starts_with('[') {
+        // Bracket-balanced joining guarantees headers stay standalone.
+        if line != "[case]" {
+            return Err(err(
+                file,
+                line_no,
+                format!("unsupported table header {line}; only [case] exists"),
+            ));
         }
-        let Some((key_part, value_part)) = line.split_once('=') else {
-            return Err(err(file, line_no, "expected key = value"));
-        };
-        let key = key_part.trim();
-        if key.is_empty()
-            || !key
-                .chars()
-                .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
-        {
-            return Err(err(file, line_no, format!("invalid key {key:?}")));
-        }
-        if !seen_keys.insert(key.to_owned()) {
-            return Err(err(file, line_no, format!("duplicate key {key:?}")));
-        }
-        let value = parse_value(value_part.trim(), file, line_no)?;
-        entries.push((key.to_owned(), value, line_no));
+        return Ok(());
+    }
+    let Some((key_part, value_part)) = line.split_once('=') else {
+        return Err(err(file, line_no, "expected key = value"));
+    };
+    let key = key_part.trim();
+    if key.is_empty()
+        || !key
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
+    {
+        return Err(err(file, line_no, format!("invalid key {key:?}")));
+    }
+    if !seen_keys.insert(key.to_owned()) {
+        return Err(err(file, line_no, format!("duplicate key {key:?}")));
+    }
+    let value = parse_value(value_part.trim(), file, line_no)?;
+    entries.push((key.to_owned(), value, line_no));
     Ok(())
 }
 
@@ -420,11 +422,9 @@ impl CaseDef {
                     def.tier = int as u8;
                 }
                 "platforms" => {
-                    let strings = value
-                        .as_strings()
-                        .ok_or_else(|| {
-                            err(path, line, "platforms must be an array of platform names")
-                        })?;
+                    let strings = value.as_strings().ok_or_else(|| {
+                        err(path, line, "platforms must be an array of platform names")
+                    })?;
                     // Empty is tolerated here so a declaratively blocked case
                     // (`blocker = ...`) can declare no targets at all; the
                     // post-parse check rejects empty-without-blocker.
@@ -443,12 +443,10 @@ impl CaseDef {
                     );
                 }
                 "idle_timeout_secs" => {
-                    def.idle_timeout_secs = Some(
-                        value
-                            .as_u64()
-                            .filter(|secs| *secs > 0)
-                            .ok_or_else(|| err(path, line, "idle_timeout_secs must be positive"))?,
-                    );
+                    def.idle_timeout_secs =
+                        Some(value.as_u64().filter(|secs| *secs > 0).ok_or_else(|| {
+                            err(path, line, "idle_timeout_secs must be positive")
+                        })?);
                 }
                 "witnesses" => {
                     let strings = value
@@ -462,9 +460,8 @@ impl CaseDef {
                     }
                     for witness in &strings {
                         // Compile once here to give case-file-level errors.
-                        crate::witness::Pattern::new(witness).map_err(|pattern_error| {
-                            err(path, line, pattern_error.to_string())
-                        })?;
+                        crate::witness::Pattern::new(witness)
+                            .map_err(|pattern_error| err(path, line, pattern_error.to_string()))?;
                     }
                     def.witnesses = strings;
                 }
@@ -474,21 +471,28 @@ impl CaseDef {
                         .ok_or_else(|| err(path, line, "fail_on must be an array of strings"))?
                         .into_iter()
                         .map(|raw| {
-                            crate::witness::Pattern::new(raw)
-                                .map_err(|pattern_error| err(path, line, pattern_error.to_string()))?;
+                            crate::witness::Pattern::new(raw).map_err(|pattern_error| {
+                                err(path, line, pattern_error.to_string())
+                            })?;
                             Ok(raw.to_owned())
                         })
                         .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
                 }
                 "env_build" => {
-                    let pairs = value
-                        .as_strings()
-                        .ok_or_else(|| {
-                            err(path, line, "env_build must be an array of \"KEY=VALUE\" strings")
-                        })?;
+                    let pairs = value.as_strings().ok_or_else(|| {
+                        err(
+                            path,
+                            line,
+                            "env_build must be an array of \"KEY=VALUE\" strings",
+                        )
+                    })?;
                     for pair in pairs {
                         let Some((key, assigned)) = pair.split_once('=') else {
-                            return Err(err(path, line, format!("env_build entry {pair:?} lacks '='")));
+                            return Err(err(
+                                path,
+                                line,
+                                format!("env_build entry {pair:?} lacks '='"),
+                            ));
                         };
                         if key.is_empty() || assigned.is_empty() {
                             return Err(err(path, line, "env_build KEY and VALUE required"));
@@ -497,14 +501,20 @@ impl CaseDef {
                     }
                 }
                 "qemu_env" => {
-                    let pairs = value
-                        .as_strings()
-                        .ok_or_else(|| {
-                            err(path, line, "qemu_env must be an array of \"KEY=VALUE\" strings")
-                        })?;
+                    let pairs = value.as_strings().ok_or_else(|| {
+                        err(
+                            path,
+                            line,
+                            "qemu_env must be an array of \"KEY=VALUE\" strings",
+                        )
+                    })?;
                     for pair in pairs {
                         let Some((key, assigned)) = pair.split_once('=') else {
-                            return Err(err(path, line, format!("qemu_env entry {pair:?} lacks '='")));
+                            return Err(err(
+                                path,
+                                line,
+                                format!("qemu_env entry {pair:?} lacks '='"),
+                            ));
                         };
                         if key.is_empty() || assigned.is_empty() {
                             return Err(err(path, line, "qemu_env KEY and VALUE required"));
@@ -564,7 +574,7 @@ impl CaseDef {
                                 path,
                                 line,
                                 format!("mode must be witness|suite, got {other:?}"),
-                            ))
+                            ));
                         }
                     };
                 }
@@ -587,7 +597,9 @@ impl CaseDef {
                 "boot_b_fail_on" => {
                     def.boot_b_fail_on = value
                         .as_strings()
-                        .ok_or_else(|| err(path, line, "boot_b_fail_on must be an array of strings"))?
+                        .ok_or_else(|| {
+                            err(path, line, "boot_b_fail_on must be an array of strings")
+                        })?
                         .into_iter()
                         .map(str::to_owned)
                         .collect::<Vec<_>>();
@@ -653,13 +665,7 @@ impl CaseDef {
 struct PlatformList;
 
 impl PlatformList {
-    const VALID: [&str; 5] = [
-        "qemu-virtio",
-        "raspi5",
-        "virt",
-        "qemu-isa",
-        "riscv64-virt",
-    ];
+    const VALID: [&str; 5] = ["qemu-virtio", "raspi5", "virt", "qemu-isa", "riscv64-virt"];
 
     fn validate(platform: &str) -> Result<(), String> {
         if Self::VALID.contains(&platform) {
@@ -737,10 +743,7 @@ mod tests {
 
     #[test]
     fn parses_canonical_case_file_schema() {
-        let dir = std::env::temp_dir().join(format!(
-            "e2e-case-test-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("e2e-case-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         write_case(
             &dir,
@@ -771,17 +774,17 @@ tags = ["network"]
         assert_eq!(case.tier, 4);
         assert_eq!(case.platforms.len(), 2);
         assert_eq!(case.timeout_secs, Some(180));
-        assert_eq!(case.env_build, vec![("SERVICEOS_E2E_NET".to_owned(), "1".to_owned())]);
+        assert_eq!(
+            case.env_build,
+            vec![("SERVICEOS_E2E_NET".to_owned(), "1".to_owned())]
+        );
         assert!(case.data_fresh);
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn duplicate_names_are_rejected() {
-        let dir = std::env::temp_dir().join(format!(
-            "e2e-dup-test-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("e2e-dup-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let body = r#"
 [case]
@@ -798,10 +801,7 @@ witnesses = ["boot banner"]
 
     #[test]
     fn unknown_keys_and_bad_values_fail_with_line_context() {
-        let dir = std::env::temp_dir().join(format!(
-            "e2e-err-test-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("e2e-err-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         write_case(
             &dir,
@@ -819,12 +819,13 @@ witnessses = ["typo key"]
 
     #[test]
     fn manifest_placeholders_are_ignored() {
-        let dir = std::env::temp_dir().join(format!(
-            "e2e-manifest-test-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("e2e-manifest-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
-        write_case(&dir, "manifest.toml", "# reserved metadata\nnot-a-case = true\n");
+        write_case(
+            &dir,
+            "manifest.toml",
+            "# reserved metadata\nnot-a-case = true\n",
+        );
         write_case(
             &dir,
             "smoke/only.toml",

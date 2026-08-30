@@ -107,7 +107,9 @@ struct Compiler {
 
 impl Compiler {
     fn new() -> Self {
-        Self { program: Vec::new() }
+        Self {
+            program: Vec::new(),
+        }
     }
 
     fn emit(&mut self, inst: Inst) -> usize {
@@ -365,10 +367,7 @@ impl Pattern {
         // '[' never reaches the class parser in this form.
         let (pattern_source, min_occurrences) = split_min_occurrences(raw);
 
-        let literal = if pattern_source
-            .chars()
-            .any(|ch| META_CHARS.contains(&ch))
-        {
+        let literal = if pattern_source.chars().any(|ch| META_CHARS.contains(&ch)) {
             None
         } else {
             Some(pattern_source.to_owned())
@@ -527,22 +526,27 @@ mod tests {
         let pattern2 = Pattern::new("E2E gfx.present frames=\\d+ [x2]").expect("parses");
         assert_eq!(pattern2.min_occurrences(), 2);
         // Raw stays readable in TAP/diagnostic output.
-        assert_eq!(
-            pattern2.raw(),
-            "E2E gfx.present frames=\\d+ [x2]"
-        );
+        assert_eq!(pattern2.raw(), "E2E gfx.present frames=\\d+ [x2]");
 
         let text = "noise\nE2E gfx.present frames=1\ntail";
         assert!(pattern.satisfied(text));
         assert_eq!(pattern2.count_occurrences(text), 1);
-        assert!(!pattern2.satisfied(text), "a single matching line cannot satisfy [x2]");
+        assert!(
+            !pattern2.satisfied(text),
+            "a single matching line cannot satisfy [x2]"
+        );
         let expanded =
             "E2E gfx.present frames=1\nx\nE2E gfx.present frames=17\ny\nE2E gfx.present frames=33";
         assert!(pattern2.satisfied(expanded));
         // The suffix never leaks into the compiled matcher itself.
         assert_eq!(pattern2.count_occurrences("[x2] alone"), 0);
         // Malformed / x1 forms are rejected rather than silently weakened.
-        assert_eq!(Pattern::new("frames=\\d+ [x1]").expect("raw").min_occurrences(), 1);
+        assert_eq!(
+            Pattern::new("frames=\\d+ [x1]")
+                .expect("raw")
+                .min_occurrences(),
+            1
+        );
     }
 
     #[test]
@@ -607,8 +611,14 @@ mod tests {
         let with_parens =
             "AFGHIJKLserviceos: boot: entered x86_64 legacy-BIOS (SeaBIOS/PVH) kernel image";
         let cases: Vec<(&str, &str)> = vec![
-            ("entered x86_64 legacy-BIOS \\(SeaBIOS/PVH\\) kernel image", with_parens),
-            ("legacy-BIOS \\(SeaBIOS/PVH\\)", "x legacy-BIOS (SeaBIOS/PVH) y"),
+            (
+                "entered x86_64 legacy-BIOS \\(SeaBIOS/PVH\\) kernel image",
+                with_parens,
+            ),
+            (
+                "legacy-BIOS \\(SeaBIOS/PVH\\)",
+                "x legacy-BIOS (SeaBIOS/PVH) y",
+            ),
             ("x86_64 \\(a\\)", "cpu x86_64 (a) ok"),
             ("SeaBIOS/PVH", with_parens),
         ];
@@ -641,10 +651,19 @@ mod probe_tmp {
     #[test]
     fn tmp_debug() {
         let p = Pattern::new("E2E gfx.present frames=\\d+");
-        let pattern = match p { Ok(v)=>v, Err(e)=>panic!("parse err {:?}", e) };
+        let pattern = match p {
+            Ok(v) => v,
+            Err(e) => panic!("parse err {:?}", e),
+        };
         let line = "E2E gfx.present frames=1";
         eprintln!("line-only match: {}", pattern.matches(line));
-        eprintln!("full match: {}", pattern.matches("noise\nE2E gfx.present frames=1\ntail"));
-        eprintln!("count: {}", pattern.count_occurrences("noise\nE2E gfx.present frames=1\ntail"));
+        eprintln!(
+            "full match: {}",
+            pattern.matches("noise\nE2E gfx.present frames=1\ntail")
+        );
+        eprintln!(
+            "count: {}",
+            pattern.count_occurrences("noise\nE2E gfx.present frames=1\ntail")
+        );
     }
 }

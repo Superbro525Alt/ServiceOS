@@ -26,7 +26,9 @@ fn sha512_abc() {
 fn sha512_two_block_message() {
     // FIPS 180-4 example: "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
     assert_eq!(
-        hex(&digest(&[b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"])),
+        hex(&digest(&[
+            b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
+        ])),
         "204a8fc6dda82f0a0ced7beb8e08a41657c16ef468b228a8279be331a703c33596fd15c13b1b07f9aa1d3bea57789ca031ad85c7a71dd70354ec631238ca3445"
     );
 }

@@ -124,10 +124,16 @@ pub struct Summary {
 /// Exit-code contract: 0 all pass/skip; 1 assertion failures; 2 infra.
 /// Infrastructure dominates when both appear (CI wants the loudest signal).
 pub fn aggregate(results: &[CaseResult]) -> i32 {
-    if results.iter().any(|row| matches!(row.outcome, Outcome::InfraFailed { .. })) {
+    if results
+        .iter()
+        .any(|row| matches!(row.outcome, Outcome::InfraFailed { .. }))
+    {
         return 2;
     }
-    if results.iter().any(|row| matches!(row.outcome, Outcome::Failed { .. })) {
+    if results
+        .iter()
+        .any(|row| matches!(row.outcome, Outcome::Failed { .. }))
+    {
         return 1;
     }
     0
@@ -163,7 +169,8 @@ pub fn print_summary_table(out: &mut dyn Write, results: &[CaseResult]) -> io::R
     for row in results {
         let detail = match &row.outcome {
             Outcome::Passed => String::new(),
-            Outcome::Skipped { reason } | Outcome::Failed { reason, .. }
+            Outcome::Skipped { reason }
+            | Outcome::Failed { reason, .. }
             | Outcome::InfraFailed { reason, .. } => reason.clone(),
         };
         writeln!(
@@ -190,7 +197,11 @@ fn first_line(text: &str) -> &str {
 }
 
 /// TAP-ish stream per docs/test-plan.md §4 including bounded tails.
-pub fn write_tap(path: &Path, results: &[CaseResult], wall: Duration) -> Result<(), Box<dyn std::error::Error>> {
+pub fn write_tap(
+    path: &Path,
+    results: &[CaseResult],
+    wall: Duration,
+) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -198,7 +209,11 @@ pub fn write_tap(path: &Path, results: &[CaseResult], wall: Duration) -> Result<
     let total = results.len();
     for (index, row) in results.iter().enumerate() {
         let number = index + 1;
-        let meta = format!("elapsed {:.1}s platform={}", row.elapsed.as_secs_f64(), row.platform);
+        let meta = format!(
+            "elapsed {:.1}s platform={}",
+            row.elapsed.as_secs_f64(),
+            row.platform
+        );
         match &row.outcome {
             Outcome::Passed => {
                 writeln!(out, "ok {number} - {} # {meta}", row.case)?;
@@ -211,7 +226,11 @@ pub fn write_tap(path: &Path, results: &[CaseResult], wall: Duration) -> Result<
                 write_tail_block(&mut out, tail)?;
             }
             Outcome::InfraFailed { reason, tail } => {
-                writeln!(out, "not ok {number} - {} # INFRA {reason}; {meta}", row.case)?;
+                writeln!(
+                    out,
+                    "not ok {number} - {} # INFRA {reason}; {meta}",
+                    row.case
+                )?;
                 write_tail_block(&mut out, tail)?;
             }
         }
@@ -220,7 +239,11 @@ pub fn write_tap(path: &Path, results: &[CaseResult], wall: Duration) -> Result<
     writeln!(
         out,
         "1..{} # plan=pass={} fail={} skip={} duration_wall={:.1}s",
-        total, summary.pass, summary.fail, summary.skip, wall.as_secs_f64()
+        total,
+        summary.pass,
+        summary.fail,
+        summary.skip,
+        wall.as_secs_f64()
     )?;
     Ok(())
 }
@@ -283,21 +306,44 @@ mod tests {
         // All pass/skip => 0.
         let rows = vec![
             result("a", Outcome::Passed),
-            result("b", Outcome::Skipped { reason: "no emulator".into() }),
+            result(
+                "b",
+                Outcome::Skipped {
+                    reason: "no emulator".into(),
+                },
+            ),
         ];
         assert_eq!(aggregate(&rows), 0);
 
         // Any assertion failure => 1 even with passes present.
         let rows = vec![
             result("a", Outcome::Passed),
-            result("b", Outcome::Failed { reason: "timeout".into(), tail: String::new() }),
+            result(
+                "b",
+                Outcome::Failed {
+                    reason: "timeout".into(),
+                    tail: String::new(),
+                },
+            ),
         ];
         assert_eq!(aggregate(&rows), 1);
 
         // Infra outranks everything => 2.
         let rows = vec![
-            result("a", Outcome::Failed { reason: "x".into(), tail: String::new() }),
-            result("b", Outcome::InfraFailed { reason: "spawn died".into(), tail: String::new() }),
+            result(
+                "a",
+                Outcome::Failed {
+                    reason: "x".into(),
+                    tail: String::new(),
+                },
+            ),
+            result(
+                "b",
+                Outcome::InfraFailed {
+                    reason: "spawn died".into(),
+                    tail: String::new(),
+                },
+            ),
         ];
         assert_eq!(aggregate(&rows), 2);
     }

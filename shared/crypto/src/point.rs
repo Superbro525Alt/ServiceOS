@@ -109,8 +109,7 @@ impl Point {
 
     pub fn eq(a: &Point, b: &Point) -> bool {
         // Operates on public data only (verification inputs).
-        Fe::ct_eq(&a.x.mul(&b.z), &b.x.mul(&a.z))
-            && Fe::ct_eq(&a.y.mul(&b.z), &b.y.mul(&a.z))
+        Fe::ct_eq(&a.x.mul(&b.z), &b.x.mul(&a.z)) && Fe::ct_eq(&a.y.mul(&b.z), &b.y.mul(&a.z))
     }
 
     /// Compress to the 32-byte RFC 8032 encoding.
@@ -183,11 +182,46 @@ mod dbg5 {
     #[test]
     fn small_scalars_fixed() {
         let b = Point::base();
-        assert_eq!(b.mul_scalar(&Scalar({ let mut x=[0u8;32]; x[0]=1; x })).compress(), unhex("5866666666666666666666666666666666666666666666666666666666666666"), "[1]B");
-        assert_eq!(b.mul_scalar(&Scalar({ let mut x=[0u8;32]; x[0]=2; x })).compress(), unhex("c9a3f86aae465f0e56513864510f3997561fa2c9e85ea21dc2292309f3cd6022"), "[2]B");
-        assert_eq!(b.mul_scalar(&Scalar({ let mut x=[0u8;32]; x[0]=3; x })).compress(), unhex("d4b4f5784868c3020403246717ec169ff79e26608ea126a1ab69ee77d1b16712"), "[3]B");
-        assert_eq!(b.add(&b).compress(), unhex("c9a3f86aae465f0e56513864510f3997561fa2c9e85ea21dc2292309f3cd6022"), "add(B,B)");
-        assert_eq!(b.double().compress(), unhex("c9a3f86aae465f0e56513864510f3997561fa2c9e85ea21dc2292309f3cd6022"), "dbl(B)");
+        assert_eq!(
+            b.mul_scalar(&Scalar({
+                let mut x = [0u8; 32];
+                x[0] = 1;
+                x
+            }))
+            .compress(),
+            unhex("5866666666666666666666666666666666666666666666666666666666666666"),
+            "[1]B"
+        );
+        assert_eq!(
+            b.mul_scalar(&Scalar({
+                let mut x = [0u8; 32];
+                x[0] = 2;
+                x
+            }))
+            .compress(),
+            unhex("c9a3f86aae465f0e56513864510f3997561fa2c9e85ea21dc2292309f3cd6022"),
+            "[2]B"
+        );
+        assert_eq!(
+            b.mul_scalar(&Scalar({
+                let mut x = [0u8; 32];
+                x[0] = 3;
+                x
+            }))
+            .compress(),
+            unhex("d4b4f5784868c3020403246717ec169ff79e26608ea126a1ab69ee77d1b16712"),
+            "[3]B"
+        );
+        assert_eq!(
+            b.add(&b).compress(),
+            unhex("c9a3f86aae465f0e56513864510f3997561fa2c9e85ea21dc2292309f3cd6022"),
+            "add(B,B)"
+        );
+        assert_eq!(
+            b.double().compress(),
+            unhex("c9a3f86aae465f0e56513864510f3997561fa2c9e85ea21dc2292309f3cd6022"),
+            "dbl(B)"
+        );
     }
 
     fn msb_ladder(p: Point, bytes: &[u8; 32]) -> Point {

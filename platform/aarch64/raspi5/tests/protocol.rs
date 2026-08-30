@@ -14,7 +14,7 @@ mod mailbox;
 
 #[cfg(test)]
 mod geometry {
-    use super::mailbox::{assemble_geometry, bus_to_physical, physical_to_bus, VC_BUS_SDRAM_ALIAS};
+    use super::mailbox::{VC_BUS_SDRAM_ALIAS, assemble_geometry, bus_to_physical, physical_to_bus};
 
     const SAMPLE_BUS: u64 = VC_BUS_SDRAM_ALIAS | 0x00F3_0000;
     // pitch(7680) * height(1080): exactly what a linear XRGB8888 surface needs.
@@ -22,9 +22,8 @@ mod geometry {
 
     #[test]
     fn assemble_accepts_canonical_allocation_and_pitch() {
-        let info =
-            assemble_geometry(SAMPLE_BUS, FRAME_BYTES, 1920, 1080, 1920 * 4, 4)
-                .expect("canonical allocation");
+        let info = assemble_geometry(SAMPLE_BUS, FRAME_BYTES, 1920, 1080, 1920 * 4, 4)
+            .expect("canonical allocation");
         assert_eq!(info.physical_base, 0x00F3_0000);
         assert_eq!(info.width, 1920);
         assert_eq!(info.height, 1080);
@@ -42,9 +41,7 @@ mod geometry {
 
     #[test]
     fn assemble_rejects_stride_narrower_than_visible_row() {
-        assert!(
-            assemble_geometry(SAMPLE_BUS, FRAME_BYTES, 1920, 1080, 1916, 4).is_none()
-        );
+        assert!(assemble_geometry(SAMPLE_BUS, FRAME_BYTES, 1920, 1080, 1916, 4).is_none());
     }
 
     #[test]
@@ -54,15 +51,16 @@ mod geometry {
 
     #[test]
     fn assemble_rejects_non_sdram_bus_addresses() {
-        assert!(
-            assemble_geometry(0x0001_3880, FRAME_BYTES, 1920, 1080, 7680, 4).is_none()
-        );
+        assert!(assemble_geometry(0x0001_3880, FRAME_BYTES, 1920, 1080, 7680, 4).is_none());
     }
 
     #[test]
     fn bus_translation_roundtrip_and_window_rejection() {
         assert_eq!(physical_to_bus(0x00F3_0000), Some(0x40F3_0000));
-        assert_eq!(bus_to_physical(0xC000_0000 | 0x00F3_0000), Some(0x00F3_0000));
+        assert_eq!(
+            bus_to_physical(0xC000_0000 | 0x00F3_0000),
+            Some(0x00F3_0000)
+        );
         assert_eq!(bus_to_physical(0x40F3_0000), Some(0x00F3_0000));
         // Peripheral windows do not map into SDRAM.
         assert_eq!(bus_to_physical(0x0001_3880), None);

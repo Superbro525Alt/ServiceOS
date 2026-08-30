@@ -8,7 +8,7 @@
 //! (no Montgomery ladder); verification early-rejects on malformed public
 //! inputs. No secret-dependent branches exist outside signing.
 
-use crate::point::{decompress, Point};
+use crate::point::{Point, decompress};
 use crate::scalar::Scalar;
 use crate::sha512;
 
@@ -51,11 +51,7 @@ pub fn verify(public_key: &[u8; 32], message: &[u8], signature: &[u8; 64]) -> bo
     if !Scalar::is_canonical(&s_bytes) {
         return false;
     }
-    let k = Scalar::reduce_wide(&sha512::digest(&[
-        &r_bytes,
-        public_key,
-        message,
-    ]));
+    let k = Scalar::reduce_wide(&sha512::digest(&[&r_bytes, public_key, message]));
     // Check [S]B == R + [k]A.
     let lhs = Point::base().mul_scalar(&Scalar(s_bytes));
     let rhs = big_r.add(&point_a.mul_scalar(&k));

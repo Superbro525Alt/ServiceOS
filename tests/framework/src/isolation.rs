@@ -3,7 +3,11 @@
 //! (temp-name + rename rather than xtask's direct copy, per the §6.5 note),
 //! so killed boots can never poison shared assets.
 
-use std::{error::Error, fs, path::{Path, PathBuf}};
+use std::{
+    error::Error,
+    fs,
+    path::{Path, PathBuf},
+};
 
 use xtask_core::run::find_ovmf_vars_template;
 
@@ -38,10 +42,12 @@ pub struct SlotPaths {
 
 pub fn sanitize_case_name(name: &str) -> String {
     name.chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.' {
-            ch
-        } else {
-            '_'
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.' {
+                ch
+            } else {
+                '_'
+            }
         })
         .collect()
 }
@@ -79,13 +85,13 @@ pub fn stage_case_images(
 
     let data_image = if uses_data_volume(platform) {
         let data_path = dir.join("serviceos-data.img");
-            if case.data_fresh {
-                create_zeroed_image(&data_path, DEFAULT_DATA_IMAGE_MIB)?;
-            } else if let Some(source) = built_disk {
-                seed_or_zero_data(&data_path, source)?;
-            } else {
-                create_zeroed_image(&data_path, DEFAULT_DATA_IMAGE_MIB)?;
-            }
+        if case.data_fresh {
+            create_zeroed_image(&data_path, DEFAULT_DATA_IMAGE_MIB)?;
+        } else if let Some(source) = built_disk {
+            seed_or_zero_data(&data_path, source)?;
+        } else {
+            create_zeroed_image(&data_path, DEFAULT_DATA_IMAGE_MIB)?;
+        }
         Some(data_path)
     } else {
         None
@@ -165,8 +171,7 @@ fn seed_or_zero_data(slot_data: &Path, built_disk: &Path) -> Result<(), Box<dyn 
 /// Throwaway vars overlay written atomically (tmp + rename), immune to the
 /// template-copy race called out for j>2 concurrency.
 fn stage_ovmf_vars_atomic(slot_dir: &Path) -> Result<PathBuf, Box<dyn Error>> {
-    let source =
-        find_ovmf_vars_template().ok_or("no OVMF variables template found")?;
+    let source = find_ovmf_vars_template().ok_or("no OVMF variables template found")?;
     let destination = slot_dir.join("OVMF_VARS.fd");
     let staging = slot_dir.join("OVMF_VARS.fd.tmp");
     fs::copy(&source, &staging)?;
@@ -200,7 +205,10 @@ mod tests {
 
     #[test]
     fn sanitizer_preserves_realistic_names() {
-        assert_eq!(sanitize_case_name("regress.dhcp-rx-delivery"), "regress.dhcp-rx-delivery");
+        assert_eq!(
+            sanitize_case_name("regress.dhcp-rx-delivery"),
+            "regress.dhcp-rx-delivery"
+        );
         assert_eq!(sanitize_case_name("boot/evil"), "boot_evil");
         assert_eq!(sanitize_case_name("sp ace"), "sp_ace");
     }

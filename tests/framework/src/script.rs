@@ -150,7 +150,7 @@ impl SerialScript {
                             Err(crate::session::WaitOutcome::DeadlineExceeded) => {
                                 return Err(format!(
                                     "expect not observed before budget share elapsed: {raw:?}"
-                                ))
+                                ));
                             }
                             Err(other) => return Err(format!("expect failed: {other}")),
                         }
@@ -219,8 +219,8 @@ fn decode_escapes(source: &str) -> Result<Vec<u8>, String> {
                     .ok_or_else(|| "truncated \\x escape".to_string())?
                     .iter()
                     .collect();
-                let value =
-                    u8::from_str_radix(&hex, 16).map_err(|_| format!("bad hex digits in \\x{hex}"))?;
+                let value = u8::from_str_radix(&hex, 16)
+                    .map_err(|_| format!("bad hex digits in \\x{hex}"))?;
                 bytes.push(value);
                 index += 4;
             }
@@ -315,7 +315,9 @@ send: help
         let script = SerialScript::parse(text).expect("parse");
         assert_eq!(script.directives.len(), 4);
         assert!(matches!(script.directives[0], Directive::Expect { .. }));
-        assert!(matches!(script.directives[1], Directive::Send { ref line } if line == "status health"));
+        assert!(
+            matches!(script.directives[1], Directive::Send { ref line } if line == "status health")
+        );
         assert_eq!(
             script.expect_count(),
             2,
@@ -331,7 +333,8 @@ send: help
 
     #[test]
     fn decodes_raw_escapes_for_hmp_toggle() {
-        let script = SerialScript::parse("expect: prompt\nraw: \\x01c\nsend: status\n").expect("parse");
+        let script =
+            SerialScript::parse("expect: prompt\nraw: \\x01c\nsend: status\n").expect("parse");
         assert_eq!(script.directives.len(), 3);
         match &script.directives[1] {
             Directive::Raw { bytes, .. } => {
@@ -345,7 +348,8 @@ send: help
 
     #[test]
     fn parses_resend_until_with_budget_accounting() {
-        let text = "send: status\nresend: pkg install developer until installed|failed\nexpect: done\n";
+        let text =
+            "send: status\nresend: pkg install developer until installed|failed\nexpect: done\n";
         let script = SerialScript::parse(text).expect("parse");
         assert_eq!(script.directives.len(), 3);
         match &script.directives[1] {

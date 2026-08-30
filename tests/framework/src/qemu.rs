@@ -12,8 +12,8 @@ use std::{
 };
 
 pub use xtask_core::run::{
-    find_qemu_aarch64_binary, find_qemu_binary, find_qemu_riscv64_binary,
-    find_ovmf_code, find_ovmf_vars_template,
+    find_ovmf_code, find_ovmf_vars_template, find_qemu_aarch64_binary, find_qemu_binary,
+    find_qemu_riscv64_binary,
 };
 
 /// The full launcher state for one guest: program, exact args, and the env
@@ -195,7 +195,11 @@ fn data_image_for(platform: &str, paths: &crate::isolation::SlotPaths) -> PathBu
 pub fn current_builder_env() -> Vec<(String, String)> {
     BUILDER_ENV_KEYS
         .iter()
-        .filter_map(|key| std::env::var(key).ok().map(|value| ((*key).to_owned(), value)))
+        .filter_map(|key| {
+            std::env::var(key)
+                .ok()
+                .map(|value| ((*key).to_owned(), value))
+        })
         .collect()
 }
 

@@ -2,6 +2,7 @@
 
 extern crate alloc;
 
+pub mod audio;
 pub mod block;
 pub mod boot;
 pub mod dtb;
@@ -13,4 +14,3 @@ pub mod selftest;
 pub mod timer;
 pub mod uart;
 pub mod virtio;
-pub mod audio;

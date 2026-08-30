@@ -368,8 +368,7 @@ pub fn validate_exchange(request: &[u32], response: &[u32]) -> Result<(), Mailbo
 /// Fetch decoded values for `tag_id` out of an already-validated response.
 /// The returned slice carries the actual returned byte count rounded up.
 pub fn tag_values<'a>(response: &'a [u32], tag_id: u32) -> Option<TagValues<'a>> {
-    let (index, words) =
-        tag_entries(response).find(|&(index, _)| response[index] == tag_id)?;
+    let (index, words) = tag_entries(response).find(|&(index, _)| response[index] == tag_id)?;
     let end = (index + 3 + words).min(response.len());
     Some(TagValues {
         tag_id,
@@ -391,12 +390,7 @@ fn write_reg(base: u64, offset: usize, value: u32) {
     }
 }
 
-fn poll_status_clear(
-    base: u64,
-    mask: u32,
-    deadline: u64,
-    now: impl Fn() -> u64,
-) -> bool {
+fn poll_status_clear(base: u64, mask: u32, deadline: u64, now: impl Fn() -> u64) -> bool {
     loop {
         if read_reg(base, regs::STATUS) & mask == 0 {
             return true;
@@ -407,12 +401,7 @@ fn poll_status_clear(
     }
 }
 
-fn poll_status_set(
-    base: u64,
-    mask: u32,
-    deadline: u64,
-    now: impl Fn() -> u64,
-) -> bool {
+fn poll_status_set(base: u64, mask: u32, deadline: u64, now: impl Fn() -> u64) -> bool {
     loop {
         if read_reg(base, regs::STATUS) & mask != 0 {
             return true;
@@ -478,8 +467,8 @@ pub fn call_property_channel(
 
 #[cfg(test)]
 mod tests {
-    use std::vec::Vec;
     use super::*;
+    use std::vec::Vec;
 
     /// Largest-tagged golden request: full negotiation prelude used by the
     /// framebuffer flow — exact wire words pinned so firmware-visible layout
@@ -507,12 +496,27 @@ mod tests {
             finished,
             &[
                 (2 + 5 + 5 + 4 + 5 + 1) * 4, // envelope bytes
-                REQUEST_CODE,              // 0
-                TAG_SET_PHYSICAL_WIDTH_HEIGHT, 8, 0, 1920, 1080,
-                TAG_SET_VIRTUAL_WIDTH_HEIGHT, 8, 0, 1920, 1080,
-                TAG_SET_DEPTH,             4, 0, 32,
-                TAG_ALLOCATE_BUFFER,       8, 0, BUFFER_MIN_ALIGN_BYTES as u32, 0,
-                TAG_END,                   //
+                REQUEST_CODE,                // 0
+                TAG_SET_PHYSICAL_WIDTH_HEIGHT,
+                8,
+                0,
+                1920,
+                1080,
+                TAG_SET_VIRTUAL_WIDTH_HEIGHT,
+                8,
+                0,
+                1920,
+                1080,
+                TAG_SET_DEPTH,
+                4,
+                0,
+                32,
+                TAG_ALLOCATE_BUFFER,
+                8,
+                0,
+                BUFFER_MIN_ALIGN_BYTES as u32,
+                0,
+                TAG_END, //
             ][..]
         );
     }
@@ -593,7 +597,10 @@ mod tests {
         // Documented-assumption translation closes the loop.
         let physical = bus_to_physical(frame_base).expect("alias window");
         assert_eq!(physical, 0x00F3_0000);
-        assert_eq!(physical_to_bus(physical), Some(VC_BUS_SDRAM_ALIAS | 0x00F3_0000));
+        assert_eq!(
+            physical_to_bus(physical),
+            Some(VC_BUS_SDRAM_ALIAS | 0x00F3_0000)
+        );
         assert_eq!(frame_bytes, 0x0033_6000);
 
         let geometry =
@@ -655,10 +662,7 @@ mod tests {
 
     #[test]
     fn bus_translation_roundtrip_and_window_rejection() {
-        assert_eq!(
-            physical_to_bus(0x00F3_0000),
-            Some(0x40F3_0000)
-        );
+        assert_eq!(physical_to_bus(0x00F3_0000), Some(0x40F3_0000));
         assert_eq!(
             bus_to_physical(0xC000_0000 | 0x00F3_0000),
             Some(0x00F3_0000)

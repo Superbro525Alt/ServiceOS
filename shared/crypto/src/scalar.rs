@@ -116,7 +116,6 @@ impl Scalar {
         }
         Scalar::reduce_wide(&bytes)
     }
-
 }
 
 #[cfg(test)]
@@ -151,7 +150,11 @@ mod tests_scalar {
 
     #[test]
     fn mul_add_commutes_and_matches_tiny() {
-        let one = Scalar({ let mut x = [0u8; 32]; x[0] = 1; x });
+        let one = Scalar({
+            let mut x = [0u8; 32];
+            x[0] = 1;
+            x
+        });
         let mut ka = [0u8; 32];
         ka[0] = 0x37;
         ka[10] = 0xab;
@@ -217,12 +220,36 @@ mod tests_scalar {
         pow255[31] = 0x80;
         let all_ff = [0xffu8; 64];
         let cases: &[(&str, [u8; 64], &str)] = &[
-            ("five", wide64(&[5]), "0500000000000000000000000000000000000000000000000000000000000000"),
-            ("l", wide64(&l_bytes), "0000000000000000000000000000000000000000000000000000000000000000"),
-            ("l_plus_5", l_plus_5_input, "0500000000000000000000000000000000000000000000000000000000000000"),
-            ("three_l", wide3, "0000000000000000000000000000000000000000000000000000000000000000"),
-            ("two_pow_255", pow255, "85344775474a7f9723b63a8be92ae76dffffffffffffffffffffffffffffff0f"),
-            ("all_ff", all_ff, "000f9c44e31106a447938568a71b0ed065bef517d273ecce3d9a307c1b419903"),
+            (
+                "five",
+                wide64(&[5]),
+                "0500000000000000000000000000000000000000000000000000000000000000",
+            ),
+            (
+                "l",
+                wide64(&l_bytes),
+                "0000000000000000000000000000000000000000000000000000000000000000",
+            ),
+            (
+                "l_plus_5",
+                l_plus_5_input,
+                "0500000000000000000000000000000000000000000000000000000000000000",
+            ),
+            (
+                "three_l",
+                wide3,
+                "0000000000000000000000000000000000000000000000000000000000000000",
+            ),
+            (
+                "two_pow_255",
+                pow255,
+                "85344775474a7f9723b63a8be92ae76dffffffffffffffffffffffffffffff0f",
+            ),
+            (
+                "all_ff",
+                all_ff,
+                "000f9c44e31106a447938568a71b0ed065bef517d273ecce3d9a307c1b419903",
+            ),
         ];
         for (name, input, expect_hex) in cases.iter() {
             let got = Scalar::reduce_wide(input);

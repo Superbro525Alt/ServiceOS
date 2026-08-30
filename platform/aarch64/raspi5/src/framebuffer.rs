@@ -214,9 +214,7 @@ pub fn negotiate(firmware_revision_probe: bool) -> Option<NegotiatedDisplay> {
 /// Map raw [`FrameGeometry`] facts onto the kernel's BootInfo frame type.
 fn to_framebuffer_info(geometry: mailbox::FrameGeometry) -> FramebufferInfo {
     FramebufferInfo {
-        physical_base: serviceos_kernel_core::memory::PhysicalAddress::new(
-            geometry.physical_base,
-        ),
+        physical_base: serviceos_kernel_core::memory::PhysicalAddress::new(geometry.physical_base),
         byte_len: geometry.byte_len,
         width: geometry.width,
         height: geometry.height,

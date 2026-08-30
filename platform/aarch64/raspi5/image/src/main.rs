@@ -201,8 +201,7 @@ extern "C" fn serviceos_raspi5_entry(dtb_ptr: usize) -> ! {
     // scanout buffer then joins the MMIO region list like any other device
     // window). Missing mailbox node or any rejected tag keeps the platform
     // serial-first. UNTESTED WITHOUT HARDWARE.
-    let negotiated_display =
-        framebuffer::negotiate(true);
+    let negotiated_display = framebuffer::negotiate(true);
     match &negotiated_display {
         Some(display) => {
             boot_state.boot_info.framebuffer = Some(display.info);

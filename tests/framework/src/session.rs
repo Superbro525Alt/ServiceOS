@@ -10,8 +10,8 @@ use std::{
     io::Read,
     process::{Child, Command, Stdio},
     sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
     },
     thread::JoinHandle,
     time::{Duration, Instant},
@@ -96,12 +96,10 @@ impl Shared {
                 if let Ok(Some(status)) = child.try_wait() {
                     *locked(&self.exit_status) = Some(exit_detail(status));
                 } else {
-                    *locked(&self.exit_status) =
-                        Some("stream EOF with unreaped child".to_owned());
+                    *locked(&self.exit_status) = Some("stream EOF with unreaped child".to_owned());
                 }
             } else {
-                *locked(&self.exit_status) =
-                    Some("stream EOF with detached child".to_owned());
+                *locked(&self.exit_status) = Some("stream EOF with detached child".to_owned());
             }
         }
     }
@@ -125,21 +123,17 @@ fn locked<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 fn exit_detail(status: std::process::ExitStatus) -> String {
-    format!(
-        "status {status} (code {:?}, signal {:?})",
-        status.code(),
+    format!("status {status} (code {:?}, signal {:?})", status.code(), {
+        #[cfg(unix)]
         {
-            #[cfg(unix)]
-            {
-                use std::os::unix::process::ExitStatusExt;
-                status.signal()
-            }
-            #[cfg(not(unix))]
-            {
-                None::<i32>
-            }
+            use std::os::unix::process::ExitStatusExt;
+            status.signal()
         }
-    )
+        #[cfg(not(unix))]
+        {
+            None::<i32>
+        }
+    })
 }
 
 fn spawn_line_reader<R>(pipe: Option<R>, shared: Arc<Shared>) -> JoinHandle<()>
@@ -163,8 +157,7 @@ where
                         Ok(n) => {
                             for byte in &chunk[..n] {
                                 if *byte == b'\n' {
-                                    let text =
-                                        String::from_utf8_lossy(&buffer).into_owned();
+                                    let text = String::from_utf8_lossy(&buffer).into_owned();
                                     println!("{text}");
                                     shared.push_line(text.trim_end_matches('\r'));
                                     buffer.clear();
@@ -416,10 +409,10 @@ mod tests {
         let script = "echo witness-marker-alpha; sleep 60 & wait";
         let mut command = std::process::Command::new("/bin/sh");
         command.arg("-c").arg(script);
-        let spec = QemuSpec::from_command(&command, vec![(
-            "SERVICEOS_E2E_TEST_ONLY".to_owned(),
-            "1".to_owned(),
-        )]);
+        let spec = QemuSpec::from_command(
+            &command,
+            vec![("SERVICEOS_E2E_TEST_ONLY".to_owned(), "1".to_owned())],
+        );
         // Scripting contract under test ⇒ opt into the injection pipe.
         let mut spec = spec;
         spec.stdin_piped = true;
@@ -434,8 +427,7 @@ mod tests {
         // stdin stays injectable per the frozen API contract.
         session.send_bytes(b"\x03").expect("send_bytes");
 
-        let result =
-            session.wait_witness("never-appears", Instant::now() + Duration::from_secs(2));
+        let result = session.wait_witness("never-appears", Instant::now() + Duration::from_secs(2));
         assert!(matches!(result, Err(WaitOutcome::DeadlineExceeded)));
         let buffer = session.kill();
         assert!(buffer.contains("witness-marker-alpha"));
@@ -448,9 +440,9 @@ mod tests {
         let mut command = std::process::Command::new("/bin/sh");
         command.arg("-c").arg("echo bye; exit 7");
         let spec = QemuSpec::from_command(&command, Vec::new());
-        let mut session =
-            SerialSession::spawn(spec, Duration::from_millis(300)).expect("spawn sh");
-        let outcome = session.wait_witness("still-waiting", Instant::now() + Duration::from_secs(5));
+        let mut session = SerialSession::spawn(spec, Duration::from_millis(300)).expect("spawn sh");
+        let outcome =
+            session.wait_witness("still-waiting", Instant::now() + Duration::from_secs(5));
         assert!(matches!(outcome, Err(WaitOutcome::GuestExited(_))));
         assert!(session.has_exited());
         session.kill();

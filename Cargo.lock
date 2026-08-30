@@ -438,6 +438,7 @@ dependencies = [
 name = "xtask"
 version = "0.1.0"
 dependencies = [
+ "serviceos-crypto",
  "serviceos-e2e",
  "xtask-core",
 ]

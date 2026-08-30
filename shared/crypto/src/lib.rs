@@ -3,7 +3,7 @@
 //! Pure-Rust cryptographic primitives for ServiceOS.
 //!
 //! Everything here is implemented from scratch against the relevant specs
-//! (FIPS 180-4 for SHA-512, RFC 8032 for Ed25519) using only `core`, so the
+//! (FIPS 180-4 for SHA-256/SHA-512, RFC 8032 for Ed25519) using only `core`, so the
 //! crate builds for the bare-metal userspace targets as well as the host.
 //!
 //! Constant-time discipline: field arithmetic, scalar reduction, and point
@@ -19,4 +19,5 @@ mod field;
 pub mod host;
 mod point;
 mod scalar;
+pub mod sha256;
 pub mod sha512;

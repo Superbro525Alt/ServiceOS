@@ -15,6 +15,7 @@ use crate::{
 };
 
 const HASH_ALGORITHM: &str = "fnv1a64";
+const INTEGRITY_HASH_ALGORITHM: &str = "sha256";
 
 #[derive(Debug)]
 enum ReleaseStatus {
@@ -53,6 +54,7 @@ struct ArtifactRecord {
     relative_path: String,
     size: u64,
     hash: u64,
+    sha256: String,
 }
 
 pub fn run_release() -> Result<(), Box<dyn Error>> {
@@ -208,19 +210,24 @@ fn collect_artifacts(artifacts: &BuildArtifacts, status: ReleaseStatus) -> Platf
             let metadata = file.metadata().ok()?;
             let size = metadata.len();
             let hash = fnv1a64_file(&file).ok()?;
+            let sha256 = sha256_file(&file).ok()?;
             let relative_path = file
                 .strip_prefix(&root)
                 .unwrap_or(&file)
                 .to_string_lossy()
                 .into_owned();
             println!(
-                "  {:<48} {:>10} B fnv1a64={:016x}",
-                relative_path, size, hash
+                "  {:<48} {:>10} B fnv1a64={:016x} sha256={}",
+                relative_path,
+                size,
+                hash,
+                sha256_hex(&sha256)
             );
             Some(ArtifactRecord {
                 relative_path,
                 size,
                 hash,
+                sha256: sha256_hex(&sha256),
             })
         })
         .collect();
@@ -251,9 +258,9 @@ fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), Box<dyn Error
     Ok(())
 }
 
-/// FNV-1a 64-bit over the file bytes. Chosen because the workspace carries no
-/// hashing dependency yet; the manifest names the algorithm explicitly so a
-/// later sha256 migration stays honest.
+/// FNV-1a 64-bit over the file bytes. Retained alongside sha256 for
+/// backcompat with existing manifest readers; the manifest names both
+/// algorithms explicitly.
 fn fnv1a64_file(path: &Path) -> Result<u64, Box<dyn Error>> {
     let mut file = fs::File::open(path)?;
     let mut buffer = [0u8; 64 * 1024];
@@ -269,6 +276,30 @@ fn fnv1a64_file(path: &Path) -> Result<u64, Box<dyn Error>> {
         }
     }
     Ok(hash)
+}
+
+/// SHA-256 over the file bytes, streamed in fixed chunks through the
+/// in-repo `serviceos-crypto` implementation (no external dependencies).
+fn sha256_file(path: &Path) -> Result<[u8; 32], Box<dyn Error>> {
+    let mut file = fs::File::open(path)?;
+    let mut buffer = [0u8; 64 * 1024];
+    let mut hasher = serviceos_crypto::sha256::Sha256::new();
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hasher.finalize())
+}
+
+fn sha256_hex(digest: &[u8; 32]) -> String {
+    let mut out = String::with_capacity(64);
+    for byte in digest {
+        out.push_str(&format!("{:02x}", byte));
+    }
+    out
 }
 
 fn json_escape(value: &str) -> String {
@@ -294,6 +325,9 @@ fn write_manifest(path: &Path, entries: &[PlatformEntry]) -> Result<(), Box<dyn 
     json.push_str("  \"manifest\": \"serviceos-release\",\n");
     json.push_str("  \"profile\": \"release\",\n");
     json.push_str(format!("  \"hash_algorithm\": \"{HASH_ALGORITHM}\",\n").as_str());
+    json.push_str(
+        format!("  \"integrity_hash_algorithm\": \"{INTEGRITY_HASH_ALGORITHM}\",\n").as_str(),
+    );
     // Deliberately timestamp-free: the manifest itself stays byte-stable
     // across rebuilds of identical inputs.
     json.push_str("  \"reproducibility\": {\n");
@@ -310,7 +344,7 @@ fn write_manifest(path: &Path, entries: &[PlatformEntry]) -> Result<(), Box<dyn 
     );
     json.push_str("    ],\n");
     json.push_str(
-        "    \"notes\": \"artifact hashes use fnv1a64 until a sha256 dependency is added; platforms marked release+debug-userspace embed debug-built bootstore.bin because release-profile nested userspace links currently fail (rust-lld .text/.got overlap); swap hash_algorithm together with the values\"\n",
+        "    \"notes\": \"every artifact carries a 64-bit FNV-1a hash (legacy, kept for backcompat with existing manifest readers) plus a sha256 integrity hash computed in-repo by serviceos-crypto; the sha256 hash is an integrity digest, not a signature; platforms marked release+debug-userspace embed debug-built bootstore.bin because release-profile nested userspace links currently fail (rust-lld .text/.got overlap)\"\n",
     );
     json.push_str("  },\n");
     json.push_str("  \"platforms\": [\n");
@@ -333,10 +367,11 @@ fn write_manifest(path: &Path, entries: &[PlatformEntry]) -> Result<(), Box<dyn 
             json.push('\n');
             for (artifact_index, record) in entry.artifacts.iter().enumerate() {
                 json.push_str(&format!(
-                    "        {{\"path\": \"{}\", \"size\": {}, \"hash\": \"{:016x}\"}}{}\n",
+                    "        {{\"path\": \"{}\", \"size\": {}, \"hash\": \"{:016x}\", \"sha256\": \"{}\"}}{}\n",
                     json_escape(&record.relative_path),
                     record.size,
                     record.hash,
+                    record.sha256,
                     if artifact_index + 1 < entry.artifacts.len() {
                         ","
                     } else {
@@ -355,4 +390,52 @@ fn write_manifest(path: &Path, entries: &[PlatformEntry]) -> Result<(), Box<dyn 
 
     fs::write(path, json)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+
+    #[test]
+    fn sha256_hex_matches_known_vector() {
+        let digest = serviceos_crypto::sha256::digest(&[b"abc"]);
+        assert_eq!(
+            sha256_hex(&digest),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn sha256_file_hashes_fixture_like_the_manifest_writer() {
+        // Same streaming code path collect_artifacts uses for manifest
+        // entries, exercised on a real on-disk fixture.
+        let payload = b"serviceos release fixture 0123456789abcdef\n";
+        let path = env::temp_dir().join(format!(
+            "serviceos-xtask-sha256-{}",
+            serviceos_crypto::sha256::digest(&[&payload[..]])[0]
+        ));
+        fs::write(&path, payload).expect("write fixture");
+        let digest = sha256_file(&path).expect("hash fixture");
+        let _ = fs::remove_file(&path);
+
+        // Cross-checked against coreutils sha256sum on the same bytes.
+        assert_eq!(
+            sha256_hex(&digest),
+            "105679abc79909b86e9a967caf1580e0668e1e4bbeff5c0755b85ccb39337e3c"
+        );
+    }
+
+    #[test]
+    fn sha256_file_streams_large_fixture() {
+        let path = env::temp_dir().join("serviceos-xtask-sha256-large");
+        fs::write(&path, vec![b'a'; 200_000]).expect("write fixture");
+        let digest = sha256_file(&path).expect("hash fixture");
+        let _ = fs::remove_file(&path);
+        assert_eq!(
+            sha256_hex(&digest),
+            // sha256("a" x 200000), cross-checked against coreutils.
+            "2287d207f24a941ff3b56c04c8a25ad56b63e3023207b3bb5b4ac0c9869d74be"
+        );
+    }
 }

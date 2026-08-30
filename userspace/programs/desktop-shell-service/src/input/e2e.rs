@@ -50,7 +50,12 @@ fn maybe_emit(delivered: u64, lost: u64) {
         // Advance in fixed strides so milestone math stays honest even when
         // several events land between wakeups.
         if NEXT_EMIT
-            .compare_exchange(next, delivered + EMIT_EVERY, Ordering::Relaxed, Ordering::Relaxed)
+            .compare_exchange(
+                next,
+                delivered + EMIT_EVERY,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            )
             .is_ok()
         {
             let _ = rt::write_logf(

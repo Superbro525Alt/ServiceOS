@@ -3,10 +3,9 @@ use serviceos_userspace_runtime as rt;
 use rt::DesktopAppId;
 
 use crate::{
-    KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_A, KEY_EQUAL, KEY_F, KEY_H, KEY_J, KEY_LEFT, KEY_M,
-    KEY_MINUS, KEY_N, KEY_RIGHT, KEY_SPACE, KEY_UP, KEY_V, MOD_ALT, MOD_CTRL, MOD_SHIFT,
-    OverlayMode, PaletteAction, WORKSPACE_COUNT,
-    access::Corner,
+    KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_A, KEY_EQUAL, KEY_F, KEY_H, KEY_J, KEY_L, KEY_LEFT,
+    KEY_M, KEY_MINUS, KEY_N, KEY_RIGHT, KEY_SPACE, KEY_UP, KEY_V, MOD_ALT, MOD_CTRL, MOD_SHIFT,
+    OverlayMode, PaletteAction, WORKSPACE_COUNT, access::Corner,
 };
 
 /// One registry row: a shell action plus every surface that can trigger it
@@ -21,11 +20,7 @@ pub(crate) struct ActionEntry {
     pub(crate) quick_key: Option<u32>,
 }
 
-const fn action(
-    act: PaletteAction,
-    label: &'static str,
-    keywords: &'static str,
-) -> ActionEntry {
+const fn action(act: PaletteAction, label: &'static str, keywords: &'static str) -> ActionEntry {
     ActionEntry {
         action: act,
         label,
@@ -77,7 +72,7 @@ pub(crate) const ACTION_MAX: usize = 40;
 
 /// Single source of truth for shell actions across palette, hot corners,
 /// quick actions, and keyboard shortcuts.
-pub(crate) const REGISTRY: [ActionEntry; 35] = [
+pub(crate) const REGISTRY: [ActionEntry; 36] = [
     bind(
         PaletteAction::Launch(DesktopAppId::Settings),
         "Open Settings",
@@ -151,7 +146,11 @@ pub(crate) const REGISTRY: [ActionEntry; 35] = [
         "Toggle Clipboard History",
         "clipboard toggle",
     ),
-    action(PaletteAction::ShowMedia, "Show Media and Volume", "media volume sound"),
+    action(
+        PaletteAction::ShowMedia,
+        "Show Media and Volume",
+        "media volume sound",
+    ),
     bind(
         PaletteAction::ToggleMedia,
         "Toggle Media and Volume",
@@ -164,11 +163,46 @@ pub(crate) const REGISTRY: [ActionEntry; 35] = [
         "Cycle Settings Page",
         "settings page cycle",
     ),
-    action(PaletteAction::LockSession, "Lock Session", "lock session security"),
-    bind(ws(1), "Switch to Workspace 1", "workspace one", MOD_CTRL | MOD_ALT, KEY_1),
-    bind(ws(2), "Switch to Workspace 2", "workspace two", MOD_CTRL | MOD_ALT, KEY_2),
-    bind(ws(3), "Switch to Workspace 3", "workspace three", MOD_CTRL | MOD_ALT, KEY_3),
-    bind(ws(4), "Switch to Workspace 4", "workspace four", MOD_CTRL | MOD_ALT, KEY_4),
+    action(
+        PaletteAction::LockSession,
+        "Lock Session",
+        "lock session security",
+    ),
+    bind(
+        PaletteAction::ShowLogin,
+        "Login",
+        "login account sign-in session credentials",
+        MOD_ALT,
+        KEY_L,
+    ),
+    bind(
+        ws(1),
+        "Switch to Workspace 1",
+        "workspace one",
+        MOD_CTRL | MOD_ALT,
+        KEY_1,
+    ),
+    bind(
+        ws(2),
+        "Switch to Workspace 2",
+        "workspace two",
+        MOD_CTRL | MOD_ALT,
+        KEY_2,
+    ),
+    bind(
+        ws(3),
+        "Switch to Workspace 3",
+        "workspace three",
+        MOD_CTRL | MOD_ALT,
+        KEY_3,
+    ),
+    bind(
+        ws(4),
+        "Switch to Workspace 4",
+        "workspace four",
+        MOD_CTRL | MOD_ALT,
+        KEY_4,
+    ),
     bind(
         mws(1),
         "Move Window to Workspace 1",
@@ -365,7 +399,9 @@ pub(crate) fn execute_shell_action(
     action: PaletteAction,
 ) -> rt::Result<u32> {
     match action {
-        PaletteAction::Launch(app_id) => crate::windows::schedule_launch_or_focus_app(state, app_id),
+        PaletteAction::Launch(app_id) => {
+            crate::windows::schedule_launch_or_focus_app(state, app_id)
+        }
         PaletteAction::ShowNotifications => {
             state.overlay_mode = OverlayMode::Notifications;
             state.overlay_selection = 0;
@@ -405,6 +441,7 @@ pub(crate) fn execute_shell_action(
         }
         PaletteAction::CycleSettingsPage => cycle_settings_page(state),
         PaletteAction::LockSession => lock_session_stub(state),
+        PaletteAction::ShowLogin => crate::login::open_login_overlay(state),
         PaletteAction::SwitchWorkspace(workspace_id) => {
             crate::windows::switch_workspace(state, workspace_id)
         }
@@ -487,6 +524,19 @@ fn lock_session_stub(state: &mut crate::DesktopState) -> rt::Result<u32> {
 mod tests {
     use super::*;
     use crate::{KEY_DOWN, KEY_TAB};
+
+    #[test]
+    fn login_binding_does_not_collide_with_workspace_shortcuts() {
+        // Alt+L belongs to the login overlay; Ctrl+Alt+1..4 stay workspace keys.
+        assert_eq!(
+            action_for_binding(MOD_ALT, crate::KEY_L),
+            Some(PaletteAction::ShowLogin)
+        );
+        assert_ne!(
+            action_for_binding(MOD_ALT, crate::KEY_L),
+            action_for_binding(MOD_CTRL | MOD_ALT, crate::KEY_1)
+        );
+    }
 
     #[test]
     fn every_corner_is_bound_exactly_once() {

@@ -40,6 +40,9 @@ pub(super) fn handle_key_input(
 
     if action == AppKeyAction::Down {
         if key_code == KEY_ESC && state.overlay_mode != OverlayMode::None {
+            if state.overlay_mode == OverlayMode::Login {
+                crate::login::reset_login(state);
+            }
             state.overlay_mode = OverlayMode::None;
             state.overlay_selection = 0;
             state.switcher_selection = 0;
@@ -69,6 +72,9 @@ pub(super) fn handle_key_input(
         }
         if state.overlay_mode == OverlayMode::WorkspaceOverview {
             return overlays::handle_workspace_overview_key(state, key_code);
+        }
+        if state.overlay_mode == OverlayMode::Login {
+            return crate::login::handle_login_key(state, key_code, modifiers);
         }
     }
 
@@ -108,6 +114,11 @@ pub(super) fn handle_text_input(state: &mut DesktopState, scalar: u32) -> rt::Re
     let Some(ch) = core::char::from_u32(scalar) else {
         return Ok(focused_surface_id(state));
     };
+    if state.overlay_mode == OverlayMode::Login {
+        // Login fields are fed through the scancode path only; unicode text
+        // events must not leak into focused apps behind the overlay.
+        return Ok(focused_surface_id(state));
+    }
     if state.overlay_mode == OverlayMode::CommandPalette {
         if !ch.is_control() && state.palette_query_len < state.palette_query.len() {
             state.palette_query[state.palette_query_len] = ch as u8;
@@ -130,4 +141,3 @@ pub(super) fn handle_text_input(state: &mut DesktopState, scalar: u32) -> rt::Re
     rt::app_control_text(control, ch)?;
     Ok(state.apps[index].window.surface_id)
 }
-

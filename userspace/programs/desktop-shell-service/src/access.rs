@@ -455,10 +455,7 @@ fn persist_access(state: &crate::DesktopState) {
 }
 
 /// Magnifier zoom step, shared by the action registry (Ctrl+Alt+= / Ctrl+Alt+-).
-pub(crate) fn apply_zoom_step(
-    state: &mut crate::DesktopState,
-    zoom_in: bool,
-) -> rt::Result<u32> {
+pub(crate) fn apply_zoom_step(state: &mut crate::DesktopState, zoom_in: bool) -> rt::Result<u32> {
     state.access.zoom_index = step_zoom(state.access.zoom_index, zoom_in);
     persist_access(state);
     sync_zoom(state)?;

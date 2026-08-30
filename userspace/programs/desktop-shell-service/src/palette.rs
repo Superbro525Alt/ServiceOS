@@ -1,9 +1,9 @@
 use serviceos_userspace_runtime::DesktopAppId;
 
 use crate::{
+    PaletteEntry,
     state::{APP_COUNT, AppSlot, OVERLAY_RESULT_MAX, PALETTE_ACTION_MAX, PaletteAction},
     windows::{self},
-    PaletteEntry,
 };
 
 pub(crate) fn palette_matches(
@@ -181,6 +181,7 @@ mod tests {
         for (query, expected) in [
             ("media", PaletteAction::ToggleMedia),
             ("lock", PaletteAction::LockSession),
+            ("login", PaletteAction::ShowLogin),
             ("settings", PaletteAction::CycleSettingsPage),
             ("dismiss", PaletteAction::DismissAllNotifications),
             ("workspace", PaletteAction::SwitchWorkspace(4)),

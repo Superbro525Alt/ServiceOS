@@ -31,8 +31,8 @@ pub(crate) use drag::{
 };
 pub(crate) use encode::{encode_window_page, pack_i32_pair};
 pub(crate) use gestures::{
-    SnapZone, hide_snap_preview, snap_zone_at, step_workspace_selection, overview_tile_at,
-    overview_tile_rect, update_snap_preview,
+    SnapZone, hide_snap_preview, overview_tile_at, overview_tile_rect, snap_zone_at,
+    step_workspace_selection, update_snap_preview,
 };
 pub(crate) use layout::{
     allocate_z_order, app_slot_index, app_title, apply_window_geometry,
@@ -49,7 +49,6 @@ pub(crate) use lifecycle::{
 #[cfg(test)]
 pub(crate) use notifications::mru_promote;
 pub(crate) use notifications::{
-    dismiss_all_notifications, dismiss_selected_notification, post_notification,
-    push_recent_focus,
+    dismiss_all_notifications, dismiss_selected_notification, post_notification, push_recent_focus,
 };
 pub(crate) use shadow::sync_focus_shadow;

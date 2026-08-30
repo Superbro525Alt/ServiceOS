@@ -84,7 +84,9 @@ pub(crate) fn crash_notification_text(
     let _ = write!(
         &mut text,
         "App crashed \u{2014} {}: {}, address {:#x}",
-        app_title, fault.class.explanation(), fault.address
+        app_title,
+        fault.class.explanation(),
+        fault.address
     );
     text
 }
@@ -187,9 +189,11 @@ mod tests {
             "Terminal",
             &decode_user_fault_exit(pack(6, CrashClass::ExecNonExec, 0x401000)).expect("fault"),
         );
-        assert!(core::str::from_utf8(exec.as_bytes())
-            .expect("utf-8")
-            .contains("Terminal: jumped to non-executable memory, address 0x401000"));
+        assert!(
+            core::str::from_utf8(exec.as_bytes())
+                .expect("utf-8")
+                .contains("Terminal: jumped to non-executable memory, address 0x401000")
+        );
     }
 
     #[test]

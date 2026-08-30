@@ -8,6 +8,7 @@ mod crash;
 mod input;
 mod launcher_docs;
 mod logging;
+mod login;
 mod media;
 mod palette;
 mod palette_docs;
@@ -150,6 +151,9 @@ fn main() -> u64 {
         switcher_selection: 0,
         palette_query: [0; PALETTE_QUERY_MAX],
         palette_query_len: 0,
+        login: login::LoginState::new(),
+        shell_client: rt::INVALID_HANDLE,
+        login_endpoint: rt::INVALID_HANDLE,
         storage_handle,
         doc_hits: [crate::palette_docs::DocHit {
             path: [0; crate::palette_docs::DOC_PATH_MAX],
@@ -351,8 +355,7 @@ fn main() -> u64 {
                 }
             }
             if now >= state.next_launcher_docs_refresh {
-                state.next_launcher_docs_refresh =
-                    now.saturating_add(LAUNCHER_DOCS_REFRESH_TICKS);
+                state.next_launcher_docs_refresh = now.saturating_add(LAUNCHER_DOCS_REFRESH_TICKS);
                 if launcher_docs::refresh_launcher_docs(&mut state)
                     && render::render_desktop(&mut state).is_err()
                 {

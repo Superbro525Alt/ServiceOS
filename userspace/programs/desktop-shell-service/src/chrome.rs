@@ -140,6 +140,17 @@ pub(crate) fn create_chrome(
         theme.panel,
         false,
     )?;
+    let (_, login_handle) = rt::graphics_surface_create(
+        graphics_handle,
+        SESSION_ID,
+        ((output_width.saturating_sub(crate::LOGIN_WIDTH)) / 2) as i32,
+        ((output_height.saturating_sub(crate::LOGIN_HEIGHT)) / 2) as i32,
+        crate::LOGIN_WIDTH,
+        crate::LOGIN_HEIGHT,
+        CURSOR_Z_ORDER - 3,
+        theme.panel,
+        false,
+    )?;
     let (_, cursor_handle) = rt::graphics_surface_create(
         graphics_handle,
         SESSION_ID,
@@ -165,6 +176,7 @@ pub(crate) fn create_chrome(
         media_handle,
         gesture_handle,
         workspace_handle,
+        login_handle,
         cursor_handle,
         output_width,
         output_height,
@@ -235,6 +247,12 @@ pub(crate) fn overlay_rect(
             crate::WORKSPACE_OVERVIEW_WIDTH as i32,
             crate::WORKSPACE_OVERVIEW_HEIGHT as i32,
         )),
+        crate::OverlayMode::Login => Some((
+            ((output_width.saturating_sub(crate::LOGIN_WIDTH)) / 2) as i32,
+            ((output_height.saturating_sub(crate::LOGIN_HEIGHT)) / 2) as i32,
+            crate::LOGIN_WIDTH as i32,
+            crate::LOGIN_HEIGHT as i32,
+        )),
     }
 }
 
@@ -267,6 +285,7 @@ mod tests {
             media_handle: 0,
             gesture_handle: 0,
             workspace_handle: 0,
+            login_handle: 0,
             cursor_handle: 0,
             output_width: 1280,
             output_height: 800,
@@ -328,6 +347,7 @@ pub(crate) fn show_chrome(chrome: &Chrome) -> rt::Result<()> {
     rt::surface_set_visibility(chrome.notifications_handle, false)?;
     rt::surface_set_visibility(chrome.clipboard_handle, false)?;
     rt::surface_set_visibility(chrome.media_handle, false)?;
+    rt::surface_set_visibility(chrome.login_handle, false)?;
     rt::surface_set_visibility(chrome.cursor_handle, true)?;
     Ok(())
 }

@@ -13,7 +13,7 @@ use crate::{
     access::{Theme, resolve_theme},
     media::{MEDIA_LINE_COUNT, MEDIA_OVERLAY_HEIGHT, MEDIA_OVERLAY_WIDTH},
     palette_action_label, palette_matches,
-    windows::{app_title, launcher_line, running_app_count, overview_tile_rect, sync_focus_shadow},
+    windows::{app_title, launcher_line, overview_tile_rect, running_app_count, sync_focus_shadow},
 };
 
 fn theme_of(state: &DesktopState) -> Theme {
@@ -456,6 +456,7 @@ fn render_overlays(state: &mut DesktopState) -> rt::Result<()> {
     let show_clipboard = state.overlay_mode == OverlayMode::ClipboardHistory;
     let show_media = state.overlay_mode == OverlayMode::Media;
     let show_workspace = state.overlay_mode == OverlayMode::WorkspaceOverview;
+    let show_login = state.overlay_mode == OverlayMode::Login;
 
     rt::surface_set_visibility(state.chrome.switcher_handle, show_switcher)?;
     rt::surface_set_visibility(state.chrome.palette_handle, show_palette)?;
@@ -463,6 +464,7 @@ fn render_overlays(state: &mut DesktopState) -> rt::Result<()> {
     rt::surface_set_visibility(state.chrome.clipboard_handle, show_clipboard)?;
     rt::surface_set_visibility(state.chrome.media_handle, show_media)?;
     rt::surface_set_visibility(state.chrome.workspace_handle, show_workspace)?;
+    rt::surface_set_visibility(state.chrome.login_handle, show_login)?;
 
     if show_switcher {
         render_switcher_overlay(state)?;
@@ -482,7 +484,123 @@ fn render_overlays(state: &mut DesktopState) -> rt::Result<()> {
     if show_workspace {
         render_workspace_overlay(state)?;
     }
+    if show_login {
+        render_login_overlay(state)?;
+    }
     Ok(())
+}
+
+/// Graphical login overlay: name + secret fields over the account-service
+/// LOGIN contract (via the shell client-session path). The secret renders
+/// only as asterisks; the footer keeps the security posture honest.
+fn render_login_overlay(state: &DesktopState) -> rt::Result<()> {
+    const LOGIN_FIELD_X: i32 = 16;
+    const LOGIN_MARK_X: i32 = 6;
+    const NAME_Y: i32 = 64;
+    const SECRET_Y: i32 = 88;
+    const MESSAGE_Y: i32 = 116;
+    const FOOTER_Y: i32 = 160;
+
+    let surface = state.chrome.login_handle;
+    let t = theme_of(state);
+    rt::surface_set_fill(surface, t.panel)?;
+    rt::surface_clear_scene(surface)?;
+    rt::surface_set_rect(
+        surface,
+        0,
+        0,
+        0,
+        crate::LOGIN_WIDTH,
+        ui::TITLEBAR_HEIGHT,
+        t.accent_dim,
+        true,
+    )?;
+    rt::surface_set_label(surface, 0, 10, 9, t.text, "LOG IN")?;
+
+    let name_text = str::from_utf8(&state.login.name[..state.login.name_len]).unwrap_or("");
+    let active_name = if state.login.secret_field_active {
+        "  "
+    } else {
+        "> "
+    };
+    let mut name_line: FixedLogBuffer<48> = FixedLogBuffer::new();
+    let _ = write!(name_line, "NAME  {}{}", active_name, name_text);
+    rt::surface_set_label(
+        surface,
+        1,
+        LOGIN_FIELD_X,
+        NAME_Y,
+        t.text,
+        name_line.as_str(),
+    )?;
+
+    let mut secret_line: FixedLogBuffer<80> = FixedLogBuffer::new();
+    let active_secret = if state.login.secret_field_active {
+        "> "
+    } else {
+        "  "
+    };
+    let mask = secret_mask(state);
+    let _ = write!(secret_line, "SECRET{}{}", active_secret, mask.as_str());
+    rt::surface_set_label(
+        surface,
+        2,
+        LOGIN_FIELD_X,
+        SECRET_Y,
+        t.text,
+        secret_line.as_str(),
+    )?;
+
+    let mark = if state.login.secret_field_active {
+        "SECRET"
+    } else {
+        "NAME  "
+    };
+    rt::surface_set_label(
+        surface,
+        3,
+        LOGIN_MARK_X,
+        if state.login.secret_field_active {
+            SECRET_Y
+        } else {
+            NAME_Y
+        },
+        t.accent,
+        mark,
+    )?;
+
+    let message = match state.login.phase {
+        crate::login::LoginPhase::Shown => "TAB SWITCH FIELD - ENTER LOGS IN - ESC CANCELS",
+        crate::login::LoginPhase::Authenticating => "CHECKING CREDENTIALS...",
+        crate::login::LoginPhase::Failed => state.login.message_str(),
+    };
+    let message_color = match state.login.phase {
+        crate::login::LoginPhase::Failed => t.accent,
+        _ => t.text_secondary,
+    };
+    rt::surface_set_label(surface, 4, LOGIN_FIELD_X, MESSAGE_Y, message_color, message)?;
+
+    rt::surface_set_label(
+        surface,
+        5,
+        LOGIN_FIELD_X,
+        FOOTER_Y,
+        t.text_muted,
+        "SINGLE OPERATOR - FNV KDF IS INTEGRITY-GRADE ONLY",
+    )?;
+    Ok(())
+}
+
+/// One asterisk per secret byte, capped by the label buffer budget.
+fn secret_mask(state: &DesktopState) -> FixedLogBuffer<72> {
+    let mut mask: FixedLogBuffer<72> = FixedLogBuffer::new();
+    for _ in 0..state.login.secret_len.min(32) {
+        let _ = write!(mask, "*");
+    }
+    if state.login.secret_len > 32 {
+        let _ = write!(mask, "+{}", state.login.secret_len - 32);
+    }
+    mask
 }
 
 /// Mission-control style workspace grid: one tile per workspace with its
@@ -531,7 +649,11 @@ fn render_workspace_overlay(state: &DesktopState) -> rt::Result<()> {
             &mut sub_buf,
             "{} WIN{}",
             windows,
-            if state.active_workspace == workspace_id { " *ACTIVE" } else { "" }
+            if state.active_workspace == workspace_id {
+                " *ACTIVE"
+            } else {
+                ""
+            }
         );
         rt::surface_set_label(
             surface,
@@ -746,7 +868,11 @@ fn render_notification_overlay(state: &DesktopState) -> rt::Result<()> {
     }
     let selected_reopenable = state
         .notification_history
-        .get(state.overlay_selection.min(crate::NOTIFICATION_HISTORY_MAX - 1))
+        .get(
+            state
+                .overlay_selection
+                .min(crate::NOTIFICATION_HISTORY_MAX - 1),
+        )
         .is_some_and(|entry| {
             entry.occupied && entry.reopenable && state.notification_history_len != 0
         });

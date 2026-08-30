@@ -11,3 +11,4 @@ lookup=session-service:send
 lookup=network-service:send
 lookup=status-service:send
 lookup=storage-service:send
+lookup=shell-service:send

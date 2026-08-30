@@ -80,6 +80,13 @@ pub(crate) const KEY_2: u32 = 3;
 pub(crate) const KEY_3: u32 = 4;
 pub(crate) const KEY_4: u32 = 5;
 pub(crate) const KEY_5: u32 = 6;
+pub(crate) const KEY_L: u32 = 38;
+pub(crate) const LOGIN_WIDTH: u32 = 340;
+pub(crate) const LOGIN_HEIGHT: u32 = 190;
+/// Caps mirror the account-service wire limits (MAX_NAME / MAX_SECRET).
+pub(crate) const LOGIN_NAME_MAX: usize = 32;
+pub(crate) const LOGIN_SECRET_MAX: usize = 64;
+pub(crate) const LOGIN_MESSAGE_MAX: usize = 96;
 
 #[derive(Clone, Copy)]
 pub(crate) struct Chrome {
@@ -94,6 +101,7 @@ pub(crate) struct Chrome {
     pub(crate) media_handle: rt::Handle,
     pub(crate) gesture_handle: rt::Handle,
     pub(crate) workspace_handle: rt::Handle,
+    pub(crate) login_handle: rt::Handle,
     pub(crate) cursor_handle: rt::Handle,
     pub(crate) output_width: u32,
     pub(crate) output_height: u32,
@@ -189,6 +197,7 @@ pub(crate) enum OverlayMode {
     ClipboardHistory,
     Media,
     WorkspaceOverview,
+    Login,
 }
 
 #[derive(Clone, Copy)]
@@ -343,6 +352,11 @@ pub(crate) struct DesktopState {
     pub(crate) switcher_selection: usize,
     pub(crate) palette_query: [u8; PALETTE_QUERY_MAX],
     pub(crate) palette_query_len: usize,
+    pub(crate) login: crate::login::LoginState,
+    /// Cached shell public-channel handle (INVALID until first use).
+    pub(crate) shell_client: rt::Handle,
+    /// Cached shell operator-session endpoint (INVALID until first login).
+    pub(crate) login_endpoint: rt::Handle,
     pub(crate) storage_handle: rt::Handle,
     pub(crate) doc_hits: [crate::palette_docs::DocHit; crate::palette_docs::DOC_HITS_MAX],
     pub(crate) doc_hits_len: usize,
@@ -383,6 +397,7 @@ pub(crate) enum PaletteAction {
     FocusNotificationSource,
     CycleSettingsPage,
     LockSession,
+    ShowLogin,
     SwitchWorkspace(u32),
     MoveFocusedToWorkspace(u32),
     FocusNext,

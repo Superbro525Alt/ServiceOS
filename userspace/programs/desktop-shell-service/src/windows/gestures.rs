@@ -54,15 +54,15 @@ pub(crate) fn snap_target_rect(
 ) -> Option<(i32, i32, u32, u32)> {
     let area_height = output_height.saturating_sub(TOPBAR_HEIGHT);
     match zone {
-        SnapZone::LeftHalf => Some((
-            0,
-            TOPBAR_HEIGHT as i32,
-            output_width / 2,
-            area_height,
-        )),
+        SnapZone::LeftHalf => Some((0, TOPBAR_HEIGHT as i32, output_width / 2, area_height)),
         SnapZone::RightHalf => {
             let left_span = output_width / 2;
-            Some((left_span as i32, TOPBAR_HEIGHT as i32, output_width - left_span, area_height))
+            Some((
+                left_span as i32,
+                TOPBAR_HEIGHT as i32,
+                output_width - left_span,
+                area_height,
+            ))
         }
         SnapZone::MinimizeBottom | SnapZone::None => None,
     }
@@ -176,7 +176,8 @@ pub(crate) fn update_snap_preview(
 ) -> rt::Result<()> {
     let surface = state.chrome.gesture_handle;
     let show = zone != SnapZone::None;
-    let (strips, count) = zone_preview_strips(zone, state.chrome.output_width, state.chrome.output_height);
+    let (strips, count) =
+        zone_preview_strips(zone, state.chrome.output_width, state.chrome.output_height);
     for strip in strips.iter() {
         if strip.slot < count as u32 {
             rt::surface_set_rect(
@@ -210,7 +211,10 @@ mod tests {
     #[test]
     fn edge_bands_trigger_side_snaps_below_topbar() {
         assert_eq!(snap_zone_at(0, 300, W, H), SnapZone::LeftHalf);
-        assert_eq!(snap_zone_at(SNAP_EDGE_BAND_PX - 1, 300, W, H), SnapZone::LeftHalf);
+        assert_eq!(
+            snap_zone_at(SNAP_EDGE_BAND_PX - 1, 300, W, H),
+            SnapZone::LeftHalf
+        );
         assert_eq!(snap_zone_at(SNAP_EDGE_BAND_PX, 300, W, H), SnapZone::None);
         assert_eq!(snap_zone_at(W as i32 - 1, 300, W, H), SnapZone::RightHalf);
         assert_eq!(
@@ -225,11 +229,23 @@ mod tests {
 
     #[test]
     fn bottom_band_wins_and_topbar_never_snaps() {
-        assert_eq!(snap_zone_at(4, H as i32 - 1, W, H), SnapZone::MinimizeBottom);
-        assert_eq!(snap_zone_at(W as i32 - 4, H as i32 - SNAP_EDGE_BAND_PX, W, H), SnapZone::MinimizeBottom);
-        assert_eq!(snap_zone_at(0, H as i32 - SNAP_EDGE_BAND_PX - 1, W, H), SnapZone::LeftHalf);
+        assert_eq!(
+            snap_zone_at(4, H as i32 - 1, W, H),
+            SnapZone::MinimizeBottom
+        );
+        assert_eq!(
+            snap_zone_at(W as i32 - 4, H as i32 - SNAP_EDGE_BAND_PX, W, H),
+            SnapZone::MinimizeBottom
+        );
+        assert_eq!(
+            snap_zone_at(0, H as i32 - SNAP_EDGE_BAND_PX - 1, W, H),
+            SnapZone::LeftHalf
+        );
         assert_eq!(snap_zone_at(0, 0, W, H), SnapZone::None);
-        assert_eq!(snap_zone_at(0, (TOPBAR_HEIGHT - 1) as i32, W, H), SnapZone::None);
+        assert_eq!(
+            snap_zone_at(0, (TOPBAR_HEIGHT - 1) as i32, W, H),
+            SnapZone::None
+        );
         assert_eq!(snap_zone_at(640, 400, W, H), SnapZone::None);
     }
 

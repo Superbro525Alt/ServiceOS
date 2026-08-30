@@ -421,8 +421,11 @@ pub(crate) fn close_app(state: &mut DesktopState, app_id: DesktopAppId) -> rt::R
 
 pub(crate) fn refresh_apps(state: &mut DesktopState) -> rt::Result<()> {
     let mut changed = false;
-    let mut pending_fault_notice: Option<(DesktopAppId, bool, FixedLogBuffer<MAX_NOTIFICATION_BYTES>)> =
-        None;
+    let mut pending_fault_notice: Option<(
+        DesktopAppId,
+        bool,
+        FixedLogBuffer<MAX_NOTIFICATION_BYTES>,
+    )> = None;
     let mut exited_app_to_clear: Option<DesktopAppId> = None;
     for index in 0..state.apps.len() {
         if !state.apps[index].running || state.apps[index].task_handle == rt::INVALID_HANDLE {

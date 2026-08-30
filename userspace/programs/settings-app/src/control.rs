@@ -8,6 +8,7 @@ use crate::netdiag;
 use crate::render::render;
 use crate::security::{first_actionable_runtime, security_policy_count, update_policy};
 use crate::state::*;
+use crate::wifi;
 
 pub(crate) enum ControlFlow {
     Continue,
@@ -120,18 +121,32 @@ fn handle_pointer_down(
         state.page = SettingsPage::System;
         state.editing_note = false;
         state.editing_hostname = false;
+        state.wifi.stop_editing();
         return Ok(true);
     }
     if x >= TAB_SECURITY_X0 && x < TAB_SECURITY_X1 && y >= TAB_Y0 && y < TAB_Y1 {
         state.page = SettingsPage::Security;
         state.editing_note = false;
         state.editing_hostname = false;
+        state.wifi.stop_editing();
         return Ok(true);
     }
     if x >= TAB_NETWORK_X0 && x < TAB_NETWORK_X1 && y >= TAB_Y0 && y < TAB_Y1 {
         state.page = SettingsPage::Network;
         state.editing_note = false;
+        state.wifi.stop_editing();
         return Ok(true);
+    }
+    if x >= TAB_WIFI_X0 && x < TAB_WIFI_X1 && y >= TAB_Y0 && y < TAB_Y1 {
+        state.page = SettingsPage::Wifi;
+        state.editing_note = false;
+        state.editing_hostname = false;
+        refresh_saved(network_handle, state);
+        return Ok(true);
+    }
+
+    if state.page == SettingsPage::Wifi {
+        return handle_wifi_pointer_down(network_handle, state, x, y);
     }
 
     if state.page == SettingsPage::Network {
@@ -226,11 +241,15 @@ fn handle_pointer_down(
 }
 
 /// Feed one text event into the active editor (note field on System,
-/// hostname field on Network). Returns whether the frame changed.
+/// hostname field on Network, modal prompt on Wifi). Returns whether the
+/// frame changed.
 fn append_text_input(state: &mut AppState, word: u64) -> bool {
     let Some(ch) = char::from_u32(word as u32) else {
         return false;
     };
+    if state.wifi.prompt.is_some() {
+        return wifi::wifi_prompt_char(&mut state.wifi, ch);
+    }
     if state.editing_note {
         if ch == '\n' {
             state.editing_note = false;
@@ -294,6 +313,96 @@ fn handle_network_pointer_down(
     Ok(true)
 }
 
+/// Load the saved-network list into page state. Failures (Unsupported
+/// without a backend) leave the list empty and surface in `saved_total`
+/// semantics: count stays 0 and the page shows the honest unavailable line.
+fn refresh_saved(network_handle: rt::Handle, state: &mut AppState) {
+    match wifi::run_saved_list(network_handle, &mut state.wifi.saved) {
+        Ok(total) => {
+            state.wifi.saved_count = state.wifi.saved.len();
+            state.wifi.saved_total = total;
+        }
+        Err(_) => {
+            state.wifi.saved_count = 0;
+            state.wifi.saved_total = 0;
+        }
+    }
+    if state.wifi.selected_saved >= state.wifi.saved_count {
+        state.wifi.selected_saved = state.wifi.saved_count.saturating_sub(1);
+    }
+}
+
+/// Pointer routing on the Wi-Fi page. While the psk/saved-add prompt is
+/// open it is modal: clicks inside keep it, clicks outside cancel it, and
+/// no button underneath fires.
+fn handle_wifi_pointer_down(
+    network_handle: rt::Handle,
+    state: &mut AppState,
+    x: i32,
+    y: i32,
+) -> rt::Result<bool> {
+    if state.wifi.prompt.is_some() {
+        let inside = x >= WIFI_ROW_X0
+            && x < WIFI_ROW_X1
+            && y >= WIFI_SCAN_ROW_Y0.saturating_sub(10)
+            && y < WIFI_ACTION_Y0;
+        if !inside {
+            state.wifi.stop_editing();
+        }
+        return Ok(true);
+    }
+
+    if x >= WIFI_SCAN_BTN_X0 && x < WIFI_SCAN_BTN_X1 && y >= WIFI_BTN_Y0 && y < WIFI_BTN_Y1 {
+        wifi::run_scan(network_handle, &mut state.wifi);
+        return Ok(true);
+    }
+    if x >= WIFI_JOIN_BTN_X0 && x < WIFI_JOIN_BTN_X1 && y >= WIFI_BTN_Y0 && y < WIFI_BTN_Y1 {
+        wifi::begin_join(network_handle, &mut state.wifi);
+        return Ok(true);
+    }
+    for index in 0..state.wifi.scan_count {
+        let y0 = WIFI_SCAN_ROW_Y0 + (index as i32) * WIFI_ROW_H;
+        if x >= WIFI_ROW_X0 && x < WIFI_ROW_X1 && y >= y0 && y < y0 + WIFI_ROW_H {
+            state.wifi.selected_scan = index;
+            return Ok(true);
+        }
+    }
+    for index in 0..state.wifi.saved_count {
+        let y0 = WIFI_SAVED_ROW_Y0 + (index as i32) * WIFI_ROW_H;
+        if x >= WIFI_ROW_X0 && x < WIFI_ROW_X1 && y >= y0 && y < y0 + WIFI_ROW_H {
+            state.wifi.selected_saved = index;
+            return Ok(true);
+        }
+    }
+    if x >= WIFI_ADD_BTN_X0 && x < WIFI_ADD_BTN_X1 && y >= WIFI_ACTION_Y0 && y < WIFI_ACTION_Y1 {
+        state.wifi.prompt_len = 0;
+        state.wifi.prompt_edit = [0; WIFI_EDIT_MAX_BYTES];
+        state.wifi.prompt = Some(WifiPrompt::SavedSsid);
+        return Ok(true);
+    }
+    if x >= WIFI_REMOVE_BTN_X0
+        && x < WIFI_REMOVE_BTN_X1
+        && y >= WIFI_ACTION_Y0
+        && y < WIFI_ACTION_Y1
+    {
+        if state.wifi.saved_count == 0 {
+            return Ok(true);
+        }
+        let selected = state.wifi.selected_saved.min(state.wifi.saved_count - 1);
+        let record = state.wifi.saved[selected];
+        state.wifi.saved_remove_outcome = Some(
+            rt::network_wifi_saved_remove(
+                network_handle,
+                wifi::ssid_str(&record.ssid, record.ssid_len),
+            )
+            .map_err(crate::wifi::classify),
+        );
+        refresh_saved(network_handle, state);
+        return Ok(true);
+    }
+    Ok(true)
+}
+
 fn handle_key_down(
     network_handle: rt::Handle,
     security_handle: rt::Handle,
@@ -322,7 +431,39 @@ fn handle_key_down(
             state.page = state.page.next();
             state.editing_note = false;
             state.editing_hostname = false;
+            state.wifi.stop_editing();
             Ok(true)
+        }
+        14 if state.wifi.prompt.is_some() => {
+            Ok(wifi::wifi_prompt_backspace(&mut state.wifi))
+        }
+        28 if state.wifi.prompt.is_some() => {
+            let changed = wifi::wifi_prompt_enter(network_handle, &mut state.wifi);
+            if changed && state.wifi.prompt.is_none() && state.wifi.saved_add_outcome.is_some() {
+                refresh_saved(network_handle, state);
+            }
+            Ok(changed)
+        }
+        1 if state.wifi.prompt.is_some() => {
+            state.wifi.stop_editing();
+            Ok(true)
+        }
+        28 if state.page == SettingsPage::Wifi => {
+            Ok(wifi::begin_join(network_handle, &mut state.wifi))
+        }
+        103 if state.page == SettingsPage::Wifi => {
+            if state.wifi.selected_scan > 0 {
+                state.wifi.selected_scan -= 1;
+                return Ok(true);
+            }
+            Ok(false)
+        }
+        108 if state.page == SettingsPage::Wifi => {
+            if state.wifi.selected_scan + 1 < state.wifi.scan_count {
+                state.wifi.selected_scan += 1;
+                return Ok(true);
+            }
+            Ok(false)
         }
         103 if state.page == SettingsPage::Security => {
             if state.selected_policy_index > 0 {
@@ -374,17 +515,20 @@ mod tests {
             ping_failed: false,
             ping_target: [0; PING_TARGET_MAX_BYTES],
             ping_target_len: 0,
+            wifi: WifiUiState::new(),
         }
     }
 
     #[test]
-    fn tab_key_cycles_all_three_pages() {
+    fn tab_key_cycles_all_four_pages() {
         let mut state = app_state();
         assert_eq!(state.page, SettingsPage::System);
         let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 15);
         assert_eq!(state.page, SettingsPage::Security);
         let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 15);
         assert_eq!(state.page, SettingsPage::Network);
+        let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 15);
+        assert_eq!(state.page, SettingsPage::Wifi);
         let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 15);
         assert_eq!(state.page, SettingsPage::System);
     }
@@ -393,6 +537,10 @@ mod tests {
     fn tab_key_leaves_editing_state() {
         let mut state = app_state();
         state.page = SettingsPage::Network;
+        state.editing_hostname = true;
+        let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 15);
+        assert!(!state.editing_hostname);
+        assert_eq!(state.page, SettingsPage::Wifi);
         state.editing_hostname = true;
         let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 15);
         assert!(!state.editing_hostname);
@@ -482,5 +630,225 @@ mod tests {
         state.editing_hostname = true;
         let _ = handle_network_pointer_down(rt::INVALID_HANDLE, &mut state, 4, 4);
         assert!(!state.editing_hostname);
+    }
+
+    fn wifi_state() -> AppState {
+        let mut state = app_state();
+        state.page = SettingsPage::Wifi;
+        state
+    }
+
+    fn secured_scan() -> rt::NetworkWifiScanEntry {
+        let mut entry = rt::NetworkWifiScanEntry {
+            bssid: [9; 6],
+            channel: 11,
+            rssi: -40,
+            ssid_len: 4,
+            ssid: [0; WIFI_SSID_MAX_BYTES],
+            security: rt::WifiSecurity::Wpa2,
+        };
+        entry.ssid[..4].copy_from_slice(b"cafe");
+        entry
+    }
+
+    #[test]
+    fn wifi_tab_pointer_enters_page_and_loads_saved_list() {
+        let mut state = wifi_state();
+        let changed = handle_pointer_down(
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            &mut state,
+            TAB_WIFI_X0 + 4,
+            TAB_Y0 + 4,
+        )
+        .expect("pointer handled");
+        assert!(changed);
+        assert_eq!(state.page, SettingsPage::Wifi);
+        // Saved list loads through the wrapper; without a backend the page
+        // state stays at zero and the render shows the unavailable line.
+        assert_eq!(state.wifi.saved_count, 0);
+    }
+
+    #[test]
+    fn wifi_pointer_selects_scan_and_saved_rows() {
+        let mut state = wifi_state();
+        state.wifi.scans[0] = secured_scan();
+        state.wifi.scan_count = 1;
+
+        // Row 0 hitbox selects the scan row.
+        let changed = handle_wifi_pointer_down(rt::INVALID_HANDLE, &mut state, 40, WIFI_SCAN_ROW_Y0 + 4)
+            .expect("row handled");
+        assert!(changed);
+        assert_eq!(state.wifi.selected_scan, 0);
+
+        // Below the rows: no selection change, still handled.
+        let _ = handle_wifi_pointer_down(rt::INVALID_HANDLE, &mut state, 40, WIFI_SCAN_ROW_Y0 + 40);
+        assert_eq!(state.wifi.selected_scan, 0);
+    }
+
+    #[test]
+    fn wifi_join_button_routes_secured_to_psk_prompt() {
+        let mut state = wifi_state();
+        state.wifi.scans[0] = secured_scan();
+        state.wifi.scan_count = 1;
+
+        let changed = handle_wifi_pointer_down(
+            rt::INVALID_HANDLE,
+            &mut state,
+            WIFI_JOIN_BTN_X0 + 4,
+            WIFI_BTN_Y0 + 4,
+        )
+        .expect("join handled");
+        assert!(changed);
+        assert_eq!(state.wifi.prompt, Some(WifiPrompt::JoinPsk));
+        assert_eq!(state.wifi.prompt_len, 0);
+
+        // Typing lands in the prompt buffer via the text path.
+        for ch in b"password12" {
+            let _ = append_text_input(&mut state, *ch as u64);
+        }
+        assert_eq!(state.wifi.prompt_len, 10);
+
+        // Enter attempts the join (a bogus handle never reaches a service
+        // and the transport reports InvalidArgument) and closes the prompt
+        // with an honest outcome recorded.
+        let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 28);
+        assert!(state.wifi.prompt.is_none());
+        assert_eq!(state.wifi.join_outcome, Some(Err(WifiOpError::Invalid)));
+    }
+
+    #[test]
+    fn wifi_join_button_open_network_skips_prompt() {
+        let mut state = wifi_state();
+        state.wifi.scans[0] = secured_scan();
+        state.wifi.scans[0].security = rt::WifiSecurity::Open;
+        state.wifi.scan_count = 1;
+
+        let _ = handle_wifi_pointer_down(
+            rt::INVALID_HANDLE,
+            &mut state,
+            WIFI_JOIN_BTN_X0 + 4,
+            WIFI_BTN_Y0 + 4,
+        );
+        assert!(state.wifi.prompt.is_none());
+        assert!(state.wifi.join_outcome.is_some());
+    }
+
+    #[test]
+    fn wifi_saved_add_button_opens_prompt_and_esc_cancels() {
+        let mut state = wifi_state();
+
+        let _ = handle_wifi_pointer_down(
+            rt::INVALID_HANDLE,
+            &mut state,
+            WIFI_ADD_BTN_X0 + 4,
+            WIFI_ACTION_Y0 + 4,
+        );
+        assert_eq!(state.wifi.prompt, Some(WifiPrompt::SavedSsid));
+
+        // Esc cancels the whole flow.
+        let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 1);
+        assert!(state.wifi.prompt.is_none());
+        assert_eq!(state.wifi.prompt_len, 0);
+    }
+
+    #[test]
+    fn wifi_saved_add_walks_ssid_then_psk_stages() {
+        let mut state = wifi_state();
+        state.wifi.prompt = Some(WifiPrompt::SavedSsid);
+
+        for ch in b"net" {
+            let _ = append_text_input(&mut state, *ch as u64);
+        }
+        let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 28);
+        assert_eq!(state.wifi.prompt, Some(WifiPrompt::SavedPsk));
+        assert_eq!(state.wifi.add_ssid_len, 3);
+
+        for ch in b"password12" {
+            let _ = append_text_input(&mut state, *ch as u64);
+        }
+        let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 28);
+        assert_eq!(state.wifi.prompt, Some(WifiPrompt::SavedPriority));
+
+        // Empty priority means 0; enter commits the add (transport fails
+        // honestly on the invalid handle) and reloads the saved list.
+        let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 28);
+        assert!(state.wifi.prompt.is_none());
+        assert!(state.wifi.saved_add_outcome.is_some());
+    }
+
+    #[test]
+    fn wifi_prompt_is_modal_over_underlying_buttons() {
+        let mut state = wifi_state();
+        state.wifi.prompt = Some(WifiPrompt::JoinPsk);
+
+        // Click on the SCAN button coordinates while the prompt is open:
+        // outside the overlay, so the prompt closes and the button does
+        // not fire (scan list stays untouched).
+        let _ = handle_wifi_pointer_down(
+            rt::INVALID_HANDLE,
+            &mut state,
+            WIFI_SCAN_BTN_X0 + 4,
+            WIFI_BTN_Y0 + 4,
+        );
+        assert!(state.wifi.prompt.is_none());
+        assert_eq!(state.wifi.scan_count, 0);
+        assert_eq!(state.wifi.scan_error, None);
+    }
+
+    #[test]
+    fn wifi_backspace_edits_prompt_via_key_path() {
+        let mut state = wifi_state();
+        state.wifi.prompt = Some(WifiPrompt::JoinPsk);
+        let _ = append_text_input(&mut state, b'a' as u64);
+        let _ = append_text_input(&mut state, b'b' as u64);
+        assert_eq!(state.wifi.prompt_len, 2);
+        let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 14);
+        assert_eq!(state.wifi.prompt_len, 1);
+        assert_eq!(state.wifi.prompt_edit[..1], *b"a");
+    }
+
+    #[test]
+    fn wifi_arrow_keys_move_scan_selection() {
+        let mut state = wifi_state();
+        state.wifi.scans[0] = secured_scan();
+        state.wifi.scans[1] = secured_scan();
+        state.wifi.scan_count = 2;
+
+        let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 108);
+        assert_eq!(state.wifi.selected_scan, 1);
+        let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 108);
+        assert_eq!(state.wifi.selected_scan, 1);
+        let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 103);
+        assert_eq!(state.wifi.selected_scan, 0);
+        let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 103);
+        assert_eq!(state.wifi.selected_scan, 0);
+    }
+
+    #[test]
+    fn wifi_scan_and_join_on_invalid_handle_stay_honest() {
+        let mut state = wifi_state();
+        let _ = handle_wifi_pointer_down(
+            rt::INVALID_HANDLE,
+            &mut state,
+            WIFI_SCAN_BTN_X0 + 4,
+            WIFI_BTN_Y0 + 4,
+        );
+        // A bogus handle never reaches a service: the scan records the
+        // failure and never fabricates rows.
+        assert_eq!(state.wifi.scan_count, 0);
+        assert_eq!(state.wifi.scan_total, 0);
+        assert_eq!(state.wifi.scan_error, Some(WifiOpError::Invalid));
+
+        state.wifi.scans[0] = secured_scan();
+        state.wifi.scan_count = 1;
+        state.wifi.prompt = Some(WifiPrompt::JoinPsk);
+        for ch in b"password12" {
+            let _ = wifi::wifi_prompt_char(&mut state.wifi, *ch as char);
+        }
+        let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 28);
+        assert_eq!(state.wifi.join_outcome, Some(Err(WifiOpError::Invalid)));
     }
 }

@@ -6,6 +6,7 @@ mod netdiag;
 mod render;
 mod security;
 mod state;
+mod wifi;
 
 use rt::ControlTag;
 use serviceos_desktop_ui as ui;
@@ -60,6 +61,7 @@ fn main() -> u64 {
         ping_failed: false,
         ping_target: [0; state::PING_TARGET_MAX_BYTES],
         ping_target_len: 0,
+        wifi: state::WifiUiState::new(),
     };
     let mut audio_stream_handle = rt::INVALID_HANDLE;
 

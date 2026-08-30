@@ -51,16 +51,42 @@ pub(crate) const NET_PING_RUN_X0: i32 = 100;
 pub(crate) const NET_PING_RUN_Y0: i32 = 152;
 pub(crate) const NET_PING_RUN_X1: i32 = 190;
 pub(crate) const NET_PING_RUN_Y1: i32 = 170;
+pub(crate) const TAB_WIFI_X0: i32 = 330;
+pub(crate) const TAB_WIFI_X1: i32 = 398;
+pub(crate) const WIFI_BTN_Y0: i32 = 106;
+pub(crate) const WIFI_BTN_Y1: i32 = 122;
+pub(crate) const WIFI_SCAN_BTN_X0: i32 = 10;
+pub(crate) const WIFI_SCAN_BTN_X1: i32 = 86;
+pub(crate) const WIFI_JOIN_BTN_X0: i32 = 94;
+pub(crate) const WIFI_JOIN_BTN_X1: i32 = 170;
+pub(crate) const WIFI_ROW_X0: i32 = 10;
+pub(crate) const WIFI_ROW_X1: i32 = 310;
+pub(crate) const WIFI_ROW_H: i32 = 12;
+pub(crate) const WIFI_SCAN_ROW_Y0: i32 = 140;
+pub(crate) const WIFI_SAVED_ROW_Y0: i32 = 178;
+pub(crate) const WIFI_ADD_BTN_X0: i32 = 10;
+pub(crate) const WIFI_ADD_BTN_X1: i32 = 86;
+pub(crate) const WIFI_REMOVE_BTN_X0: i32 = 94;
+pub(crate) const WIFI_REMOVE_BTN_X1: i32 = 186;
+pub(crate) const WIFI_ACTION_Y0: i32 = 202;
+pub(crate) const WIFI_ACTION_Y1: i32 = 218;
 /// Mirrors the network-service MAX_HOSTNAME_BYTES decode buffer.
 pub(crate) const HOSTNAME_EDIT_MAX_BYTES: usize = 48;
 pub(crate) const PING_TARGET_MAX_BYTES: usize = 16;
 pub(crate) const PING_PROBE_COUNT: usize = 4;
+/// Reply entry caps the network-service documents for the wireless family.
+pub(crate) const WIFI_SCAN_ROWS: usize = rt::NETWORK_WIFI_SCAN_REPLY_ENTRIES_MAX;
+pub(crate) const WIFI_SAVED_ROWS: usize = rt::NETWORK_WIFI_SAVED_REPLY_ENTRIES_MAX;
+pub(crate) const WIFI_SSID_MAX_BYTES: usize = rt::NETWORK_WIFI_SSID_BYTES_MAX;
+pub(crate) const WIFI_PSK_MAX_BYTES: usize = rt::NETWORK_WIFI_PSK_BYTES_MAX;
+pub(crate) const WIFI_EDIT_MAX_BYTES: usize = WIFI_PSK_MAX_BYTES;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SettingsPage {
     System,
     Security,
     Network,
+    Wifi,
 }
 
 #[derive(Clone, Copy)]
@@ -86,6 +112,7 @@ pub(crate) struct AppState {
     pub(crate) ping_failed: bool,
     pub(crate) ping_target: [u8; PING_TARGET_MAX_BYTES],
     pub(crate) ping_target_len: usize,
+    pub(crate) wifi: WifiUiState,
 }
 
 impl SettingsPage {
@@ -93,8 +120,99 @@ impl SettingsPage {
         match self {
             SettingsPage::System => SettingsPage::Security,
             SettingsPage::Security => SettingsPage::Network,
-            SettingsPage::Network => SettingsPage::System,
+            SettingsPage::Network => SettingsPage::Wifi,
+            SettingsPage::Wifi => SettingsPage::System,
         }
+    }
+}
+
+/// Modal prompt stages on the Wi-Fi page. Join psk for a secured scan row,
+/// then the three-stage saved-network add flow (ssid, psk, priority).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WifiPrompt {
+    JoinPsk,
+    SavedSsid,
+    SavedPsk,
+    SavedPriority,
+}
+
+/// Honest classification of a failed wireless wrapper call. Unsupported is
+/// the expected reply on boots with no wireless backend device.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WifiOpError {
+    Unsupported,
+    Invalid,
+    Rejected,
+    Transport,
+}
+
+pub(crate) struct WifiUiState {
+    pub(crate) scans: [rt::NetworkWifiScanEntry; WIFI_SCAN_ROWS],
+    pub(crate) scan_count: usize,
+    pub(crate) scan_total: usize,
+    pub(crate) scan_error: Option<WifiOpError>,
+    pub(crate) selected_scan: usize,
+    pub(crate) join_outcome: Option<Result<rt::WifiLinkState, WifiOpError>>,
+    pub(crate) saved: [rt::NetworkWifiSavedNetwork; WIFI_SAVED_ROWS],
+    pub(crate) saved_count: usize,
+    pub(crate) saved_total: usize,
+    pub(crate) saved_add_outcome: Option<Result<(), WifiOpError>>,
+    pub(crate) saved_remove_outcome: Option<Result<(), WifiOpError>>,
+    pub(crate) selected_saved: usize,
+    pub(crate) prompt: Option<WifiPrompt>,
+    pub(crate) prompt_edit: [u8; WIFI_EDIT_MAX_BYTES],
+    pub(crate) prompt_len: usize,
+    pub(crate) add_ssid: [u8; WIFI_SSID_MAX_BYTES],
+    pub(crate) add_ssid_len: usize,
+    pub(crate) add_psk: [u8; WIFI_PSK_MAX_BYTES],
+    pub(crate) add_psk_len: usize,
+}
+
+impl WifiUiState {
+    pub(crate) fn new() -> Self {
+        Self {
+            scans: [rt::NetworkWifiScanEntry {
+                bssid: [0; 6],
+                channel: 0,
+                rssi: 0,
+                ssid_len: 0,
+                ssid: [0; WIFI_SSID_MAX_BYTES],
+                security: rt::WifiSecurity::Unknown,
+            }; WIFI_SCAN_ROWS],
+            scan_count: 0,
+            scan_total: 0,
+            scan_error: None,
+            selected_scan: 0,
+            join_outcome: None,
+            saved: [rt::NetworkWifiSavedNetwork {
+                ssid_len: 0,
+                ssid: [0; WIFI_SSID_MAX_BYTES],
+                priority: 0,
+            }; WIFI_SAVED_ROWS],
+            saved_count: 0,
+            saved_total: 0,
+            saved_add_outcome: None,
+            saved_remove_outcome: None,
+            selected_saved: 0,
+            prompt: None,
+            prompt_edit: [0; WIFI_EDIT_MAX_BYTES],
+            prompt_len: 0,
+            add_ssid: [0; WIFI_SSID_MAX_BYTES],
+            add_ssid_len: 0,
+            add_psk: [0; WIFI_PSK_MAX_BYTES],
+            add_psk_len: 0,
+        }
+    }
+
+    /// Close the modal prompt and discard any half-typed stage data.
+    pub(crate) fn stop_editing(&mut self) {
+        self.prompt = None;
+        self.prompt_len = 0;
+        self.prompt_edit = [0; WIFI_EDIT_MAX_BYTES];
+        self.add_ssid_len = 0;
+        self.add_ssid = [0; WIFI_SSID_MAX_BYTES];
+        self.add_psk_len = 0;
+        self.add_psk = [0; WIFI_PSK_MAX_BYTES];
     }
 }
 

@@ -10,6 +10,7 @@ use crate::security::{
     policy_name, runtime_env_state_name, security_policy_count,
 };
 use crate::state::*;
+use crate::wifi;
 
 pub(crate) fn render(
     presenter: &mut ui::FirstPresentSurface,
@@ -53,6 +54,7 @@ pub(crate) fn render(
             state.selected_policy_index,
         )?,
         SettingsPage::Network => draw_network_page(bytes, network_handle, state),
+        SettingsPage::Wifi => draw_wifi_page(bytes, network_handle, state),
     }
 
     presenter.present(buffer_slot, width as u32, height as u32)
@@ -658,6 +660,268 @@ fn draw_network_page(bytes: &mut [u8], network_handle: rt::Handle, state: &AppSt
     );
 }
 
+/// Wi-Fi page: status + scan list + join + saved networks + hints. The
+/// wireless family answers Unsupported with no backend device, so every
+/// block degrades to an honest unavailable line — empty is the correct
+/// render today, never fabricated scan rows.
+fn draw_wifi_page(bytes: &mut [u8], network_handle: rt::Handle, state: &AppState) {
+    let (wlan_line, device_line, link_state, status_error) =
+        match rt::network_wifi_status(network_handle) {
+            Ok(status) => {
+                let mut wlan = FixedLogBuffer::<64>::new();
+                let _ = write!(
+                    &mut wlan,
+                    "WLAN {} SSID {}",
+                    wifi::link_state_name(status.link_state),
+                    if status.ssid_len > 0 {
+                        wifi::ssid_str(&status.ssid, status.ssid_len)
+                    } else {
+                        "-"
+                    },
+                );
+                (wlan, "DEVICE PRESENT", Some(status.link_state), None)
+            }
+            Err(error) => {
+                let classified = wifi::classify(error);
+                let device = if classified == WifiOpError::Unsupported {
+                    "DEVICE: NO WIRELESS DEVICE"
+                } else {
+                    "DEVICE UNAVAILABLE"
+                };
+                (FixedLogBuffer::<64>::new(), device, None, Some(classified))
+            }
+        };
+
+    for (index, line) in [
+        "WI-FI",
+        str::from_utf8(wlan_line.as_bytes()).unwrap_or("WLAN"),
+        device_line,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        rt::draw_text_rgba8888(
+            bytes,
+            PIXEL_STRIDE,
+            12,
+            70 + (index as i32 * 12),
+            if index == 0 {
+                ui::TEXT_PRIMARY
+            } else {
+                ui::TEXT_SECONDARY
+            },
+            line,
+        );
+    }
+
+    draw_button(
+        bytes,
+        WIFI_SCAN_BTN_X0,
+        WIFI_BTN_Y0,
+        WIFI_SCAN_BTN_X1,
+        WIFI_BTN_Y1,
+        ui::ACCENT_DIM,
+        "SCAN",
+        ui::TEXT_PRIMARY,
+    );
+    draw_button(
+        bytes,
+        WIFI_JOIN_BTN_X0,
+        WIFI_BTN_Y0,
+        WIFI_JOIN_BTN_X1,
+        WIFI_BTN_Y1,
+        ui::ACCENT_DIM,
+        "JOIN SEL",
+        ui::TEXT_PRIMARY,
+    );
+
+    // Scan header + rows.
+    let scan_header: FixedLogBuffer<48> = if let Some(error) = state.wifi.scan_error {
+        let mut text = FixedLogBuffer::<48>::new();
+        let _ = write!(&mut text, "SCAN FAILED {}", wifi::error_name(error));
+        text
+    } else if state.wifi.scan_count > 0 {
+        let mut text = FixedLogBuffer::<48>::new();
+        let _ = write!(
+            &mut text,
+            "SCAN {} FOUND (SHOWING {})",
+            state.wifi.scan_total, state.wifi.scan_count,
+        );
+        text
+    } else {
+        let mut text = FixedLogBuffer::<48>::new();
+        let _ = write!(&mut text, "SCAN PRESS SCAN");
+        text
+    };
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        12,
+        132,
+        ui::TEXT_MUTED,
+        str::from_utf8(scan_header.as_bytes()).unwrap_or("SCAN"),
+    );
+    for (index, entry) in state.wifi.scans.iter().take(state.wifi.scan_count).enumerate() {
+        let row = wifi::scan_row_text::<64>(entry);
+        rt::draw_text_rgba8888(
+            bytes,
+            PIXEL_STRIDE,
+            12,
+            WIFI_SCAN_ROW_Y0 + 2 + (index as i32 * WIFI_ROW_H),
+            if index == state.wifi.selected_scan {
+                ui::TEXT_PRIMARY
+            } else {
+                ui::TEXT_MUTED
+            },
+            str::from_utf8(row.as_bytes()).unwrap_or("SCAN ROW"),
+        );
+    }
+
+    // Saved networks.
+    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, 12, 170, ui::TEXT_MUTED, "SAVED");
+    if state.wifi.saved_count == 0 {
+        rt::draw_text_rgba8888(
+            bytes,
+            PIXEL_STRIDE,
+            12,
+            WIFI_SAVED_ROW_Y0 + 2,
+            ui::TEXT_MUTED,
+            "SAVED UNAVAILABLE",
+        );
+    }
+    for (index, record) in state.wifi.saved.iter().take(state.wifi.saved_count).enumerate() {
+        let row = wifi::saved_row_text::<48>(record);
+        rt::draw_text_rgba8888(
+            bytes,
+            PIXEL_STRIDE,
+            12,
+            WIFI_SAVED_ROW_Y0 + 2 + (index as i32 * WIFI_ROW_H),
+            if index == state.wifi.selected_saved {
+                ui::TEXT_PRIMARY
+            } else {
+                ui::TEXT_MUTED
+            },
+            str::from_utf8(row.as_bytes()).unwrap_or("SAVED ROW"),
+        );
+    }
+
+    draw_button(
+        bytes,
+        WIFI_ADD_BTN_X0,
+        WIFI_ACTION_Y0,
+        WIFI_ADD_BTN_X1,
+        WIFI_ACTION_Y1,
+        ui::ACCENT_DIM,
+        "SAVED +",
+        ui::TEXT_PRIMARY,
+    );
+    draw_button(
+        bytes,
+        WIFI_REMOVE_BTN_X0,
+        WIFI_ACTION_Y0,
+        WIFI_REMOVE_BTN_X1,
+        WIFI_ACTION_Y1,
+        ui::ACCENT_DIM,
+        "SAVED -",
+        ui::TEXT_PRIMARY,
+    );
+
+    if let Some(outcome) = &state.wifi.join_outcome {
+        let text = wifi::join_outcome_text::<48>(outcome);
+        rt::draw_text_rgba8888(
+            bytes,
+            PIXEL_STRIDE,
+            12,
+            226,
+            ui::TEXT_SECONDARY,
+            str::from_utf8(text.as_bytes()).unwrap_or("JOIN"),
+        );
+    } else if let Some(outcome) = wifi::saved_outcome_text::<48>(
+        state.wifi.saved_add_outcome,
+        state.wifi.saved_remove_outcome,
+    ) {
+        rt::draw_text_rgba8888(
+            bytes,
+            PIXEL_STRIDE,
+            12,
+            226,
+            ui::TEXT_SECONDARY,
+            str::from_utf8(outcome.as_bytes()).unwrap_or("SAVED"),
+        );
+    }
+
+    // State-based troubleshooting hints.
+    let hints = wifi::hint_lines(
+        link_state,
+        status_error,
+        state.wifi.join_outcome.and_then(|outcome| outcome.err()),
+        state.wifi.scan_error,
+    );
+    for (index, hint) in hints.iter().enumerate() {
+        if hint.is_empty() {
+            continue;
+        }
+        rt::draw_text_rgba8888(
+            bytes,
+            PIXEL_STRIDE,
+            12,
+            240 + (index as i32 * 12),
+            ui::TEXT_MUTED,
+            hint,
+        );
+    }
+
+    // Modal prompt overlay drawn last so it covers rows underneath.
+    if let Some(prompt) = state.wifi.prompt {
+        ui::fill_rgba8888_rect(
+            bytes,
+            PIXEL_STRIDE,
+            BUFFER_WIDTH as usize,
+            BUFFER_HEIGHT as usize,
+            WIFI_ROW_X0.max(0) as usize,
+            WIFI_SCAN_ROW_Y0.saturating_sub(10).max(0) as usize,
+            (WIFI_ROW_X1 - WIFI_ROW_X0).max(0) as usize,
+            (WIFI_ACTION_Y0 - (WIFI_SCAN_ROW_Y0 - 10)).max(0) as usize,
+            ui::BG_PANEL,
+        );
+        rt::draw_text_rgba8888(
+            bytes,
+            PIXEL_STRIDE,
+            12,
+            WIFI_SCAN_ROW_Y0.saturating_sub(4),
+            ui::TEXT_PRIMARY,
+            wifi::prompt_title(prompt),
+        );
+        ui::fill_rgba8888_rect(
+            bytes,
+            PIXEL_STRIDE,
+            BUFFER_WIDTH as usize,
+            BUFFER_HEIGHT as usize,
+            12,
+            (WIFI_SCAN_ROW_Y0 + 10).max(0) as usize,
+            268,
+            20,
+            ui::ACCENT,
+        );
+        rt::draw_text_rgba8888(
+            bytes,
+            PIXEL_STRIDE,
+            20,
+            WIFI_SCAN_ROW_Y0 + 16,
+            ui::BG_PANEL,
+            str::from_utf8(&state.wifi.prompt_edit[..state.wifi.prompt_len]).unwrap_or(""),
+        );
+        rt::draw_text_rgba8888(
+            bytes,
+            PIXEL_STRIDE,
+            12,
+            WIFI_SCAN_ROW_Y0 + 36,
+            ui::TEXT_MUTED,
+            "ENTER COMMIT  ESC CANCEL  BKSP DELETE",
+        );
+    }
+}
+
 fn draw_tabs(bytes: &mut [u8], page: SettingsPage) {
     draw_button(
         bytes,
@@ -699,6 +963,20 @@ fn draw_tabs(bytes: &mut [u8], page: SettingsPage) {
             ui::ACCENT_DIM
         },
         "NETWORK",
+        ui::TEXT_PRIMARY,
+    );
+    draw_button(
+        bytes,
+        TAB_WIFI_X0,
+        TAB_Y0,
+        TAB_WIFI_X1,
+        TAB_Y1,
+        if page == SettingsPage::Wifi {
+            ui::ACCENT
+        } else {
+            ui::ACCENT_DIM
+        },
+        "WIFI",
         ui::TEXT_PRIMARY,
     );
 }

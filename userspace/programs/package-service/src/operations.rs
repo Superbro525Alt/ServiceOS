@@ -6,6 +6,26 @@ fn optional_text<'a>(text: &'a str) -> Option<&'a str> {
     if text.is_empty() { None } else { Some(text) }
 }
 
+/// Emits one live-operation progress record on the log stream at a phase
+/// transition. Budget: one record per phase entry (five per operation), so
+/// the package log stream stays quiet during a mutation. `op` reuses the
+/// journal action codes (JOURNAL_INSTALL/UPDATE/ROLLBACK) and `progress.pack()`
+/// carries the phase/step/total word the operation reply already uses, so the
+/// shell decodes both with the same helpers it applies to final replies.
+fn emit_operation_progress(
+    log_handle: rt::Handle,
+    op: u32,
+    progress: &ops_model::ProgressTracker,
+) {
+    let _ = emit_package_event(
+        log_handle,
+        LogSeverity::Info,
+        LogEvent::PackageOperationProgress,
+        op as u64,
+        progress.pack(),
+    );
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_install_request(
     bootstrap: rt::Handle,
@@ -28,6 +48,7 @@ pub(crate) fn handle_install_request(
     let argument = parse_version_argument(message, &mut version_buffer)?.unwrap_or("");
     let (version_part, source_name) = ops_model::split_version_source(argument);
     let mut progress = ops_model::ProgressTracker::new(OPERATION_TOTAL_STEPS);
+    emit_operation_progress(log_handle, ops_model::JOURNAL_INSTALL, &progress);
     let resolved_source = match resolve_source_index(repos, repo_count, source_name) {
         Ok(value) => value,
         Err(status) => {
@@ -92,11 +113,13 @@ pub(crate) fn handle_install_request(
             &mut packages[index],
             target,
             LogEvent::PackageInstalled,
+            ops_model::JOURNAL_INSTALL,
             &mut progress,
             &mut auto_restored,
         );
         if status == PackageStatus::Ok {
             progress.enter_phase(ops_model::PROGRESS_PHASE_PERSIST);
+            emit_operation_progress(log_handle, ops_model::JOURNAL_INSTALL, &progress);
             let _ =
                 crate::storage::persist_installed_state(storage_handle, packages, package_count);
             progress.complete_step();
@@ -151,6 +174,7 @@ pub(crate) fn handle_update_request(
     let argument = parse_version_argument(message, &mut version_buffer)?.unwrap_or("");
     let (version_part, source_name) = ops_model::split_version_source(argument);
     let mut progress = ops_model::ProgressTracker::new(OPERATION_TOTAL_STEPS);
+    emit_operation_progress(log_handle, ops_model::JOURNAL_UPDATE, &progress);
     let resolved_source = match resolve_source_index(repos, repo_count, source_name) {
         Ok(value) => value,
         Err(status) => {
@@ -221,11 +245,13 @@ pub(crate) fn handle_update_request(
                         &mut packages[index],
                         target,
                         LogEvent::PackageUpdated,
+                        ops_model::JOURNAL_UPDATE,
                         &mut progress,
                         &mut auto_restored,
                     );
                     if status == PackageStatus::Ok {
                         progress.enter_phase(ops_model::PROGRESS_PHASE_PERSIST);
+                        emit_operation_progress(log_handle, ops_model::JOURNAL_UPDATE, &progress);
                         let _ = crate::storage::persist_installed_state(
                             storage_handle,
                             packages,
@@ -344,6 +370,7 @@ pub(crate) fn handle_rollback_request(
     let reply_handle = message.handles[0];
     let service_id = service_id_from_word(message.words[0]);
     let mut progress = ops_model::ProgressTracker::new(OPERATION_TOTAL_STEPS);
+    emit_operation_progress(log_handle, ops_model::JOURNAL_ROLLBACK, &progress);
     if let Some(index) = find_package_slot(packages, service_id, package_count) {
         let slot = &mut packages[index];
         if let Some(target) = slot.rollback {
@@ -382,12 +409,14 @@ pub(crate) fn handle_rollback_request(
                 slot,
                 target,
                 LogEvent::PackageRolledBack,
+                ops_model::JOURNAL_ROLLBACK,
                 &mut progress,
                 &mut auto_restored,
             );
             if status == PackageStatus::Ok {
                 let previous = slot.active;
                 progress.enter_phase(ops_model::PROGRESS_PHASE_PERSIST);
+                emit_operation_progress(log_handle, ops_model::JOURNAL_ROLLBACK, &progress);
                 slot.active = Some(target);
                 slot.installed = Some(target);
                 slot.rollback = previous;
@@ -442,6 +471,7 @@ pub(crate) fn activate_package_version(
     slot: &mut PackageSlot,
     target: usize,
     event: LogEvent,
+    op: u32,
     progress: &mut ops_model::ProgressTracker,
     auto_restored: &mut bool,
 ) -> PackageStatus {
@@ -450,6 +480,7 @@ pub(crate) fn activate_package_version(
     }
 
     progress.enter_phase(ops_model::PROGRESS_PHASE_MATERIALIZE);
+    emit_operation_progress(log_handle, op, progress);
     let materialized =
         ensure_version_materialized(storage_handle, network_handle, slot, target, repos);
     if materialized != PackageStatus::Ok {
@@ -458,6 +489,7 @@ pub(crate) fn activate_package_version(
     progress.complete_step();
 
     progress.enter_phase(ops_model::PROGRESS_PHASE_VERIFY);
+    emit_operation_progress(log_handle, op, progress);
     let manifest_path = active_manifest_path(&slot.versions[target]);
     let manifest = match load_manifest_from_storage_path(storage_handle, manifest_path) {
         Ok(manifest) => manifest,
@@ -475,6 +507,7 @@ pub(crate) fn activate_package_version(
     progress.complete_step();
 
     progress.enter_phase(ops_model::PROGRESS_PHASE_ACTIVATE);
+    emit_operation_progress(log_handle, op, progress);
     let previous = slot.active;
     match rt::manager_activate_service(bootstrap, manifest.service_manifest.as_str().unwrap_or(""))
     {

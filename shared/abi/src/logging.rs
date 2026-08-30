@@ -108,6 +108,7 @@ pub enum LogEvent {
     RuntimeApprovalChanged = 69,
     KernelTrap = 70,
     KernelPressureChanged = 71,
+    PackageOperationProgress = 72,
 }
 
 #[repr(u32)]

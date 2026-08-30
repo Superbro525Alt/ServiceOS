@@ -200,6 +200,7 @@ pub(crate) fn event_name(event: LogEvent) -> &'static str {
         LogEvent::PackageRemoved => "package-removed",
         LogEvent::PackageRolledBack => "package-rolled-back",
         LogEvent::PackageActivationFailed => "package-activation-failed",
+        LogEvent::PackageOperationProgress => "package-operation-progress",
         LogEvent::PackageRepositoryAdded => "package-repository-added",
         LogEvent::PackageRepositorySynced => "package-repository-synced",
         LogEvent::PackageRepositorySyncFailed => "package-repository-sync-failed",

@@ -346,6 +346,7 @@ fn run_apply_steps(
             &mut packages[index],
             target,
             LogEvent::PackageUpdated,
+            ops_model::JOURNAL_SYSUPDATE,
             progress,
             &mut auto_restored,
         );
@@ -606,6 +607,7 @@ fn run_rollback_steps(
             &mut packages[index],
             target,
             LogEvent::PackageRolledBack,
+            ops_model::JOURNAL_SYSUPDATE,
             progress,
             &mut auto_restored,
         );

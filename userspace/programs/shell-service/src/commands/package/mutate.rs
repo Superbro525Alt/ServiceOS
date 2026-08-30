@@ -10,6 +10,7 @@ use super::parse::{
     channel_name, maintenance_action_name, parse_channel, parse_ring, repo_sync_state_name,
     ring_name, trust_mode_name,
 };
+use super::progress::{OP_INSTALL, OP_ROLLBACK, OP_UPDATE, streamed_mutation};
 
 /// Progress phases reported by package-service; mirrors the service-side
 /// model (five equal phases, percent = phase share + step share).
@@ -24,6 +25,7 @@ pub(super) struct MutationOptions<'a> {
     source: Option<&'a str>,
     yes: bool,
     force_compat: bool,
+    verbose: bool,
 }
 
 pub(super) fn parse_mutation_options<'a, I>(parts: I) -> MutationOptions<'a>
@@ -35,6 +37,7 @@ where
         source: None,
         yes: false,
         force_compat: false,
+        verbose: false,
     };
     for token in parts {
         if token == "--yes" {
@@ -43,6 +46,10 @@ where
         }
         if token == "--force-compat" {
             options.force_compat = true;
+            continue;
+        }
+        if token == "--verbose" {
+            options.verbose = true;
             continue;
         }
         match token.rsplit_once('@') {
@@ -113,7 +120,7 @@ pub(in crate::commands) fn simple_request(request_tag: u32, word0: u64) -> rt::R
     request
 }
 
-fn phase_name(phase: u32) -> &'static str {
+pub(in crate::commands) fn phase_name(phase: u32) -> &'static str {
     match phase {
         0 => "resolve",
         1 => "materialize",
@@ -125,7 +132,7 @@ fn phase_name(phase: u32) -> &'static str {
 }
 
 /// Whole-operation percent across five equally weighted phases.
-fn progress_percent(phase: u32, step: u32, total: u32) -> u32 {
+pub(in crate::commands) fn progress_percent(phase: u32, step: u32, total: u32) -> u32 {
     if phase >= PROGRESS_PHASES || total == 0 {
         return 0;
     }
@@ -283,6 +290,7 @@ where
         rt::PackageTag::InstallRequest as u32,
         rt::PackageTag::InstallReply as u32,
         "installed",
+        OP_INSTALL,
     )
 }
 
@@ -303,6 +311,7 @@ where
         rt::PackageTag::UpdateRequest as u32,
         rt::PackageTag::UpdateReply as u32,
         "updated",
+        OP_UPDATE,
     )
 }
 
@@ -388,6 +397,7 @@ fn run_mutation<'a, I>(
     request_tag: u32,
     reply_tag: u32,
     verb: &'static str,
+    op: u32,
 ) -> rt::Result<()>
 where
     I: Iterator<Item = &'a str>,
@@ -438,44 +448,13 @@ where
 
     let argument = compose_version_argument(&mut argument_buffer, options.version, options.source);
     let mut request = mutation_request(request_tag, service_id, argument)?;
-    let reply = rt::channel_call(package_handle, &mut request);
+    let reply = if options.verbose {
+        streamed_mutation(bootstrap, output, package_handle, &mut request, op, service_id)?
+    } else {
+        rt::channel_call(package_handle, &mut request)?
+    };
     let _ = rt::handle_close(package_handle);
-    let reply = reply?;
-    if reply.tag != reply_tag || reply.word_count < 1 {
-        return Err(rt::Error::InvalidArgument);
-    }
-    let status = status_from_word(reply.words[0]);
-    if status != PackageStatus::Ok {
-        return write_output_linef(
-            output,
-            format_args!("{} failed: {}", verb, package_status_name(status),),
-        );
-    }
-    let (phase, step, total) = decode_progress(&reply);
-    write_output_linef(
-        output,
-        format_args!(
-            "{} {} ({}/{} steps, {} {}%)",
-            verb,
-            service_name(service_id),
-            step,
-            total,
-            phase_name(phase),
-            progress_percent(phase, step, total),
-        ),
-    )
-}
-
-fn decode_progress(reply: &rt::RawMessage) -> (u32, u32, u32) {
-    if reply.word_count < 4 {
-        return (0, 0, 0);
-    }
-    let word = reply.words[3];
-    (
-        (word & 0xff) as u32,
-        ((word >> 8) & 0xffff) as u32,
-        ((word >> 24) & 0xffff) as u32,
-    )
+    super::progress::report_mutation_reply(output, &reply, reply_tag, verb, service_id)
 }
 
 pub(super) fn cmd_pkg_remove(
@@ -572,11 +551,16 @@ pub(super) fn cmd_pkg_remove(
     }
 }
 
-pub(super) fn cmd_pkg_rollback(
+pub(super) fn cmd_pkg_rollback<'a, I>(
     bootstrap: rt::Handle,
     output: ShellOutput,
     service_id: ServiceId,
-) -> rt::Result<()> {
+    parts: I,
+) -> rt::Result<()>
+where
+    I: Iterator<Item = &'a str>,
+{
+    let verbose = parts.into_iter().any(|token| token == "--verbose");
     let package_handle = rt::lookup_service(bootstrap, ServiceId::Package)?;
 
     // Capture the pre-rollback state so the summary can show what moved.
@@ -599,9 +583,19 @@ pub(super) fn cmd_pkg_rollback(
         rt::PackageTag::RollbackRequest as u32,
         service_id as u32 as u64,
     );
-    let reply = rt::channel_call(package_handle, &mut request);
+    let reply = if verbose {
+        streamed_mutation(
+            bootstrap,
+            output,
+            package_handle,
+            &mut request,
+            OP_ROLLBACK,
+            service_id,
+        )?
+    } else {
+        rt::channel_call(package_handle, &mut request)?
+    };
     let _ = rt::handle_close(package_handle);
-    let reply = reply?;
     if reply.tag != rt::PackageTag::RollbackReply as u32 || reply.word_count < 6 {
         return Err(rt::Error::InvalidArgument);
     }
@@ -912,5 +906,25 @@ mod tests {
             trust_explanation(rt::PackageRepositoryTrustMode::SignedKey),
             "signed by the bound ed25519 source key"
         );
+    }
+
+    #[test]
+    fn mutation_options_parse_verbose_flag() {
+        let options = parse_mutation_options(
+            ["1.4.0", "--verbose", "@beta", "--yes"].into_iter(),
+        );
+        assert!(options.verbose);
+        assert!(options.yes);
+        assert_eq!(options.version, Some("1.4.0"));
+        assert_eq!(options.source, Some("beta"));
+        assert!(!options.force_compat);
+        // Flag stays opt-in: absent by default and independent of --yes.
+        let quiet = parse_mutation_options(["--yes"].into_iter());
+        assert!(!quiet.verbose);
+        assert!(quiet.yes);
+        // --verbose never leaks into the version argument.
+        let only_flag = parse_mutation_options(["--verbose"].into_iter());
+        assert!(only_flag.verbose);
+        assert!(only_flag.version.is_none());
     }
 }

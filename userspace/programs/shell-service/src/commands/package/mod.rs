@@ -2,6 +2,7 @@ mod keys;
 pub(in crate::commands) mod mutate;
 mod onboard;
 pub(in crate::commands) mod parse;
+pub(in crate::commands) mod progress;
 pub(in crate::commands) mod query;
 mod repos;
 mod rollout;
@@ -36,7 +37,7 @@ where
             None => write_output_linef(
                 output,
                 format_args!(
-                    "usage: pkg install <name> [version] [@source] [--yes] [--force-compat]"
+                    "usage: pkg install <name> [version] [@source] [--yes] [--force-compat] [--verbose]"
                 ),
             ),
         },
@@ -45,7 +46,7 @@ where
             None => write_output_linef(
                 output,
                 format_args!(
-                    "usage: pkg update <name> [version] [@source] [--yes] [--force-compat]"
+                    "usage: pkg update <name> [version] [@source] [--yes] [--force-compat] [--verbose]"
                 ),
             ),
         },
@@ -54,8 +55,11 @@ where
             None => write_output_linef(output, format_args!("usage: pkg remove <name>")),
         },
         Some("rollback") => match parts.next().and_then(parse_service_name) {
-            Some(service_id) => mutate::cmd_pkg_rollback(bootstrap, output, service_id),
-            None => write_output_linef(output, format_args!("usage: pkg rollback <name>")),
+            Some(service_id) => mutate::cmd_pkg_rollback(bootstrap, output, service_id, parts),
+            None => write_output_linef(
+                output,
+                format_args!("usage: pkg rollback <name> [--verbose]"),
+            ),
         },
         Some("history") => match parts.next().and_then(parse_service_name) {
             Some(service_id) => query::cmd_pkg_history(bootstrap, output, service_id),

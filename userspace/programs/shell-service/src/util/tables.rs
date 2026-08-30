@@ -272,6 +272,7 @@ pub(crate) fn event_name_from_word(value: u64) -> Option<&'static str> {
         68 => "runtime-approval-pending",
         69 => "runtime-approval-changed",
         70 => "kernel-trap",
+        72 => "package-operation-progress",
         _ => return None,
     })
 }

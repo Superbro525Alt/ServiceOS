@@ -209,6 +209,56 @@ mod tests {
     }
 
     #[test]
+    fn operation_phase_entry_matrix_matches_emission_shape() {
+        // Live progress streaming emits one record per phase entry, carrying
+        // pack_progress(phase, step, total) in the record's arg1 word. For
+        // the five-entry sequence an install/update/rollback walks, the
+        // completed-step count carries into the next phase's percent.
+        let mut tracker = ProgressTracker::new(5);
+        let mut words = [0u64; 5];
+        words[0] = tracker.pack();
+        for (i, phase) in [
+            PROGRESS_PHASE_MATERIALIZE,
+            PROGRESS_PHASE_VERIFY,
+            PROGRESS_PHASE_ACTIVATE,
+            PROGRESS_PHASE_PERSIST,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            tracker.complete_step();
+            tracker.enter_phase(phase);
+            words[i + 1] = tracker.pack();
+        }
+        let expected: [(u8, u32, u32, u32); 5] = [
+            (PROGRESS_PHASE_RESOLVE, 0, 5, 0),
+            (PROGRESS_PHASE_MATERIALIZE, 1, 5, 24),
+            (PROGRESS_PHASE_VERIFY, 2, 5, 48),
+            (PROGRESS_PHASE_ACTIVATE, 3, 5, 72),
+            (PROGRESS_PHASE_PERSIST, 4, 5, 96),
+        ];
+        for (word, (phase, step, total, percent)) in words.iter().zip(expected) {
+            let (dp, ds, dt) = unpack_progress(*word);
+            assert_eq!((dp, ds, dt), (phase, step, total));
+            assert_eq!(progress_percent(dp, ds, dt), percent);
+        }
+        // Steps still complete inside the final phase: the reply word lands
+        // at 100 percent even though the last streamed record showed 96.
+        tracker.complete_step();
+        assert_eq!(tracker.percent(), 100);
+    }
+
+    #[test]
+    fn operation_words_name_the_streamed_action() {
+        // Progress records carry the journal action code in arg0; the shell
+        // labels them with the same names.
+        assert_eq!(journal_action_name(JOURNAL_INSTALL), "install");
+        assert_eq!(journal_action_name(JOURNAL_UPDATE), "update");
+        assert_eq!(journal_action_name(JOURNAL_ROLLBACK), "rollback");
+        assert_eq!(journal_action_name(JOURNAL_SYSUPDATE), "sysupdate");
+    }
+
+    #[test]
     fn stale_journal_detection() {
         assert!(!journal_is_stale(JOURNAL_NONE));
         assert!(journal_is_stale(JOURNAL_INSTALL));

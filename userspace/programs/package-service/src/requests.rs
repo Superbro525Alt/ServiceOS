@@ -764,6 +764,7 @@ fn recover_interrupted_operation(
                     &mut packages[index],
                     target,
                     completion_event,
+                    action,
                     &mut progress,
                     &mut auto_restored,
                 );

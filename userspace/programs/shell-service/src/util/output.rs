@@ -144,10 +144,10 @@ pkg repo status: show onboarding ledger, side-load policy, and host arch\r\n\
 pkg sideload policy [allow|warn|deny]: set the side-loading policy switch\r\n\
 pkg repo sync [all|index]: fetch repository metadata through package-service\r\n\
 pkg info <name>: inspect one package\r\n\
-  pkg install <name> [version] [@source] [--yes] [--force-compat]: activate a package from a chosen source\r\n\
-  pkg update <name> [version] [@source] [--yes] [--force-compat]: switch to a newer package version\r\n\
+  pkg install <name> [version] [@source] [--yes] [--force-compat] [--verbose]: activate a package from a chosen source (--verbose streams live phase progress)\r\n\
+  pkg update <name> [version] [@source] [--yes] [--force-compat] [--verbose]: switch to a newer package version (--verbose streams live phase progress)\r\n\
  pkg remove <name>: deactivate a package\r\n\
- pkg rollback <name>: restore the prior active version (prints the rollback summary)\r\n\
+ pkg rollback <name> [--verbose]: restore the prior active version (prints the rollback summary)\r\n\
 pkg history <name>: show current and rollback versions\r\n\
 pkg provenance <name>: inspect package source and trust state\r\n\
 pkg policy <name>: inspect package channel/ring/pin policy\r\n\

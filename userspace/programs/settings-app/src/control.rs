@@ -144,9 +144,25 @@ fn handle_pointer_down(
         refresh_saved(network_handle, state);
         return Ok(true);
     }
+    if x >= TAB_BACKUP_X0 && x < TAB_BACKUP_X1 && y >= TAB_Y0 && y < TAB_Y1 {
+        state.page = SettingsPage::Backup;
+        state.editing_note = false;
+        state.editing_hostname = false;
+        state.wifi.stop_editing();
+        state.backup.stop_editing();
+        return Ok(true);
+    }
 
     if state.page == SettingsPage::Wifi {
         return handle_wifi_pointer_down(network_handle, state, x, y);
+    }
+
+    if state.page == SettingsPage::Backup {
+        // No transport route to backup-service exists in this boot graph, so
+        // the page's controls render disabled and clicks stay inert — the
+        // manual-activation explainer is the only honest content.
+        state.editing_note = false;
+        return Ok(true);
     }
 
     if state.page == SettingsPage::Network {
@@ -432,11 +448,10 @@ fn handle_key_down(
             state.editing_note = false;
             state.editing_hostname = false;
             state.wifi.stop_editing();
+            state.backup.stop_editing();
             Ok(true)
         }
-        14 if state.wifi.prompt.is_some() => {
-            Ok(wifi::wifi_prompt_backspace(&mut state.wifi))
-        }
+        14 if state.wifi.prompt.is_some() => Ok(wifi::wifi_prompt_backspace(&mut state.wifi)),
         28 if state.wifi.prompt.is_some() => {
             let changed = wifi::wifi_prompt_enter(network_handle, &mut state.wifi);
             if changed && state.wifi.prompt.is_none() && state.wifi.saved_add_outcome.is_some() {
@@ -516,11 +531,12 @@ mod tests {
             ping_target: [0; PING_TARGET_MAX_BYTES],
             ping_target_len: 0,
             wifi: WifiUiState::new(),
+            backup: crate::backup::BackupUiState::new(),
         }
     }
 
     #[test]
-    fn tab_key_cycles_all_four_pages() {
+    fn tab_key_cycles_all_five_pages() {
         let mut state = app_state();
         assert_eq!(state.page, SettingsPage::System);
         let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 15);
@@ -529,6 +545,8 @@ mod tests {
         assert_eq!(state.page, SettingsPage::Network);
         let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 15);
         assert_eq!(state.page, SettingsPage::Wifi);
+        let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 15);
+        assert_eq!(state.page, SettingsPage::Backup);
         let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 15);
         assert_eq!(state.page, SettingsPage::System);
     }
@@ -541,6 +559,10 @@ mod tests {
         let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 15);
         assert!(!state.editing_hostname);
         assert_eq!(state.page, SettingsPage::Wifi);
+        state.editing_hostname = true;
+        let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 15);
+        assert!(!state.editing_hostname);
+        assert_eq!(state.page, SettingsPage::Backup);
         state.editing_hostname = true;
         let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 15);
         assert!(!state.editing_hostname);
@@ -678,8 +700,9 @@ mod tests {
         state.wifi.scan_count = 1;
 
         // Row 0 hitbox selects the scan row.
-        let changed = handle_wifi_pointer_down(rt::INVALID_HANDLE, &mut state, 40, WIFI_SCAN_ROW_Y0 + 4)
-            .expect("row handled");
+        let changed =
+            handle_wifi_pointer_down(rt::INVALID_HANDLE, &mut state, 40, WIFI_SCAN_ROW_Y0 + 4)
+                .expect("row handled");
         assert!(changed);
         assert_eq!(state.wifi.selected_scan, 0);
 

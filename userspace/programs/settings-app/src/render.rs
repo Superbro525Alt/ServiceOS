@@ -4,6 +4,7 @@ use rt::{ConfigKey, FixedLogBuffer};
 use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
 
+use crate::backup::{self, BACKUP_LIST_ROWS, BackupPrompt, BackupUnavailable};
 use crate::netdiag;
 use crate::security::{
     PermissionSummary, RuntimeCapSummary, audit_kind_name, first_actionable_runtime, image_name,
@@ -55,6 +56,7 @@ pub(crate) fn render(
         )?,
         SettingsPage::Network => draw_network_page(bytes, network_handle, state),
         SettingsPage::Wifi => draw_wifi_page(bytes, network_handle, state),
+        SettingsPage::Backup => draw_backup_page(bytes, state),
     }
 
     presenter.present(buffer_slot, width as u32, height as u32)
@@ -761,7 +763,13 @@ fn draw_wifi_page(bytes: &mut [u8], network_handle: rt::Handle, state: &AppState
         ui::TEXT_MUTED,
         str::from_utf8(scan_header.as_bytes()).unwrap_or("SCAN"),
     );
-    for (index, entry) in state.wifi.scans.iter().take(state.wifi.scan_count).enumerate() {
+    for (index, entry) in state
+        .wifi
+        .scans
+        .iter()
+        .take(state.wifi.scan_count)
+        .enumerate()
+    {
         let row = wifi::scan_row_text::<64>(entry);
         rt::draw_text_rgba8888(
             bytes,
@@ -789,7 +797,13 @@ fn draw_wifi_page(bytes: &mut [u8], network_handle: rt::Handle, state: &AppState
             "SAVED UNAVAILABLE",
         );
     }
-    for (index, record) in state.wifi.saved.iter().take(state.wifi.saved_count).enumerate() {
+    for (index, record) in state
+        .wifi
+        .saved
+        .iter()
+        .take(state.wifi.saved_count)
+        .enumerate()
+    {
         let row = wifi::saved_row_text::<48>(record);
         rt::draw_text_rgba8888(
             bytes,
@@ -922,6 +936,188 @@ fn draw_wifi_page(bytes: &mut [u8], network_handle: rt::Handle, state: &AppState
     }
 }
 
+fn draw_backup_page(bytes: &mut [u8], state: &AppState) {
+    let backup = &state.backup;
+
+    let mut title = FixedLogBuffer::<48>::new();
+    let _ = write!(&mut title, "BACKUP / RESTORE");
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        12,
+        70,
+        ui::TEXT_PRIMARY,
+        str::from_utf8(title.as_bytes()).unwrap_or("BACKUP"),
+    );
+
+    let (status_text, status_color) = match backup.unavailable {
+        Some(BackupUnavailable::NoRoute) => ("SERVICE ABSENT - MANUAL ACTIVATION", ui::STATUS_WARN),
+        Some(BackupUnavailable::TransportFailure) => {
+            ("BACKUP SERVICE UNREACHABLE - TRANSPORT", ui::STATUS_WARN)
+        }
+        None => ("SERVICE ROUTE READY", ui::STATUS_OK),
+    };
+    rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, 12, 80, status_color, status_text);
+
+    for (index, line) in [
+        "IMAGE  services/backup-service/program.img",
+        "SPAWN ON DEMAND VIA STORED-IMAGE LAUNCH",
+        "NO NAMED SERVICE ID; NO PUBLIC CHANNEL YET",
+        "SETTINGS APP HAS NO BACKUP ROUTE THIS BOOT",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        rt::draw_text_rgba8888(
+            bytes,
+            PIXEL_STRIDE,
+            12,
+            94 + (index as i32 * 10),
+            ui::TEXT_MUTED,
+            line,
+        );
+    }
+
+    for (index, line) in [
+        "SHELL: services | service backup-service",
+        "SHELL: run services/backup-service/program.img",
+        "  STANDALONE RUN EXITS (NEEDS STORAGE HANDLE)",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        rt::draw_text_rgba8888(
+            bytes,
+            PIXEL_STRIDE,
+            12,
+            138 + (index as i32 * 10),
+            ui::TEXT_SECONDARY,
+            line,
+        );
+    }
+
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        12,
+        176,
+        ui::TEXT_MUTED,
+        "SCOPES: CONFIG ACCOUNTS PACKAGES",
+    );
+
+    // Controls render disabled until a route exists; clicks are inert.
+    for (x0, x1, label) in [
+        (BACKUP_EXPORT_BTN_X0, BACKUP_EXPORT_BTN_X1, "EXPORT"),
+        (BACKUP_RESTORE_BTN_X0, BACKUP_RESTORE_BTN_X1, "RESTORE"),
+        (BACKUP_DELETE_BTN_X0, BACKUP_DELETE_BTN_X1, "DELETE"),
+    ] {
+        draw_button(
+            bytes,
+            x0,
+            BACKUP_BTN_Y0,
+            x1,
+            BACKUP_BTN_Y1,
+            ui::BG_PANEL,
+            label,
+            ui::TEXT_MUTED,
+        );
+    }
+
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        12,
+        BACKUP_LIST_Y0 - 10,
+        ui::TEXT_MUTED,
+        "SNAPSHOTS (backups/)",
+    );
+    if backup.entry_count == 0 {
+        rt::draw_text_rgba8888(
+            bytes,
+            PIXEL_STRIDE,
+            12,
+            BACKUP_LIST_Y0,
+            ui::TEXT_MUTED,
+            "NO ROUTE - LIST UNAVAILABLE",
+        );
+    } else {
+        for (row, entry) in backup.entries[..backup.entry_count].iter().enumerate() {
+            let label = entry.path_str().unwrap_or("?");
+            rt::draw_text_rgba8888(
+                bytes,
+                PIXEL_STRIDE,
+                12,
+                BACKUP_LIST_Y0 + (row as i32 * 10),
+                if row == backup.selected {
+                    ui::TEXT_PRIMARY
+                } else {
+                    ui::TEXT_SECONDARY
+                },
+                label,
+            );
+        }
+    }
+    if backup.entry_total > backup.entry_count {
+        let mut more = FixedLogBuffer::<48>::new();
+        let _ = write!(
+            &mut more,
+            "+{} MORE (CAPACITY-BOUNDED VIEW)",
+            backup.entry_total - backup.entry_count
+        );
+        rt::draw_text_rgba8888(
+            bytes,
+            PIXEL_STRIDE,
+            12,
+            BACKUP_LIST_Y0 + (BACKUP_LIST_ROWS as i32 * 10),
+            ui::TEXT_MUTED,
+            str::from_utf8(more.as_bytes()).unwrap_or("+MORE"),
+        );
+    }
+
+    let mut footer = FixedLogBuffer::<64>::new();
+    match backup.prompt {
+        Some(BackupPrompt::RestoreConfirm(report)) => {
+            let _ = write!(
+                &mut footer,
+                "DRY-RUN OK: {} RECS {} BYTES - CONFIRM TO APPLY",
+                report.selected_records, report.total_bytes
+            );
+        }
+        Some(BackupPrompt::DeleteConfirm) => {
+            let _ = write!(&mut footer, "CONFIRM DELETE");
+        }
+        None => match (
+            backup.export_outcome,
+            backup.restore_outcome,
+            backup.delete_outcome,
+        ) {
+            (Some(Err(error)), _, _) | (_, Some(Err(error)), _) | (_, _, Some(Err(error))) => {
+                let _ = write!(&mut footer, "FAILED: {}", backup::backup_error_name(error));
+            }
+            (Some(Ok(_)), _, _) => {
+                let _ = write!(&mut footer, "EXPORT DONE");
+            }
+            (_, Some(Ok(_)), _) => {
+                let _ = write!(&mut footer, "RESTORE DONE");
+            }
+            (_, _, Some(Ok(()))) => {
+                let _ = write!(&mut footer, "DELETE DONE");
+            }
+            (None, None, None) => {
+                let _ = write!(&mut footer, "IDLE");
+            }
+        },
+    }
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        12,
+        326,
+        ui::TEXT_SECONDARY,
+        str::from_utf8(footer.as_bytes()).unwrap_or("IDLE"),
+    );
+}
+
 fn draw_tabs(bytes: &mut [u8], page: SettingsPage) {
     draw_button(
         bytes,
@@ -977,6 +1173,20 @@ fn draw_tabs(bytes: &mut [u8], page: SettingsPage) {
             ui::ACCENT_DIM
         },
         "WIFI",
+        ui::TEXT_PRIMARY,
+    );
+    draw_button(
+        bytes,
+        TAB_BACKUP_X0,
+        TAB_Y0,
+        TAB_BACKUP_X1,
+        TAB_Y1,
+        if page == SettingsPage::Backup {
+            ui::ACCENT
+        } else {
+            ui::ACCENT_DIM
+        },
+        "BACKUP",
         ui::TEXT_PRIMARY,
     );
 }

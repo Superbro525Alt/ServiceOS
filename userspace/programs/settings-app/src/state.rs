@@ -53,6 +53,17 @@ pub(crate) const NET_PING_RUN_X1: i32 = 190;
 pub(crate) const NET_PING_RUN_Y1: i32 = 170;
 pub(crate) const TAB_WIFI_X0: i32 = 330;
 pub(crate) const TAB_WIFI_X1: i32 = 398;
+pub(crate) const TAB_BACKUP_X0: i32 = 406;
+pub(crate) const TAB_BACKUP_X1: i32 = 486;
+pub(crate) const BACKUP_BTN_Y0: i32 = 196;
+pub(crate) const BACKUP_BTN_Y1: i32 = 212;
+pub(crate) const BACKUP_EXPORT_BTN_X0: i32 = 10;
+pub(crate) const BACKUP_EXPORT_BTN_X1: i32 = 86;
+pub(crate) const BACKUP_RESTORE_BTN_X0: i32 = 94;
+pub(crate) const BACKUP_RESTORE_BTN_X1: i32 = 170;
+pub(crate) const BACKUP_DELETE_BTN_X0: i32 = 178;
+pub(crate) const BACKUP_DELETE_BTN_X1: i32 = 254;
+pub(crate) const BACKUP_LIST_Y0: i32 = 230;
 pub(crate) const WIFI_BTN_Y0: i32 = 106;
 pub(crate) const WIFI_BTN_Y1: i32 = 122;
 pub(crate) const WIFI_SCAN_BTN_X0: i32 = 10;
@@ -87,6 +98,7 @@ pub(crate) enum SettingsPage {
     Security,
     Network,
     Wifi,
+    Backup,
 }
 
 #[derive(Clone, Copy)]
@@ -113,6 +125,7 @@ pub(crate) struct AppState {
     pub(crate) ping_target: [u8; PING_TARGET_MAX_BYTES],
     pub(crate) ping_target_len: usize,
     pub(crate) wifi: WifiUiState,
+    pub(crate) backup: crate::backup::BackupUiState,
 }
 
 impl SettingsPage {
@@ -121,7 +134,8 @@ impl SettingsPage {
             SettingsPage::System => SettingsPage::Security,
             SettingsPage::Security => SettingsPage::Network,
             SettingsPage::Network => SettingsPage::Wifi,
-            SettingsPage::Wifi => SettingsPage::System,
+            SettingsPage::Wifi => SettingsPage::Backup,
+            SettingsPage::Backup => SettingsPage::System,
         }
     }
 }

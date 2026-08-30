@@ -3,7 +3,7 @@ use core::fmt::Write as _;
 use rt::FixedLogBuffer;
 use serviceos_userspace_runtime as rt;
 
-use crate::state::{WifiOpError, WifiPrompt, WifiUiState, WIFI_SSID_MAX_BYTES};
+use crate::state::{WIFI_SSID_MAX_BYTES, WifiOpError, WifiPrompt, WifiUiState};
 
 /// Classify a failed wrapper call for honest rendering. Unsupported is the
 /// documented reply while no wireless backend device is registered.
@@ -11,7 +11,9 @@ pub(crate) fn classify(error: rt::Error) -> WifiOpError {
     match error {
         rt::Error::Unsupported => WifiOpError::Unsupported,
         rt::Error::InvalidArgument | rt::Error::BufferTooSmall => WifiOpError::Invalid,
-        rt::Error::NotFound | rt::Error::Busy | rt::Error::CapacityExceeded => WifiOpError::Rejected,
+        rt::Error::NotFound | rt::Error::Busy | rt::Error::CapacityExceeded => {
+            WifiOpError::Rejected
+        }
         _ => WifiOpError::Transport,
     }
 }
@@ -204,9 +206,8 @@ pub(crate) fn begin_join(network_handle: rt::Handle, state: &mut WifiUiState) ->
         state.prompt = Some(WifiPrompt::JoinPsk);
     } else {
         let ssid = ssid_str(&entry.ssid, entry.ssid_len);
-        state.join_outcome = Some(
-            rt::network_wifi_join(network_handle, ssid, None).map_err(classify),
-        );
+        state.join_outcome =
+            Some(rt::network_wifi_join(network_handle, ssid, None).map_err(classify));
     }
     true
 }
@@ -218,10 +219,7 @@ fn commit_join(
     state: &mut WifiUiState,
 ) {
     let ssid = ssid_str(&entry.ssid, entry.ssid_len);
-    state.join_outcome = Some(
-        rt::network_wifi_join(network_handle, ssid, psk)
-            .map_err(classify),
-    );
+    state.join_outcome = Some(rt::network_wifi_join(network_handle, ssid, psk).map_err(classify));
 }
 
 /// Feed one typed character into the active prompt stage. Each stage has
@@ -232,7 +230,9 @@ pub(crate) fn wifi_prompt_char(state: &mut WifiUiState, ch: char) -> bool {
         return false;
     };
     let (max_bytes, allow_space, digits_only) = match prompt {
-        WifiPrompt::JoinPsk | WifiPrompt::SavedPsk => (crate::state::WIFI_PSK_MAX_BYTES, true, false),
+        WifiPrompt::JoinPsk | WifiPrompt::SavedPsk => {
+            (crate::state::WIFI_PSK_MAX_BYTES, true, false)
+        }
         WifiPrompt::SavedSsid => (WIFI_SSID_MAX_BYTES, true, false),
         WifiPrompt::SavedPriority => (3, false, true),
     };
@@ -315,7 +315,8 @@ pub(crate) fn wifi_prompt_enter(network_handle: rt::Handle, state: &mut WifiUiSt
             }
             state.add_psk_len = state.prompt_len;
             state.add_psk = [0; crate::state::WIFI_PSK_MAX_BYTES];
-            state.add_psk[..state.prompt_len].copy_from_slice(&state.prompt_edit[..state.prompt_len]);
+            state.add_psk[..state.prompt_len]
+                .copy_from_slice(&state.prompt_edit[..state.prompt_len]);
             state.prompt_len = 0;
             state.prompt_edit = [0; crate::state::WIFI_EDIT_MAX_BYTES];
             state.prompt = Some(WifiPrompt::SavedPriority);
@@ -328,8 +329,7 @@ pub(crate) fn wifi_prompt_enter(network_handle: rt::Handle, state: &mut WifiUiSt
             let ssid = core::str::from_utf8(&state.add_ssid[..state.add_ssid_len]).unwrap_or("");
             let psk = core::str::from_utf8(&state.add_psk[..state.add_psk_len]).unwrap_or("");
             state.saved_add_outcome = Some(
-                rt::network_wifi_saved_add(network_handle, ssid, psk, priority)
-                    .map_err(classify),
+                rt::network_wifi_saved_add(network_handle, ssid, psk, priority).map_err(classify),
             );
             state.stop_editing();
             true

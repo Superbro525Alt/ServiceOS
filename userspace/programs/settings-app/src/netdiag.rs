@@ -188,6 +188,7 @@ mod tests {
             ping_target: [0; PING_TARGET_MAX_BYTES],
             ping_target_len: 0,
             wifi: crate::state::WifiUiState::new(),
+            backup: crate::backup::BackupUiState::new(),
         };
         run_ping(rt::INVALID_HANDLE, 0x0a00_0202, &mut state);
         assert!(state.ping_failed);

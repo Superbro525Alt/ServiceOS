@@ -1,6 +1,7 @@
 #![cfg_attr(not(test), no_std)]
 #![cfg_attr(not(test), no_main)]
 
+mod backup;
 mod control;
 mod netdiag;
 mod render;
@@ -62,6 +63,7 @@ fn main() -> u64 {
         ping_target: [0; state::PING_TARGET_MAX_BYTES],
         ping_target_len: 0,
         wifi: state::WifiUiState::new(),
+        backup: backup::BackupUiState::new(),
     };
     let mut audio_stream_handle = rt::INVALID_HANDLE;
 

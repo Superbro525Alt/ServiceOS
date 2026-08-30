@@ -11,15 +11,22 @@
 > (explicit rcx/rdx placement + clobber_abi). The #GP is gone; isa-smoke e2e
 > passes; qemu-virtio still reaches desktop-ready.
 >
-> NEW OPEN BUG (replaces the entry fault): after "entering userspace
-> executor" on qemu-isa, user mode runs but the graph goes silent. Live
-> `-d int` evidence (60 s boot): root-manager makes exactly one
-> ChannelReceive (syscall 7) and a second thread one ThreadExit (syscall 2),
-> then ~12k timer vectors (v=40) interrupt the SAME user IP (0x4000000035892)
-> with no further syscalls — a syscall-free user-mode spin. Root-manager
-> never reaches its first spawn. Next agent: disassemble the root-manager
-> image at offset 0x35892 to identify the spin site, and compare the same
-> window on qemu-virtio.
+> NEW OPEN BUG (replaces the entry fault) — RESOLVED same session: the
+> post-entry silence had the SAME root cause one layer deeper. The
+> `int 0x80` syscall stub (arch/x86_64/src/syscall_entry.S) passed the
+> saved frame pointer to `serviceos_x86_64_handle_syscall` in RCX only —
+> correct for the uefi target's win64 ABI, wrong for the none target's
+> SysV ABI (RDI) — so on qemu-isa every syscall handler dereferenced the
+> user's live RDI as the frame, "succeeded" with RDX=0, and restored the
+> original registers: root-manager's ChannelReceive never received its
+> bootstrap reply, a follow-on ThreadExit was equally no-op'd, and the
+> thread spun forever (12k timer preemptions at one user IP, zero
+> syscalls). Fix: `mov rdi, rax` added to both the int-gate stub and the
+> fast SYSCALL/SYSRET stub (which never set any arg register and was
+> latent on all targets since userspace only issues int 0x80 today).
+> qemu-isa now brings up the full serial-first graph and prints
+> `serviceos shell ready` for the first time; qemu-virtio is byte-for-byte
+> unaffected (RCX unchanged) and still reaches desktop-ready.
 
 ## What works (verified)
 - `cargo xtask run --platform qemu-isa` boots via SeaBIOS PVH ELF note.

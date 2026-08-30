@@ -54,10 +54,11 @@ serviceos_x86_64_syscall_fast_entry:
     and rsp, -16
     sub rsp, 40
     mov [rsp + 32], rax
-    
+    mov rcx, rax
+    mov rdi, rax
+
     # Call Rust handler
     call serviceos_x86_64_handle_syscall_fast
-    
     # Check if we need to switch to kernel
     test rax, rax
     jnz serviceos_x86_64_syscall_fast_exit_to_kernel

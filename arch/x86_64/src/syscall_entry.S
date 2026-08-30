@@ -43,6 +43,7 @@ serviceos_x86_64_syscall_entry:
     PUSH_GENERAL_REGS
     mov rax, rsp
     mov rcx, rax
+    mov rdi, rax
     and rsp, -16
     sub rsp, 40
     mov [rsp + 32], rax

@@ -11,6 +11,7 @@ use crate::{
     persistent::{persist_state, release_blob_session, release_directory_session,
         release_mutable_entry},
     root::try_unmount,
+    root::try_rename_entry,
 };
 
 const SELFTEST_PREFIX: &[u8] = b"data/";
@@ -257,6 +258,10 @@ pub(crate) fn run_boot_selftest(
         ));
     }
 
+    // 8. Gated e2e witness: server-side rename/move (0x527/0x528 wire ops).
+    // Fully inert unless the image was built with SERVICEOS_E2E_STORAGE=1.
+    rename_move_probe(mounts, entries, mutable_entries);
+
     let _ = persist_state(persistent_store, mounts, mutable_entries);
 }
 
@@ -472,4 +477,220 @@ fn logf(message: &str) {
 
 fn logf_args(args: core::fmt::Arguments) {
     let _ = rt::write_logf("storage", args);
+}
+
+/// Gated e2e witness for the server-side rename/move core
+/// (`root.rs try_rename_entry`, the shared implementation behind the
+/// 0x527/0x528 wire ops). Covers: same-directory rename, cross-directory
+/// move, destination-collision rejection, directory rename carrying a
+/// child subtree, and index consistency after the renames (old paths =
+/// miss, new path = hit through the real search planner). Emits
+/// `E2E storage.rename PASS|FAIL` only when the image was built with
+/// SERVICEOS_E2E_STORAGE=1; otherwise returns before any output or
+/// mutation so default boots stay byte-identical (smoke/no-probe-defaults).
+fn rename_move_probe(
+    mounts: &mut MountTable,
+    entries: &[EntrySlot],
+    mutable_entries: &mut [MutableEntry; MAX_MUTABLE_ENTRIES],
+) {
+    if !matches!(option_env!("SERVICEOS_E2E_STORAGE"), Some("1")) {
+        return;
+    }
+    const PROBE_FILE: &[u8] = b"data/e2e-rename.txt";
+    const PROBE_RENAMED: &[u8] = b"data/e2e-renamed.txt";
+    const PROBE_DIR: &[u8] = b"data/e2e-move/";
+    const PROBE_MOVED: &[u8] = b"data/e2e-move/moved.txt";
+    const PROBE_DIR_MOVED: &[u8] = b"data/e2e-moved-dir/";
+    const PROBE_TREE_FILE: &[u8] = b"data/e2e-moved-dir/moved.txt";
+    const PROBE_COLLIDE: &[u8] = b"data/e2e-collide.txt";
+    const PROBE_PAYLOAD: &[u8] = b"storage-rename-e2e";
+
+    fn fail(step: u32, status: u32) {
+        logf_args(format_args!(
+            "E2E storage.rename FAIL step={step} status={status}"
+        ));
+    }
+    // Best-effort residue removal on any path through the probe so the
+    // final persist never records probe leftovers.
+    fn cleanup(mutable_entries: &mut [MutableEntry; MAX_MUTABLE_ENTRIES]) {
+        for path in [
+            PROBE_TREE_FILE,
+            PROBE_MOVED,
+            PROBE_RENAMED,
+            PROBE_COLLIDE,
+            PROBE_FILE,
+            PROBE_DIR_MOVED,
+            PROBE_DIR,
+        ] {
+            if let Some(index) = find_mutable_entry(mutable_entries, path) {
+                release_mutable_entry(&mut mutable_entries[index]);
+            }
+        }
+    }
+
+    let tick = rt::monotonic_now().unwrap_or(0);
+
+    // 1. CREATE the working set under the writable `data/` namespace.
+    let created = create_rename_probe_entry(mutable_entries, PROBE_FILE,
+        StorageEntryKind::File, PROBE_PAYLOAD)
+        && create_rename_probe_entry(mutable_entries, PROBE_DIR,
+            StorageEntryKind::Directory, &[])
+        && create_rename_probe_entry(mutable_entries, PROBE_COLLIDE,
+            StorageEntryKind::File, PROBE_PAYLOAD);
+    if !created {
+        fail(1, StorageStatus::NotFound as u32);
+        return;
+    }
+
+    // The index must be built from the live entries before try_rename_entry
+    // mutates it (lazy-build contract, same as the mutation probe).
+    let mut probe_index = crate::index::SearchIndex::new();
+    probe_index.ensure_built(entries, mutable_entries, tick);
+
+    // 2. RENAME same-directory (data/e2e-rename.txt -> data/e2e-renamed.txt).
+    let status = try_rename_entry(
+        mounts,
+        entries,
+        mutable_entries,
+        &mut probe_index,
+        PROBE_FILE,
+        PROBE_RENAMED,
+        tick.wrapping_add(1),
+    );
+    if status != StorageStatus::Ok {
+        cleanup(mutable_entries);
+        fail(2, status as u32);
+        return;
+    }
+
+    // 3. MOVE cross-directory (data/e2e-renamed.txt -> data/e2e-move/moved.txt).
+    let status = try_rename_entry(
+        mounts,
+        entries,
+        mutable_entries,
+        &mut probe_index,
+        PROBE_RENAMED,
+        PROBE_MOVED,
+        tick.wrapping_add(2),
+    );
+    if status != StorageStatus::Ok {
+        cleanup(mutable_entries);
+        fail(3, status as u32);
+        return;
+    }
+
+    // 4. Destination collision must be rejected without overwrite.
+    let status = try_rename_entry(
+        mounts,
+        entries,
+        mutable_entries,
+        &mut probe_index,
+        PROBE_MOVED,
+        PROBE_COLLIDE,
+        tick.wrapping_add(3),
+    );
+    if status != StorageStatus::AlreadyExists {
+        cleanup(mutable_entries);
+        fail(4, status as u32);
+        return;
+    }
+
+    // 5. RENAME a directory with a child: the subtree must follow
+    // (data/e2e-move/ -> data/e2e-moved-dir/, child becomes
+    // data/e2e-moved-dir/moved.txt).
+    let status = try_rename_entry(
+        mounts,
+        entries,
+        mutable_entries,
+        &mut probe_index,
+        PROBE_DIR,
+        PROBE_DIR_MOVED,
+        tick.wrapping_add(4),
+    );
+    if status != StorageStatus::Ok {
+        cleanup(mutable_entries);
+        fail(5, status as u32);
+        return;
+    }
+
+    // 6. The child followed the tree rename with its payload intact.
+    let child_bytes = find_mutable_entry(mutable_entries, PROBE_TREE_FILE)
+        .map(|index| mutable_entries[index].data_len)
+        .unwrap_or(0);
+    if child_bytes != PROBE_PAYLOAD.len() {
+        cleanup(mutable_entries);
+        fail(6, child_bytes as u32);
+        return;
+    }
+
+    // 7. Index consistency: every pre-rename path is a miss, both
+    // post-rename paths are hits, and the real search planner resolves
+    // the moved file by name exactly once.
+    let snapshot = probe_index.snapshot();
+    let old_gone = [PROBE_FILE, PROBE_RENAMED, PROBE_MOVED, PROBE_DIR]
+        .iter()
+        .all(|path| !snapshot.iter().any(|entry| entry.path() == *path));
+    if !old_gone {
+        cleanup(mutable_entries);
+        fail(7, StorageStatus::NotFound as u32);
+        return;
+    }
+    let new_present = snapshot.iter().any(|entry| entry.path() == PROBE_DIR_MOVED)
+        && snapshot.iter().any(|entry| entry.path() == PROBE_TREE_FILE);
+    if !new_present {
+        cleanup(mutable_entries);
+        fail(7, StorageStatus::InvalidPath as u32);
+        return;
+    }
+    let plan = crate::index::plan_search(
+        snapshot,
+        b"data/",
+        &[b"moved.txt"],
+        0,
+        u64::MAX,
+        0,
+        100,
+    );
+    let index_hit = plan.len == 1 && snapshot[plan.order[0]].path() == PROBE_TREE_FILE;
+    if !index_hit {
+        cleanup(mutable_entries);
+        fail(8, plan.len as u32);
+        return;
+    }
+
+    cleanup(mutable_entries);
+    logf("E2E storage.rename PASS create=3 rename=3 collide-denied=1 index-hit=1");
+}
+
+/// Allocate one probe entry directly in the mutable table (same layer the
+/// IPC create handlers compose). Files get a private memory blob preloaded
+/// with `payload`.
+fn create_rename_probe_entry(
+    mutable_entries: &mut [MutableEntry; MAX_MUTABLE_ENTRIES],
+    path: &[u8],
+    kind: StorageEntryKind,
+    payload: &[u8],
+) -> bool {
+    let Some(slot_index) = mutable_entries
+        .iter()
+        .position(|entry| !entry.occupied)
+    else {
+        return false;
+    };
+    mutable_entries[slot_index] = MutableEntry::empty();
+    let slot = &mut mutable_entries[slot_index];
+    slot.kind = kind;
+    slot.path[..path.len()].copy_from_slice(path);
+    slot.path_len = path.len();
+    slot.persistent = true;
+    if kind == StorageEntryKind::File {
+        slot.data_handle = rt::memory_create(payload.len().max(INITIAL_FILE_CAPACITY), true)
+            .unwrap_or(rt::INVALID_HANDLE);
+        slot.data_capacity = payload.len().max(INITIAL_FILE_CAPACITY);
+        if rt::memory_write(slot.data_handle, 0, payload).is_ok() {
+            slot.data_len = payload.len();
+        }
+    }
+    slot.occupied = true;
+    true
 }

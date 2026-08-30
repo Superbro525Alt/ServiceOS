@@ -1,0 +1,26 @@
+# T3 live rename/move witness: the storage-service rename probe behind
+# SERVICEOS_E2E_STORAGE=1 drives the shared rename/move core
+# (userspace/programs/storage-service/src/root.rs try_rename_entry — the
+# implementation behind the 0x527/0x528 wire ops) inside the mounted
+# `data/` namespace: same-dir rename, cross-dir move, dest-collision
+# rejection, directory rename carrying a child subtree, and index
+# consistency (old paths = miss, new path = hit). Silent on default boots.
+[case]
+name = "storage-rename.live"
+tier = 3
+platforms = ["qemu-virtio"]
+timeout_secs = 300
+env_build = ["SERVICEOS_E2E_STORAGE=1"]
+witnesses = [
+    "selftest mount-(added ok|present restored=1)",  # data/ namespace up
+    "selftest mutation-probe create=2 rename=1 delete=2 ok=1",
+    "E2E storage.rename PASS create=3 rename=3 collide-denied=1 index-hit=1",
+]
+fail_on = [
+    "E2E storage.rename FAIL",
+    "selftest persist FAILED",
+    "CRASH LOOP",
+]
+serial_script = ""
+data_fresh = true
+tags = ["live", "storage", "e2e-probe"]

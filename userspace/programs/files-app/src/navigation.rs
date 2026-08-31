@@ -30,7 +30,7 @@ pub(crate) fn reopen_directory(
     Ok(())
 }
 
-fn reset_listing(state: &mut ExplorerState) {
+pub(crate) fn reset_listing(state: &mut ExplorerState) {
     state.entry_count = 0;
     state.scroll_offset = 0;
     state.selected_index = 0;
@@ -371,6 +371,9 @@ mod tests {
             view_mode: ViewMode::Directory,
             search_query: [0; crate::state::MAX_SEARCH_QUERY],
             search_query_len: 0,
+            content_hit_line: [0; MAX_ENTRIES],
+            content_truncated: false,
+            content_oversize: false,
             recent_sel: 0,
             press: None,
             dragging: false,

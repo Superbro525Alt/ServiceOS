@@ -4,6 +4,7 @@
 mod assoc;
 mod bridge;
 mod control;
+mod grep;
 mod navigation;
 mod ops;
 mod persist;
@@ -64,6 +65,9 @@ fn main() -> u64 {
         view_mode: ViewMode::Directory,
         search_query: [0; state::MAX_SEARCH_QUERY],
         search_query_len: 0,
+        content_hit_line: [0; state::MAX_ENTRIES],
+        content_truncated: false,
+        content_oversize: false,
         recent_sel: 0,
         press: None,
         dragging: false,

@@ -24,6 +24,7 @@ pub(crate) fn render(
     let title = match state.view_mode {
         ViewMode::Directory => "FILES",
         ViewMode::Search => "SEARCH",
+        ViewMode::ContentSearch => "FIND",
         ViewMode::Recent => "RECENT",
     };
     ui::draw_window_frame_rgba8888(
@@ -37,7 +38,7 @@ pub(crate) fn render(
     );
     draw_header(bytes, state);
     match state.view_mode {
-        ViewMode::Directory | ViewMode::Search => draw_list(bytes, state),
+        ViewMode::Directory | ViewMode::Search | ViewMode::ContentSearch => draw_list(bytes, state),
         ViewMode::Recent => draw_recent(bytes, state),
     }
     draw_footer(bytes, state);
@@ -63,6 +64,12 @@ fn draw_header(bytes: &mut [u8], state: &ExplorerState) {
     } else if state.view_mode == ViewMode::Search {
         let query = str::from_utf8(&state.search_query[..state.search_query_len]).unwrap_or("?");
         let _ = path_line.write_fmt(format_args!("SEARCH {query} IN /"));
+        if let Ok(path) = str::from_utf8(&state.current_path[..state.current_path_len]) {
+            let _ = path_line.write_fmt(format_args!("{path}"));
+        }
+    } else if state.view_mode == ViewMode::ContentSearch {
+        let needle = str::from_utf8(&state.search_query[..state.search_query_len]).unwrap_or("");
+        let _ = path_line.write_fmt(format_args!("FIND {needle} IN /"));
         if let Ok(path) = str::from_utf8(&state.current_path[..state.current_path_len]) {
             let _ = path_line.write_fmt(format_args!("{path}"));
         }
@@ -105,7 +112,12 @@ fn draw_list(bytes: &mut [u8], state: &ExplorerState) {
     }
 
     if state.load_failed {
-        draw_note(bytes, "LIST FAILED", ui::STATUS_WARN);
+        let failed = if state.view_mode == ViewMode::ContentSearch {
+            "FIND FAILED"
+        } else {
+            "LIST FAILED"
+        };
+        draw_note(bytes, failed, ui::STATUS_WARN);
         return;
     }
 
@@ -114,6 +126,12 @@ fn draw_list(bytes: &mut [u8], state: &ExplorerState) {
             bytes,
             if state.view_mode == ViewMode::Search {
                 "NO MATCHES"
+            } else if state.view_mode == ViewMode::ContentSearch {
+                if state.search_query_len == 0 {
+                    "TYPE TO FIND"
+                } else {
+                    "NO MATCHES"
+                }
             } else {
                 "EMPTY"
             },
@@ -163,15 +181,53 @@ fn draw_list(bytes: &mut [u8], state: &ExplorerState) {
                 }
             }
         };
-        draw_entry_label(
-            bytes,
-            entry,
-            (LIST_X + 8) as i32,
-            (y + 4) as i32,
-            color,
-            state.is_selected(index) && index != state.selected_index,
-        );
+        if state.view_mode == ViewMode::ContentSearch {
+            draw_content_hit_label(
+                bytes,
+                entry,
+                state.content_hit_line[index],
+                (LIST_X + 8) as i32,
+                (y + 4) as i32,
+                color,
+            );
+        } else {
+            draw_entry_label(
+                bytes,
+                entry,
+                (LIST_X + 8) as i32,
+                (y + 4) as i32,
+                color,
+                state.is_selected(index) && index != state.selected_index,
+            );
+        }
     }
+}
+
+/// Content-hit row: line number plus the hit's full path (the scope is on
+/// the header line), bounded by the shared label buffer.
+fn draw_content_hit_label(
+    bytes: &mut [u8],
+    entry: ExplorerEntry,
+    line: u64,
+    x: i32,
+    y: i32,
+    color: u32,
+) {
+    let mut label = FixedLogBuffer::<96>::new();
+    let _ = write!(label, "L{} ", line);
+    if let Ok(path) = str::from_utf8(&entry.path[..entry.path_len]) {
+        let _ = write!(label, "{path}");
+    } else {
+        let _ = write!(label, "INVALID");
+    }
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        x,
+        y,
+        color,
+        str::from_utf8(label.as_bytes()).unwrap_or("INVALID"),
+    );
 }
 
 fn draw_recent(bytes: &mut [u8], state: &ExplorerState) {
@@ -287,6 +343,25 @@ fn draw_footer(bytes: &mut [u8], state: &ExplorerState) {
             let query =
                 str::from_utf8(&state.search_query[..state.search_query_len]).unwrap_or("?");
             let _ = write!(footer, "SEARCH {query}  [ESC] CANCEL");
+        }
+        ViewMode::ContentSearch => {
+            let needle =
+                str::from_utf8(&state.search_query[..state.search_query_len]).unwrap_or("");
+            if state.search_query_len == 0 {
+                let _ = write!(footer, "FIND: TYPE QUERY  [ESC] CANCEL");
+            } else {
+                let _ = write!(
+                    footer,
+                    "FIND {needle} {} HITS [ESC] CANCEL",
+                    state.entry_count
+                );
+            }
+            if state.content_truncated {
+                let _ = write!(footer, "  MORE MATCHES");
+            }
+            if state.content_oversize {
+                let _ = write!(footer, "  LARGE SKIPPED");
+            }
         }
     }
     rt::draw_text_rgba8888(

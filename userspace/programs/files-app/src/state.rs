@@ -21,6 +21,8 @@ pub(crate) const KEY_D: u32 = 32;
 pub(crate) const KEY_R: u32 = 19;
 pub(crate) const KEY_N: u32 = 49;
 pub(crate) const KEY_F2: u32 = 60;
+pub(crate) const KEY_F: u32 = 33;
+pub(crate) const KEY_X: u32 = 45;
 pub(crate) const KEY_DELETE: u32 = 111;
 pub(crate) const KEY_UP: u32 = 103;
 pub(crate) const KEY_PAGE_UP: u32 = 104;
@@ -52,6 +54,7 @@ pub(crate) enum EntryKind {
 pub(crate) enum ViewMode {
     Directory,
     Search,
+    ContentSearch,
     Recent,
 }
 
@@ -104,6 +107,14 @@ pub(crate) struct ExplorerState {
     /// Bounded directory-scoped name-search text.
     pub(crate) search_query: [u8; MAX_SEARCH_QUERY],
     pub(crate) search_query_len: usize,
+    /// Parallel to `entries` in ContentSearch mode: the line number of each
+    /// content hit (0 when the row is not a content hit).
+    pub(crate) content_hit_line: [u64; MAX_ENTRIES],
+    /// ORed 0x524 reply flags: matches exist beyond the rendered window.
+    pub(crate) content_truncated: bool,
+    /// ORed 0x524 reply flags: files larger than the grep byte bound were
+    /// skipped by the service.
+    pub(crate) content_oversize: bool,
     pub(crate) recent_sel: usize,
     /// Pending press on a file row that may grow into a drag gesture.
     pub(crate) press: Option<Press>,
@@ -300,6 +311,9 @@ mod tests {
             view_mode: ViewMode::Directory,
             search_query: [0; MAX_SEARCH_QUERY],
             search_query_len: 0,
+            content_hit_line: [0; MAX_ENTRIES],
+            content_truncated: false,
+            content_oversize: false,
             recent_sel: 0,
             press: None,
             dragging: false,

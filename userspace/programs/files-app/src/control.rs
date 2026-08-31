@@ -14,9 +14,9 @@ use crate::persist;
 use crate::render::render;
 use crate::state::{
     DRAG_THRESHOLD_PX, Dialog, EntryKind, ExplorerState, KEY_BACKSPACE, KEY_D, KEY_DELETE,
-    KEY_DOWN, KEY_ENTER, KEY_ESC, KEY_F2, KEY_LEFT, KEY_N, KEY_O, KEY_PAGE_DOWN, KEY_PAGE_UP,
-    KEY_R, KEY_RIGHT, KEY_UP, MOD_CTRL, MOD_SHIFT, MenuAction, Press, SURFACE_BUFFER_SLOTS,
-    ViewMode, menu_hit,
+    KEY_DOWN, KEY_ENTER, KEY_ESC, KEY_F, KEY_F2, KEY_LEFT, KEY_N, KEY_O, KEY_PAGE_DOWN,
+    KEY_PAGE_UP, KEY_R, KEY_RIGHT, KEY_UP, KEY_X, MAX_ENTRIES, MOD_CTRL, MOD_SHIFT, MenuAction,
+    Press, SURFACE_BUFFER_SLOTS, ViewMode, menu_hit,
 };
 
 /// Candidate slot ceiling for open-with cycling.
@@ -405,9 +405,13 @@ fn handle_key_down(
         state.open_with_pick = None;
         state.view_mode = match state.view_mode {
             ViewMode::Recent => ViewMode::Directory,
-            ViewMode::Directory | ViewMode::Search => ViewMode::Recent,
+            ViewMode::Directory | ViewMode::Search | ViewMode::ContentSearch => ViewMode::Recent,
         };
         clamp_view(state);
+        return Ok(true);
+    }
+    if key_code == KEY_F && modifiers & MOD_CTRL != 0 {
+        enter_content_search(state);
         return Ok(true);
     }
     match state.view_mode {
@@ -415,6 +419,15 @@ fn handle_key_down(
         ViewMode::Directory => {}
         ViewMode::Search => {
             return handle_key_search(state, storage_handle, desktop_handle, key_code, modifiers);
+        }
+        ViewMode::ContentSearch => {
+            return handle_key_content_search(
+                state,
+                storage_handle,
+                desktop_handle,
+                key_code,
+                modifiers,
+            );
         }
     }
 
@@ -524,6 +537,110 @@ fn exit_search(state: &mut ExplorerState) {
     state.search_query.fill(0);
     state.search_query_len = 0;
     state.view_mode = ViewMode::Directory;
+}
+
+/// Ctrl+F: a fresh content-search over the current directory subtree. The
+/// typed query reuses the shared bounded buffer; hits replace the listing.
+fn enter_content_search(state: &mut ExplorerState) {
+    exit_search(state);
+    state.view_mode = ViewMode::ContentSearch;
+    state.content_hit_line = [0; MAX_ENTRIES];
+    state.content_truncated = false;
+    state.content_oversize = false;
+    state.open_with_pick = None;
+    state.menu = None;
+    state.await_context = None;
+}
+
+fn exit_content_search(state: &mut ExplorerState) {
+    exit_search(state);
+    state.content_hit_line = [0; MAX_ENTRIES];
+    state.content_truncated = false;
+    state.content_oversize = false;
+}
+
+/// Appends one printable byte to the content needle, capped at the
+/// contract's GREP_NEEDLE_MAX. Returns whether the query changed.
+fn append_content_query(state: &mut ExplorerState, character: u8) -> bool {
+    if state.search_query_len < crate::grep::GREP_NEEDLE_MAX
+        && state.search_query_len < state.search_query.len()
+    {
+        state.search_query[state.search_query_len] = character;
+        state.search_query_len += 1;
+        return true;
+    }
+    false
+}
+
+fn handle_key_content_search(
+    state: &mut ExplorerState,
+    storage_handle: rt::Handle,
+    desktop_handle: rt::Handle,
+    key_code: u32,
+    modifiers: u32,
+) -> rt::Result<bool> {
+    match key_code {
+        KEY_ESC => {
+            exit_content_search(state);
+            if reload_directory(state).is_err() {
+                state.load_failed = true;
+            }
+        }
+        KEY_BACKSPACE => {
+            state.search_query_len = state.search_query_len.saturating_sub(1);
+            state.search_query[state.search_query_len] = 0;
+            if state.search_query_len == 0 {
+                exit_content_search(state);
+                if reload_directory(state).is_err() {
+                    state.load_failed = true;
+                }
+            } else if crate::grep::reload_content_search(state, storage_handle).is_err() {
+                state.load_failed = true;
+            }
+        }
+        KEY_ENTER | KEY_RIGHT => {
+            let Some(selected_kind) = state
+                .entries
+                .get(state.selected_index)
+                .filter(|_| state.selected_index < state.entry_count)
+                .map(|entry| entry.kind)
+            else {
+                return Ok(true);
+            };
+            let is_file = selected_kind == EntryKind::File;
+            exit_content_search(state);
+            if open_selected_routed(state, storage_handle, desktop_handle).is_err() {
+                state.load_failed = true;
+            }
+            if is_file && reload_directory(state).is_err() {
+                state.load_failed = true;
+            }
+        }
+        KEY_UP => {
+            if state.selected_index > 0 {
+                state.selected_index -= 1;
+                ensure_selected_visible(state);
+            }
+        }
+        KEY_DOWN => {
+            if state.selected_index + 1 < state.entry_count {
+                state.selected_index += 1;
+                ensure_selected_visible(state);
+            }
+        }
+        _ => {
+            if let Some(character) = ops::scancode_to_char(key_code, modifiers) {
+                if character.is_ascii_graphic() || character == b' ' {
+                    if append_content_query(state, character)
+                        && crate::grep::reload_content_search(state, storage_handle).is_err()
+                    {
+                        state.load_failed = true;
+                    }
+                }
+            }
+        }
+    }
+    Ok(true)
 }
 
 fn handle_key_search(
@@ -1242,6 +1359,9 @@ mod tests {
             view_mode: ViewMode::Directory,
             search_query: [0; crate::state::MAX_SEARCH_QUERY],
             search_query_len: 0,
+            content_hit_line: [0; MAX_ENTRIES],
+            content_truncated: false,
+            content_oversize: false,
             recent_sel: 0,
             press: None,
             dragging: false,
@@ -1598,6 +1718,108 @@ mod tests {
         assert_eq!(state.search_query_len, 0);
         assert_eq!(&state.current_path[..state.current_path_len], b"docs/");
         assert!(state.load_failed);
+    }
+
+    fn content_state(hits: &[(&[u8], u64)]) -> ExplorerState {
+        let mut state = file_state(
+            hits.first()
+                .map(|(path, _)| *path)
+                .unwrap_or(b"home/notes.txt"),
+        );
+        state.view_mode = ViewMode::ContentSearch;
+        state.entry_count = 0;
+        for (index, (path, line)) in hits.iter().enumerate() {
+            state.entries[index].kind = EntryKind::File;
+            state.entries[index].path_len = path.len();
+            state.entries[index].path[..path.len()].copy_from_slice(path);
+            state.content_hit_line[index] = *line;
+            state.entry_count += 1;
+        }
+        state
+    }
+
+    #[test]
+    fn ctrl_f_enters_fresh_content_search_mode() {
+        let mut state = file_state(b"home/notes.txt");
+        state.search_query_len = 3;
+        state.search_query[..3].copy_from_slice(b"abc");
+
+        assert!(key(&mut state, KEY_F, MOD_CTRL));
+
+        assert_eq!(state.view_mode, ViewMode::ContentSearch);
+        assert_eq!(state.search_query_len, 0);
+        assert!(!state.content_truncated && !state.content_oversize);
+        assert_eq!(state.entry_count, 1);
+    }
+
+    #[test]
+    fn content_typing_appends_and_caps_at_needle_bound() {
+        let mut state = content_state(&[]);
+        for _ in 0..40 {
+            assert!(key(&mut state, KEY_X, 0));
+        }
+        assert_eq!(state.search_query_len, crate::grep::GREP_NEEDLE_MAX);
+        assert!(
+            state.search_query[..crate::grep::GREP_NEEDLE_MAX]
+                .iter()
+                .all(|byte| *byte == b'x')
+        );
+        // With no storage channel the refresh fails, but the mode holds.
+        assert_eq!(state.view_mode, ViewMode::ContentSearch);
+    }
+
+    #[test]
+    fn content_backspace_to_empty_restores_directory_listing() {
+        let mut state = content_state(&[]);
+        state.search_query_len = 1;
+        state.search_query[0] = b'x';
+
+        assert!(key(&mut state, KEY_BACKSPACE, 0));
+
+        assert_eq!(state.view_mode, ViewMode::Directory);
+        assert_eq!(state.search_query_len, 0);
+    }
+
+    #[test]
+    fn content_esc_restores_directory_and_clears_hit_flags() {
+        let mut state = content_state(&[(b"docs/notes.md".as_slice(), 7)]);
+        state.search_query_len = 2;
+        state.search_query[..2].copy_from_slice(b"to");
+        state.content_truncated = true;
+        state.content_oversize = true;
+
+        assert!(key(&mut state, KEY_ESC, 0));
+
+        assert_eq!(state.view_mode, ViewMode::Directory);
+        assert_eq!(state.search_query_len, 0);
+        assert!(!state.content_truncated && !state.content_oversize);
+    }
+
+    #[test]
+    fn content_ctrl_r_still_reaches_recent_view() {
+        let mut state = content_state(&[(b"docs/notes.md".as_slice(), 7)]);
+        assert!(key(&mut state, KEY_R, MOD_CTRL));
+        assert_eq!(state.view_mode, ViewMode::Recent);
+    }
+
+    #[test]
+    fn content_enter_on_file_hit_exits_and_reuses_file_routing() {
+        let mut state = content_state(&[(b"docs/notes.md".as_slice(), 7)]);
+        state.search_query_len = 2;
+        state.search_query[..2].copy_from_slice(b"to");
+
+        assert!(key(&mut state, KEY_ENTER, 0));
+
+        assert_eq!(state.view_mode, ViewMode::Directory);
+        assert_eq!(state.search_query_len, 0);
+        assert!(state.load_failed, "routing exercised with invalid handles");
+    }
+
+    #[test]
+    fn content_enter_with_no_hits_is_consumed_noop() {
+        let mut state = content_state(&[]);
+        assert!(key(&mut state, KEY_ENTER, 0));
+        assert_eq!(state.view_mode, ViewMode::ContentSearch);
     }
 
     fn key(state: &mut ExplorerState, code: u32, modifiers: u32) -> bool {

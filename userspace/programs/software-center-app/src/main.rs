@@ -5,6 +5,7 @@ mod actions;
 mod catalog_meta;
 mod control;
 mod developer;
+mod progress;
 mod render;
 mod repositories;
 mod state;
@@ -14,7 +15,7 @@ use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
 
 use crate::actions::{error_label, reload_catalog, set_statusf};
-use crate::control::{poll_control, ControlFlow};
+use crate::control::{ControlFlow, poll_control};
 use crate::render::render;
 use crate::state::{AppState, BUFFER_BYTES, BUFFER_HEIGHT, BUFFER_WIDTH, SURFACE_BUFFER_SLOTS};
 
@@ -36,6 +37,14 @@ fn main() -> u64 {
     let surface_handle = startup.handles[0];
     let control_handle = startup.handles[1];
     let package_handle = startup.handles[2];
+    // Optional live-progress channel: root-manager appends the log-service
+    // grant after the positional handles (absent = silent degrade to the
+    // final-reply-only behavior).
+    let log_handle = if startup.handle_count >= 4 {
+        startup.handles[3]
+    } else {
+        rt::INVALID_HANDLE
+    };
     let mut state = AppState::new(
         startup.words[1] as u32,
         startup.words[2] as u32,
@@ -70,6 +79,7 @@ fn main() -> u64 {
         match poll_control(
             control_handle,
             package_handle,
+            log_handle,
             &mut buffers,
             &mut presenter,
             &mut state,
@@ -78,6 +88,16 @@ fn main() -> u64 {
             Ok(ControlFlow::Worked) => continue,
             Ok(ControlFlow::Exit) => break,
             Err(_) => return 0xf505,
+        }
+
+        // Streamed package operation: pump progress records, repaint the
+        // bounded status line on change, render the final reply on landing.
+        if crate::actions::pump_active_operation(package_handle, &mut state) {
+            let (slot, buffer) = buffers.advance();
+            if render(&mut presenter, slot, buffer, package_handle, &state).is_err() {
+                return 0xf503;
+            }
+            continue;
         }
 
         match startup.run(|| match reload_catalog(package_handle, &mut state) {

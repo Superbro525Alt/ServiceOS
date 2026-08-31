@@ -9,9 +9,9 @@ use crate::catalog_meta::{self, MAX_QUERY_BYTES};
 use crate::developer;
 use crate::repositories::{self, AddField, LEDGER_NOTE, SIDELOAD_NOTE};
 use crate::state::{
-    compute_layout, installed_count, query_text, selected_entry, service_title, AppState,
-    CatalogEntry, Layout, BUFFER_BYTES, BUFFER_HEIGHT, BUFFER_WIDTH, CATEGORY_FILTERS,
-    HEADER_HEIGHT, MAX_SOURCE_BYTES, PIXEL_STRIDE, ROW_HEIGHT, STATUS_BAR_HEIGHT,
+    AppState, BUFFER_BYTES, BUFFER_HEIGHT, BUFFER_WIDTH, CATEGORY_FILTERS, CatalogEntry,
+    HEADER_HEIGHT, Layout, MAX_SOURCE_BYTES, PIXEL_STRIDE, ROW_HEIGHT, STATUS_BAR_HEIGHT,
+    compute_layout, installed_count, query_text, selected_entry, service_title,
 };
 
 pub(crate) fn render(
@@ -57,15 +57,25 @@ pub(crate) fn render(
         let mut rollback = [0u8; 24];
         let mut latest = [0u8; 24];
         let mut source = [0u8; MAX_SOURCE_BYTES];
-        if let Ok(provenance) = rt::package_provenance(
-            package_handle,
-            entry.service_id,
-            &mut installed,
-            &mut active,
-            &mut rollback,
-            &mut latest,
-            &mut source,
-        ) {
+        // While a streamed package operation is in flight the package
+        // service is busy; a provenance query would queue behind it and
+        // stall the progress pump, so details render from the catalog
+        // snapshot for the duration.
+        let provenance = if state.operation.is_some() {
+            None
+        } else {
+            rt::package_provenance(
+                package_handle,
+                entry.service_id,
+                &mut installed,
+                &mut active,
+                &mut rollback,
+                &mut latest,
+                &mut source,
+            )
+            .ok()
+        };
+        if let Some(provenance) = provenance {
             let _ = write!(&mut detail0, "{}", service_title(entry.service_id));
             let description = catalog_meta::description_for(entry.service_id);
             if description.is_empty() {

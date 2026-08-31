@@ -61,9 +61,15 @@ pub(super) fn launch_program_from_image(
     startup_words: &[u64],
     startup_handles: &[rt::Handle],
     startup_handle_rights: &[u64],
+    syscall_abi_flags: u64,
 ) -> rt::Result<rt::Handle> {
     let bootstrap = rt::channel_create()?;
-    let task_handle = rt::task_spawn_image(image_handle, bootstrap_authority, bootstrap.second)?;
+    let task_handle = rt::task_spawn_image_with_abi(
+        image_handle,
+        bootstrap_authority,
+        bootstrap.second,
+        syscall_abi_flags,
+    )?;
     let task_view = rt::handle_duplicate(
         task_handle,
         rights::READ | rights::DUPLICATE | rights::TRANSFER,
@@ -321,6 +327,19 @@ fn append_launch_grants(
                 startup,
                 handle_index,
             )?;
+            // Live package-operation progress: the software center streams
+            // package-service's per-phase progress records (the same stream
+            // `pkg --verbose` follows). Send-only, appended after the
+            // positional handles; absent when log-service is not up, in
+            // which case the app degrades to final-reply-only rendering.
+            let _ = append_service_launch_handle(
+                slots,
+                service_count,
+                ServiceId::Log,
+                rights::SEND | rights::TRANSFER,
+                startup,
+                handle_index,
+            );
         }
         _ => {}
     }

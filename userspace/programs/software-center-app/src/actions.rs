@@ -1,11 +1,12 @@
 use core::{fmt::Write, str};
 
-use rt::{FixedLogBuffer, PackageChannel, PackageRing, ServiceId};
+use rt::{FixedLogBuffer, PackageChannel, PackageRing, PackageTag, ServiceId};
 use serviceos_userspace_runtime as rt;
 
+use crate::progress;
 use crate::state::{
     AppState, CatalogEntry, MAX_CATEGORY_BYTES, MAX_ENTRIES, MAX_SOURCE_BYTES, MAX_STATUS_BYTES,
-    MAX_SUMMARY_BYTES, rebuild_view, select_service,
+    MAX_SUMMARY_BYTES, OperationState, rebuild_view, select_service, service_label,
 };
 
 pub(crate) fn reload_catalog(package_handle: rt::Handle, state: &mut AppState) -> rt::Result<()> {
@@ -78,67 +79,158 @@ pub(crate) enum PackageAction {
     Remove,
 }
 
+/// Entry point for the detail-panel action buttons. Install/update stream
+/// live phase progress while the main loop pumps (see crate::progress);
+/// remove stays on the plain blocking call because package-service emits no
+/// progress records for it. Both degrade to today's final-reply-only
+/// behavior whenever the log channel or a subscription slot is unavailable.
 pub(crate) fn apply_selected_package_action(
     package_handle: rt::Handle,
+    log_handle: rt::Handle,
     state: &mut AppState,
     entry: CatalogEntry,
     action: PackageAction,
 ) {
-    // Pre-remove snapshot feeds the cleanup summary shown after removal.
-    let remove_snapshot = if matches!(action, PackageAction::Remove) {
-        capture_remove_snapshot(package_handle, entry.service_id)
-    } else {
-        None
-    };
-
-    let result = match action {
+    match action {
         PackageAction::InstallOrUpdate => {
-            if entry.installed {
-                rt::package_update(package_handle, entry.service_id, None)
+            let (request_tag, op) = if entry.installed {
+                (PackageTag::UpdateRequest, progress::OP_UPDATE)
             } else {
-                rt::package_install(package_handle, entry.service_id, None)
-            }
+                (PackageTag::InstallRequest, progress::OP_INSTALL)
+            };
+            begin_streamed_mutation(package_handle, log_handle, state, entry, request_tag, op);
         }
-        PackageAction::Remove => rt::package_remove(package_handle, entry.service_id),
-    };
+        PackageAction::Remove => {
+            // Pre-remove snapshot feeds the cleanup summary shown after removal.
+            let snapshot = capture_remove_snapshot(package_handle, entry.service_id);
+            let result = rt::package_remove(package_handle, entry.service_id);
+            report_remove_result(package_handle, state, entry.service_id, snapshot, result);
+        }
+    }
+}
 
+/// Starts an install/update as a streamed operation: the log subscription
+/// opens before the mutation request is sent (so early phase records are not
+/// lost), then the request goes out with a reply channel and the main loop
+/// pumps progress until the reply lands. Any failure along the way — no log
+/// channel, subscribe handshake refused, send error — falls back to the
+/// exact blocking call today's code makes, silently.
+fn begin_streamed_mutation(
+    package_handle: rt::Handle,
+    log_handle: rt::Handle,
+    state: &mut AppState,
+    entry: CatalogEntry,
+    request_tag: PackageTag,
+    op: u32,
+) {
+    let service_id = entry.service_id;
+    let was_installed = entry.installed;
+    let verb = if was_installed { "update" } else { "install" };
+    let reply_pair = match rt::channel_create() {
+        Ok(pair) => pair,
+        Err(error) => {
+            report_install_update_result(
+                package_handle,
+                state,
+                service_id,
+                was_installed,
+                Err(error),
+            );
+            return;
+        }
+    };
+    let subscription = match progress::open_subscription(log_handle) {
+        Some(subscription) => subscription,
+        None => {
+            // Degrade: final-reply-only, byte-identical to the old path.
+            let _ = rt::handle_close(reply_pair.first);
+            let _ = rt::handle_close(reply_pair.second);
+            let result = blocking_install_or_update(package_handle, was_installed, service_id);
+            report_install_update_result(package_handle, state, service_id, was_installed, result);
+            return;
+        }
+    };
+    let mut request = progress::build_mutation_request(reply_pair.second, request_tag, service_id);
+    let sent = rt::channel_send_blocking(package_handle, &mut request);
+    // The request consumed the send right; the receive end stays with us.
+    let _ = rt::handle_close(reply_pair.second);
+    if let Err(error) = sent {
+        let _ = rt::handle_close(subscription);
+        let _ = rt::handle_close(reply_pair.first);
+        report_install_update_result(package_handle, state, service_id, was_installed, Err(error));
+        return;
+    }
+    let now = rt::monotonic_now().unwrap_or(0);
+    state.operation = Some(OperationState {
+        op,
+        reply_tag: progress::reply_tag_for(request_tag),
+        service_id,
+        subscription,
+        reply_pair: reply_pair.first,
+        last_activity_tick: now,
+        records_seen: 0,
+        rendered: (0, 0, 0),
+        degraded: false,
+        note_shown: false,
+    });
+    set_statusf(
+        state,
+        format_args!("{} {}...", verb, service_label(service_id)),
+    );
+}
+
+/// The blocking mutation the plain path always made (also the degrade path).
+fn blocking_install_or_update(
+    package_handle: rt::Handle,
+    was_installed: bool,
+    service_id: ServiceId,
+) -> rt::Result<()> {
+    if was_installed {
+        rt::package_update(package_handle, service_id, None)
+    } else {
+        rt::package_install(package_handle, service_id, None)
+    }
+}
+
+/// Main-loop pump for an active streamed operation: drains progress records,
+/// repaints the bounded status line on change, and renders the final status
+/// when the reply lands. Returns true when the frame changed.
+pub(crate) fn pump_active_operation(package_handle: rt::Handle, state: &mut AppState) -> bool {
+    let (service_id, was_installed) = match state.operation.as_ref() {
+        Some(operation) => (operation.service_id, operation.op == progress::OP_UPDATE),
+        None => return false,
+    };
+    progress::pump_operation(state, |state, result| {
+        report_install_update_result(package_handle, state, service_id, was_installed, result);
+    })
+}
+
+/// Renders an install/update result exactly as the single-shot code always
+/// did: catalog reload, selection, session bookkeeping, and the final status
+/// line (success summary or "<verb> failed: <label>").
+fn report_install_update_result(
+    package_handle: rt::Handle,
+    state: &mut AppState,
+    service_id: ServiceId,
+    was_installed: bool,
+    result: rt::Result<()>,
+) {
     match result {
         Ok(()) => {
             if reload_catalog(package_handle, state).is_ok() {
-                select_service(state, entry.service_id);
-                match action {
-                    PackageAction::InstallOrUpdate => {
-                        if entry.installed {
-                            let tick = rt::monotonic_now().unwrap_or(0);
-                            state.record_session_update(entry.service_id, tick);
-                            set_statusf(
-                                state,
-                                format_args!(
-                                    "updated {} (at tick {})",
-                                    crate::state::service_label(entry.service_id),
-                                    tick
-                                ),
-                            );
-                        } else {
-                            set_statusf(
-                                state,
-                                format_args!(
-                                    "installed {}",
-                                    crate::state::service_label(entry.service_id)
-                                ),
-                            );
-                        }
-                    }
-                    PackageAction::Remove => {
-                        set_statusf(
-                            state,
-                            format_args!(
-                                "removed {}: {}",
-                                crate::state::service_label(entry.service_id),
-                                remove_cleanup_summary(remove_snapshot)
-                            ),
-                        );
-                    }
+                select_service(state, service_id);
+                if was_installed {
+                    let tick = rt::monotonic_now().unwrap_or(0);
+                    state.record_session_update(service_id, tick);
+                    set_statusf(
+                        state,
+                        format_args!("updated {} (at tick {})", service_label(service_id), tick),
+                    );
+                } else {
+                    set_statusf(
+                        state,
+                        format_args!("installed {}", service_label(service_id)),
+                    );
                 }
             } else {
                 set_statusf(
@@ -148,20 +240,44 @@ pub(crate) fn apply_selected_package_action(
             }
         }
         Err(error) => {
-            let verb = match action {
-                PackageAction::InstallOrUpdate => {
-                    if entry.installed {
-                        "update"
-                    } else {
-                        "install"
-                    }
-                }
-                PackageAction::Remove => "remove",
-            };
+            let verb = if was_installed { "update" } else { "install" };
             set_statusf(
                 state,
                 format_args!("{} failed: {}", verb, error_label(error)),
             );
+        }
+    }
+}
+
+/// Renders a remove result exactly as the single-shot code always did.
+fn report_remove_result(
+    package_handle: rt::Handle,
+    state: &mut AppState,
+    service_id: ServiceId,
+    snapshot: Option<RemoveSnapshot>,
+    result: rt::Result<()>,
+) {
+    match result {
+        Ok(()) => {
+            if reload_catalog(package_handle, state).is_ok() {
+                select_service(state, service_id);
+                set_statusf(
+                    state,
+                    format_args!(
+                        "removed {}: {}",
+                        service_label(service_id),
+                        remove_cleanup_summary(snapshot)
+                    ),
+                );
+            } else {
+                set_statusf(
+                    state,
+                    format_args!("package action completed but reload failed"),
+                );
+            }
+        }
+        Err(error) => {
+            set_statusf(state, format_args!("remove failed: {}", error_label(error)));
         }
     }
 }

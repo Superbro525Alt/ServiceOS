@@ -112,6 +112,30 @@ impl CatalogEntry {
     }
 }
 
+/// One streamed package operation in flight (install/update): the log
+/// subscription + reply channel pair it watches, and the render bookkeeping
+/// that keeps repaints bounded (change-gated, one honest degrade note).
+/// Handles are closed by progress::close_operation when the op ends.
+pub(crate) struct OperationState {
+    pub(crate) op: u32,
+    /// PackageTag of the expected reply (InstallReply/UpdateReply).
+    pub(crate) reply_tag: u32,
+    pub(crate) service_id: ServiceId,
+    /// Log subscription handle; INVALID once degraded.
+    pub(crate) subscription: rt::Handle,
+    /// Receive end of the reply pair; send end was consumed by the request.
+    pub(crate) reply_pair: rt::Handle,
+    pub(crate) last_activity_tick: u64,
+    pub(crate) records_seen: usize,
+    /// Last (phase, step, total) rendered: dedupes repaints.
+    pub(crate) rendered: (u32, u32, u32),
+    /// Stream degraded: reply-only watching (idle bound or subscription loss).
+    pub(crate) degraded: bool,
+    /// The honest degrade note was already rendered.
+    pub(crate) note_shown: bool,
+}
+
+/// The status/pre-remove snapshot state carried alongside an in-flight op.
 pub(crate) struct AppState {
     pub(crate) width: u32,
     pub(crate) height: u32,
@@ -140,6 +164,10 @@ pub(crate) struct AppState {
     /// holds no developer-service channel grant, so this stays in the
     /// unavailable state with shell pointers (see crate::developer).
     pub(crate) developer: DevState,
+    /// Live package operation in flight (install/update streaming); None
+    /// otherwise. While Some, action triggers are ignored and the main loop
+    /// pumps progress (see crate::progress).
+    pub(crate) operation: Option<OperationState>,
 }
 
 pub(crate) const CATEGORY_FILTERS: [&str; 5] =
@@ -166,6 +194,7 @@ impl AppState {
             session_update_count: 0,
             sources: SourcesState::new(),
             developer: DevState::new(),
+            operation: None,
         }
     }
 

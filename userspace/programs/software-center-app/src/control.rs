@@ -3,19 +3,19 @@ use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
 
 use crate::actions::{
-    apply_selected_package_action, launch_guidance, set_statusf, sync_repositories, PackageAction,
+    PackageAction, apply_selected_package_action, launch_guidance, set_statusf, sync_repositories,
 };
 use crate::catalog_meta::keycode_to_char;
 use crate::developer::{self, DevKey};
 use crate::render::render;
 use crate::repositories::{
-    self, execute_add, refresh_sources, sync_selected, SourcesClick, SourcesKey,
+    self, SourcesClick, SourcesKey, execute_add, refresh_sources, sync_selected,
 };
 use crate::state::{
+    AppState, KEY_BACKSPACE, KEY_DELETE, KEY_DOWN, KEY_ENTER, KEY_ESC, KEY_J, KEY_L, KEY_PAGE_DOWN,
+    KEY_PAGE_UP, KEY_R, KEY_S, KEY_TAB, KEY_UP, Layout, ROW_HEIGHT, SURFACE_BUFFER_SLOTS,
     clamp_view, clear_query, compute_layout, cycle_category_filter, ensure_selected_visible,
     pop_query_char, push_query_char, scroll_down, scroll_up, selected_entry, visible_row_count,
-    AppState, Layout, KEY_BACKSPACE, KEY_DELETE, KEY_DOWN, KEY_ENTER, KEY_ESC, KEY_J, KEY_L,
-    KEY_PAGE_DOWN, KEY_PAGE_UP, KEY_R, KEY_S, KEY_TAB, KEY_UP, ROW_HEIGHT, SURFACE_BUFFER_SLOTS,
 };
 
 pub(crate) enum ControlFlow {
@@ -27,6 +27,7 @@ pub(crate) enum ControlFlow {
 pub(crate) fn poll_control(
     control_handle: rt::Handle,
     package_handle: rt::Handle,
+    log_handle: rt::Handle,
     buffers: &mut ui::SurfaceBuffers<SURFACE_BUFFER_SLOTS>,
     presenter: &mut ui::FirstPresentSurface,
     state: &mut AppState,
@@ -58,7 +59,7 @@ pub(crate) fn poll_control(
                 did_work = true;
                 match action {
                     Some(rt::AppPointerAction::Down) => {
-                        changed |= handle_pointer_down(package_handle, state, x, y)?;
+                        changed |= handle_pointer_down(package_handle, log_handle, state, x, y)?;
                     }
                     Some(rt::AppPointerAction::Scroll) => {
                         if detail > 0 {
@@ -78,7 +79,12 @@ pub(crate) fn poll_control(
                     ui::decode_app_key_action(message.words[0]),
                     Some(rt::AppKeyAction::Down)
                 ) {
-                    changed |= handle_key_down(package_handle, state, message.words[1] as u32)?;
+                    changed |= handle_key_down(
+                        package_handle,
+                        log_handle,
+                        state,
+                        message.words[1] as u32,
+                    )?;
                 }
             }
             Ok(()) if message.tag == AppControlTag::Close as u32 => return Ok(ControlFlow::Exit),
@@ -103,13 +109,18 @@ pub(crate) fn poll_control(
 
 fn handle_pointer_down(
     package_handle: rt::Handle,
+    log_handle: rt::Handle,
     state: &mut AppState,
     x: i32,
     y: i32,
 ) -> rt::Result<bool> {
     let layout = compute_layout(state);
     if y >= layout.sync_y0 && y < layout.sync_y1 && x >= layout.sync_x0 && x < layout.sync_x1 {
-        sync_repositories(package_handle, state);
+        // While a streamed operation is in flight the package channel is
+        // busy; a blocking sync here would stall the progress pump.
+        if state.operation.is_none() {
+            sync_repositories(package_handle, state);
+        }
         return Ok(true);
     }
 
@@ -126,12 +137,15 @@ fn handle_pointer_down(
         && x < layout.install_x1
     {
         if let Some(entry) = selected_entry(state) {
-            apply_selected_package_action(
-                package_handle,
-                state,
-                entry,
-                PackageAction::InstallOrUpdate,
-            );
+            if state.operation.is_none() {
+                apply_selected_package_action(
+                    package_handle,
+                    log_handle,
+                    state,
+                    entry,
+                    PackageAction::InstallOrUpdate,
+                );
+            }
             return Ok(true);
         }
     }
@@ -141,7 +155,15 @@ fn handle_pointer_down(
         && x < layout.remove_x1
     {
         if let Some(entry) = selected_entry(state) {
-            apply_selected_package_action(package_handle, state, entry, PackageAction::Remove);
+            if state.operation.is_none() {
+                apply_selected_package_action(
+                    package_handle,
+                    log_handle,
+                    state,
+                    entry,
+                    PackageAction::Remove,
+                );
+            }
             return Ok(true);
         }
     }
@@ -198,7 +220,10 @@ fn handle_sources_pointer(
             }
         }
         SourcesClick::ConfirmAdd => {
-            execute_add(package_handle, state);
+            // Blocking package call: hold while a streamed op is in flight.
+            if state.operation.is_none() {
+                execute_add(package_handle, state);
+            }
             true
         }
         SourcesClick::CancelReview => {
@@ -206,7 +231,9 @@ fn handle_sources_pointer(
             true
         }
         SourcesClick::SyncThis => {
-            sync_selected(package_handle, state);
+            if state.operation.is_none() {
+                sync_selected(package_handle, state);
+            }
             true
         }
     }
@@ -277,7 +304,12 @@ fn handle_sources_key(package_handle: rt::Handle, state: &mut AppState, key: u32
     changed
 }
 
-fn handle_key_down(package_handle: rt::Handle, state: &mut AppState, key: u32) -> rt::Result<bool> {
+fn handle_key_down(
+    package_handle: rt::Handle,
+    log_handle: rt::Handle,
+    state: &mut AppState,
+    key: u32,
+) -> rt::Result<bool> {
     if state.developer.open {
         return Ok(handle_dev_key(state, key));
     }
@@ -319,12 +351,15 @@ fn handle_key_down(package_handle: rt::Handle, state: &mut AppState, key: u32) -
         }
         KEY_ENTER => {
             if let Some(entry) = selected_entry(state) {
-                apply_selected_package_action(
-                    package_handle,
-                    state,
-                    entry,
-                    PackageAction::InstallOrUpdate,
-                );
+                if state.operation.is_none() {
+                    apply_selected_package_action(
+                        package_handle,
+                        log_handle,
+                        state,
+                        entry,
+                        PackageAction::InstallOrUpdate,
+                    );
+                }
                 return Ok(true);
             }
         }
@@ -337,17 +372,31 @@ fn handle_key_down(package_handle: rt::Handle, state: &mut AppState, key: u32) -
                 return Ok(true);
             }
             if let Some(entry) = selected_entry(state).filter(|entry| entry.installed) {
-                apply_selected_package_action(package_handle, state, entry, PackageAction::Remove);
+                if state.operation.is_none() {
+                    apply_selected_package_action(
+                        package_handle,
+                        log_handle,
+                        state,
+                        entry,
+                        PackageAction::Remove,
+                    );
+                }
                 return Ok(true);
             }
         }
         KEY_R if state.query_len == 0 => {
-            sync_repositories(package_handle, state);
+            // Blocking sync stalls the progress pump while an op streams.
+            if state.operation.is_none() {
+                sync_repositories(package_handle, state);
+            }
             return Ok(true);
         }
         KEY_S if state.query_len == 0 => {
-            state.sources.open = true;
-            refresh_sources(package_handle, state);
+            // refresh_sources probes the (busy) package channel.
+            if state.operation.is_none() {
+                state.sources.open = true;
+                refresh_sources(package_handle, state);
+            }
             return Ok(true);
         }
         KEY_J if state.query_len == 0 => {

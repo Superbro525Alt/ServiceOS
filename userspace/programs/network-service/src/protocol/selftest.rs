@@ -1,6 +1,6 @@
 use smoltcp::{
     iface::{Interface, SocketSet, SocketStorage},
-    socket::{tcp, udp},
+    socket::{icmp, tcp, udp},
     wire::IpAddress,
 };
 
@@ -60,6 +60,8 @@ pub(crate) fn run(
     log_handle: rt::Handle,
     iface: &mut Interface,
     device: &mut KernelPacketDevice,
+    sockets: &mut SocketSet<'_>,
+    icmp_handle: smoltcp::iface::SocketHandle,
     gateway: smoltcp::wire::Ipv4Address,
 ) {
     let _ = rt::write_logf(
@@ -172,6 +174,47 @@ pub(crate) fn run(
         },
         udp_ok as u64 | ((tcp_ok as u64) << 1),
     );
+
+    // IPv6 v0 slice witnesses (build-time gated: images built without
+    // SERVICEOS_E2E_NETWORK=1 never run these probes and emit nothing, so
+    // default boot serial stays byte-identical).
+    if crate::consts::ipv6_e2e_probe_enabled() {
+        let (mut sent, mut got, mut echoed) = (false, false, false);
+        let udp6_ok = udp_v6_round_trip(iface, device, &mut sent, &mut got, &mut echoed);
+        let _ = rt::write_logf(
+            "network",
+            format_args!(
+                "E2E net.ipv6-udp {} sent={} got={} echoed={}",
+                if udp6_ok { "PASS" } else { "FAIL" },
+                sent as u8,
+                got as u8,
+                echoed as u8
+            ),
+        );
+
+        let mut requested = false;
+        let mut replied = false;
+        let mut sequence = 0xe600u16;
+        let (ping6_ok, polls) = ping6_round_trip(
+            iface,
+            device,
+            sockets,
+            icmp_handle,
+            &mut requested,
+            &mut replied,
+            &mut sequence,
+        );
+        let _ = rt::write_logf(
+            "network",
+            format_args!(
+                "E2E net.ipv6-ping6 {} sent={} reply={} polls={}",
+                if ping6_ok { "PASS" } else { "FAIL" },
+                requested as u8,
+                replied as u8,
+                polls
+            ),
+        );
+    }
 }
 
 /// One UDP datagram at `<gateway>:9` plus a bounded poll loop; returns how
@@ -219,8 +262,13 @@ fn external_probe(
     crate::device::rx_ring_snapshot().frames_pushed
 }
 
-fn pump(iface: &mut Interface, device: &mut KernelPacketDevice, sockets: &mut SocketSet<'_>) {
-    let _ = iface.poll(now_instant(), device, sockets);
+fn pump<D: smoltcp::phy::Device>(
+    iface: &mut Interface,
+    device: &mut D,
+    sockets: &mut SocketSet<'_>,
+) {
+    let result = iface.poll(now_instant(), device, sockets);
+    let _ = result;
 }
 
 fn udp_round_trip(
@@ -472,4 +520,441 @@ fn tcp_listen_accept_round_trip(
     sockets.remove(client);
     sockets.remove(server);
     established && forwarded && replied && closed
+}
+
+/// IPv6 v0 slice probe: one UDP datagram round-trip between two sockets on
+/// the interface's own link-local address through the real stack and device
+/// loopback path. First delivery forces the same NS/NA neighbor dance real
+/// v6 uses (the solicited-node multicast frame is kept in-process by the
+/// device loopback predicate, then the NA reply fills the neighbor cache).
+fn udp_v6_round_trip<D: smoltcp::phy::Device>(
+    iface: &mut Interface,
+    device: &mut D,
+    sent_flag: &mut bool,
+    got_flag: &mut bool,
+    echoed_flag: &mut bool,
+) -> bool {
+    let link_local = crate::device::local_link_local();
+    if link_local == smoltcp::wire::Ipv6Address::UNSPECIFIED {
+        return false;
+    }
+
+    let mut a_meta_r = [udp::PacketMetadata::EMPTY; 2];
+    let mut a_data_r = [0u8; SELFTEST_BUFFER_BYTES];
+    let mut a_meta_t = [udp::PacketMetadata::EMPTY; 2];
+    let mut a_data_t = [0u8; SELFTEST_BUFFER_BYTES];
+    let mut b_meta_r = [udp::PacketMetadata::EMPTY; 2];
+    let mut b_data_r = [0u8; SELFTEST_BUFFER_BYTES];
+    let mut b_meta_t = [udp::PacketMetadata::EMPTY; 2];
+    let mut b_data_t = [0u8; SELFTEST_BUFFER_BYTES];
+
+    let mut test_storage = [SocketStorage::EMPTY; 4];
+    let mut sockets = SocketSet::new(&mut test_storage[..]);
+    let a = sockets.add(udp::Socket::new(
+        udp::PacketBuffer::new(&mut a_meta_r[..], &mut a_data_r[..]),
+        udp::PacketBuffer::new(&mut a_meta_t[..], &mut a_data_t[..]),
+    ));
+    let b = sockets.add(udp::Socket::new(
+        udp::PacketBuffer::new(&mut b_meta_r[..], &mut b_data_r[..]),
+        udp::PacketBuffer::new(&mut b_meta_t[..], &mut b_data_t[..]),
+    ));
+
+    let bound_a = sockets
+        .get_mut::<udp::Socket>(a)
+        // Explicit link-local bind so the datagram's source address is the
+        // v6 interface address (mirrors the v4 loopback bind above).
+        .bind(smoltcp::wire::IpListenEndpoint::from((
+            link_local,
+            SELFTEST_UDP_PORT_A,
+        )))
+        .is_ok();
+    let bound_b = sockets
+        .get_mut::<udp::Socket>(b)
+        .bind(SELFTEST_UDP_PORT_B)
+        .is_ok();
+    if !bound_a || !bound_b {
+        sockets.remove(a);
+        sockets.remove(b);
+        return false;
+    }
+
+    *sent_flag = true;
+    let sent = sockets
+        .get_mut::<udp::Socket>(a)
+        .send_slice(
+            UDP_PAYLOAD,
+            smoltcp::wire::IpEndpoint {
+                addr: smoltcp::wire::IpAddress::Ipv6(link_local),
+                port: SELFTEST_UDP_PORT_B,
+            },
+        )
+        .is_ok();
+
+    let mut received = None;
+    if sent {
+        // Yield between polls: the smoltcp neighbor cache rate-limits
+        // discovery for 1s cache-wide after any dispatch (the v4 probes
+        // trigger it just before us), and the userspace monotonic clock only
+        // advances across yields. Without this the first NS attempt would
+        // stay rate-limited for the whole bounded loop on a quiet boot.
+        // Host tests skip the yield entirely (see now_instant).
+        #[cfg(not(test))]
+        {
+            let _ = rt::yield_current();
+        }
+        for poll_i in 0..SELFTEST_POLL_LIMIT {
+            pump(iface, device, &mut sockets);
+            #[cfg(not(test))]
+            {
+                let _ = rt::yield_current();
+            }
+            let mut buffer = [0u8; SELFTEST_BUFFER_BYTES];
+            if let Ok((count, meta)) = sockets.get_mut::<udp::Socket>(b).recv_slice(&mut buffer) {
+                if count == UDP_PAYLOAD.len()
+                    && &buffer[..count] == UDP_PAYLOAD
+                    && meta.endpoint.addr == smoltcp::wire::IpAddress::Ipv6(link_local)
+                    && meta.endpoint.port == SELFTEST_UDP_PORT_A
+                {
+                    received = Some(meta.endpoint);
+                    *got_flag = true;
+                }
+                break;
+            }
+        }
+    }
+
+    let mut echoed = false;
+    if let Some(endpoint) = received {
+        let sent_back = sockets
+            .get_mut::<udp::Socket>(b)
+            .send_slice(UDP_REPLY, endpoint)
+            .is_ok();
+        if sent_back {
+            for _ in 0..SELFTEST_POLL_LIMIT {
+                #[cfg(not(test))]
+                {
+                    let _ = rt::yield_current();
+                }
+                pump(iface, device, &mut sockets);
+                let mut buffer = [0u8; SELFTEST_BUFFER_BYTES];
+                match sockets.get_mut::<udp::Socket>(a).recv_slice(&mut buffer) {
+                    Ok((count, _)) => {
+                        echoed = count == UDP_REPLY.len() && &buffer[..count] == UDP_REPLY;
+                        *echoed_flag = true;
+                        break;
+                    }
+                    Err(_) => {}
+                }
+            }
+        }
+    }
+
+    sockets.remove(a);
+    sockets.remove(b);
+    received.is_some() && echoed
+}
+
+/// IPv6 v0 slice probe: one ICMPv6 echo request to the interface's own
+/// link-local address, answered by the stack's echo-reply path through the
+/// device loopback. Bounded by poll iterations (the userspace monotonic
+/// clock does not advance on this kernel build, so a wall-clock timeout
+/// would never fire); returns the loop count at which the reply landed.
+#[allow(clippy::too_many_arguments)]
+fn ping6_round_trip<D: smoltcp::phy::Device>(
+    iface: &mut Interface,
+    device: &mut D,
+    sockets: &mut SocketSet<'_>,
+    icmp_handle: smoltcp::iface::SocketHandle,
+    requested_flag: &mut bool,
+    replied_flag: &mut bool,
+    sequence: &mut u16,
+) -> (bool, u64) {
+    use smoltcp::wire::{Icmpv6Packet, Icmpv6Repr, Ipv6Address};
+
+    let link_local = crate::device::local_link_local();
+    if link_local == Ipv6Address::UNSPECIFIED {
+        return (false, 0);
+    }
+    let checksum = device.capabilities().checksum;
+
+    {
+        let socket = sockets.get_mut::<icmp::Socket>(icmp_handle);
+        if !socket.is_open() {
+            let _ = socket.bind(icmp::Endpoint::Ident(crate::consts::PING_IDENTIFIER));
+        }
+        if !socket.can_send() {
+            return (false, 0);
+        }
+        let payload = [0x53, 0x4f, (*sequence >> 8) as u8, *sequence as u8];
+        let icmp_repr = Icmpv6Repr::EchoRequest {
+            ident: crate::consts::PING_IDENTIFIER,
+            seq_no: *sequence,
+            data: &payload,
+        };
+        let packet = match socket.send(
+            icmp_repr.buffer_len(),
+            smoltcp::wire::IpAddress::Ipv6(link_local),
+        ) {
+            Ok(packet) => packet,
+            Err(_) => return (false, 0),
+        };
+        icmp_repr.emit(
+            &link_local,
+            &link_local,
+            &mut Icmpv6Packet::new_unchecked(packet),
+            &checksum,
+        );
+    }
+    *requested_flag = true;
+    let seq_no = *sequence;
+    *sequence = sequence.wrapping_add(1);
+
+    for poll in 0..SELFTEST_POLL_LIMIT {
+        // Same rate-limit yield as the v6 UDP probe above.
+        #[cfg(not(test))]
+        {
+            let _ = rt::yield_current();
+        }
+        pump(iface, device, sockets);
+        let socket = sockets.get_mut::<icmp::Socket>(icmp_handle);
+        if socket.can_recv() {
+            let Ok((payload, remote)) = socket.recv() else {
+                continue;
+            };
+            let IpAddress::Ipv6(remote_v6) = remote else {
+                continue;
+            };
+            let Ok(packet) = Icmpv6Packet::new_checked(&payload) else {
+                continue;
+            };
+            let Ok(reply) = Icmpv6Repr::parse(&remote_v6, &link_local, &packet, &checksum) else {
+                continue;
+            };
+            if let Icmpv6Repr::EchoReply {
+                ident,
+                seq_no: reply_seq,
+                ..
+            } = reply
+            {
+                if ident == crate::consts::PING_IDENTIFIER && reply_seq == seq_no {
+                    *replied_flag = true;
+                    return (true, poll as u64);
+                }
+            }
+        }
+    }
+    (false, SELFTEST_POLL_LIMIT as u64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use smoltcp::{
+        iface::Config as IfaceConfig,
+        phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken},
+        time::Instant,
+        wire::{EthernetAddress, HardwareAddress},
+    };
+
+    /// In-memory stand-in for KernelPacketDevice that applies the same
+    /// self-frame rule: frames the device loopback predicate claims are
+    /// pushed back onto the RX queue, everything else is parked in an
+    /// "escaped" sink for assertions.
+    type SharedQueue = std::rc::Rc<std::cell::RefCell<std::collections::VecDeque<Vec<u8>>>>;
+
+    pub(crate) fn shared_queue() -> SharedQueue {
+        std::rc::Rc::new(std::cell::RefCell::new(std::collections::VecDeque::new()))
+    }
+
+    pub(crate) struct LoopDevice {
+        pub(crate) rx: SharedQueue,
+        pub(crate) escaped: SharedQueue,
+    }
+
+    pub(crate) struct LoopRx {
+        pub(crate) frame: Vec<u8>,
+    }
+
+    #[derive(Clone)]
+    pub(crate) struct LoopTx {
+        rx: SharedQueue,
+        escaped: SharedQueue,
+    }
+
+    impl LoopDevice {
+        pub(crate) fn new() -> Self {
+            Self {
+                rx: shared_queue(),
+                escaped: shared_queue(),
+            }
+        }
+    }
+
+    impl Device for LoopDevice {
+        type RxToken<'a> = LoopRx;
+        type TxToken<'a> = LoopTx;
+
+        fn receive(&mut self, _t: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
+            let frame = self.rx.borrow_mut().pop_front()?;
+            Some((
+                LoopRx { frame },
+                LoopTx {
+                    rx: self.rx.clone(),
+                    escaped: self.escaped.clone(),
+                },
+            ))
+        }
+
+        fn transmit(&mut self, _t: Instant) -> Option<Self::TxToken<'_>> {
+            Some(LoopTx {
+                rx: self.rx.clone(),
+                escaped: self.escaped.clone(),
+            })
+        }
+
+        fn capabilities(&self) -> DeviceCapabilities {
+            let mut caps = DeviceCapabilities::default();
+            caps.medium = Medium::Ethernet;
+            caps.max_transmission_unit = 1500;
+            caps.max_burst_size = Some(1);
+            caps
+        }
+    }
+
+    impl RxToken for LoopRx {
+        fn consume<R, F>(self, f: F) -> R
+        where
+            F: FnOnce(&[u8]) -> R,
+        {
+            f(&self.frame)
+        }
+    }
+
+    impl TxToken for LoopTx {
+        fn consume<R, F>(self, len: usize, f: F) -> R
+        where
+            F: FnOnce(&mut [u8]) -> R,
+        {
+            let mut buffer = vec![0u8; len];
+            let result = f(&mut buffer);
+            if crate::device::frame_targets_guest(&buffer) {
+                self.rx.borrow_mut().push_back(buffer);
+            } else {
+                self.escaped.borrow_mut().push_back(buffer);
+            }
+            result
+        }
+    }
+
+    /// Host-side proof of the whole v0 mechanism: link-local configuration,
+    /// the NS/NA neighbor dance through the device loopback predicate, and
+    /// one UDP datagram round-trip between two sockets on the same
+    /// link-local address — the exact sequence the gated in-guest probe
+    /// drives, without kernel or QEMU.
+    #[test]
+    fn v6_loopback_udp_round_trip_host() {
+        let mac: [u8; 6] = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
+        let own = crate::util::eui64_link_local(mac);
+        crate::device::set_loopback_identity_for_tests(
+            mac,
+            smoltcp::wire::Ipv4Address::new(10, 0, 2, 15),
+            own,
+        );
+
+        let mut device = LoopDevice::new();
+        let mut iface = Interface::new(
+            IfaceConfig::new(HardwareAddress::Ethernet(EthernetAddress(mac))),
+            &mut device,
+            Instant::from_secs(0),
+        );
+        crate::protocol::apply_interface_runtime(
+            &mut iface,
+            crate::types::InterfaceRuntimeState::static_config(crate::types::NetworkConfig {
+                static_address: smoltcp::wire::Ipv4Address::new(10, 0, 2, 15),
+                static_prefix_len: 24,
+                static_gateway: smoltcp::wire::Ipv4Address::new(10, 0, 2, 2),
+                dynamic_ipv4: false,
+                dns_server: smoltcp::wire::Ipv4Address::new(10, 0, 2, 3),
+                probe_timeout_ticks: 100,
+                dns_query_timeout_ticks: 100,
+                dhcp_acquire_timeout_ticks: 100,
+                tcp_connect_timeout_ticks: 100,
+                tcp_idle_timeout_ticks: 100,
+            }),
+        );
+
+        let (mut sent, mut got, mut echoed) = (false, false, false);
+        let ok = udp_v6_round_trip(&mut iface, &mut device, &mut sent, &mut got, &mut echoed);
+        assert!(sent, "send_slice must accept the queued datagram");
+        assert!(ok, "v6 UDP round trip must complete over the loopback path");
+        assert!(got && echoed);
+        assert!(
+            device.escaped.borrow().is_empty(),
+            "self-addressed v6 frames must never escape to the backend"
+        );
+    }
+
+    /// Same machinery for ICMPv6 echo: request to the own link-local, echo
+    /// reply produced by the stack's echo path, received back via loopback.
+    #[test]
+    fn v6_loopback_ping6_host() {
+        let mac: [u8; 6] = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
+        let own = crate::util::eui64_link_local(mac);
+        crate::device::set_loopback_identity_for_tests(
+            mac,
+            smoltcp::wire::Ipv4Address::new(10, 0, 2, 15),
+            own,
+        );
+
+        let mut device = LoopDevice::new();
+        let mut iface = Interface::new(
+            IfaceConfig::new(HardwareAddress::Ethernet(EthernetAddress(mac))),
+            &mut device,
+            Instant::from_secs(0),
+        );
+        crate::protocol::apply_interface_runtime(
+            &mut iface,
+            crate::types::InterfaceRuntimeState::static_config(crate::types::NetworkConfig {
+                static_address: smoltcp::wire::Ipv4Address::new(10, 0, 2, 15),
+                static_prefix_len: 24,
+                static_gateway: smoltcp::wire::Ipv4Address::new(10, 0, 2, 2),
+                dynamic_ipv4: false,
+                dns_server: smoltcp::wire::Ipv4Address::new(10, 0, 2, 3),
+                probe_timeout_ticks: 100,
+                dns_query_timeout_ticks: 100,
+                dhcp_acquire_timeout_ticks: 100,
+                tcp_connect_timeout_ticks: 100,
+                tcp_idle_timeout_ticks: 100,
+            }),
+        );
+
+        let mut socket_storage = [SocketStorage::EMPTY; 2];
+        let mut icmp_rx_meta = [icmp::PacketMetadata::EMPTY; 2];
+        let mut icmp_tx_meta = [icmp::PacketMetadata::EMPTY];
+        let mut icmp_rx_data = [0u8; 256];
+        let mut icmp_tx_data = [0u8; 256];
+        let mut sockets = SocketSet::new(&mut socket_storage[..]);
+        let icmp_handle = sockets.add(icmp::Socket::new(
+            icmp::PacketBuffer::new(&mut icmp_rx_meta[..], &mut icmp_rx_data[..]),
+            icmp::PacketBuffer::new(&mut icmp_tx_meta[..], &mut icmp_tx_data[..]),
+        ));
+
+        let mut requested = false;
+        let mut replied = false;
+        let mut sequence = 1u16;
+        let (ok, polls) = ping6_round_trip(
+            &mut iface,
+            &mut device,
+            &mut sockets,
+            icmp_handle,
+            &mut requested,
+            &mut replied,
+            &mut sequence,
+        );
+        assert!(requested);
+        assert!(ok, "ICMPv6 echo must round-trip over the loopback path");
+        assert!(replied);
+        assert!(polls < 4096);
+        assert!(device.escaped.borrow().is_empty());
+    }
 }

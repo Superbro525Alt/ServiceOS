@@ -1,7 +1,7 @@
 use smoltcp::{
     iface::{SocketHandle, SocketSet},
     socket::udp,
-    wire::{IpAddress, Ipv4Address},
+    wire::{IpAddress, Ipv4Address, Ipv6Address},
 };
 
 use rt::{
@@ -167,10 +167,19 @@ pub(crate) fn handle_datagram_request(
         x if x == NetworkSocketTag::SendToRequest as u32 => {
             send_datagram(sockets, slot, request, firewall)
         }
+        x if x == NetworkSocketTag::SendToV6Request as u32 => {
+            send_datagram_v6(sockets, slot, request, firewall)
+        }
         x if x == NetworkSocketTag::ReceiveRequest as u32
             || x == NetworkSocketTag::ReceiveFromRequest as u32 =>
         {
             let reply = receive_datagram(sockets, slot, request, firewall)?;
+            let _ = rt::channel_send(reply_handle, &reply);
+            let _ = rt::handle_close(reply_handle);
+            return Ok(());
+        }
+        x if x == NetworkSocketTag::ReceiveFromV6Request as u32 => {
+            let reply = receive_datagram_v6(sockets, slot, request, firewall)?;
             let _ = rt::channel_send(reply_handle, &reply);
             let _ = rt::handle_close(reply_handle);
             return Ok(());
@@ -286,8 +295,25 @@ fn receive_datagram(
     let socket = sockets.get_mut::<udp::Socket>(socket_handle);
     match socket.recv_slice(&mut buffer[..read_len]) {
         Ok((count, metadata)) => {
-            let IpAddress::Ipv4(remote) = metadata.endpoint.addr;
-            let source_be = u32::from_be_bytes(remote.octets());
+            let source_be = match metadata.endpoint.addr {
+                IpAddress::Ipv4(remote) => u32::from_be_bytes(remote.octets()),
+                IpAddress::Ipv6(_) => {
+                    // Consumed v6-origin datagram; the v4 receive contract
+                    // cannot carry a 128-bit source. Disclosed v0
+                    // limitation — clients use ReceiveFromV6 for those.
+                    let _ = rt::write_logf(
+                        "network",
+                        format_args!(
+                            "udp v4 receive consumed ipv6-origin datagram local={}",
+                            slot.local_port
+                        ),
+                    );
+                    reply.words[0] = NetworkStatus::Unsupported as u32 as u64;
+                    reply.words[1] = 0;
+                    reply.words[2] = 0;
+                    return Ok(reply);
+                }
+            };
             if !firewall.decide(
                 Direction::Inbound,
                 Proto::Udp,
@@ -333,4 +359,164 @@ fn allocate_ephemeral_port(next_local_port: &mut u16) -> u16 {
         next_local_port.saturating_add(1)
     };
     current
+}
+
+/// SendToV6Request: words[0] = payload length, words[1] = destination port,
+/// words[2..4] = 16 destination address bytes (ipv6_addr_words), words[4..]
+/// = inline payload. Reply mirrors SendToReply: status, bytes written.
+fn send_datagram_v6(
+    sockets: &mut SocketSet<'_>,
+    slot: &mut UdpDatagramSlot,
+    request: &RawMessage,
+    firewall: &mut FirewallState,
+) -> RawMessage {
+    let mut reply = RawMessage::empty(NetworkSocketTag::SendToV6Reply as u32);
+    reply.word_count = 2;
+    if request.word_count < 4 {
+        reply.words[0] = NetworkStatus::InvalidTarget as u32 as u64;
+        reply.words[1] = 0;
+        return reply;
+    }
+    let byte_len = request.words[0] as usize;
+    let port = request.words[1] as u16;
+    let octets = rt::ipv6_addr_octets([request.words[2], request.words[3]]);
+    let destination = Ipv6Address::from(octets);
+    let mut payload = [0u8; MAX_SOCKET_INLINE_BYTES];
+    let payload = match decode_inline_bytes(
+        &request.words[4..request.word_count as usize],
+        byte_len,
+        &mut payload,
+    ) {
+        Ok(payload) => payload,
+        Err(_) => {
+            reply.words[0] = NetworkStatus::InvalidTarget as u32 as u64;
+            reply.words[1] = 0;
+            return reply;
+        }
+    };
+    let Some(socket_handle) = slot.socket_handle else {
+        reply.words[0] = NetworkStatus::Closed as u32 as u64;
+        reply.words[1] = 0;
+        return reply;
+    };
+    if destination.is_multicast() || destination.is_unspecified() {
+        let _ = rt::write_logf(
+            "network",
+            format_args!(
+                "udp v6 send rejected local={} remote={} port={}: target not unicast",
+                slot.local_port,
+                crate::util::Ipv6LogAddress(destination),
+                port
+            ),
+        );
+        reply.words[0] = NetworkStatus::InvalidTarget as u32 as u64;
+        reply.words[1] = 0;
+        return reply;
+    }
+    if !firewall.decide(Direction::Outbound, Proto::Udp, slot.local_port, port) {
+        let _ = rt::write_logf(
+            "network",
+            format_args!(
+                "firewall deny outbound udp6 local={} remote={} port={}",
+                slot.local_port,
+                crate::util::Ipv6LogAddress(destination),
+                port
+            ),
+        );
+        reply.words[0] = NetworkStatus::Denied as u32 as u64;
+        reply.words[1] = 0;
+        return reply;
+    }
+    let socket = sockets.get_mut::<udp::Socket>(socket_handle);
+    match socket.send_slice(
+        payload,
+        smoltcp::wire::IpEndpoint {
+            addr: IpAddress::Ipv6(destination),
+            port,
+        },
+    ) {
+        Ok(()) => {
+            slot.last_activity_ticks = rt::monotonic_now().unwrap_or(slot.last_activity_ticks);
+            slot.tx_bytes = slot.tx_bytes.saturating_add(payload.len() as u64);
+            reply.words[0] = NetworkStatus::Ok as u32 as u64;
+            reply.words[1] = payload.len() as u64;
+        }
+        Err(_) => {
+            reply.words[0] = NetworkStatus::Busy as u32 as u64;
+            reply.words[1] = 0;
+        }
+    }
+    reply
+}
+
+/// ReceiveFromV6Request: words[0] = max payload length. Reply: words[0] =
+/// status, words[1] = payload length, words[2] = source port, words[3..5] =
+/// 16 source address bytes (ipv6_addr_words), words[5..] = inline payload.
+/// A queued datagram from an IPv4 peer is consumed and answered with
+/// Unsupported (the receive family is not known before dequeuing).
+fn receive_datagram_v6(
+    sockets: &mut SocketSet<'_>,
+    slot: &mut UdpDatagramSlot,
+    request: &RawMessage,
+    firewall: &mut FirewallState,
+) -> rt::Result<RawMessage> {
+    let mut reply = RawMessage::empty(NetworkSocketTag::ReceiveFromV6Reply as u32);
+    reply.word_count = 5;
+    let requested = request.words.first().copied().unwrap_or(0) as usize;
+    let read_len = requested.min(MAX_SOCKET_INLINE_BYTES);
+    let mut buffer = [0u8; MAX_SOCKET_INLINE_BYTES];
+    let Some(socket_handle) = slot.socket_handle else {
+        reply.words[0] = NetworkStatus::Closed as u32 as u64;
+        return Ok(reply);
+    };
+    let socket = sockets.get_mut::<udp::Socket>(socket_handle);
+    match socket.recv_slice(&mut buffer[..read_len]) {
+        Ok((count, metadata)) => {
+            let source_port = metadata.endpoint.port;
+            let source_octets = match metadata.endpoint.addr {
+                IpAddress::Ipv6(remote) => remote.octets(),
+                IpAddress::Ipv4(_) => {
+                    // Consumed v4 datagram; caller should re-ask via the
+                    // v4 receive op. Disclosed v0 limitation.
+                    let _ = rt::write_logf(
+                        "network",
+                        format_args!(
+                            "udp v6 receive consumed ipv4-origin datagram local={}",
+                            slot.local_port
+                        ),
+                    );
+                    reply.words[0] = NetworkStatus::Unsupported as u32 as u64;
+                    return Ok(reply);
+                }
+            };
+            if !firewall.decide(Direction::Inbound, Proto::Udp, slot.local_port, source_port) {
+                let _ = rt::write_logf(
+                    "network",
+                    format_args!(
+                        "firewall deny inbound udp6 local={} remote={} port={}",
+                        slot.local_port,
+                        crate::util::Ipv6LogAddress(Ipv6Address::from(source_octets)),
+                        source_port
+                    ),
+                );
+                reply.words[0] = NetworkStatus::Busy as u32 as u64;
+                return Ok(reply);
+            }
+            slot.last_activity_ticks = rt::monotonic_now().unwrap_or(slot.last_activity_ticks);
+            slot.rx_bytes = slot.rx_bytes.saturating_add(count as u64);
+            let words = rt::ipv6_addr_words(source_octets);
+            reply.words[0] = NetworkStatus::Ok as u32 as u64;
+            reply.words[1] = count as u64;
+            reply.words[2] = source_port as u64;
+            reply.words[3] = words[0];
+            reply.words[4] = words[1];
+            let packed = pack_inline_bytes(&buffer[..count], &mut reply.words[5..])?;
+            reply.word_count = 5 + packed;
+        }
+        Err(_) => {
+            // Nonblocking contract: no queued datagram -> Busy.
+            reply.words[0] = NetworkStatus::Busy as u32 as u64;
+        }
+    }
+    Ok(reply)
 }

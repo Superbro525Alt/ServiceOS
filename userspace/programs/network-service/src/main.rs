@@ -167,7 +167,10 @@ pub(crate) fn run() -> u64 {
     apply_interface_runtime(&mut iface, runtime_state);
 
     let mut socket_storage = [SocketStorage::EMPTY; 16];
-    let mut icmp_rx_meta = [icmp::PacketMetadata::EMPTY];
+    // Two rx slots: a self-addressed ping6 loopback delivers BOTH the echo
+    // request (ident-matched on the way back through the stack) and the
+    // echo reply to this socket; one slot would drop the reply.
+    let mut icmp_rx_meta = [icmp::PacketMetadata::EMPTY; 2];
     let mut icmp_tx_meta = [icmp::PacketMetadata::EMPTY];
     let mut icmp_rx_data = [0u8; 256];
     let mut icmp_tx_data = [0u8; 256];
@@ -447,7 +450,14 @@ pub(crate) fn run() -> u64 {
             && loop_ticks >= 1024
         {
             selftest_done = true;
-            run_network_selftest(log_handle, &mut iface, &mut device, runtime_state.gateway);
+            run_network_selftest(
+                log_handle,
+                &mut iface,
+                &mut device,
+                &mut sockets,
+                icmp_handle,
+                runtime_state.gateway,
+            );
             let snapshot = device::rx_ring_snapshot();
             if snapshot.active {
                 let _ = rt::write_logf(

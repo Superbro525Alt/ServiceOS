@@ -157,6 +157,14 @@ pub enum NetworkTag {
     /// the state echo is still honest service-side truth.
     WifiStatusRequest = 0x830,
     WifiStatusReply = 0x831,
+    /// IPv6 ICMP echo (bounded v0: literal IPv6 address targets only —
+    /// no host resolution, no routing beyond link-local). words[0] = text
+    /// length, words[1..] = inline text. Reply Ping6Reply: words[0] =
+    /// status, words[1..3] = 16 target address bytes as two big-endian
+    /// words (see ipv6_addr_words), words[3] = round-trip milliseconds
+    /// (0 when not Ok).
+    Ping6Request = 0x832,
+    Ping6Reply = 0x833,
 }
 
 /// Service-layer security classification for a wireless network. Values
@@ -271,6 +279,21 @@ pub enum NetworkSocketTag {
     /// Close protocol as outbound streams.
     AcceptRequest = 0x82e,
     AcceptReply = 0x82f,
+    /// UDP only, IPv6: send one datagram to a v6 endpoint. words[0] =
+    /// payload length, words[1] = destination port, words[2..4] = 16
+    /// destination address bytes as two big-endian words (see
+    /// ipv6_addr_words), words[4..] = inline payload. Reply: same shape as
+    /// SendToReply (words[0] = status, words[1] = bytes written).
+    SendToV6Request = 0x830,
+    SendToV6Reply = 0x831,
+    /// UDP only, IPv6: receive one datagram. words[0] = max payload length.
+    /// Reply: words[0] = status (Busy when no datagram is queued,
+    /// Unsupported when the queued datagram originated from an IPv4 peer —
+    /// the datagram is consumed either way), words[1] = payload length,
+    /// words[2] = source port, words[3..5] = 16 source address bytes as two
+    /// big-endian words (see ipv6_addr_words), words[5..] = inline payload.
+    ReceiveFromV6Request = 0x832,
+    ReceiveFromV6Reply = 0x833,
 }
 
 /// Pack the SocketListenRequest words[1] parameter: local port + backlog.
@@ -291,6 +314,42 @@ pub const fn pack_ipv4_endpoint(address_be: u32, port: u16) -> u64 {
 /// Unpack a packed IPv4 endpoint word.
 pub const fn unpack_ipv4_endpoint(packed: u64) -> (u32, u16) {
     ((packed >> 16) as u32, packed as u16)
+}
+
+/// Pack 16 IPv6 address bytes into two words (network byte order, most
+/// significant octet in bits 56..63 of word 0). Used by the v6 datagram and
+/// ping6 contract fields documented on the additive 0x830+ tags.
+pub const fn ipv6_addr_words(octets: [u8; 16]) -> [u64; 2] {
+    let mut words = [0u64; 2];
+    let mut index = 0;
+    while index < 2 {
+        let mut bytes = [0u8; 8];
+        let mut offset = 0;
+        while offset < 8 {
+            bytes[offset] = octets[index * 8 + offset];
+            offset += 1;
+        }
+        words[index] = u64::from_be_bytes(bytes);
+        index += 1;
+    }
+    words
+}
+
+/// Unpack two words back into 16 IPv6 address bytes (inverse of
+/// ipv6_addr_words).
+pub const fn ipv6_addr_octets(words: [u64; 2]) -> [u8; 16] {
+    let mut octets = [0u8; 16];
+    let mut index = 0;
+    while index < 2 {
+        let bytes = words[index].to_be_bytes();
+        let mut offset = 0;
+        while offset < 8 {
+            octets[index * 8 + offset] = bytes[offset];
+            offset += 1;
+        }
+        index += 1;
+    }
+    octets
 }
 
 pub const TCP_FLAG_FIN: u8 = 1 << 0;
@@ -678,5 +737,47 @@ mod tests {
         // Cross-namespace sanity: per-socket control channels are a distinct
         // tag space, so 0x820 legally appears in both enums.
         assert_eq!(NetworkSocketTag::StatusRequest as u32, 0x820);
+    }
+
+    #[test]
+    fn ipv6_additive_wire_values() {
+        // Additive v6 tags append at the END of each namespace; existing
+        // values are frozen by the tests above and must never move.
+        assert_eq!(NetworkSocketTag::SendToV6Request as u32, 0x830);
+        assert_eq!(NetworkSocketTag::SendToV6Reply as u32, 0x831);
+        assert_eq!(NetworkSocketTag::ReceiveFromV6Request as u32, 0x832);
+        assert_eq!(NetworkSocketTag::ReceiveFromV6Reply as u32, 0x833);
+        assert_eq!(NetworkTag::Ping6Request as u32, 0x832);
+        assert_eq!(NetworkTag::Ping6Reply as u32, 0x833);
+        // The two namespaces are distinct channels: the same numeric value
+        // may appear in both (Ping6Request vs ReceiveFromV6Request).
+        assert_eq!(
+            NetworkTag::Ping6Request as u32,
+            NetworkSocketTag::ReceiveFromV6Request as u32
+        );
+    }
+
+    #[test]
+    fn ipv6_addr_word_codec_roundtrip() {
+        let mut octets = [0u8; 16];
+        for (index, byte) in octets.iter_mut().enumerate() {
+            *byte = (index * 17 + 1) as u8;
+        }
+        assert_eq!(ipv6_addr_octets(ipv6_addr_words(octets)), octets);
+        // Most significant octet lands in the top byte of word 0.
+        let words = ipv6_addr_words(octets);
+        assert_eq!(words[0] >> 56, octets[0] as u64);
+        assert_eq!(words[1] & 0xff, octets[15] as u64);
+        // Link-local example: fe80::1 packs predictably.
+        let link_local = {
+            let mut o = [0u8; 16];
+            o[0] = 0xfe;
+            o[1] = 0x80;
+            o[15] = 1;
+            o
+        };
+        let words = ipv6_addr_words(link_local);
+        assert_eq!(words[0], 0xfe80_0000_0000_0000);
+        assert_eq!(words[1], 1);
     }
 }

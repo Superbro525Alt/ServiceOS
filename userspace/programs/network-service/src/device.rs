@@ -4,7 +4,10 @@ use core::ptr::NonNull;
 use smoltcp::{
     phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken},
     time::Instant,
-    wire::{ArpOperation, ArpPacket, ArpRepr, EthernetAddress, EthernetFrame, Ipv4Address},
+    wire::{
+        ArpOperation, ArpPacket, ArpRepr, EthernetAddress, EthernetFrame, EthernetProtocol,
+        Ipv4Address, Ipv6Address, Ipv6Packet,
+    },
 };
 
 use rt::{MappedMemory, PacketInterfaceInfo, PacketRingLayout};
@@ -15,11 +18,11 @@ use crate::consts::{LOOPBACK_ADDRESS, MAX_FRAME_BYTES};
 /// Consumer-side mirror of the shared RX ring header layout (see
 /// `kernel/core/src/network/ring.rs`). The image is one header page followed
 /// by one page per slot; each slot page starts with a u64 length then the
-/// frame data.
+/// frame data. Magic/version words are validated kernel-side through the
+/// `PacketRingLayout` reply (see `enable_shared_rx`), so the offsets below
+/// cover only the counters the service reads directly.
 const RING_MAGIC: u32 = 0x534f_5258;
 const RING_VERSION: u32 = 1;
-const OFF_MAGIC: usize = 0;
-const OFF_VERSION: usize = 4;
 const OFF_HEAD: usize = 16;
 const OFF_TAIL: usize = 24;
 const OFF_FRAMES_PUSHED: usize = 32;
@@ -393,6 +396,7 @@ unsafe impl<T> Sync for SyncCell<T> {}
 static LOOPBACK_RX_RING: SyncCell<Option<LoopbackRing>> = SyncCell(UnsafeCell::new(None));
 static OWN_MAC: SyncCell<[u8; 6]> = SyncCell(UnsafeCell::new([0; 6]));
 static LOCAL_IPV4: SyncCell<[u8; 4]> = SyncCell(UnsafeCell::new([127, 0, 0, 1]));
+static LOCAL_IPV6: SyncCell<[u8; 16]> = SyncCell(UnsafeCell::new([0; 16]));
 static LB_STATS: SyncCell<(u64, u64, u64)> = SyncCell(UnsafeCell::new((0, 0, 0)));
 static NEIGHBORS: SyncCell<NeighborTable> = SyncCell(UnsafeCell::new(NeighborTable::new()));
 
@@ -500,6 +504,42 @@ pub(crate) fn set_local_ipv4(address: Ipv4Address) {
     // SAFETY: see static declarations above.
     unsafe {
         *LOCAL_IPV4.0.get() = address.octets();
+    }
+}
+
+/// Record the interface's IPv6 link-local address so the loopback predicate
+/// can keep self-addressed v6 frames in-process (mirrors LOCAL_IPV4).
+pub(crate) fn set_local_ipv6(address: Ipv6Address) {
+    // SAFETY: see static declarations above.
+    unsafe {
+        *LOCAL_IPV6.0.get() = address.octets();
+    }
+}
+
+fn local_ipv6() -> Ipv6Address {
+    // SAFETY: see static declarations above.
+    let octets = unsafe { *LOCAL_IPV6.0.get() };
+    Ipv6Address::from(octets)
+}
+
+/// Copy of the interface's IPv6 link-local address (unspecified when no v6
+/// address has been configured yet); used by the gated v6 selftest probes.
+pub(crate) fn local_link_local() -> Ipv6Address {
+    local_ipv6()
+}
+
+/// Test-only identity hook for the host-side loopback integration tests.
+#[cfg(test)]
+pub(crate) fn set_loopback_identity_for_tests(
+    mac: [u8; 6],
+    local_v4: Ipv4Address,
+    local_v6: Ipv6Address,
+) {
+    // SAFETY: single-threaded test process.
+    unsafe {
+        *OWN_MAC.0.get() = mac;
+        *LOCAL_IPV4.0.get() = local_v4.octets();
+        *LOCAL_IPV6.0.get() = local_v6.octets();
     }
 }
 
@@ -761,11 +801,15 @@ impl TxToken for KernelTxToken<'_> {
 }
 
 /// Whether an emitted frame must be delivered back into our own RX path:
-/// unicast addressed to our own MAC from our own MAC, or an ARP request
-/// resolving one of the guest's own addresses (loopnet or assigned IP). ARP
-/// replies we emit are unicast-to-self and loop back through the first rule,
-/// which also fills the neighbor cache when reprocessed.
-fn frame_targets_guest(frame: &[u8]) -> bool {
+/// unicast addressed to our own MAC from our own MAC, an ARP request
+/// resolving one of the guest's own addresses (loopnet or assigned IP), or
+/// an IPv6 frame whose destination is our own link-local address (or the
+/// solicited-node multicast group of it, which self-addressed Neighbor
+/// Solicitations use). ARP replies we emit are unicast-to-self and loop back
+/// through the first rule, which also fills the neighbor cache when
+/// reprocessed; the IPv6 rules let the NS/NA exchange and v6 datagrams take
+/// the same in-process path without ever reaching the host backend.
+pub(crate) fn frame_targets_guest(frame: &[u8]) -> bool {
     let Ok(eth) = EthernetFrame::new_checked(frame) else {
         return false;
     };
@@ -775,6 +819,17 @@ fn frame_targets_guest(frame: &[u8]) -> bool {
     let local = Ipv4Address::new(octets[0], octets[1], octets[2], octets[3]);
     if eth.dst_addr() == own_mac && eth.src_addr() == own_mac {
         return true;
+    }
+    if eth.ethertype() == EthernetProtocol::Ipv6 {
+        let own_v6 = local_ipv6();
+        if own_v6 == Ipv6Address::UNSPECIFIED {
+            return false;
+        }
+        let Ok(ipv6) = Ipv6Packet::new_checked(eth.payload()) else {
+            return false;
+        };
+        let dst = ipv6.dst_addr();
+        return dst == own_v6 || dst == crate::util::solicited_node_multicast(own_v6);
     }
     if eth.ethertype() != smoltcp::wire::EthernetProtocol::Arp {
         return false;
@@ -792,4 +847,112 @@ fn frame_targets_guest(frame: &[u8]) -> bool {
     };
     operation == ArpOperation::Request
         && (target_protocol_addr == LOOPBACK_ADDRESS || target_protocol_addr == local)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use smoltcp::wire::{EthernetRepr, IpProtocol, Ipv6Repr};
+
+    /// Single test fn because the predicate reads process-global statics
+    /// (OWN_MAC / LOCAL_IPV6) that parallel tests would race on.
+    #[test]
+    fn frame_targets_guest_rules() {
+        let own_mac: [u8; 6] = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
+        // SAFETY: test-only initialization of process-global cells.
+        unsafe {
+            *OWN_MAC.0.get() = own_mac;
+        }
+
+        // Rule 1: unicast self-addressed frames loop back regardless of
+        // ethertype.
+        let mut arp_probe = [0u8; 42];
+        let arp_repr = ArpRepr::EthernetIpv4 {
+            operation: ArpOperation::Request,
+            source_hardware_addr: EthernetAddress(own_mac),
+            source_protocol_addr: Ipv4Address::new(10, 0, 2, 15),
+            target_hardware_addr: EthernetAddress::BROADCAST,
+            target_protocol_addr: LOOPBACK_ADDRESS,
+        };
+        let eth_repr = EthernetRepr {
+            src_addr: EthernetAddress(own_mac),
+            dst_addr: EthernetAddress::BROADCAST,
+            ethertype: EthernetProtocol::Arp,
+        };
+        eth_repr.emit(&mut EthernetFrame::new_unchecked(&mut arp_probe[..]));
+        arp_repr.emit(&mut ArpPacket::new_unchecked(&mut arp_probe[14..]));
+        assert!(frame_targets_guest(&arp_probe));
+
+        fn ipv6_frame(
+            src_mac: [u8; 6],
+            dst_mac: [u8; 6],
+            src_ip: Ipv6Address,
+            dst_ip: Ipv6Address,
+        ) -> Vec<u8> {
+            let eth = EthernetRepr {
+                src_addr: EthernetAddress(src_mac),
+                dst_addr: EthernetAddress(dst_mac),
+                ethertype: EthernetProtocol::Ipv6,
+            };
+            let ip = Ipv6Repr {
+                src_addr: src_ip,
+                dst_addr: dst_ip,
+                next_header: IpProtocol::Icmpv6,
+                payload_len: 4,
+                hop_limit: 255,
+            };
+            let mut frame = vec![0u8; eth.buffer_len() + ip.buffer_len()];
+            eth.emit(&mut EthernetFrame::new_unchecked(&mut frame[..]));
+            ip.emit(&mut Ipv6Packet::new_unchecked(
+                &mut frame[eth.buffer_len()..],
+            ));
+            frame
+        }
+
+        let own_link_local = crate::util::eui64_link_local(own_mac);
+        // SAFETY: test-only initialization of process-global cells.
+        unsafe {
+            *LOCAL_IPV6.0.get() = own_link_local.octets();
+        }
+
+        // Rule 3: IPv6 to our own link-local loops back.
+        let frame = ipv6_frame(own_mac, own_mac, own_link_local, own_link_local);
+        assert!(frame_targets_guest(&frame));
+
+        // Rule 3: self-directed Neighbor Solicitation (dst = our
+        // solicited-node multicast) loops back so the NS/NA dance mirrors
+        // the ARP self-reply path.
+        let frame = ipv6_frame(
+            own_mac,
+            own_mac,
+            own_link_local,
+            crate::util::solicited_node_multicast(own_link_local),
+        );
+        assert!(frame_targets_guest(&frame));
+
+        // Foreign link-local destinations go out the real backend. The
+        // ethernet frame is addressed to the foreign MAC (rule 1 must not
+        // mask the v6 destination check).
+        let foreign = Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 0x99);
+        let foreign_mac: [u8; 6] = [0x52, 0x54, 0x00, 0x12, 0x34, 0x99];
+        let frame = ipv6_frame(own_mac, foreign_mac, own_link_local, foreign);
+        assert!(!frame_targets_guest(&frame));
+
+        // Multicast NS for someone else's address is not ours either.
+        let frame = ipv6_frame(
+            own_mac,
+            foreign_mac,
+            own_link_local,
+            crate::util::solicited_node_multicast(foreign),
+        );
+        assert!(!frame_targets_guest(&frame));
+
+        // No v6 address configured: v6 frames never loop back.
+        // SAFETY: test-only reset of process-global cells.
+        unsafe {
+            *LOCAL_IPV6.0.get() = [0; 16];
+        }
+        let frame = ipv6_frame(own_mac, foreign_mac, own_link_local, own_link_local);
+        assert!(!frame_targets_guest(&frame));
+    }
 }

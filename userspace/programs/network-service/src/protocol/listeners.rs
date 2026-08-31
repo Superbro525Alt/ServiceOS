@@ -224,7 +224,9 @@ pub(crate) fn pump_listeners(
         }
 
         // Firewall gate: inspect the inbound peer before adopting it. A deny
-        // aborts the handshake and re-arms the listener.
+        // aborts the handshake and re-arms the listener. IPv6 inbound
+        // connections are outside the v0 slice (listeners stay v4); the
+        // handshake is still aborted cleanly by treating them as filtered.
         let endpoints = {
             let socket = sockets.get_mut::<tcp::Socket>(socket_handle);
             match (socket.remote_endpoint(), socket.local_endpoint()) {
@@ -232,6 +234,7 @@ pub(crate) fn pump_listeners(
                     smoltcp::wire::IpAddress::Ipv4(address) => {
                         Some((address, remote.port, local.port))
                     }
+                    smoltcp::wire::IpAddress::Ipv6(_) => None,
                 },
                 _ => None,
             }

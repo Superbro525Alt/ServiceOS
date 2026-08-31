@@ -35,7 +35,11 @@ use crate::{
     util::{decode_inline_text, emit_log, ipv4_to_u32, pack_inline_bytes, ticks_to_millis},
 };
 
-use super::{listeners::open_listener, transport::perform_ping, udp::open_udp_socket};
+use super::{
+    listeners::open_listener,
+    transport::{perform_ping, perform_ping6},
+    udp::open_udp_socket,
+};
 
 fn status_for_detail(detail: ChaseDetail) -> NetworkStatus {
     match detail {
@@ -413,6 +417,78 @@ pub(crate) fn handle_public_request(
                         reply.words[0] = status_for_detail(outcome.detail) as u32 as u64;
                         reply.words[1] = outcome.address.unwrap_or(0) as u64;
                         reply.words[2] = 0;
+                    }
+                }
+            }
+
+            let _ = rt::channel_send(reply_handle, &reply);
+            let _ = rt::handle_close(reply_handle);
+        }
+        x if x == NetworkTag::Ping6Request as u32 => {
+            if request.word_count < 1 || request.handle_count < 1 {
+                return Ok(());
+            }
+            let reply_handle = request.handles[0];
+            let mut text = [0u8; MAX_HOSTNAME_BYTES];
+            let target = decode_inline_text(
+                &request.words[1..request.word_count as usize],
+                request.words[0] as usize,
+                &mut text,
+            )?;
+            let mut reply = RawMessage::empty(NetworkTag::Ping6Reply as u32);
+            reply.word_count = 4;
+
+            // Bounded v0: literal IPv6 addresses only. No host resolution
+            // (v6 name lookup stays with the AAAA record path) and no
+            // routing — link-local targets are the honest scope.
+            let parsed = match target.parse::<IpAddress>() {
+                Ok(IpAddress::Ipv6(address)) if !address.is_unspecified() => Ok(address),
+                _ => Err(()),
+            };
+            match parsed {
+                Err(()) => {
+                    reply.words[0] = NetworkStatus::InvalidTarget as u32 as u64;
+                }
+                Ok(target_addr) => {
+                    let words = rt::ipv6_addr_words(target_addr.octets());
+                    reply.words[1] = words[0];
+                    reply.words[2] = words[1];
+                    if !firewall.decide(Direction::Outbound, Proto::Icmp, 0, 0) {
+                        let _ = rt::write_logf(
+                            "network",
+                            format_args!(
+                                "firewall deny outbound icmp6 target={}",
+                                crate::util::Ipv6LogAddress(target_addr)
+                            ),
+                        );
+                        reply.words[0] = NetworkStatus::Denied as u32 as u64;
+                        reply.words[3] = 0;
+                    } else {
+                        match perform_ping6(
+                            iface,
+                            device,
+                            sockets,
+                            icmp_handle,
+                            target_addr,
+                            config.probe_timeout_ticks,
+                            next_sequence,
+                        )? {
+                            Some(elapsed_ms) => {
+                                reply.words[0] = NetworkStatus::Ok as u32 as u64;
+                                reply.words[3] = elapsed_ms;
+                                let _ = emit_log(
+                                    log_handle,
+                                    LogSeverity::Info,
+                                    LogEvent::NetworkProbeCompleted,
+                                    crate::consts::PING6_PROBE_ARG0_TAG,
+                                    elapsed_ms,
+                                );
+                            }
+                            None => {
+                                reply.words[0] = NetworkStatus::Timeout as u32 as u64;
+                                reply.words[3] = 0;
+                            }
+                        }
                     }
                 }
             }

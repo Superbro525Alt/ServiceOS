@@ -25,6 +25,22 @@ pub(crate) const SELFTEST_UDP_PORT_B: u16 = 40_124;
 pub(crate) const SELFTEST_TCP_PORT: u16 = 40_125;
 pub(crate) const SELFTEST_POLL_LIMIT: usize = 4096;
 
+// --- IPv6 datagram plumbing (bounded v0 slice) ---
+//
+// Link-local scope only: the interface carries one fe80::/64 address derived
+// from the MAC via modified EUI-64 (RFC 4291). No global addresses, no SLAAC,
+// no DHCPv6, no duplicate address detection, no routing beyond the link.
+/// E2E witness gate (build-time): v6 selftest probes run and emit
+/// `E2E net.ipv6-*` lines only when the image was built with
+/// SERVICEOS_E2E_NETWORK=1; default boots stay byte-identical.
+pub(crate) fn ipv6_e2e_probe_enabled() -> bool {
+    matches!(option_env!("SERVICEOS_E2E_NETWORK"), Some("1"))
+}
+/// Structured-record discriminator for ping6 probe records (ASCII "PING6"
+/// zero-padded into the high bytes, so it is always > 2^32 and can never be
+/// mistaken for an IPv4 address word by downstream log classifiers).
+pub(crate) const PING6_PROBE_ARG0_TAG: u64 = 0x5049_4E47_3600_0000;
+
 // --- Resolver cache / DNS client ---
 pub(crate) const MAX_RESOLVER_CACHE_ENTRIES: usize = 16;
 /// Hard bound on CNAME indirections followed for a single resolution.

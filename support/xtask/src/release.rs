@@ -16,6 +16,18 @@ use crate::{
 
 const HASH_ALGORITHM: &str = "fnv1a64";
 const INTEGRITY_HASH_ALGORITHM: &str = "sha256";
+const SIGNATURE_ALGORITHM: &str = "ed25519";
+/// Env var pointing at a file holding the hex-encoded 32-byte ed25519 seed.
+/// When set, `cargo xtask release` signs RELEASE-MANIFEST.json; when unset
+/// (the default) the manifest is byte-identical to the unsigned format.
+const SIGNING_KEY_ENV: &str = "SERVICEOS_RELEASE_SIGNING_KEY";
+/// Env var fallback for the 64-hex-character ed25519 public key used by
+/// `cargo xtask release-verify` when `--key` is not passed.
+const VERIFY_KEY_ENV: &str = "SERVICEOS_RELEASE_VERIFY_KEY";
+/// Documented signing scheme, embedded in the manifest notes whenever the
+/// manifest is actually signed (the unsigned manifest stays byte-identical
+/// to the pre-signing format and carries no signing prose).
+const SIGNING_SCHEME_NOTE: &str = "; when SERVICEOS_RELEASE_SIGNING_KEY is set the manifest gains a trailing signature member computed as ed25519 (RFC 8032) over the sha256 of this exact manifest text with the signature member removed (the canonical pre-signature serialization, including this notes text); the signature key_id is the fnv1a64 of the 32-byte ed25519 public key rendered as 16 hex characters; installer images are not signed yet";
 
 #[derive(Debug)]
 enum ReleaseStatus {
@@ -321,6 +333,51 @@ fn json_escape(value: &str) -> String {
 }
 
 fn write_manifest(path: &Path, entries: &[PlatformEntry]) -> Result<(), Box<dyn Error>> {
+    let signing_key = match std::env::var(SIGNING_KEY_ENV) {
+        Ok(value) if !value.trim().is_empty() => Some(PathBuf::from(value.trim())),
+        Ok(_) => None,
+        Err(std::env::VarError::NotPresent) => None,
+        Err(err) => return Err(format!("{SIGNING_KEY_ENV}: {err}").into()),
+    };
+    write_manifest_with_signing(path, entries, signing_key.as_deref())
+}
+
+/// Write the manifest, optionally signed. `signing_key` (when given) is a
+/// file holding the hex-encoded 32-byte ed25519 seed; the key file is read
+/// from disk and never echoed: error messages name the env var, never the
+/// key material.
+fn write_manifest_with_signing(
+    path: &Path,
+    entries: &[PlatformEntry],
+    signing_key: Option<&Path>,
+) -> Result<(), Box<dyn Error>> {
+    let seed = signing_key
+        .map(load_signing_seed_file)
+        .transpose()
+        .map_err(|reason| -> Box<dyn Error> { reason.into() })?;
+
+    let unsigned_json = build_manifest_json(entries, seed.is_some().then_some(SIGNING_SCHEME_NOTE));
+    let manifest_text = match &seed {
+        Some(seed) => {
+            let public = serviceos_crypto::ed25519::public_key(seed);
+            let text = append_manifest_signature(&unsigned_json, seed);
+            println!(
+                "Release manifest signed: {SIGNATURE_ALGORITHM} key_id {}",
+                manifest_key_id(&public)
+            );
+            text
+        }
+        None => unsigned_json,
+    };
+    fs::write(path, manifest_text)?;
+    Ok(())
+}
+
+/// Build the canonical manifest JSON. `signing_scheme_note` (when given) is
+/// appended to the reproducibility notes so the signed manifest documents
+/// its own verification scheme; the unsigned manifest omits it, keeping the
+/// default output byte-identical to the pre-signing format.
+fn build_manifest_json(entries: &[PlatformEntry], signing_scheme_note: Option<&str>) -> String {
     let mut json = String::from("{\n");
     json.push_str("  \"manifest\": \"serviceos-release\",\n");
     json.push_str("  \"profile\": \"release\",\n");
@@ -343,9 +400,13 @@ fn write_manifest(path: &Path, entries: &[PlatformEntry]) -> Result<(), Box<dyn 
         "      \"toolchain and host tool versions (rustc, llvm-objcopy, mtools, QEMU) are not pinned\"\n",
     );
     json.push_str("    ],\n");
-    json.push_str(
-        "    \"notes\": \"every artifact carries a 64-bit FNV-1a hash (legacy, kept for backcompat with existing manifest readers) plus a sha256 integrity hash computed in-repo by serviceos-crypto; the sha256 hash is an integrity digest, not a signature; platforms marked release+debug-userspace embed debug-built bootstore.bin because release-profile nested userspace links currently fail (rust-lld .text/.got overlap)\"\n",
+    let mut notes = String::from(
+        "every artifact carries a 64-bit FNV-1a hash (legacy, kept for backcompat with existing manifest readers) plus a sha256 integrity hash computed in-repo by serviceos-crypto; the sha256 hash is an integrity digest, not a signature; platforms marked release+debug-userspace embed debug-built bootstore.bin because release-profile nested userspace links currently fail (rust-lld .text/.got overlap)",
     );
+    if let Some(note) = signing_scheme_note {
+        notes.push_str(note);
+    }
+    json.push_str(&format!("    \"notes\": \"{}\"\n", json_escape(&notes)));
     json.push_str("  },\n");
     json.push_str("  \"platforms\": [\n");
 
@@ -387,8 +448,216 @@ fn write_manifest(path: &Path, entries: &[PlatformEntry]) -> Result<(), Box<dyn 
         ));
     }
     json.push_str("  ]\n}\n");
+    json
+}
 
-    fs::write(path, json)?;
+fn load_signing_seed_file(path: &Path) -> Result<[u8; 32], String> {
+    let raw = fs::read_to_string(path).map_err(|err| {
+        format!(
+            "{SIGNING_KEY_ENV}: cannot read signing key file {}: {err}",
+            path.display()
+        )
+    })?;
+    parse_seed_hex(raw.trim())
+}
+
+fn parse_seed_hex(text: &str) -> Result<[u8; 32], String> {
+    let bytes = parse_hex_strict(text).ok_or_else(|| {
+        format!("{SIGNING_KEY_ENV}: signing key must be 64 hex characters (32 bytes)")
+    })?;
+    if bytes.len() != 32 {
+        return Err(format!(
+            "{SIGNING_KEY_ENV}: signing key must be 64 hex characters (32 bytes), got {} bytes",
+            bytes.len()
+        ));
+    }
+    let mut seed = [0u8; 32];
+    seed.copy_from_slice(&bytes);
+    Ok(seed)
+}
+
+/// Strict hex decode: even length, hex digits only, no sign/whitespace
+/// tolerance (the key file may be newline-terminated; callers trim first).
+fn parse_hex_strict(text: &str) -> Option<Vec<u8>> {
+    let bytes = text.as_bytes();
+    if bytes.is_empty() || bytes.len() % 2 != 0 {
+        return None;
+    }
+    (0..bytes.len() / 2)
+        .map(|i| Some(hex_nibble(bytes[i * 2])? << 4 | hex_nibble(bytes[i * 2 + 1])?))
+        .collect()
+}
+
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn fnv1a64_bytes(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// Signature key_id: fnv1a64 over the 32-byte ed25519 public key, 16 hex.
+fn manifest_key_id(public: &[u8; 32]) -> String {
+    format!("{:016x}", fnv1a64_bytes(public))
+}
+
+/// The trailing `signature` member (without its leading comma), formatted
+/// exactly as `split_manifest_signature` expects to find it.
+fn signature_member(public: &[u8; 32], signature: &[u8; 64]) -> String {
+    let mut member = String::from("  \"signature\": {\n");
+    member.push_str(&format!("    \"algorithm\": \"{SIGNATURE_ALGORITHM}\",\n"));
+    member.push_str(&format!(
+        "    \"key_id\": \"{}\",\n",
+        manifest_key_id(public)
+    ));
+    member.push_str("    \"signature\": \"");
+    for byte in signature {
+        member.push_str(&format!("{byte:02x}"));
+    }
+    member.push_str("\"\n  }");
+    member
+}
+
+/// Sign the canonical pre-signature manifest bytes and append the trailing
+/// `signature` member. The signed message is the sha256 of the exact
+/// unsigned serialization (including any signing scheme note).
+fn append_manifest_signature(unsigned_json: &str, seed: &[u8; 32]) -> String {
+    let public = serviceos_crypto::ed25519::public_key(seed);
+    let digest = serviceos_crypto::sha256::digest(&[unsigned_json.as_bytes()]);
+    let signature = serviceos_crypto::ed25519::sign(seed, &digest);
+    debug_assert!(unsigned_json.ends_with("\n}\n"));
+    let body = &unsigned_json[..unsigned_json.len() - 3];
+    format!("{body},\n{}\n}}\n", signature_member(&public, &signature))
+}
+
+/// Split a signed manifest into its `signature` member text and the exact
+/// canonical bytes the signature was computed over (the manifest with the
+/// trailing signature member removed). Returns `None` when the manifest
+/// carries no signature member.
+fn split_manifest_signature(manifest: &str) -> Option<(String, String)> {
+    if !manifest.ends_with("\n}\n") {
+        return None;
+    }
+    let comma = manifest.rfind(",\n  \"signature\": {")?;
+    let member = manifest[comma + 2..manifest.len() - 3].to_string();
+    let canonical = format!("{}\n}}\n", &manifest[..comma]);
+    Some((member, canonical))
+}
+
+/// Pull a `"field": "value"` scalar out of the signature member text.
+fn member_field(member: &str, field: &str) -> Option<String> {
+    let marker = format!("\"{field}\": \"");
+    let start = member.find(&marker)? + marker.len();
+    let rest = &member[start..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
+/// Verify a manifest's trailing signature against a 32-byte ed25519 public
+/// key. The scheme is the one documented in SIGNING_SCHEME_NOTE: ed25519
+/// over the sha256 of the exact manifest bytes with the signature member
+/// removed.
+fn verify_manifest_signature(manifest: &str, public: &[u8; 32]) -> Result<(), String> {
+    let Some((member, canonical)) = split_manifest_signature(manifest) else {
+        return Err("manifest carries no signature member".to_string());
+    };
+    let algorithm =
+        member_field(&member, "algorithm").ok_or("signature member missing algorithm")?;
+    if algorithm != SIGNATURE_ALGORITHM {
+        return Err(format!("unsupported signature algorithm: {algorithm}"));
+    }
+    let key_id = member_field(&member, "key_id").ok_or("signature member missing key_id")?;
+    let expected_key_id = manifest_key_id(public);
+    if key_id != expected_key_id {
+        return Err(format!(
+            "key_id mismatch: manifest signed by {key_id}, supplied key is {expected_key_id}"
+        ));
+    }
+    let signature_hex =
+        member_field(&member, "signature").ok_or("signature member missing signature")?;
+    let signature_bytes =
+        parse_hex_strict(&signature_hex).ok_or("signature field is not valid hex")?;
+    let signature: [u8; 64] = signature_bytes
+        .try_into()
+        .map_err(|_| "signature field must be 128 hex characters (64 bytes)".to_string())?;
+    let digest = serviceos_crypto::sha256::digest(&[canonical.as_bytes()]);
+    if !serviceos_crypto::ed25519::verify(public, &digest, &signature) {
+        return Err(
+            "ed25519 verification failed: manifest content does not match signature".to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn resolve_verify_key(key_hex: Option<&str>) -> Result<[u8; 32], Box<dyn Error>> {
+    let text = match key_hex {
+        Some(hex) => hex.to_string(),
+        None => std::env::var(VERIFY_KEY_ENV).map_err(|_| {
+            format!("no verification key: pass --key <64-hex public key> or set {VERIFY_KEY_ENV}")
+        })?,
+    };
+    let bytes = parse_hex_strict(text.trim())
+        .ok_or("verification key must be 64 hex characters (32 bytes)")?;
+    if bytes.len() != 32 {
+        return Err("verification key must be 64 hex characters (32 bytes)".into());
+    }
+    let mut public = [0u8; 32];
+    public.copy_from_slice(&bytes);
+    Ok(public)
+}
+
+/// `cargo xtask release-verify [manifest] [--key <64-hex public key>]`.
+/// Checks a signed RELEASE-MANIFEST.json against a supplied ed25519 public
+/// key (arg or SERVICEOS_RELEASE_VERIFY_KEY). An unsigned manifest is a
+/// graceful no-op (reported, exit 0); a signed manifest that fails
+/// verification is an error (exit nonzero).
+pub fn run_release_verify(
+    manifest: Option<&str>,
+    key_hex: Option<&str>,
+) -> Result<(), Box<dyn Error>> {
+    let manifest_path = match manifest {
+        Some(path) => PathBuf::from(path),
+        None => workspace_root().join("target/release/RELEASE-MANIFEST.json"),
+    };
+    let text = fs::read_to_string(&manifest_path)
+        .map_err(|err| format!("cannot read manifest {}: {err}", manifest_path.display()))?;
+    if !text.contains("\"manifest\": \"serviceos-release\"") {
+        return Err(format!(
+            "{} is not a serviceos release manifest",
+            manifest_path.display()
+        )
+        .into());
+    }
+    // Unsigned manifests are a graceful no-op: reported, exit 0, no key
+    // needed. Key resolution errors only matter once there is a signature.
+    if split_manifest_signature(&text).is_none() {
+        println!(
+            "{}: unsigned (no signature member); nothing to verify",
+            manifest_path.display()
+        );
+        return Ok(());
+    }
+    let public = resolve_verify_key(key_hex)?;
+    match verify_manifest_signature(&text, &public) {
+        Ok(()) => println!(
+            "{}: signature OK ({SIGNATURE_ALGORITHM}, key_id {})",
+            manifest_path.display(),
+            manifest_key_id(&public)
+        ),
+        Err(reason) => {
+            return Err(format!("{}: signature INVALID: {reason}", manifest_path.display()).into());
+        }
+    }
     Ok(())
 }
 
@@ -437,5 +706,178 @@ mod tests {
             // sha256("a" x 200000), cross-checked against coreutils.
             "2287d207f24a941ff3b56c04c8a25ad56b63e3023207b3bb5b4ac0c9869d74be"
         );
+    }
+
+    // --- release manifest signing ---
+
+    fn fixture_entries() -> Vec<PlatformEntry> {
+        vec![
+            PlatformEntry {
+                spec: PlatformSpec::all()[0],
+                status: ReleaseStatus::FullRelease,
+                artifacts: vec![ArtifactRecord {
+                    relative_path: "images/qemu-virtio/serviceos.img".to_string(),
+                    size: 1234,
+                    hash: 0x0123_4567_89ab_cdef,
+                    sha256: "aa".repeat(32),
+                }],
+            },
+            PlatformEntry {
+                spec: PlatformSpec::all()[1],
+                status: ReleaseStatus::MixedUserspaceDebug,
+                artifacts: Vec::new(),
+            },
+        ]
+    }
+
+    fn fixture_seed() -> [u8; 32] {
+        [0x42u8; 32]
+    }
+
+    #[test]
+    fn fnv1a64_bytes_matches_known_vectors() {
+        // FNV-1a 64 reference vectors (empty string = offset basis, "a").
+        assert_eq!(fnv1a64_bytes(b""), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(fnv1a64_bytes(b"a"), 0xaf63_dc4c_8601_ec8c);
+    }
+
+    #[test]
+    fn signature_roundtrip_on_fixture_manifest() {
+        let seed = fixture_seed();
+        let public = serviceos_crypto::ed25519::public_key(&seed);
+        let unsigned = build_manifest_json(&fixture_entries(), Some(SIGNING_SCHEME_NOTE));
+        let signed = append_manifest_signature(&unsigned, &seed);
+
+        assert!(signed.contains("\"signature\": {"));
+        assert!(signed.contains(&format!("\"key_id\": \"{}\"", manifest_key_id(&public))));
+        // Canonical bytes are exactly the signed manifest minus the
+        // trailing signature member.
+        let (member, canonical) = split_manifest_signature(&signed).expect("split signed");
+        assert_eq!(canonical, unsigned);
+        assert_eq!(
+            member_field(&member, "algorithm").as_deref(),
+            Some(SIGNATURE_ALGORITHM)
+        );
+        verify_manifest_signature(&signed, &public).expect("signature verifies");
+    }
+
+    #[test]
+    fn tampered_manifest_rejected() {
+        let seed = fixture_seed();
+        let public = serviceos_crypto::ed25519::public_key(&seed);
+        let unsigned = build_manifest_json(&fixture_entries(), Some(SIGNING_SCHEME_NOTE));
+        let signed = append_manifest_signature(&unsigned, &seed);
+
+        // Flip one content byte (a platform name character).
+        let tampered = signed.replacen("\"qemu-virtio\"", "\"qemu-virtij\"", 1);
+        assert_ne!(tampered, signed);
+        let err = verify_manifest_signature(&tampered, &public)
+            .expect_err("tampered manifest must not verify");
+        assert!(err.contains("ed25519 verification failed"), "{err}");
+
+        // A different key must be rejected before any crypto runs.
+        let other_public = serviceos_crypto::ed25519::public_key(&[0x43u8; 32]);
+        let err = verify_manifest_signature(&signed, &other_public)
+            .expect_err("wrong key must not verify");
+        assert!(err.contains("key_id mismatch"), "{err}");
+    }
+
+    #[test]
+    fn unsigned_manifest_has_no_signature_member() {
+        let unsigned = build_manifest_json(&fixture_entries(), None);
+        assert!(!unsigned.contains("\"signature\": {"));
+        assert!(!unsigned.contains("\"key_id\""));
+        assert!(split_manifest_signature(&unsigned).is_none());
+        // The notes line is byte-identical to the pre-signing format (the
+        // notes text routes through json_escape, which must be an identity
+        // for this literal).
+        assert!(unsigned.contains(
+            "    \"notes\": \"every artifact carries a 64-bit FNV-1a hash (legacy, kept for backcompat with existing manifest readers) plus a sha256 integrity hash computed in-repo by serviceos-crypto; the sha256 hash is an integrity digest, not a signature; platforms marked release+debug-userspace embed debug-built bootstore.bin because release-profile nested userspace links currently fail (rust-lld .text/.got overlap)\"\n",
+        ));
+        let err = verify_manifest_signature(&unsigned, &[0u8; 32])
+            .expect_err("unsigned manifest has nothing to verify");
+        assert!(err.contains("no signature member"), "{err}");
+    }
+
+    #[test]
+    fn canonical_scheme_is_stable() {
+        let unsigned = build_manifest_json(&fixture_entries(), Some(SIGNING_SCHEME_NOTE));
+        let seed = fixture_seed();
+        // Same key and content sign deterministically.
+        let signed_a = append_manifest_signature(&unsigned, &seed);
+        let signed_b = append_manifest_signature(&unsigned, &seed);
+        assert_eq!(signed_a, signed_b);
+        // Split inverts append byte-for-byte.
+        let (_, canonical) = split_manifest_signature(&signed_a).expect("split");
+        assert_eq!(canonical, unsigned);
+    }
+
+    #[test]
+    fn signing_seed_file_parsing_is_strict_and_error_hygiene_holds() {
+        let seed = fixture_seed();
+        let mut hex = String::new();
+        for byte in seed {
+            hex.push_str(&format!("{byte:02x}"));
+        }
+        let dir = env::temp_dir();
+
+        // Valid 64-hex file (with trailing newline, like `openssl rand -hex`).
+        let good = dir.join("serviceos-xtask-seed-good");
+        fs::write(&good, format!("{hex}\n")).expect("write key fixture");
+        assert_eq!(load_signing_seed_file(&good).expect("valid seed"), seed);
+        let _ = fs::remove_file(&good);
+
+        // Wrong length, non-hex, and missing files all error naming the env
+        // var and never echo key material.
+        let cases: Vec<(&str, String)> = vec![
+            ("short", hex[..hex.len() - 2].to_string()),
+            ("odd", hex[..hex.len() - 1].to_string()),
+            ("nonhex", "z".repeat(64)),
+        ];
+        for (name, content) in cases {
+            let path = dir.join(format!("serviceos-xtask-seed-{name}"));
+            fs::write(&path, content).expect("write bad key fixture");
+            let err = load_signing_seed_file(&path).expect_err("bad seed must error");
+            assert!(err.contains(SIGNING_KEY_ENV), "{err}");
+            assert!(
+                !err.contains(&hex),
+                "error must not echo key material: {err}"
+            );
+            let _ = fs::remove_file(&path);
+        }
+        let err = load_signing_seed_file(&dir.join("serviceos-xtask-seed-missing"))
+            .expect_err("missing seed must error");
+        assert!(err.contains(SIGNING_KEY_ENV), "{err}");
+    }
+
+    /// Manual-verification fixture generator (not part of the normal suite):
+    /// writes a signed manifest from the REAL writer path to /tmp using a
+    /// fixed seed, and prints the matching public key for
+    /// `cargo xtask release-verify`. Run with:
+    ///   cargo test -p xtask --lib generate_signed_manifest_fixture -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn generate_signed_manifest_fixture() {
+        let seed = fixture_seed();
+        let public = serviceos_crypto::ed25519::public_key(&seed);
+        let mut key_hex = String::new();
+        for byte in seed {
+            key_hex.push_str(&format!("{byte:02x}"));
+        }
+        let mut pub_hex = String::new();
+        for byte in public {
+            pub_hex.push_str(&format!("{byte:02x}"));
+        }
+        let key_path = env::temp_dir().join("serviceos-artsign-seed.hex");
+        fs::write(&key_path, format!("{key_hex}\n")).expect("write key fixture");
+        let pub_path = env::temp_dir().join("serviceos-artsign-pubkey.hex");
+        fs::write(&pub_path, format!("{pub_hex}\n")).expect("write pubkey fixture");
+        let manifest_path = env::temp_dir().join("serviceos-artsign-manifest.json");
+        write_manifest_with_signing(&manifest_path, &fixture_entries(), Some(&key_path))
+            .expect("write signed manifest fixture");
+        println!("FIXTURE-KEYFILE {}", key_path.display());
+        println!("FIXTURE-MANIFEST {}", manifest_path.display());
+        println!("FIXTURE-PUBKEY-FILE {}", pub_path.display());
+        println!("FIXTURE-PUBKEY {pub_hex}");
     }
 }

@@ -10,8 +10,13 @@ pub enum CommandKind {
     Recover,
     CiMatrix,
     /// Build release images for every registered platform and write a
-    /// RELEASE-MANIFEST.json artifact manifest.
+    /// RELEASE-MANIFEST.json artifact manifest (signed when
+    /// SERVICEOS_RELEASE_SIGNING_KEY is set).
     Release,
+    /// Verify a signed RELEASE-MANIFEST.json against a supplied ed25519
+    /// public key (`--key` or SERVICEOS_RELEASE_VERIFY_KEY). Unsigned
+    /// manifests are a graceful no-op.
+    ReleaseVerify,
     /// Boot-upgrade-boot cycle on qemu-virtio verifying storage persistence
     /// markers survive a rebuild between boots.
     TestUpgrade,
@@ -31,6 +36,12 @@ pub struct Options<'a> {
     /// Raw remainder args for commands that own their flag vocabulary
     /// (`test-e2e` parses its spec in support/xtask/src/e2e.rs).
     pub e2e_extra: Vec<String>,
+    /// `release-verify`: optional positional manifest path (defaults to
+    /// target/release/RELEASE-MANIFEST.json).
+    pub release_verify_manifest: Option<String>,
+    /// `release-verify`: `--key <64-hex public key>`; falls back to
+    /// SERVICEOS_RELEASE_VERIFY_KEY.
+    pub release_verify_key: Option<String>,
 }
 
 impl<'a> Options<'a> {
@@ -48,6 +59,7 @@ impl<'a> Options<'a> {
             "recover" => CommandKind::Recover,
             "ci-matrix" => CommandKind::CiMatrix,
             "release" => CommandKind::Release,
+            "release-verify" => CommandKind::ReleaseVerify,
             "test-upgrade" => CommandKind::TestUpgrade,
             "validate" => CommandKind::Validate,
             "test-e2e" => CommandKind::TestE2e,
@@ -65,6 +77,47 @@ impl<'a> Options<'a> {
                 platform: platform.unwrap_or("qemu-virtio"),
                 release,
                 e2e_extra: rest.to_vec(),
+                release_verify_manifest: None,
+                release_verify_key: None,
+            });
+        }
+
+        // release-verify owns its own grammar: optional positional manifest
+        // path plus --key <hex>. Parsed here so the shared loop below never
+        // sees its flags.
+        if command == CommandKind::ReleaseVerify {
+            let mut manifest = None;
+            let mut key = None;
+            let mut index = 0usize;
+            while index < rest.len() {
+                match rest[index].as_str() {
+                    "--key" => {
+                        let Some(value) = rest.get(index + 1) else {
+                            return Err(Box::new(UsageError));
+                        };
+                        key = Some(value.clone());
+                        index += 2;
+                    }
+                    other => {
+                        if let Some(value) = other.strip_prefix("--key=") {
+                            key = Some(value.to_string());
+                            index += 1;
+                        } else if manifest.is_none() {
+                            manifest = Some(other.to_string());
+                            index += 1;
+                        } else {
+                            return Err(Box::new(UsageError));
+                        }
+                    }
+                }
+            }
+            return Ok(Options {
+                command,
+                platform: "qemu-virtio",
+                release,
+                e2e_extra: Vec::new(),
+                release_verify_manifest: manifest,
+                release_verify_key: key,
             });
         }
 
@@ -100,6 +153,8 @@ impl<'a> Options<'a> {
             platform,
             release,
             e2e_extra: Vec::new(),
+            release_verify_manifest: None,
+            release_verify_key: None,
         })
     }
 }
@@ -122,7 +177,7 @@ impl fmt::Display for UsageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "usage: cargo xtask <build|image|run|recover|qemu|release|test-upgrade|validate|ci-matrix|test-e2e> [--platform <qemu-virtio|raspi5|virt|qemu-isa|riscv64-virt>] [--release]\n       test-e2e flags: [--platform <p>] [--tier <1..4>] [--filter <substr-or-regex>] [--tag <t>] [-j <n>] [--timeout-secs <s>] [--report <path>] [--list]"
+            "usage: cargo xtask <build|image|run|recover|qemu|release|release-verify|test-upgrade|validate|ci-matrix|test-e2e> [--platform <qemu-virtio|raspi5|virt|qemu-isa|riscv64-virt>] [--release]\n       release-verify: [manifest] [--key <64-hex public key>] (env fallback: SERVICEOS_RELEASE_VERIFY_KEY)\n       test-e2e flags: [--platform <p>] [--tier <1..4>] [--filter <substr-or-regex>] [--tag <t>] [-j <n>] [--timeout-secs <s>] [--report <path>] [--list]"
         )
     }
 }

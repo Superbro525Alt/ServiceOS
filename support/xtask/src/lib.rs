@@ -31,6 +31,12 @@ pub fn try_main() -> Result<(), Box<dyn std::error::Error>> {
             return Ok(());
         }
         cli::CommandKind::Release => return release::run_release(),
+        cli::CommandKind::ReleaseVerify => {
+            return release::run_release_verify(
+                options.release_verify_manifest.as_deref(),
+                options.release_verify_key.as_deref(),
+            );
+        }
         cli::CommandKind::TestUpgrade => return upgrade::run_test_upgrade(),
         cli::CommandKind::Validate => return validate::run_validate(),
         cli::CommandKind::TestE2e => {
@@ -62,7 +68,10 @@ pub fn try_main() -> Result<(), Box<dyn std::error::Error>> {
             run::run_platform(&artifacts, &image)?;
         }
         cli::CommandKind::CiMatrix => unreachable!("ci-matrix returns before platform resolution"),
-        cli::CommandKind::Release | cli::CommandKind::TestUpgrade | cli::CommandKind::Validate => {
+        cli::CommandKind::Release
+        | cli::CommandKind::ReleaseVerify
+        | cli::CommandKind::TestUpgrade
+        | cli::CommandKind::Validate => {
             unreachable!("release commands return before platform resolution")
         }
         cli::CommandKind::TestE2e => unreachable!("test-e2e returns before platform resolution"),

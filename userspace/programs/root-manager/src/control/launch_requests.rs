@@ -216,11 +216,6 @@ pub(super) fn handle_launch_stored_image_request(
     let caller = slots[service_index].manifest.service_id;
     if !launch_image_is_authorized(caller) || message.word_count < 2 {
         reply.words[0] = ManagerStatus::Denied as u32 as u64;
-        let _ = crate::util::fallback_logf(format_args!(
-            "TEMP-L1 stored launch denied caller={}",
-            crate::util::service_name(caller)
-        ));
-        reply.words[0] = ManagerStatus::Denied as u32 as u64;
         close_message_handles(message);
         return rt::channel_send(slots[service_index].control_handle, &reply);
     }

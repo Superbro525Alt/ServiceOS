@@ -7,9 +7,15 @@ use serviceos_userspace_runtime as rt;
 use crate::{
     BlobSession, DirectorySession, EntrySlot, INITIAL_FILE_CAPACITY, MAX_BLOB_SESSIONS,
     MAX_DIRECTORY_SESSIONS, MAX_MUTABLE_ENTRIES, MountTable, MutableEntry, PersistentStore,
+    fsck::{
+        CODE_DUPLICATE_PATH, CODE_INVALID_PATH, CODE_KIND_SLASH_MISMATCH, CODE_SNAPSHOT_CHECKSUM,
+        FsckReport, full_scan,
+    },
+    index::SearchIndex,
     path::find_mutable_entry,
     persistent::{
-        persist_state, release_blob_session, release_directory_session, release_mutable_entry,
+        load_persistent_slot, parse_header, persist_state, release_blob_session,
+        release_directory_session, release_mutable_entry,
     },
     root::try_rename_entry,
     root::try_unmount,
@@ -262,6 +268,25 @@ pub(crate) fn run_boot_selftest(
     // 8. Gated e2e witness: server-side rename/move (0x527/0x528 wire ops).
     // Fully inert unless the image was built with SERVICEOS_E2E_STORAGE=1.
     rename_move_probe(mounts, entries, mutable_entries);
+
+    // 9. Gated e2e witness: corruption-seeded fsck repair (0x525/0x526).
+    fsck_repair_probe(
+        mounts,
+        entries,
+        mutable_entries,
+        persistent_store.as_deref_mut(),
+    );
+
+    // 10. Gated e2e witness: unmount/re-mount capability (0x51b/0x51c wire
+    // ops) with a full snapshot re-parse between the two.
+    unmount_capability_probe(
+        mounts,
+        entries,
+        mutable_entries,
+        blob_sessions,
+        directory_sessions,
+        persistent_store.as_deref_mut(),
+    );
 
     let _ = persist_state(persistent_store, mounts, mutable_entries);
 }
@@ -686,4 +711,457 @@ fn create_rename_probe_entry(
     }
     slot.occupied = true;
     true
+}
+
+/// Release every entry still carrying `path` (duplicates included).
+fn release_all(mutable_entries: &mut [MutableEntry; MAX_MUTABLE_ENTRIES], path: &[u8]) {
+    while let Some(index) = find_mutable_entry(mutable_entries, path) {
+        release_mutable_entry(&mut mutable_entries[index]);
+    }
+}
+
+fn fsck_report_has(report: &FsckReport, code: u8) -> bool {
+    report.iter().any(|finding| finding.code == code)
+}
+
+/// Gated e2e witness for the corruption-seeded fsck repair flow (0x525/0x526
+/// wire ops, root-authority gated). Seeds three provably-bad in-memory
+/// entries (duplicate path, absolute invalid path, kind/slash mismatch) plus
+/// one flipped byte inside the active snapshot slot's checksummed record
+/// region, then proves: the dry scan lists every finding, apply=true drops
+/// exactly the three entries and re-persists a clean snapshot, a second
+/// flush reclaims the corrupted stale slot, and a post-repair full scan plus
+/// load+search roundtrip are intact. Emits `E2E storage.fsck PASS|FAIL` only
+/// when the image was built with SERVICEOS_E2E_STORAGE=1; otherwise returns
+/// before any output or mutation so default boots stay byte-identical.
+fn fsck_repair_probe(
+    mounts: &mut MountTable,
+    entries: &[EntrySlot],
+    mutable_entries: &mut [MutableEntry; MAX_MUTABLE_ENTRIES],
+    mut persistent_store: Option<&mut PersistentStore>,
+) {
+    if !matches!(option_env!("SERVICEOS_E2E_STORAGE"), Some("1")) {
+        return;
+    }
+    if persistent_store.is_none() {
+        return;
+    }
+    const PROBE_FILE: &[u8] = b"data/e2e-fsck.txt";
+    const PROBE_PAYLOAD: &[u8] = b"storage-fsck-e2e";
+    const PROBE_INVALID: &[u8] = b"/e2e-abs.txt";
+    const PROBE_BAD_DIR: &[u8] = b"data/e2e-baddir";
+
+    fn fail(step: u32, status: u32) {
+        logf_args(format_args!(
+            "E2E storage.fsck FAIL step={step} status={status}"
+        ));
+    }
+    fn cleanup(mutable_entries: &mut [MutableEntry; MAX_MUTABLE_ENTRIES]) {
+        release_all(mutable_entries, PROBE_FILE);
+        release_all(mutable_entries, PROBE_INVALID);
+        release_all(mutable_entries, PROBE_BAD_DIR);
+    }
+
+    let tick = rt::monotonic_now().unwrap_or(0);
+
+    // 1. Baseline: one healthy probe file persisted, full scan (memory plus
+    // both snapshot slots) clean.
+    if !create_rename_probe_entry(
+        mutable_entries,
+        PROBE_FILE,
+        StorageEntryKind::File,
+        PROBE_PAYLOAD,
+    ) {
+        fail(1, StorageStatus::NotFound as u32);
+        return;
+    }
+    if persist_state(persistent_store.as_deref_mut(), mounts, mutable_entries).is_err() {
+        cleanup(mutable_entries);
+        fail(1, StorageStatus::Busy as u32);
+        return;
+    }
+    let baseline = full_scan(
+        persistent_store.as_deref_mut(),
+        mounts,
+        mutable_entries,
+        false,
+    );
+    if !baseline.is_clean() {
+        cleanup(mutable_entries);
+        fail(2, baseline.errors);
+        return;
+    }
+
+    // 2. Seed memory corruption: duplicate path, absolute invalid path,
+    // kind/slash mismatch — never persisted, repairable in place.
+    let seeded = create_rename_probe_entry(
+        mutable_entries,
+        PROBE_FILE,
+        StorageEntryKind::File,
+        PROBE_PAYLOAD,
+    ) && create_rename_probe_entry(
+        mutable_entries,
+        PROBE_INVALID,
+        StorageEntryKind::File,
+        PROBE_PAYLOAD,
+    ) && create_rename_probe_entry(
+        mutable_entries,
+        PROBE_BAD_DIR,
+        StorageEntryKind::Directory,
+        &[],
+    );
+    if !seeded {
+        cleanup(mutable_entries);
+        fail(3, StorageStatus::NotFound as u32);
+        return;
+    }
+
+    // 3. Dry scan lists every seeded finding class.
+    let dry = full_scan(
+        persistent_store.as_deref_mut(),
+        mounts,
+        mutable_entries,
+        false,
+    );
+    let listed = fsck_report_has(&dry, CODE_DUPLICATE_PATH)
+        && fsck_report_has(&dry, CODE_INVALID_PATH)
+        && fsck_report_has(&dry, CODE_KIND_SLASH_MISMATCH);
+    if !listed {
+        cleanup(mutable_entries);
+        fail(4, dry.errors);
+        return;
+    }
+
+    // 4. Seed snapshot corruption: flip the last byte of the last entry
+    // record — checksummed metadata parsed by nothing else, so the only
+    // possible finding is the checksum mismatch.
+    let seed_status = seed_snapshot_checksum_flip(persistent_store.as_deref_mut());
+    if seed_status != 0 {
+        cleanup(mutable_entries);
+        fail(5, seed_status);
+        return;
+    }
+
+    // 5. Dry scan reports the checksum defect on top of the seeds.
+    let dry = full_scan(
+        persistent_store.as_deref_mut(),
+        mounts,
+        mutable_entries,
+        false,
+    );
+    if !fsck_report_has(&dry, CODE_SNAPSHOT_CHECKSUM) {
+        cleanup(mutable_entries);
+        fail(6, dry.errors);
+        return;
+    }
+
+    // 6. Apply repairs: exactly the three bad entries drop, the checksum
+    // finding is carried in the same report, and the cleaned snapshot is
+    // re-persisted.
+    let applied = full_scan(
+        persistent_store.as_deref_mut(),
+        mounts,
+        mutable_entries,
+        true,
+    );
+    if applied.dropped != 3 || !fsck_report_has(&applied, CODE_SNAPSHOT_CHECKSUM) {
+        cleanup(mutable_entries);
+        fail(7, applied.dropped);
+        return;
+    }
+
+    // 7. Reclaim the corrupted stale slot: one more flush rotates back onto
+    // it so both slots verify clean afterwards.
+    if persist_state(persistent_store.as_deref_mut(), mounts, mutable_entries).is_err() {
+        cleanup(mutable_entries);
+        fail(8, StorageStatus::Busy as u32);
+        return;
+    }
+    let after = full_scan(
+        persistent_store.as_deref_mut(),
+        mounts,
+        mutable_entries,
+        false,
+    );
+    if !after.is_clean() {
+        cleanup(mutable_entries);
+        fail(9, after.errors);
+        return;
+    }
+
+    // 8. Integrity roundtrip: payload bytes intact and the rebuilt search
+    // index resolves the repaired file exactly once.
+    let len = find_mutable_entry(mutable_entries, PROBE_FILE)
+        .map(|index| mutable_entries[index].data_len)
+        .unwrap_or(0);
+    let mut probe_index = SearchIndex::new();
+    probe_index.ensure_built(entries, mutable_entries, tick);
+    let plan = crate::index::plan_search(
+        probe_index.snapshot(),
+        b"data/",
+        &[b"e2e-fsck.txt"],
+        0,
+        u64::MAX,
+        0,
+        100,
+    );
+    let index_hit = plan.len == 1 && probe_index.snapshot()[plan.order[0]].path() == PROBE_FILE;
+    if len != PROBE_PAYLOAD.len() || !index_hit {
+        cleanup(mutable_entries);
+        fail(10, len as u32);
+        return;
+    }
+
+    logf("E2E storage.fsck PASS seeded=3 checksum=1 dropped=3 reclaimed=1 clean=1 index-hit=1");
+}
+
+/// Flip one checksummed-but-unparsed byte inside the active snapshot slot's
+/// entry-record region. Returns 0 on success, nonzero step status otherwise.
+fn seed_snapshot_checksum_flip(mut store: Option<&mut PersistentStore>) -> u32 {
+    let Some(store) = store.as_deref_mut() else {
+        return 1;
+    };
+    let slot_base = store.active_slot * store.slot_blocks;
+    let mut block = [0u8; crate::BLOCK_BUFFER_BYTES];
+    if rt::block_device_read(
+        store.handle,
+        slot_base as u64,
+        &mut block[..store.block_size],
+    )
+    .is_err()
+    {
+        return 2;
+    }
+    let Some((_, entry_count, _, records_offset, _, _, _)) =
+        parse_header(store, store.active_slot, &block, store.block_size)
+    else {
+        return 3;
+    };
+    if entry_count == 0 {
+        return 4;
+    }
+    let target = records_offset + entry_count * crate::PERSISTENT_RECORD_BYTES - 1;
+    let (block_index, byte_index) = (target / store.block_size, target % store.block_size);
+    if rt::block_device_read(
+        store.handle,
+        (slot_base + block_index) as u64,
+        &mut block[..store.block_size],
+    )
+    .is_err()
+    {
+        return 5;
+    }
+    block[byte_index] ^= 0xff;
+    if rt::block_device_write(
+        store.handle,
+        (slot_base + block_index) as u64,
+        &block[..store.block_size],
+    )
+    .is_err()
+    {
+        return 6;
+    }
+    0
+}
+
+/// Gated e2e witness for the unmount/re-mount capability contract
+/// (root.rs try_unmount behind the 0x51b/0x51c wire ops). Proves the
+/// capability gates (wrong authority Denied, unknown prefix NotFound, boot
+/// root anchored), a clean unmount of the persistent `data/` namespace, the
+/// dual-slot generation chain, and a simulated abrupt end — the whole
+/// snapshot is re-parsed from the block device through the boot restore
+/// path, payload bytes verified, then `data/` remounts and the search index
+/// resolves the file again. Emits `E2E storage.unmount PASS|FAIL` only when
+/// the image was built with SERVICEOS_E2E_STORAGE=1; otherwise returns
+/// before any output or mutation so default boots stay byte-identical.
+fn unmount_capability_probe(
+    mounts: &mut MountTable,
+    entries: &[EntrySlot],
+    mutable_entries: &mut [MutableEntry; MAX_MUTABLE_ENTRIES],
+    blob_sessions: &mut [BlobSession; MAX_BLOB_SESSIONS],
+    directory_sessions: &mut [DirectorySession; MAX_DIRECTORY_SESSIONS],
+    mut persistent_store: Option<&mut PersistentStore>,
+) {
+    if !matches!(option_env!("SERVICEOS_E2E_STORAGE"), Some("1")) {
+        return;
+    }
+    if persistent_store.is_none() {
+        return;
+    }
+    const PROBE_FILE: &[u8] = b"data/e2e-fsck.txt";
+    const PROBE_PAYLOAD: &[u8] = b"storage-fsck-e2e";
+
+    fn fail(step: u32, status: u32) {
+        logf_args(format_args!(
+            "E2E storage.unmount FAIL step={step} status={status}"
+        ));
+    }
+
+    let authority = STORAGE_ROOT_AUTHORITY;
+
+    // 1. Wrong authority must be rejected.
+    let denied = try_unmount(
+        mounts,
+        mutable_entries,
+        blob_sessions,
+        directory_sessions,
+        persistent_store.as_deref_mut(),
+        b"data/",
+        authority.wrapping_add(1),
+    );
+    if denied != StorageStatus::Denied {
+        release_all(mutable_entries, PROBE_FILE);
+        fail(1, denied as u32);
+        return;
+    }
+
+    // 2. Unknown prefix answers NotFound.
+    let not_found = try_unmount(
+        mounts,
+        mutable_entries,
+        blob_sessions,
+        directory_sessions,
+        persistent_store.as_deref_mut(),
+        b"e2e-absent/",
+        authority,
+    );
+    if not_found != StorageStatus::NotFound {
+        release_all(mutable_entries, PROBE_FILE);
+        fail(2, not_found as u32);
+        return;
+    }
+
+    // 3. The boot root anchors the namespace and can never be removed.
+    let anchored = try_unmount(
+        mounts,
+        mutable_entries,
+        blob_sessions,
+        directory_sessions,
+        persistent_store.as_deref_mut(),
+        b"",
+        authority,
+    );
+    if anchored != StorageStatus::Denied {
+        release_all(mutable_entries, PROBE_FILE);
+        fail(3, anchored as u32);
+        return;
+    }
+
+    // 4. Unmount the persistent data/ namespace (no open handles by now).
+    let status = try_unmount(
+        mounts,
+        mutable_entries,
+        blob_sessions,
+        directory_sessions,
+        persistent_store.as_deref_mut(),
+        b"data/",
+        authority,
+    );
+    if status != StorageStatus::Ok || rt::storage_find_mount_by_path(mounts, b"data/").is_some() {
+        release_all(mutable_entries, PROBE_FILE);
+        fail(4, status as u32);
+        return;
+    }
+
+    // 5. Simulated abrupt end: check the dual-slot generation chain, then
+    // re-parse the whole snapshot from the block device through the boot
+    // restore path. The unmount persist dropped the data/ mount while the
+    // persistent entries ride along in the snapshot.
+    let Some(store) = persistent_store.as_deref_mut() else {
+        release_all(mutable_entries, PROBE_FILE);
+        fail(5, StorageStatus::NotFound as u32);
+        return;
+    };
+    let mut header = [0u8; crate::BLOCK_BUFFER_BYTES];
+    let mut generations = [0u64; 2];
+    let mut parsed = true;
+    for slot in 0..2usize {
+        if rt::block_device_read(
+            store.handle,
+            (slot * store.slot_blocks) as u64,
+            &mut header[..store.block_size],
+        )
+        .is_err()
+        {
+            parsed = false;
+            break;
+        }
+        match parse_header(store, slot, &header, store.block_size) {
+            Some((generation, _, _, _, _, _, _)) => generations[slot] = generation,
+            None => {
+                parsed = false;
+                break;
+            }
+        }
+    }
+    if !parsed
+        || crate::fsck::chain_regression(
+            generations[store.active_slot],
+            generations[store.active_slot ^ 1],
+        )
+    {
+        release_all(mutable_entries, PROBE_FILE);
+        fail(5, 1);
+        return;
+    }
+    let reloaded = matches!(
+        load_persistent_slot(store, store.active_slot, mounts, mutable_entries),
+        Ok(Some(_))
+    );
+    if !reloaded || rt::storage_find_mount_by_path(mounts, b"data/").is_some() {
+        release_all(mutable_entries, PROBE_FILE);
+        fail(5, 2);
+        return;
+    }
+    let mut payload = [0u8; PROBE_PAYLOAD.len()];
+    let restored = find_mutable_entry(mutable_entries, PROBE_FILE)
+        .map(|index| {
+            let entry = &mutable_entries[index];
+            entry.data_len == PROBE_PAYLOAD.len()
+                && rt::memory_read(entry.data_handle, 0, &mut payload)
+                    .map(|read| read == PROBE_PAYLOAD.len() && payload.as_slice() == PROBE_PAYLOAD)
+                    .unwrap_or(false)
+        })
+        .unwrap_or(false);
+    if !restored {
+        release_all(mutable_entries, PROBE_FILE);
+        fail(5, 3);
+        return;
+    }
+
+    // 6. Remount data/ and prove the search index resolves the file again.
+    let remounted = rt::storage_mount_add(
+        mounts,
+        b"data/",
+        StorageMountKind::Persistent,
+        STORAGE_MOUNT_FLAG_WRITABLE | STORAGE_MOUNT_FLAG_PERSISTENT,
+        authority,
+    );
+    if let Err(status) = remounted {
+        release_all(mutable_entries, PROBE_FILE);
+        fail(6, status as u32);
+        return;
+    }
+    let tick = rt::monotonic_now().unwrap_or(0);
+    let mut probe_index = SearchIndex::new();
+    probe_index.ensure_built(entries, mutable_entries, tick);
+    let plan = crate::index::plan_search(
+        probe_index.snapshot(),
+        b"data/",
+        &[b"e2e-fsck.txt"],
+        0,
+        u64::MAX,
+        0,
+        100,
+    );
+    let index_hit = plan.len == 1 && probe_index.snapshot()[plan.order[0]].path() == PROBE_FILE;
+    if !index_hit {
+        release_all(mutable_entries, PROBE_FILE);
+        fail(6, plan.len as u32);
+        return;
+    }
+
+    // 7. Best-effort residue removal so the boot's final persist stays clean.
+    release_all(mutable_entries, PROBE_FILE);
+    logf("E2E storage.unmount PASS denied=2 notfound=1 unmount=1 reparse=1 remount=1 index-hit=1");
 }

@@ -36,7 +36,7 @@ const SEV_WARNING: u8 = 2;
 #[derive(Clone, Copy)]
 pub(crate) struct FsckFinding {
     severity: u8,
-    code: u8,
+    pub(crate) code: u8,
     origin: u16,
     path_len: usize,
     path: [u8; FSCK_PATH_BYTES],
@@ -71,10 +71,10 @@ impl FsckFinding {
 
 #[derive(Clone, Copy)]
 pub(crate) struct FsckReport {
-    errors: u32,
-    warnings: u32,
-    dropped: u32,
-    rebuilt_index: bool,
+    pub(crate) errors: u32,
+    pub(crate) warnings: u32,
+    pub(crate) dropped: u32,
+    pub(crate) rebuilt_index: bool,
     findings: [FsckFinding; FSCK_MAX_FINDINGS],
     count: usize,
     truncated: bool,
@@ -519,7 +519,7 @@ fn scan_snapshot_slots(store: &PersistentStore, mounts: &MountTable, report: &mu
         }
         if stored_checksum != 0 {
             let computed =
-                recompute_snapshot_checksum(store, slot, &block, records_offset, data_offset);
+                recompute_snapshot_checksum(store, slot, entry_count, mount_count, records_offset);
             if computed != stored_checksum {
                 report.error(CODE_SNAPSHOT_CHECKSUM, slot as u16, b"metadata");
             }
@@ -543,30 +543,50 @@ fn scan_snapshot_slots(store: &PersistentStore, mounts: &MountTable, report: &mu
 fn recompute_snapshot_checksum(
     store: &PersistentStore,
     slot: usize,
-    header_block: &[u8; crate::BLOCK_BUFFER_BYTES],
+    entry_count: usize,
+    mount_count: usize,
     records_offset: usize,
-    data_offset: usize,
 ) -> u64 {
+    // Must mirror flush_persistent_store exactly: FNV-1a64 over the
+    // checksum-free header prefix followed by the contiguous entry records
+    // and mount records — block-alignment padding between the last record
+    // and data_offset is layout filler, never checksummed material.
     let block_size = store.block_size;
     let mut summer = SnapshotChecksummer::new();
-    summer.feed(header_checksum_input(header_block));
-    let mut cursor = records_offset;
-    while cursor < data_offset {
-        let block_start = (cursor / block_size) * block_size;
-        let mut block = [0u8; crate::BLOCK_BUFFER_BYTES];
-        if rt::block_device_read(
-            store.handle,
-            (slot * store.slot_blocks + block_start / block_size) as u64,
-            &mut block[..block_size],
-        )
-        .is_err()
-        {
+    let mut block = [0u8; crate::BLOCK_BUFFER_BYTES];
+    if block_size > block.len() {
+        return 0;
+    }
+    if rt::block_device_read(
+        store.handle,
+        (slot * store.slot_blocks) as u64,
+        &mut block[..block_size],
+    )
+    .is_err()
+    {
+        return 0;
+    }
+    summer.feed(header_checksum_input(&block));
+    for record_index in 0..entry_count {
+        let Ok(record) = read_record_span(
+            store,
+            slot,
+            records_offset + record_index * crate::PERSISTENT_RECORD_BYTES,
+        ) else {
             return 0;
-        }
-        let chunk_end = block_start + block_size;
-        let end = data_offset.min(chunk_end);
-        summer.feed(&block[block_start % block_size..end - block_start]);
-        cursor = end.max(chunk_end);
+        };
+        summer.feed(&record);
+    }
+    let mounts_base = records_offset + entry_count * crate::PERSISTENT_RECORD_BYTES;
+    for record_index in 0..mount_count {
+        let Ok(record) = read_record_span(
+            store,
+            slot,
+            mounts_base + record_index * crate::MOUNT_RECORD_BYTES,
+        ) else {
+            return 0;
+        };
+        summer.feed(&record);
     }
     summer.finish()
 }
@@ -1017,5 +1037,68 @@ mod tests {
         );
         assert_eq!(report.iter().count(), FSCK_MAX_FINDINGS);
         assert!(report.truncated);
+    }
+
+    /// Byte-level corruption matrix for the raw snapshot header parser —
+    /// the same gate the boot restore path uses, exercised as real device
+    /// bytes rather than pre-parsed fields.
+    #[test]
+    fn snapshot_header_parser_rejects_each_byte_corruption_class() {
+        let store = PersistentStore {
+            handle: rt::INVALID_HANDLE,
+            block_size: 512,
+            slot_blocks: 8,
+            active_slot: 0,
+            generation: 0,
+        };
+        let mut block = [0u8; 512];
+        block[..8].copy_from_slice(&crate::PERSISTENT_MAGIC);
+        block[8..12].copy_from_slice(&crate::PERSISTENT_VERSION.to_le_bytes());
+        block[12..16].copy_from_slice(&1u32.to_le_bytes());
+        block[16..24].copy_from_slice(&9u64.to_le_bytes());
+        block[24..32].copy_from_slice(&512u64.to_le_bytes());
+        block[32..40].copy_from_slice(&1536u64.to_le_bytes());
+        block[40..48].copy_from_slice(&2048u64.to_le_bytes());
+        block[48..52].copy_from_slice(&1u32.to_le_bytes());
+        block[52..60].copy_from_slice(&0x1234_5678_90ab_cdefu64.to_le_bytes());
+        assert!(parse_header(&store, 0, &block, 512).is_some());
+
+        let mut bad_magic = block;
+        bad_magic[0] ^= 0xff;
+        assert!(parse_header(&store, 0, &bad_magic, 512).is_none());
+
+        let mut bad_version = block;
+        bad_version[8..12].copy_from_slice(&99u32.to_le_bytes());
+        assert!(parse_header(&store, 0, &bad_version, 512).is_none());
+
+        let mut entry_overflow = block;
+        entry_overflow[12..16].copy_from_slice(&(MAX_MUTABLE_ENTRIES as u32 + 1).to_le_bytes());
+        assert!(parse_header(&store, 0, &entry_overflow, 512).is_none());
+
+        let mut mount_overflow = block;
+        mount_overflow[48..52].copy_from_slice(&(STORAGE_MOUNT_TABLE_MAX as u32 + 1).to_le_bytes());
+        assert!(parse_header(&store, 0, &mount_overflow, 512).is_none());
+
+        let mut records_below_block = block;
+        records_below_block[24..32].copy_from_slice(&256u64.to_le_bytes());
+        assert!(parse_header(&store, 0, &records_below_block, 512).is_none());
+
+        let mut total_oversized = block;
+        total_oversized[40..48].copy_from_slice(&4097u64.to_le_bytes());
+        assert!(parse_header(&store, 0, &total_oversized, 512).is_none());
+
+        let mut total_empty = block;
+        total_empty[40..48].copy_from_slice(&0u64.to_le_bytes());
+        assert!(parse_header(&store, 0, &total_empty, 512).is_none());
+
+        let mut data_overlapping = block;
+        data_overlapping[32..40].copy_from_slice(&768u64.to_le_bytes());
+        assert!(parse_header(&store, 0, &data_overlapping, 512).is_none());
+
+        // A zero checksum word means "absent" and must keep parsing so
+        // checksum-era snapshots load untouched.
+        let mut checksum_absent = block;
+        checksum_absent[52..60].copy_from_slice(&0u64.to_le_bytes());
+        assert!(parse_header(&store, 0, &checksum_absent, 512).is_some());
     }
 }

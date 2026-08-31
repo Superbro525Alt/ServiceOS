@@ -1,0 +1,31 @@
+# T3 live fsck/unmount deep-probe witness: the storage-service gated probes
+# behind SERVICEOS_E2E_STORAGE=1 drive the corruption-seeded fsck repair flow
+# (0x525/0x526 wire ops: seeded bad entries + one flipped checksummed snapshot
+# byte -> dry scan lists every finding -> apply drops exactly the bad entries
+# and re-persists -> stale slot reclaimed -> clean full scan + index hit) and
+# the unmount capability contract (0x51b/0x51c: authority/NotFound/boot-root
+# gates, persistent data/ unmount, dual-slot generation chain, full snapshot
+# re-parse through the boot restore path with payload byte verification,
+# remount + index hit). Silent on default boots.
+[case]
+name = "storage-fsck.live"
+tier = 3
+platforms = ["qemu-virtio"]
+timeout_secs = 300
+env_build = ["SERVICEOS_E2E_STORAGE=1"]
+witnesses = [
+    "selftest mount-(added ok|present restored=1)",  # data/ namespace up
+    "selftest mutation-probe create=2 rename=1 delete=2 ok=1",
+    "E2E storage.rename PASS create=3 rename=3 collide-denied=1 index-hit=1",
+    "E2E storage.fsck PASS seeded=3 checksum=1 dropped=3 reclaimed=1 clean=1 index-hit=1",
+    "E2E storage.unmount PASS denied=2 notfound=1 unmount=1 reparse=1 remount=1 index-hit=1",
+]
+fail_on = [
+    "E2E storage.fsck FAIL",
+    "E2E storage.unmount FAIL",
+    "selftest persist FAILED",
+    "CRASH LOOP",
+]
+serial_script = ""
+data_fresh = true
+tags = ["live", "storage", "fsck", "e2e-probe"]

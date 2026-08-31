@@ -65,12 +65,16 @@ fn str_field<'a>(scratch: &'a [u8], len: usize) -> &'a str {
     core::str::from_utf8(&scratch[..len]).unwrap_or("")
 }
 
+/// Handle one wire request. Returns true when the PERSISTED store changed
+/// (account created, password set, or a legacy credential record upgraded to
+/// PBKDF2 on login) so the caller can write through to storage; runtime-only
+/// state (claims, session ownership) does not count.
 pub fn handle_request(
     store: &mut AccountStore,
     request: &RawMessage,
     response: &mut RawMessage,
     scratch: &mut RequestScratch,
-) {
+) -> bool {
     match request.tag {
         x if x == account_tag::CREATE_REQUEST => {
             response.tag = account_tag::CREATE_REPLY;
@@ -102,6 +106,7 @@ pub fn handle_request(
                     response.word_count = 2;
                     response.words[0] = 0;
                     response.words[1] = id as u64;
+                    true
                 }
                 Err(error) => fail(response, error),
             }
@@ -127,13 +132,46 @@ pub fn handle_request(
                 &scratch.secret[..secret_len],
                 session_id as u32,
             ) {
-                Ok(claim) => {
+                Ok((claim, upgraded)) => {
                     let caps = store.active_capabilities().unwrap_or(0);
                     response.word_count = 4;
                     response.words[0] = 0;
                     response.words[1] = claim.account_id as u64;
                     response.words[2] = claim.session_id as u64;
                     response.words[3] = caps as u64;
+                    upgraded
+                }
+                Err(error) => fail(response, error),
+            }
+        }
+        x if x == account_tag::SET_PASSWORD_REQUEST => {
+            response.tag = account_tag::SET_PASSWORD_REPLY;
+            let name_len = match decode_str(request, 0, MAX_NAME, &mut scratch.name) {
+                Ok(l) => l,
+                Err(e) => return fail(response, e),
+            };
+            let old_offset = 1 + name_len.div_ceil(8);
+            let old_len = match decode_str(request, old_offset, MAX_SECRET, &mut scratch.secret) {
+                Ok(l) => l,
+                Err(e) => return fail(response, e),
+            };
+            // New secret borrows the display scratch slot: it arrives after
+            // the old secret and both are needed only until re-derivation.
+            let new_offset = old_offset + 1 + old_len.div_ceil(8);
+            let new_len = match decode_str(request, new_offset, MAX_SECRET, &mut scratch.display) {
+                Ok(l) => l,
+                Err(e) => return fail(response, e),
+            };
+            match store.set_password(
+                str_field(&scratch.name, name_len),
+                &scratch.secret[..old_len],
+                &scratch.display[..new_len],
+            ) {
+                Ok(index) => {
+                    response.word_count = 2;
+                    response.words[0] = 0;
+                    response.words[1] = store.accounts[index].id as u64;
+                    true
                 }
                 Err(error) => fail(response, error),
             }
@@ -148,6 +186,7 @@ pub fn handle_request(
                     response.word_count = 2;
                     response.words[0] = 0;
                     response.words[1] = claim.account_id as u64;
+                    false
                 }
                 Err(error) => fail(response, error),
             }
@@ -168,6 +207,7 @@ pub fn handle_request(
                     response.words[1] = account_id as u64;
                     response.words[2] = from_session as u64;
                     response.words[3] = to_session as u64;
+                    false
                 }
                 Err(error) => fail(response, error),
             }
@@ -183,6 +223,7 @@ pub fn handle_request(
                     response.word_count = 2;
                     response.words[0] = 0;
                     response.words[1] = caps as u64;
+                    false
                 }
                 Err(error) => fail(response, error),
             }
@@ -197,12 +238,16 @@ pub fn handle_request(
                 response.words[2 + index * 2] = account.id as u64;
                 response.words[3 + index * 2] = account.capabilities as u64;
             }
+            false
         }
-        _ => {}
+        _ => false,
     }
 }
 
-fn fail(response: &mut RawMessage, error: AccountError) {
+/// Stamp an error reply; returns false so `return fail(..)` short-circuits
+/// handle_request with a clean "not dirty" verdict.
+fn fail(response: &mut RawMessage, error: AccountError) -> bool {
     response.word_count = 1;
     response.words[0] = error.to_code() as u64;
+    false
 }

@@ -231,42 +231,16 @@ pub fn parse_response(bytes: &[u8]) -> Result<Response<'_>, ParseError> {
 
 /// HMAC-SHA-512 (RFC 2104 block layout, block size 128).
 ///
-/// Built over `serviceos-crypto`'s SHA-512 because the workspace has no
-/// other hash. INTEGRITY-GRADE HONESTY NOTE: real WPA2 key derivation uses
+/// Re-exported from `serviceos_crypto::hmac` — the pure implementation was
+/// moved there so exactly one HMAC exists in the tree; this re-export keeps
+/// the historical `wireless::hmac_sha512` path working for callers and
+/// tests. INTEGRITY-GRADE HONESTY NOTE: real WPA2 key derivation uses
 /// HMAC-SHA-1 (PRF-512, 802.11i) and AES-CMAC MICs (802.11w/CCMP); this
 /// SHA-512 HMAC is a *placeholder* of the same shape so the protocol layer
 /// is complete and testable. It is cryptographically sound as an HMAC but
 /// is NOT interoperable with real 802.11i peers, and MUST be replaced with
 /// the spec algorithms before hardware bring-up.
-pub fn hmac_sha512(key: &[u8], parts: &[&[u8]]) -> [u8; 64] {
-    const BLOCK: usize = 128;
-    let mut key_block = [0u8; BLOCK];
-    if key.len() > BLOCK {
-        // Long keys are hashed first (RFC 2104).
-        let mut hash = Sha512::new();
-        hash.update(key);
-        let long_digest = hash.finalize();
-        key_block[..64].copy_from_slice(&long_digest);
-    } else {
-        key_block[..key.len()].copy_from_slice(key);
-    }
-    let mut ipad = [0x36u8; BLOCK];
-    let mut opad = [0x5cu8; BLOCK];
-    for index in 0..BLOCK {
-        ipad[index] ^= key_block[index];
-        opad[index] ^= key_block[index];
-    }
-    let mut inner = Sha512::new();
-    inner.update(&ipad);
-    for part in parts {
-        inner.update(part);
-    }
-    let inner_digest = inner.finalize();
-    let mut outer = Sha512::new();
-    outer.update(&opad);
-    outer.update(&inner_digest);
-    outer.finalize()
-}
+pub use serviceos_crypto::hmac::hmac_sha512;
 
 /// Placeholder PMK derivation from a PSK.
 ///

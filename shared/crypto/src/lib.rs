@@ -15,8 +15,10 @@
 
 pub mod ed25519;
 mod field;
+pub mod hmac;
 #[cfg(feature = "std-helper")]
 pub mod host;
+pub mod pbkdf2;
 mod point;
 mod scalar;
 pub mod sha256;

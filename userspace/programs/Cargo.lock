@@ -53,6 +53,7 @@ version = "0.1.0"
 name = "serviceos-account-service"
 version = "0.1.0"
 dependencies = [
+ "serviceos-crypto",
  "serviceos-userspace-runtime",
 ]
 

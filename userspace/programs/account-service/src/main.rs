@@ -12,7 +12,9 @@
 //! Startup handle convention (positional, all optional beyond zero):
 //! handles[0] = storage-service channel. When present the account store is
 //! loaded from `state/account/accounts.cfg` and re-written after every
-//! mutation; without it the store lives in memory seeded with defaults.
+//! persisted mutation (account creation, password changes, PBKDF2 upgrades
+//! of legacy credential records); without it the store lives in memory
+//! seeded with defaults.
 
 #![cfg_attr(not(test), no_std)]
 #![cfg_attr(not(test), no_main)]
@@ -28,7 +30,10 @@ use crate::protocol::RequestScratch;
 
 use serviceos_userspace_runtime as rt;
 
-const MAX_STORE_BYTES: usize = 2048;
+// Full 8-account store with PBKDF2 records: each PBKDF2 line adds ~190
+// chars (algorithm marker, iteration count, 32-hex salt, 128-hex hash) on
+// top of the ~135-char legacy prefix, so 2048 no longer bounds 8 records.
+const MAX_STORE_BYTES: usize = 4096;
 const ACCOUNTS_DIR: &str = "state/account";
 const EXIT_OK: u64 = 0;
 const EXIT_STARTUP: u64 = 0xfa01;
@@ -87,6 +92,10 @@ fn main() -> u64 {
             AccountStore::seed_defaults()
         }
     };
+    // Boot tick mixed into every fresh PBKDF2 salt. Honesty: this kernel has
+    // no RNG yet, so salts are unique-ish boot-local substitutes, not
+    // cryptographically random (see `pbkdf2_salt`).
+    store.salt_tick = rt::monotonic_now().unwrap_or(0);
 
     loop {
         if lifecycle_stop_requested(bootstrap) {
@@ -109,7 +118,11 @@ fn main() -> u64 {
                 );
                 let mut scratch = RequestScratch::new();
                 let mut response = RawMessage::empty(0);
-                protocol::handle_request(&mut store, &request, &mut response, &mut scratch);
+                let store_dirty =
+                    protocol::handle_request(&mut store, &request, &mut response, &mut scratch);
+                if store_dirty {
+                    persist_store(storage_handle, &store);
+                }
                 if response.tag != 0 {
                     let sent = rt::channel_send(request.handles[0], &response);
                     if sent.is_err() {

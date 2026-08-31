@@ -178,6 +178,13 @@ pub fn dispatch_syscall(number: SyscallNumber, context: &SyscallContext) -> Sysc
         state.syscalls.fetch_add(1, Ordering::Relaxed);
     }
 
+    // Guest syscall-ABI translation hook: tasks spawned with a guest ABI
+    // flag never reach the native numbering (Linux write=1 would collide
+    // with ServiceOS MonotonicNow). Native tasks pass straight through.
+    if let Some(result) = syscall::dispatch_guest(number, context) {
+        return result;
+    }
+
     syscall::dispatcher()
         .map(|dispatcher| dispatcher.dispatch(number, context))
         .unwrap_or_else(|| SyscallReturn::error(syscall::SyscallError::NotInitialized))

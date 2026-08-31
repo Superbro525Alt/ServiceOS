@@ -95,6 +95,17 @@ fn parse_profile(text: &str) -> rt::Result<Profile> {
                 }
                 profile.requested_caps |= requested;
             }
+            "linux-syscall" => {
+                // Additive guest ABI mode: `linux-syscall = true` routes the
+                // environment's guest-exec spawns through Linux x86_64
+                // syscall translation in the kernel. Default (line absent)
+                // stays native.
+                profile.linux_syscall = match value.trim() {
+                    "true" => true,
+                    "false" => false,
+                    _ => return Err(rt::Error::InvalidArgument),
+                };
+            }
             "mount" => {
                 if profile.mount_count == profile.mounts.len() {
                     return Err(rt::Error::CapacityExceeded);
@@ -160,6 +171,7 @@ pub(crate) fn instantiate_env(profile: Profile) -> EnvSlot {
     env.mount_count = profile.mount_count;
     env.var_count = profile.var_count;
     env.lib_count = profile.lib_count;
+    env.linux_syscall = profile.linux_syscall;
     env.active_runs = 0;
     let mut index = 0usize;
     while index < profile.mount_count {
@@ -297,6 +309,27 @@ mod tests {
         assert_eq!(env.libs[0].name.as_bytes(), b"libc");
         assert_eq!(env.libs[0].guest.as_bytes(), b"/lib/libc.so.sosimg");
         assert_eq!(EnvSlot::empty().lib_count, 0);
+    }
+
+    #[test]
+    fn linux_syscall_line_defaults_off_and_round_trips() {
+        // Absent line: native numbering (flag-off contract).
+        let plain = parse_profile("kind=posix\n").expect("profile");
+        assert!(!plain.linux_syscall);
+
+        let flagged = parse_profile("kind=posix\nlinux-syscall = true\n").expect("profile");
+        assert!(flagged.linux_syscall);
+        let env = instantiate_env(flagged);
+        assert!(env.linux_syscall);
+        let env_plain = instantiate_env(plain);
+        assert!(!env_plain.linux_syscall);
+
+        // Explicit false is accepted and means the same as absent.
+        let explicit_off = parse_profile("kind=posix\nlinux-syscall=false\n").expect("profile");
+        assert!(!explicit_off.linux_syscall);
+
+        // Unknown values are rejected loudly instead of silently ignored.
+        assert!(parse_profile("kind=posix\nlinux-syscall = yes\n").is_err());
     }
 
     #[test]

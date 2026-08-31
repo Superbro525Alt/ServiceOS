@@ -377,12 +377,24 @@ fn handle_guest_exec_launch(
                 | rt::rights::TRANSFER,
         },
     ];
-    let task_handle = rt::manager_launch_image_with_payload(
-        bootstrap,
-        image_handle,
-        &[EXEC_GUEST_WORKLOAD as u64, env_id as u64],
-        &startup_handles,
-    );
+    let task_handle = match env.linux_syscall {
+        // The environment declared `linux-syscall = true`: the guest's
+        // syscalls enter the kernel gate through Linux x86_64 number
+        // translation. Native envs keep the byte-identical legacy message.
+        true => rt::manager_launch_image_with_payload_abi(
+            bootstrap,
+            image_handle,
+            &[EXEC_GUEST_WORKLOAD as u64, env_id as u64],
+            &startup_handles,
+            serviceos_userspace_runtime::linux_abi::spawn_abi::LINUX_SYSCALL,
+        ),
+        false => rt::manager_launch_image_with_payload(
+            bootstrap,
+            image_handle,
+            &[EXEC_GUEST_WORKLOAD as u64, env_id as u64],
+            &startup_handles,
+        ),
+    };
     let _ = rt::handle_close(image_handle);
     let _ = rt::handle_close(pair.second);
 

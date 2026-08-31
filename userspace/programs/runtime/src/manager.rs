@@ -7,6 +7,8 @@ use crate::{
     manager_status_from_word, pack_bytes, rights, service_id_from_word,
 };
 
+use serviceos_abi::linux_abi::spawn_abi;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StartupHandle {
     pub handle: Handle,
@@ -288,14 +290,38 @@ pub fn manager_launch_image_with_payload(
     startup_words: &[u64],
     startup_handles: &[StartupHandle],
 ) -> Result<Handle> {
+    manager_launch_image_with_payload_abi(
+        bootstrap,
+        image_handle,
+        startup_words,
+        startup_handles,
+        spawn_abi::NATIVE,
+    )
+}
+
+/// Launch an image with an explicit syscall-ABI request appended as an
+/// optional trailing request word. When `abi_flags == spawn_abi::NATIVE`
+/// the wire message is byte-identical to the unflagged launch (the word is
+/// omitted, so older root-managers see the same message).
+pub fn manager_launch_image_with_payload_abi(
+    bootstrap: Handle,
+    image_handle: Handle,
+    startup_words: &[u64],
+    startup_handles: &[StartupHandle],
+    abi_flags: u64,
+) -> Result<Handle> {
     if startup_words.len() + 1 > IPC_MAX_WORDS || startup_handles.len() + 1 > IPC_MAX_HANDLES {
         return Err(Error::BufferTooSmall);
     }
+    let trailing_abi_word = if abi_flags != 0 { 1 } else { 0 };
     let mut request = RawMessage::empty(ManagerTag::LaunchImageRequest as u32);
-    request.word_count = 1 + startup_words.len() as u32;
+    request.word_count = (1 + startup_words.len() + trailing_abi_word) as u32;
     request.words[0] = startup_words.len() as u64;
     for (index, word) in startup_words.iter().copied().enumerate() {
         request.words[1 + index] = word;
+    }
+    if trailing_abi_word == 1 {
+        request.words[1 + startup_words.len()] = abi_flags;
     }
     request.handle_count = 1 + startup_handles.len() as u32;
     request.handles[0] = image_handle;

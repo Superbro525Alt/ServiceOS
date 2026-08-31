@@ -47,7 +47,10 @@ pub(crate) fn encode_env_status(reply: &mut RawMessage, env_id: u32, env: EnvSlo
     reply.words[9] = pending_capabilities(env.capabilities, env.granted_caps) as u64;
     reply.words[10] = env.sandbox.requested_mask() as u64;
     reply.words[11] = env.sandbox.granted_mask() as u64;
-    reply.word_count = 12;
+    // Additive word 12: guest syscall-ABI mode of the environment
+    // (1 = linux-syscall translation, 0 = native numbering).
+    reply.words[12] = env.linux_syscall as u64;
+    reply.word_count = 13;
 }
 
 pub(crate) fn decision_policy(decision: u64) -> PermissionPolicyState {
@@ -406,6 +409,31 @@ mod tests {
             decision_policy(u64::MAX),
             PermissionPolicyState::Allowed
         ));
+    }
+
+    #[test]
+    fn env_status_surfaces_linux_syscall_mode_in_additive_word() {
+        // Native env: word 12 = 0, word count 13 (was 12 before the mode).
+        let mut native = EnvSlot::empty();
+        native.occupied = true;
+        let mut reply = RawMessage::empty(0);
+        encode_env_status(&mut reply, 3, native);
+        assert_eq!(reply.word_count, 13);
+        assert_eq!(reply.words[12], 0);
+
+        // linux-syscall env: word 12 = 1.
+        native.linux_syscall = true;
+        let mut flagged = RawMessage::empty(0);
+        encode_env_status(&mut flagged, 3, native);
+        assert_eq!(flagged.word_count, 13);
+        assert_eq!(flagged.words[12], 1);
+
+        // Words 0..12 are unchanged from the legacy layout.
+        let mut legacy = EnvSlot::empty();
+        legacy.occupied = true;
+        let mut untouched = RawMessage::empty(0);
+        encode_env_status(&mut untouched, 3, legacy);
+        assert_eq!(untouched.words[0..12], reply.words[0..12]);
     }
 
     #[test]

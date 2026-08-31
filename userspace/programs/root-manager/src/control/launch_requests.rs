@@ -147,6 +147,14 @@ pub(super) fn handle_launch_image_request(
         close_message_handles(message);
         return result;
     }
+    // Additive syscall-ABI request word: senders append exactly one trailing
+    // word after the startup words; absence means native numbering. Unknown
+    // flag values are rejected by the kernel's TaskSpawnImage gate.
+    let abi_flags = if (message.word_count as usize) > 1 + startup_word_count {
+        message.words[1 + startup_word_count]
+    } else {
+        serviceos_abi::linux_abi::spawn_abi::NATIVE
+    };
     let task_handle = match launch_program_from_image(
         slots,
         service_count,
@@ -156,6 +164,7 @@ pub(super) fn handle_launch_image_request(
         &message.words[1..1 + startup_word_count],
         &message.handles[1..message.handle_count as usize],
         &message.handle_rights[1..message.handle_count as usize],
+        abi_flags,
     ) {
         Ok(task_handle) => task_handle,
         Err(rt::Error::PermissionDenied) => {
@@ -258,6 +267,7 @@ pub(super) fn handle_launch_stored_image_request(
         &message.words[2..2 + startup_word_count],
         &message.handles[..message.handle_count as usize],
         &message.handle_rights[..message.handle_count as usize],
+        serviceos_abi::linux_abi::spawn_abi::NATIVE,
     ) {
         Ok(task_handle) => task_handle,
         Err(rt::Error::PermissionDenied) => {

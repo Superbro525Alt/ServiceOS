@@ -1,6 +1,7 @@
 use crate::{
     memory,
     object::KernelObjectRef,
+    syscall::GuestSyscallAbi,
     task::{
         self, SchedulingContext, TaskDescriptor, TaskRole, ThreadDescriptor, ThreadMode,
         ThreadWakeReason,
@@ -27,6 +28,17 @@ pub fn spawn_image_bytes(
     role: TaskRole,
     bootstrap_transfer: Option<crate::capability::PreparedTransfer>,
 ) -> Result<SpawnedUserTask, SpawnError> {
+    spawn_image_bytes_with_abi(image, role, bootstrap_transfer, GuestSyscallAbi::Native)
+}
+
+/// Spawn a user image whose syscalls enter through `abi`. Native numbering
+/// (the default) is byte-identical to the unflagged spawn path.
+pub fn spawn_image_bytes_with_abi(
+    image: &[u8],
+    role: TaskRole,
+    bootstrap_transfer: Option<crate::capability::PreparedTransfer>,
+    syscall_abi: GuestSyscallAbi,
+) -> Result<SpawnedUserTask, SpawnError> {
     let objects = crate::object::model().ok_or(SpawnError::ObjectsUnavailable)?;
     let tasks = task::system().ok_or(SpawnError::TasksUnavailable)?;
     let _memory = memory::manager().ok_or(SpawnError::MemoryUnavailable)?;
@@ -35,6 +47,7 @@ pub fn spawn_image_bytes(
     let address_space_id = runtime.allocate_address_space_id();
     let prepared = (hooks.prepare_address_space)(image)?;
     runtime.register_address_space(address_space_id, prepared.page_table_root);
+    runtime.set_syscall_abi(address_space_id, syscall_abi);
     (hooks.register_address_space)(address_space_id, prepared.page_table_root);
     crate::user::record_loaded_image(address_space_id, prepared.image);
 

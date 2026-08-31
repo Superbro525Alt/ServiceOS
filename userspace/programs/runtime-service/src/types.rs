@@ -90,6 +90,10 @@ pub(crate) struct Profile {
     /// sensitive-only words that join `capabilities` when the environment
     /// is instantiated so the approval matrix sees them as requested.
     pub(crate) requested_caps: u32,
+    /// Env-profile line `linux-syscall = true`: guest executables spawned
+    /// by this environment's runs enter the kernel through Linux x86_64
+    /// syscall-number translation instead of native ServiceOS numbering.
+    pub(crate) linux_syscall: bool,
     pub(crate) mounts: [MountSlot; MAX_MOUNTS],
     pub(crate) mount_count: usize,
     pub(crate) vars: [VarSlot; MAX_VARS],
@@ -104,6 +108,7 @@ impl Profile {
             kind: RuntimeKind::Posix,
             capabilities: 0,
             requested_caps: 0,
+            linux_syscall: false,
             mounts: [MountSlot::empty(); MAX_MOUNTS],
             mount_count: 0,
             vars: [VarSlot::empty(); MAX_VARS],
@@ -121,6 +126,9 @@ pub(crate) struct EnvSlot {
     pub(crate) state: RuntimeEnvState,
     pub(crate) capabilities: u32,
     pub(crate) granted_caps: u32,
+    /// Guest syscall ABI mode inherited from the profile's `linux-syscall`
+    /// line; surfaced through the additive EnvStatusReply word.
+    pub(crate) linux_syscall: bool,
     pub(crate) sandbox: crate::sandbox::SandboxProfile,
     pub(crate) mounts: [MountSlot; MAX_MOUNTS],
     pub(crate) mount_count: usize,
@@ -139,6 +147,7 @@ impl EnvSlot {
             state: RuntimeEnvState::Destroyed,
             capabilities: 0,
             granted_caps: 0,
+            linux_syscall: false,
             sandbox: crate::sandbox::SandboxProfile::empty(),
             mounts: [MountSlot::empty(); MAX_MOUNTS],
             mount_count: 0,

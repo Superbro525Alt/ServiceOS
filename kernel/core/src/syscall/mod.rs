@@ -1,11 +1,13 @@
 mod access;
 mod dispatch;
+mod guest;
 mod handlers;
 mod resolve;
 mod types;
 
 pub use access::{user_mut, user_ref, user_slice, user_slice_mut};
 pub use dispatch::{DispatchTable, dispatcher, initialize};
+pub use guest::{GuestSyscallAbi, dispatch_guest};
 pub use types::{
     MAX_SYSCALL_SLOTS, SYSCALL_ABI_VERSION, SyscallAction, SyscallContext, SyscallDispatcher,
     SyscallError, SyscallKind, SyscallNumber, SyscallReturn, SyscallSnapshot,

@@ -215,11 +215,25 @@ pub(crate) fn handle_task_spawn_image(context: &SyscallContext) -> SyscallReturn
         }
     };
 
-    let spawned =
-        match user::spawn_image_bytes(&image_bytes, TaskRole::UserService, bootstrap_transfer) {
-            Ok(spawned) => spawned,
-            Err(error) => return SyscallReturn::error(map_spawn_error(error)),
-        };
+    // Additive ABI-flag slot: 0 = native numbering (every legacy caller
+    // zeroes this register through the runtime wrappers), the shared-ABI
+    // `spawn_abi::LINUX_SYSCALL` word opts the task into Linux x86_64
+    // syscall translation. Unknown words are rejected loudly.
+    let syscall_abi = match crate::syscall::GuestSyscallAbi::from_spawn_flags(context.arguments[3])
+    {
+        Some(abi) => abi,
+        None => return SyscallReturn::error(SyscallError::InvalidArgument),
+    };
+
+    let spawned = match user::spawn_image_bytes_with_abi(
+        &image_bytes,
+        TaskRole::UserService,
+        bootstrap_transfer,
+        syscall_abi,
+    ) {
+        Ok(spawned) => spawned,
+        Err(error) => return SyscallReturn::error(map_spawn_error(error)),
+    };
     match task
         .capability_space()
         .install(spawned.task, CapabilityRights::task(), None)

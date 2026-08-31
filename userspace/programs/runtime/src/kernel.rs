@@ -4,6 +4,8 @@ use crate::{
     syscall1, syscall2, syscall3, syscall4,
 };
 
+use serviceos_abi::linux_abi::spawn_abi;
+
 pub fn abi_version() -> Result<u64> {
     syscall0(SyscallNumber::AbiVersion)
 }
@@ -114,11 +116,30 @@ pub fn task_spawn_image(
     bootstrap_authority: Handle,
     bootstrap_handle: Handle,
 ) -> Result<Handle> {
-    syscall3(
+    task_spawn_image_with_abi(
+        image_handle,
+        bootstrap_authority,
+        bootstrap_handle,
+        spawn_abi::NATIVE,
+    )
+}
+
+/// Spawn a guest image with an explicit syscall-ABI flag word in the
+/// additive fourth argument slot. `spawn_abi::NATIVE` (0) is identical to
+/// the unflagged spawn; `spawn_abi::LINUX_SYSCALL` opts the task into
+/// Linux x86_64 syscall-number translation at the kernel gate.
+pub fn task_spawn_image_with_abi(
+    image_handle: Handle,
+    bootstrap_authority: Handle,
+    bootstrap_handle: Handle,
+    abi_flags: u64,
+) -> Result<Handle> {
+    syscall4(
         SyscallNumber::TaskSpawnImage,
         image_handle as u64,
         bootstrap_authority as u64,
         bootstrap_handle as u64,
+        abi_flags,
     )
     .map(|value| value as Handle)
 }

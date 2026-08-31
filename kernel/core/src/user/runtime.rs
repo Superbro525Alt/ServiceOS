@@ -3,6 +3,7 @@ use spin::{Mutex, Once};
 
 use crate::{
     memory::{PAGE_SIZE_BYTES, PhysicalAddress, VirtualAddress},
+    syscall::GuestSyscallAbi,
     task::{AddressSpaceId, TaskId, ThreadId},
 };
 
@@ -22,6 +23,9 @@ struct UserRuntimeState {
     threads: BTreeMap<ThreadId, TaskId>,
     address_spaces: BTreeMap<AddressSpaceId, AddressSpaceRuntime>,
     loaded_images: BTreeMap<AddressSpaceId, super::LoadedUserImage>,
+    /// Guest syscall-ABI mode per address space, set only for explicitly
+    /// flagged spawns; every unlisted address space is native.
+    syscall_abis: BTreeMap<AddressSpaceId, GuestSyscallAbi>,
 }
 
 pub struct UserRuntime {
@@ -37,6 +41,7 @@ impl UserRuntime {
                 threads: BTreeMap::new(),
                 address_spaces: BTreeMap::new(),
                 loaded_images: BTreeMap::new(),
+                syscall_abis: BTreeMap::new(),
             }),
         }
     }
@@ -137,6 +142,7 @@ impl UserRuntime {
         let mut state = self.state.lock();
         state.address_spaces.remove(&address_space_id);
         state.loaded_images.remove(&address_space_id);
+        state.syscall_abis.remove(&address_space_id);
     }
 
     pub fn record_loaded_image(
@@ -156,6 +162,21 @@ impl UserRuntime {
             .loaded_images
             .get(&address_space_id)
             .copied()
+    }
+
+    /// Record the syscall ABI a spawned address space enters syscalls
+    /// through. Absent entries mean native numbering.
+    pub fn set_syscall_abi(&self, address_space_id: AddressSpaceId, abi: GuestSyscallAbi) {
+        self.state.lock().syscall_abis.insert(address_space_id, abi);
+    }
+
+    pub fn syscall_abi(&self, address_space_id: AddressSpaceId) -> GuestSyscallAbi {
+        self.state
+            .lock()
+            .syscall_abis
+            .get(&address_space_id)
+            .copied()
+            .unwrap_or_default()
     }
 }
 
@@ -191,6 +212,14 @@ pub fn record_loaded_image(address_space_id: AddressSpaceId, image: super::Loade
 
 pub fn loaded_image_for(address_space_id: AddressSpaceId) -> Option<super::LoadedUserImage> {
     runtime().and_then(|runtime| runtime.loaded_image(address_space_id))
+}
+
+/// Syscall ABI of the currently running task: `Native` when no user runtime
+/// or current task exists (every kernel-internal path stays native).
+pub fn current_task_syscall_abi() -> Option<GuestSyscallAbi> {
+    let task = crate::task::system()?.current_task_object()?;
+    let address_space = task.task()?.address_space()?;
+    runtime().map(|runtime| runtime.syscall_abi(address_space))
 }
 
 pub fn arch_hooks() -> Option<super::UserArchHooks> {

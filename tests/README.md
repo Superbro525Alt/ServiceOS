@@ -52,3 +52,10 @@ Parallel `-j` scheduling and slot pruning land in WP4. T0 remains
 Known quirk: `virt` boots use `-accel tcg,thread=multi` (~10× slower than
 KVM) and can sit silent for minutes mid kernel selftests (plan §6.1);
 calibrate its `timeout_secs` per host before tightening budgets.
+
+Known host flake (TCG wedge lottery on multi-tenant hosts): a TCG guest
+(`virt`, `riscv64-virt`, `qemu-isa`) intermittently wedges permanently —
+symptom is a case timeout with zero/minimal guest progress or a network-rx
+stall while tx continues. Tree-independent and nondeterministic; an isolated
+rerun of the failing case passes. The runner serializes TCG cases (one
+process-wide TCG slot) to reduce incidence; it cannot eliminate the wedge.

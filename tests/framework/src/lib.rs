@@ -22,13 +22,14 @@ use std::{
     collections::BTreeMap,
     error::Error,
     path::{Path, PathBuf},
+    sync::{Mutex, MutexGuard, TryLockError},
     time::{Duration, Instant},
 };
 
 use xtask_core::{
     build::{BuildArtifacts, build_for_platform},
     image::create_platform_image,
-    platform::PlatformSpec,
+    platform::{PlatformSpec, RunKind},
 };
 
 pub use case::{CaseDef, WitnessMode, load_cases};
@@ -208,11 +209,73 @@ impl RunCtx {
     }
 }
 
+/// Process-wide serialization for TCG guest boots (host-wedge mitigation):
+/// QEMU `tcg,thread=multi` instances contending for a starved host
+/// intermittently wedge permanently (serial silence or network-rx stall;
+/// see the 2026-09 virt investigation), so at most one TCG row runs at any
+/// instant. KVM and no-emulator rows keep full parallelism. Process-global
+/// because scheduling lives in the runner binary, whose worker pool calls
+/// [`run_case`] concurrently.
+static TCG_EXECUTION: Mutex<()> = Mutex::new(());
+
+/// True when this platform's QEMU invocation runs under TCG on this host:
+/// the aarch64 builder hardcodes `-accel tcg,thread=multi` and the
+/// qemu-isa / riscv64-virt builders pass no `-accel` flag (QEMU default =
+/// TCG), qemu-virtio honors `QEMU_ACCEL` / `/dev/kvm` (mirrors
+/// `xtask-core::run::qemu_accel_mode`), and raspi5 never boots an emulator
+/// (build-only). Unknown names count as TCG (conservative serialization).
+pub fn platform_uses_tcg(platform: &str) -> bool {
+    let Ok(spec) = PlatformSpec::resolve(platform) else {
+        return true;
+    };
+    match spec.run_kind {
+        RunKind::ManualDeploy => false,
+        RunKind::QemuArmVirt | RunKind::QemuIsa | RunKind::QemuRiscvVirt => true,
+        RunKind::QemuVirtio => accel_mode_forces_tcg(
+            std::env::var("QEMU_ACCEL").ok().as_deref(),
+            Path::new("/dev/kvm").exists(),
+        ),
+    }
+}
+
+/// Pure core of the qemu-virtio accel decision (`run.rs qemu_accel_mode`):
+/// TCG iff the env override forces it, else KVM's absence.
+fn accel_mode_forces_tcg(explicit: Option<&str>, kvm_available: bool) -> bool {
+    match explicit {
+        Some("tcg") => true,
+        Some("kvm") => false,
+        _ => !kvm_available,
+    }
+}
+
+/// Acquire the single TCG execution slot for the whole row (staging, both
+/// boots of a regression chain, teardown) when the platform is TCG. The
+/// wait happens before any timer starts, so per-case budgets are untouched;
+/// row elapsed still reflects the honest wall-clock wait.
+fn tcg_serial_slot(platform: &str) -> Option<MutexGuard<'static, ()>> {
+    if !platform_uses_tcg(platform) {
+        return None;
+    }
+    match TCG_EXECUTION.try_lock() {
+        Ok(guard) => Some(guard),
+        Err(TryLockError::WouldBlock) => {
+            eprintln!("    (tcg gate: waiting for the single TCG slot; {platform})");
+            Some(
+                TCG_EXECUTION
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            )
+        }
+        Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+    }
+}
+
 /// Execute one (case, platform) row end-to-end. Guest misbehavior becomes
 /// data on the result row; only harness breakdowns land in `Err` and surface
 /// as InfraFailed rows upstream. Safe to call from multiple worker threads:
 /// the context is frozen (read-only) and every mutable interaction — env
-/// capture, staging, QEMU spawn — is per-row.
+/// capture, staging, QEMU spawn — is per-row (TCG rows additionally
+/// serialize on [`TCG_EXECUTION`]).
 pub fn run_case(case: &CaseDef, ctx: &RunCtx, platform: &str) -> CaseResult {
     let started = Instant::now();
 
@@ -236,6 +299,10 @@ pub fn run_case(case: &CaseDef, ctx: &RunCtx, platform: &str) -> CaseResult {
             format!("excluded: case does not declare platform {platform}"),
         );
     }
+
+    // Host-wedge mitigation: TCG rows hold the single TCG slot end-to-end so
+    // two emulated guests never contend for the starved host concurrently.
+    let _tcg_slot = tcg_serial_slot(platform);
 
     let result = match execute_row(case, ctx, platform, started) {
         Ok(result) => result,
@@ -674,4 +741,40 @@ fn execute_raspi_image_assertion(
             String::new(),
         )
     })
+}
+
+#[cfg(test)]
+mod tcg_gate_tests {
+    use super::*;
+
+    #[test]
+    fn tcg_platform_set_follows_the_registry() {
+        assert!(platform_uses_tcg("virt"));
+        assert!(platform_uses_tcg("riscv64-virt"));
+        assert!(platform_uses_tcg("qemu-isa"));
+        assert!(!platform_uses_tcg("raspi5"));
+        assert!(platform_uses_tcg("mystery-platform"));
+    }
+
+    #[test]
+    fn qemu_virtio_accel_decision_mirrors_run_rs() {
+        assert!(accel_mode_forces_tcg(Some("tcg"), true));
+        assert!(!accel_mode_forces_tcg(Some("kvm"), false));
+        assert!(accel_mode_forces_tcg(None, false));
+        assert!(!accel_mode_forces_tcg(None, true));
+    }
+
+    #[test]
+    fn tcg_slot_serializes_only_tcg_platforms() {
+        // KVM/no-emulator platforms never touch the gate.
+        assert!(tcg_serial_slot("raspi5").is_none());
+        let _gate = tcg_serial_slot("virt");
+        // A second TCG row on another worker would block here; same-thread
+        // reentry would deadlock, so only assert the gate is held via the
+        // poisoning-free try path through a fresh handle.
+        assert!(matches!(
+            TCG_EXECUTION.try_lock(),
+            Err(TryLockError::WouldBlock)
+        ));
+    }
 }

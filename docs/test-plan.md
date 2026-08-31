@@ -348,7 +348,9 @@ WP4 scheduling contract (as landed):
   boot rows then run on `N` worker threads, tier-ordered (fast smokes first,
   long TCG/high-tier last), with each row's per-case timeout enforced
   concurrently and a deterministic name-sorted summary/TAP regardless of
-  completion order.
+  completion order. TCG-platform rows additionally serialize against each
+  other (one process-wide TCG execution slot inside `run_case`; KVM and
+  no-emulator rows unaffected) as mitigation for the TCG host-wedge lottery.
 - Per-tuple image snapshots live under `target/e2e/builds/<tuple>/` (the
   builder's fixed output path would otherwise be clobbered across tuples);
   slots stage copies from there, so no two boots ever share an image, and

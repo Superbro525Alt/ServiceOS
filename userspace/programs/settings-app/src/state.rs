@@ -64,6 +64,15 @@ pub(crate) const BACKUP_RESTORE_BTN_X1: i32 = 170;
 pub(crate) const BACKUP_DELETE_BTN_X0: i32 = 178;
 pub(crate) const BACKUP_DELETE_BTN_X1: i32 = 254;
 pub(crate) const BACKUP_LIST_Y0: i32 = 230;
+/// Snapshot row pitch on the Backup page list (render steps 10px per row).
+pub(crate) const BACKUP_ROW_H: i32 = 10;
+/// Prompt confirm/cancel buttons (rendered only while a prompt is up).
+pub(crate) const BACKUP_PROMPT_BTN_Y0: i32 = 336;
+pub(crate) const BACKUP_PROMPT_BTN_Y1: i32 = 352;
+pub(crate) const BACKUP_CONFIRM_BTN_X0: i32 = 10;
+pub(crate) const BACKUP_CONFIRM_BTN_X1: i32 = 86;
+pub(crate) const BACKUP_CANCEL_BTN_X0: i32 = 94;
+pub(crate) const BACKUP_CANCEL_BTN_X1: i32 = 170;
 pub(crate) const WIFI_BTN_Y0: i32 = 106;
 pub(crate) const WIFI_BTN_Y1: i32 = 122;
 pub(crate) const WIFI_SCAN_BTN_X0: i32 = 10;

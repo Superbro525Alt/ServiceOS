@@ -25,6 +25,7 @@ pub(crate) fn poll_control(
     audio_handle: rt::Handle,
     runtime_handle: rt::Handle,
     security_handle: rt::Handle,
+    backup_handle: rt::Handle,
     audio_stream_handle: rt::Handle,
     state: &mut AppState,
 ) -> rt::Result<ControlFlow> {
@@ -57,6 +58,7 @@ pub(crate) fn poll_control(
                         network_handle,
                         runtime_handle,
                         security_handle,
+                        backup_handle,
                         audio_stream_handle,
                         state,
                         x,
@@ -72,6 +74,7 @@ pub(crate) fn poll_control(
                     changed |= handle_key_down(
                         network_handle,
                         security_handle,
+                        backup_handle,
                         state,
                         message.words[1] as u32,
                     )?;
@@ -112,6 +115,7 @@ fn handle_pointer_down(
     network_handle: rt::Handle,
     runtime_handle: rt::Handle,
     security_handle: rt::Handle,
+    backup_handle: rt::Handle,
     audio_stream_handle: rt::Handle,
     state: &mut AppState,
     x: i32,
@@ -149,7 +153,7 @@ fn handle_pointer_down(
         state.editing_note = false;
         state.editing_hostname = false;
         state.wifi.stop_editing();
-        state.backup.stop_editing();
+        crate::backup::on_page_enter(backup_handle, &mut state.backup);
         return Ok(true);
     }
 
@@ -158,11 +162,8 @@ fn handle_pointer_down(
     }
 
     if state.page == SettingsPage::Backup {
-        // No transport route to backup-service exists in this boot graph, so
-        // the page's controls render disabled and clicks stay inert — the
-        // manual-activation explainer is the only honest content.
         state.editing_note = false;
-        return Ok(true);
+        return handle_backup_pointer_down(backup_handle, state, x, y);
     }
 
     if state.page == SettingsPage::Network {
@@ -332,6 +333,97 @@ fn handle_network_pointer_down(
 /// Load the saved-network list into page state. Failures (Unsupported
 /// without a backend) leave the list empty and surface in `saved_total`
 /// semantics: count stays 0 and the page shows the honest unavailable line.
+/// Pointer routing on the Backup page. Without a trusted route the page is
+/// the manual-activation explainer and every click is inert. With a route:
+/// prompts are modal (confirm/cancel only), then the action buttons, then
+/// the snapshot rows for selection.
+fn handle_backup_pointer_down(
+    backup_handle: rt::Handle,
+    state: &mut AppState,
+    x: i32,
+    y: i32,
+) -> rt::Result<bool> {
+    if !crate::backup::page_live(&state.backup) {
+        return Ok(false);
+    }
+
+    if state.backup.prompt.is_some() {
+        if x >= BACKUP_CONFIRM_BTN_X0
+            && x < BACKUP_CONFIRM_BTN_X1
+            && y >= BACKUP_PROMPT_BTN_Y0
+            && y < BACKUP_PROMPT_BTN_Y1
+        {
+            match state.backup.prompt {
+                Some(crate::backup::BackupPrompt::RestoreConfirm(_)) => {
+                    crate::backup::perform_restore_apply(
+                        backup_handle,
+                        &mut state.backup,
+                        crate::backup::BACKUP_SCOPE_KNOWN_MASK,
+                    );
+                }
+                Some(crate::backup::BackupPrompt::DeleteConfirm) => {
+                    crate::backup::perform_delete(backup_handle, &mut state.backup);
+                }
+                None => {}
+            }
+            return Ok(true);
+        }
+        if x >= BACKUP_CANCEL_BTN_X0
+            && x < BACKUP_CANCEL_BTN_X1
+            && y >= BACKUP_PROMPT_BTN_Y0
+            && y < BACKUP_PROMPT_BTN_Y1
+        {
+            state.backup.cancel_prompt();
+            return Ok(true);
+        }
+        // Modal: clicks outside the prompt buttons change nothing.
+        return Ok(false);
+    }
+
+    if x >= BACKUP_EXPORT_BTN_X0
+        && x < BACKUP_EXPORT_BTN_X1
+        && y >= BACKUP_BTN_Y0
+        && y < BACKUP_BTN_Y1
+    {
+        crate::backup::perform_export(
+            backup_handle,
+            &mut state.backup,
+            crate::backup::BACKUP_SCOPE_KNOWN_MASK,
+        );
+        return Ok(true);
+    }
+    if x >= BACKUP_RESTORE_BTN_X0
+        && x < BACKUP_RESTORE_BTN_X1
+        && y >= BACKUP_BTN_Y0
+        && y < BACKUP_BTN_Y1
+    {
+        crate::backup::perform_restore_dry_run(
+            backup_handle,
+            &mut state.backup,
+            crate::backup::BACKUP_SCOPE_KNOWN_MASK,
+        );
+        return Ok(true);
+    }
+    if x >= BACKUP_DELETE_BTN_X0
+        && x < BACKUP_DELETE_BTN_X1
+        && y >= BACKUP_BTN_Y0
+        && y < BACKUP_BTN_Y1
+    {
+        let _ = state.backup.begin_delete();
+        return Ok(true);
+    }
+
+    if x >= WIFI_ROW_X0 && x < WIFI_ROW_X1 && y >= BACKUP_LIST_Y0 {
+        let row = ((y - BACKUP_LIST_Y0) / BACKUP_ROW_H) as usize;
+        if row < state.backup.entry_count {
+            state.backup.select(row);
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
 fn refresh_saved(network_handle: rt::Handle, state: &mut AppState) {
     match wifi::run_saved_list(network_handle, &mut state.wifi.saved) {
         Ok(total) => {
@@ -422,6 +514,7 @@ fn handle_wifi_pointer_down(
 fn handle_key_down(
     network_handle: rt::Handle,
     security_handle: rt::Handle,
+    backup_handle: rt::Handle,
     state: &mut AppState,
     key: u32,
 ) -> rt::Result<bool> {
@@ -448,7 +541,11 @@ fn handle_key_down(
             state.editing_note = false;
             state.editing_hostname = false;
             state.wifi.stop_editing();
-            state.backup.stop_editing();
+            if state.page == SettingsPage::Backup {
+                crate::backup::on_page_enter(backup_handle, &mut state.backup);
+            } else {
+                state.backup.stop_editing();
+            }
             Ok(true)
         }
         14 if state.wifi.prompt.is_some() => Ok(wifi::wifi_prompt_backspace(&mut state.wifi)),
@@ -539,15 +636,45 @@ mod tests {
     fn tab_key_cycles_all_five_pages() {
         let mut state = app_state();
         assert_eq!(state.page, SettingsPage::System);
-        let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 15);
+        let _ = handle_key_down(
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            &mut state,
+            15,
+        );
         assert_eq!(state.page, SettingsPage::Security);
-        let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 15);
+        let _ = handle_key_down(
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            &mut state,
+            15,
+        );
         assert_eq!(state.page, SettingsPage::Network);
-        let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 15);
+        let _ = handle_key_down(
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            &mut state,
+            15,
+        );
         assert_eq!(state.page, SettingsPage::Wifi);
-        let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 15);
+        let _ = handle_key_down(
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            &mut state,
+            15,
+        );
         assert_eq!(state.page, SettingsPage::Backup);
-        let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 15);
+        let _ = handle_key_down(
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            &mut state,
+            15,
+        );
         assert_eq!(state.page, SettingsPage::System);
     }
 
@@ -556,15 +683,33 @@ mod tests {
         let mut state = app_state();
         state.page = SettingsPage::Network;
         state.editing_hostname = true;
-        let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 15);
+        let _ = handle_key_down(
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            &mut state,
+            15,
+        );
         assert!(!state.editing_hostname);
         assert_eq!(state.page, SettingsPage::Wifi);
         state.editing_hostname = true;
-        let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 15);
+        let _ = handle_key_down(
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            &mut state,
+            15,
+        );
         assert!(!state.editing_hostname);
         assert_eq!(state.page, SettingsPage::Backup);
         state.editing_hostname = true;
-        let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 15);
+        let _ = handle_key_down(
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            &mut state,
+            15,
+        );
         assert!(!state.editing_hostname);
         assert_eq!(state.page, SettingsPage::System);
     }
@@ -584,19 +729,37 @@ mod tests {
         assert_eq!(&state.hostname_edit[..4], b"gw-x");
 
         // Backspace then retype.
-        let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 14);
+        let _ = handle_key_down(
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            &mut state,
+            14,
+        );
         assert_eq!(state.hostname_edit_len, 3);
         let _ = append_text_input(&mut state, b'9' as u64);
         assert_eq!(&state.hostname_edit[..4], b"gw-9");
 
         // Enter commits via the runtime wrapper; transport on INVALID_HANDLE
         // fails so commit_hostname returns false but must not panic.
-        let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 28);
+        let _ = handle_key_down(
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            &mut state,
+            28,
+        );
         assert!(!state.editing_hostname);
 
         // Esc cancels an edit without committing.
         state.editing_hostname = true;
-        let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 1);
+        let _ = handle_key_down(
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            &mut state,
+            1,
+        );
         assert!(!state.editing_hostname);
     }
 
@@ -681,6 +844,7 @@ mod tests {
             rt::INVALID_HANDLE,
             rt::INVALID_HANDLE,
             rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
             &mut state,
             TAB_WIFI_X0 + 4,
             TAB_Y0 + 4,
@@ -737,7 +901,13 @@ mod tests {
         // Enter attempts the join (a bogus handle never reaches a service
         // and the transport reports InvalidArgument) and closes the prompt
         // with an honest outcome recorded.
-        let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 28);
+        let _ = handle_key_down(
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            &mut state,
+            28,
+        );
         assert!(state.wifi.prompt.is_none());
         assert_eq!(state.wifi.join_outcome, Some(Err(WifiOpError::Invalid)));
     }
@@ -772,7 +942,13 @@ mod tests {
         assert_eq!(state.wifi.prompt, Some(WifiPrompt::SavedSsid));
 
         // Esc cancels the whole flow.
-        let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 1);
+        let _ = handle_key_down(
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            &mut state,
+            1,
+        );
         assert!(state.wifi.prompt.is_none());
         assert_eq!(state.wifi.prompt_len, 0);
     }
@@ -785,19 +961,37 @@ mod tests {
         for ch in b"net" {
             let _ = append_text_input(&mut state, *ch as u64);
         }
-        let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 28);
+        let _ = handle_key_down(
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            &mut state,
+            28,
+        );
         assert_eq!(state.wifi.prompt, Some(WifiPrompt::SavedPsk));
         assert_eq!(state.wifi.add_ssid_len, 3);
 
         for ch in b"password12" {
             let _ = append_text_input(&mut state, *ch as u64);
         }
-        let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 28);
+        let _ = handle_key_down(
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            &mut state,
+            28,
+        );
         assert_eq!(state.wifi.prompt, Some(WifiPrompt::SavedPriority));
 
         // Empty priority means 0; enter commits the add (transport fails
         // honestly on the invalid handle) and reloads the saved list.
-        let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 28);
+        let _ = handle_key_down(
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            &mut state,
+            28,
+        );
         assert!(state.wifi.prompt.is_none());
         assert!(state.wifi.saved_add_outcome.is_some());
     }
@@ -828,7 +1022,13 @@ mod tests {
         let _ = append_text_input(&mut state, b'a' as u64);
         let _ = append_text_input(&mut state, b'b' as u64);
         assert_eq!(state.wifi.prompt_len, 2);
-        let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 14);
+        let _ = handle_key_down(
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            &mut state,
+            14,
+        );
         assert_eq!(state.wifi.prompt_len, 1);
         assert_eq!(state.wifi.prompt_edit[..1], *b"a");
     }
@@ -840,13 +1040,37 @@ mod tests {
         state.wifi.scans[1] = secured_scan();
         state.wifi.scan_count = 2;
 
-        let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 108);
+        let _ = handle_key_down(
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            &mut state,
+            108,
+        );
         assert_eq!(state.wifi.selected_scan, 1);
-        let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 108);
+        let _ = handle_key_down(
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            &mut state,
+            108,
+        );
         assert_eq!(state.wifi.selected_scan, 1);
-        let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 103);
+        let _ = handle_key_down(
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            &mut state,
+            103,
+        );
         assert_eq!(state.wifi.selected_scan, 0);
-        let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 103);
+        let _ = handle_key_down(
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            &mut state,
+            103,
+        );
         assert_eq!(state.wifi.selected_scan, 0);
     }
 
@@ -871,7 +1095,13 @@ mod tests {
         for ch in b"password12" {
             let _ = wifi::wifi_prompt_char(&mut state.wifi, *ch as char);
         }
-        let _ = handle_key_down(rt::INVALID_HANDLE, rt::INVALID_HANDLE, &mut state, 28);
+        let _ = handle_key_down(
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            rt::INVALID_HANDLE,
+            &mut state,
+            28,
+        );
         assert_eq!(state.wifi.join_outcome, Some(Err(WifiOpError::Invalid)));
     }
 }

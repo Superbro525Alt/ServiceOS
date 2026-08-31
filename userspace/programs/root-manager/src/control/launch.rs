@@ -1,14 +1,24 @@
+use core::cell::UnsafeCell;
+
 use rt::{
     ControlTag, PermissionPolicyState, RawMessage, SecurityStatus, SecurityTag, ServiceId,
-    ServiceImageId, rights,
+    ServiceImageId, TaskStateCode, rights,
 };
 use serviceos_abi::{IPC_MAX_HANDLES, IPC_MAX_WORDS};
 use serviceos_userspace_runtime as rt;
 
 use crate::{
+    control::storage::load_image_from_storage,
     state::{MAX_SERVICE_SLOTS, ServiceSlot},
     util::{find_slot_index, find_slot_index_checked},
 };
+
+/// Boot-store location of the manually-activated backup-service image. The
+/// Backup page in settings-app reaches the service through a public-channel
+/// grant minted here at settings-app launch time (see
+/// `append_backup_channel_grant`); the shell drives the same image through
+/// its own stored-image launch path (shell-service `commands/backup.rs`).
+const BACKUP_PROGRAM_PATH: &str = "services/backup-service/program.img";
 
 pub(super) fn launch_program(
     slots: &[ServiceSlot; MAX_SERVICE_SLOTS],
@@ -38,6 +48,7 @@ pub(super) fn launch_program(
     append_launch_grants(
         slots,
         service_count,
+        bootstrap_authority,
         caller,
         image_id,
         &mut startup,
@@ -210,6 +221,7 @@ fn close_startup_handles(startup: &RawMessage) {
 fn append_launch_grants(
     slots: &[ServiceSlot; MAX_SERVICE_SLOTS],
     service_count: usize,
+    bootstrap_authority: rt::Handle,
     caller: ServiceId,
     image_id: ServiceImageId,
     startup: &mut RawMessage,
@@ -253,14 +265,29 @@ fn append_launch_grants(
                 startup,
                 handle_index,
             )?;
-            let _ = append_service_launch_handle(
+            // The Backup page reaches backup-service through the channel
+            // granted here (handles[7], present only when the Runtime grant
+            // above landed at handles[6] — the gating keeps the positional
+            // contract deterministic). Absent grant => the page degrades to
+            // its manual-activation explainer.
+            let runtime_granted = append_service_launch_handle(
                 slots,
                 service_count,
                 ServiceId::Runtime,
                 rights::SEND | rights::TRANSFER,
                 startup,
                 handle_index,
-            );
+            )
+            .is_ok();
+            if runtime_granted {
+                let _ = append_backup_channel_grant(
+                    slots,
+                    service_count,
+                    bootstrap_authority,
+                    startup,
+                    handle_index,
+                );
+            }
         }
         ServiceImageId::FilesApp => {
             append_service_launch_handle(
@@ -345,6 +372,167 @@ fn append_launch_grants(
     }
 
     Ok(())
+}
+
+struct BackupGrantCache {
+    task_view: rt::Handle,
+    public: rt::Handle,
+}
+
+struct BackupGrantCacheSlot(UnsafeCell<BackupGrantCache>);
+
+// SAFETY: the manager's supervision loop is strictly single-threaded (same
+// shape as shell-service's channel caches).
+unsafe impl Sync for BackupGrantCacheSlot {}
+
+static BACKUP_GRANT_CACHE: BackupGrantCacheSlot =
+    BackupGrantCacheSlot(UnsafeCell::new(BackupGrantCache {
+        task_view: rt::INVALID_HANDLE,
+        public: rt::INVALID_HANDLE,
+    }));
+
+fn backup_grant_cache() -> &'static mut BackupGrantCache {
+    // SAFETY: single-threaded manager loop.
+    unsafe { &mut *BACKUP_GRANT_CACHE.0.get() }
+}
+
+/// Grant settings-app the backup-service public channel (handles[7]).
+///
+/// Mirrors the shell's stored-image launch handshake (storage grant first,
+/// announcer second): the image is loaded from the boot store, spawned, and
+/// its announce carrying the public send-half is awaited here. The channel
+/// is cached across settings-app launches and re-validated through the task
+/// view, so a crashed instance is respawned on the next launch. Any failure
+/// leaves the grant absent — the page renders its manual-activation
+/// explainer — and never fails the settings-app launch itself.
+fn append_backup_channel_grant(
+    slots: &[ServiceSlot; MAX_SERVICE_SLOTS],
+    service_count: usize,
+    bootstrap_authority: rt::Handle,
+    startup: &mut RawMessage,
+    handle_index: &mut usize,
+) -> rt::Result<()> {
+    if *handle_index >= IPC_MAX_HANDLES {
+        return Err(rt::Error::BufferTooSmall);
+    }
+
+    let public = backup_grant_cache().public;
+    let task_view = backup_grant_cache().task_view;
+    if public != rt::INVALID_HANDLE {
+        match rt::task_status(task_view) {
+            Ok(status)
+                if !matches!(status.state, TaskStateCode::Exited | TaskStateCode::Faulted) =>
+            {
+                // Cached instance still running: reuse its channel.
+                let granted = rt::handle_duplicate(public, rights::SEND | rights::TRANSFER)?;
+                startup.handles[*handle_index] = granted;
+                startup.handle_rights[*handle_index] = rights::SEND;
+                *handle_index += 1;
+                return Ok(());
+            }
+            _ => {
+                // Stale cache entry: drop the dead handles and respawn.
+                let _ = rt::handle_close(public);
+                let _ = rt::handle_close(task_view);
+            }
+        }
+    }
+
+    let image_handle = load_image_from_storage(slots, service_count, BACKUP_PROGRAM_PATH)?;
+    let announcer = match rt::channel_create() {
+        Ok(pair) => pair,
+        Err(error) => {
+            let _ = rt::handle_close(image_handle);
+            return Err(error);
+        }
+    };
+    // Storage grant first (the service exits without it), announcer second:
+    // backup-service's positional startup contract, same as the shell path.
+    let storage_index = find_slot_index(slots, service_count, ServiceId::Storage)?;
+    let storage_grant = rt::handle_duplicate(
+        slots[storage_index].public_handle,
+        rights::SEND | rights::TRANSFER | rights::DUPLICATE,
+    );
+    let storage_grant = match storage_grant {
+        Ok(handle) => handle,
+        Err(error) => {
+            let _ = rt::handle_close(announcer.first);
+            let _ = rt::handle_close(announcer.second);
+            let _ = rt::handle_close(image_handle);
+            return Err(error);
+        }
+    };
+
+    let startup_handles = [storage_grant, announcer.second];
+    let startup_rights = [
+        rights::SEND | rights::TRANSFER,
+        rights::SEND | rights::TRANSFER,
+    ];
+    let spawned = launch_program_from_image(
+        slots,
+        service_count,
+        bootstrap_authority,
+        ServiceId::DesktopShell,
+        image_handle,
+        &[],
+        &startup_handles,
+        &startup_rights,
+        serviceos_abi::linux_abi::spawn_abi::NATIVE,
+    );
+    let _ = rt::handle_close(storage_grant);
+    let _ = rt::handle_close(announcer.second);
+    let _ = rt::handle_close(image_handle);
+    let task_view = match spawned {
+        Ok(handle) => handle,
+        Err(error) => {
+            let _ = rt::handle_close(announcer.first);
+            return Err(error);
+        }
+    };
+
+    // Await the child's announce carrying its public send-half.
+    const ANNOUNCE_WAIT_ITERATIONS: usize = 5000;
+    let mut announced = rt::INVALID_HANDLE;
+    for _ in 0..ANNOUNCE_WAIT_ITERATIONS {
+        let mut message = RawMessage::empty(0);
+        match rt::channel_receive_nonblocking(announcer.first, &mut message) {
+            Ok(()) => {
+                if message.handle_count >= 1 {
+                    announced = message.handles[0];
+                }
+                break;
+            }
+            Err(rt::Error::QueueEmpty) => {
+                if rt::yield_current().is_err() {
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    let _ = rt::handle_close(announcer.first);
+    if announced == rt::INVALID_HANDLE {
+        let _ = rt::handle_close(task_view);
+        return Err(rt::Error::Busy);
+    }
+
+    let granted = rt::handle_duplicate(announced, rights::SEND | rights::TRANSFER);
+    match granted {
+        Ok(handle) => {
+            let cache = backup_grant_cache();
+            cache.task_view = task_view;
+            cache.public = announced;
+            startup.handles[*handle_index] = handle;
+            startup.handle_rights[*handle_index] = rights::SEND;
+            *handle_index += 1;
+            Ok(())
+        }
+        Err(error) => {
+            let _ = rt::handle_close(announced);
+            let _ = rt::handle_close(task_view);
+            Err(error)
+        }
+    }
 }
 
 fn append_dynamic_launch_grants(

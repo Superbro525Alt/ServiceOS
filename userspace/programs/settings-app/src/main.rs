@@ -46,6 +46,9 @@ fn main() -> u64 {
     } else {
         rt::INVALID_HANDLE
     };
+    let backup_handle = crate::backup::backup_route_position(startup.handle_count as usize)
+        .map(|index| startup.handles[index])
+        .unwrap_or(rt::INVALID_HANDLE);
     let mut state = AppState {
         width: startup.words[1] as u32,
         height: startup.words[2] as u32,
@@ -115,6 +118,7 @@ fn main() -> u64 {
             audio_handle,
             runtime_handle,
             security_handle,
+            backup_handle,
             audio_stream_handle,
             &mut state,
         ) {

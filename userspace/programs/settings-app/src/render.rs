@@ -959,41 +959,43 @@ fn draw_backup_page(bytes: &mut [u8], state: &AppState) {
     };
     rt::draw_text_rgba8888(bytes, PIXEL_STRIDE, 12, 80, status_color, status_text);
 
-    for (index, line) in [
-        "IMAGE  services/backup-service/program.img",
-        "SPAWN ON DEMAND VIA STORED-IMAGE LAUNCH",
-        "NO NAMED SERVICE ID; PUBLISHES VIA LAUNCH HANDSHAKE",
-        "SETTINGS APP HAS NO BACKUP ROUTE THIS BOOT",
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        rt::draw_text_rgba8888(
-            bytes,
-            PIXEL_STRIDE,
-            12,
-            94 + (index as i32 * 10),
-            ui::TEXT_MUTED,
-            line,
-        );
-    }
+    let live = backup::page_live(backup);
+    if !live {
+        for (index, line) in [
+            "IMAGE  services/backup-service/program.img",
+            "SPAWN ON DEMAND VIA STORED-IMAGE LAUNCH",
+            "NO ROUTE THIS BOOT; PUBLISHES VIA LAUNCH HANDSHAKE",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            rt::draw_text_rgba8888(
+                bytes,
+                PIXEL_STRIDE,
+                12,
+                94 + (index as i32 * 10),
+                ui::TEXT_MUTED,
+                line,
+            );
+        }
 
-    for (index, line) in [
-        "SHELL: backup list | backup export [scope]",
-        "SHELL: backup restore <name> [--yes]",
-        "SHELL: backup delete <name> [--yes]",
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        rt::draw_text_rgba8888(
-            bytes,
-            PIXEL_STRIDE,
-            12,
-            138 + (index as i32 * 10),
-            ui::TEXT_SECONDARY,
-            line,
-        );
+        for (index, line) in [
+            "SHELL: backup list | backup export [scope]",
+            "SHELL: backup restore <name> [--yes]",
+            "SHELL: backup delete <name> [--yes]",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            rt::draw_text_rgba8888(
+                bytes,
+                PIXEL_STRIDE,
+                12,
+                138 + (index as i32 * 10),
+                ui::TEXT_SECONDARY,
+                line,
+            );
+        }
     }
 
     rt::draw_text_rgba8888(
@@ -1005,7 +1007,13 @@ fn draw_backup_page(bytes: &mut [u8], state: &AppState) {
         "SCOPES: CONFIG ACCOUNTS PACKAGES",
     );
 
-    // Controls render disabled until a route exists; clicks are inert.
+    // Controls render active only while a granted route is trusted; the
+    // explainer keeps them visually disabled.
+    let (button_bg, button_fg) = if live {
+        (ui::ACCENT, ui::TEXT_PRIMARY)
+    } else {
+        (ui::BG_PANEL, ui::TEXT_MUTED)
+    };
     for (x0, x1, label) in [
         (BACKUP_EXPORT_BTN_X0, BACKUP_EXPORT_BTN_X1, "EXPORT"),
         (BACKUP_RESTORE_BTN_X0, BACKUP_RESTORE_BTN_X1, "RESTORE"),
@@ -1017,9 +1025,9 @@ fn draw_backup_page(bytes: &mut [u8], state: &AppState) {
             BACKUP_BTN_Y0,
             x1,
             BACKUP_BTN_Y1,
-            ui::BG_PANEL,
+            button_bg,
             label,
-            ui::TEXT_MUTED,
+            button_fg,
         );
     }
 
@@ -1032,13 +1040,18 @@ fn draw_backup_page(bytes: &mut [u8], state: &AppState) {
         "SNAPSHOTS (backups/)",
     );
     if backup.entry_count == 0 {
+        let empty_text = if live {
+            "NO SNAPSHOTS"
+        } else {
+            "NO ROUTE - LIST UNAVAILABLE"
+        };
         rt::draw_text_rgba8888(
             bytes,
             PIXEL_STRIDE,
             12,
             BACKUP_LIST_Y0,
             ui::TEXT_MUTED,
-            "NO ROUTE - LIST UNAVAILABLE",
+            empty_text,
         );
     } else {
         for (row, entry) in backup.entries[..backup.entry_count].iter().enumerate() {
@@ -1071,6 +1084,29 @@ fn draw_backup_page(bytes: &mut [u8], state: &AppState) {
             BACKUP_LIST_Y0 + (BACKUP_LIST_ROWS as i32 * 10),
             ui::TEXT_MUTED,
             str::from_utf8(more.as_bytes()).unwrap_or("+MORE"),
+        );
+    }
+
+    if live && backup.prompt.is_some() {
+        draw_button(
+            bytes,
+            BACKUP_CONFIRM_BTN_X0,
+            BACKUP_PROMPT_BTN_Y0,
+            BACKUP_CONFIRM_BTN_X1,
+            BACKUP_PROMPT_BTN_Y1,
+            ui::ACCENT,
+            "CONFIRM",
+            ui::TEXT_PRIMARY,
+        );
+        draw_button(
+            bytes,
+            BACKUP_CANCEL_BTN_X0,
+            BACKUP_PROMPT_BTN_Y0,
+            BACKUP_CANCEL_BTN_X1,
+            BACKUP_PROMPT_BTN_Y1,
+            ui::BG_PANEL,
+            "CANCEL",
+            ui::TEXT_SECONDARY,
         );
     }
 

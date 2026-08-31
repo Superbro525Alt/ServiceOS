@@ -1,17 +1,14 @@
 //! Backup page machinery. The backup service is a manual-activation image
-//! (`services/backup-service/program.img`) with no named `ServiceId`; it
-//! publishes its public channel only over the launcher handshake, which the
-//! settings app does not receive, so this page has no transport route today:
-//! the runtime surface is an honest manual-activation explainer pointing at
-//! the shell's `backup` command family, and the request/reply state machine
-//! below is exercised by host tests only, ready for the future register/
-//! lookup route. Wire shapes mirror backup-service `protocol.rs` exactly
-//! (status-first replies, 0 = Ok).
-//!
-//! The unused-code allowance is deliberate: the request builders and reply
-//! decoders are dormant until a route exists, and host tests keep them
-//! correct in the meantime.
-#![allow(dead_code)]
+//! (`services/backup-service/program.img`) with no registration under its
+//! named `ServiceId`; it publishes its public channel over the launcher
+//! handshake. Root-manager performs that handshake when it launches this
+//! app and delivers the channel as startup handles[7] (present only when
+//! the Runtime grant landed at handles[6]; see root-manager
+//! `control/launch.rs`). This module owns both halves of that route: the
+//! transport glue that drives the request/reply machine over the granted
+//! channel, and the honest explainer that replaces the page when the grant
+//! is absent or the service unreachable. Wire shapes mirror backup-service
+//! `protocol.rs` exactly (status-first replies, 0 = Ok).
 
 use serviceos_userspace_runtime as rt;
 
@@ -204,12 +201,16 @@ impl BackupUiState {
         self.pending_restore_name = [0; BACKUP_NAME_MAX_BYTES];
     }
 
-    // ---- request builders (pure; the future control layer sends them) ----
+    // ---- request builders (pure; the transport layer sends them) ----
 
-    pub(crate) fn encode_list_request(&self) -> rt::RawMessage {
+    /// LIST request: [index]; the service replies once per index with
+    /// [status, index_echo, kind, name_len, packed path] (or status-only on
+    /// failure), so the page pages through `backups/` one row per round trip
+    /// until the End status.
+    pub(crate) fn encode_list_request(&self, index: usize) -> rt::RawMessage {
         let mut request = rt::RawMessage::empty(BACKUP_TAG_LIST_REQUEST);
         request.word_count = 1;
-        request.words[0] = BACKUP_LIST_ROWS as u64;
+        request.words[0] = index as u64;
         request
     }
 
@@ -569,6 +570,163 @@ pub(crate) fn decode_export_reply(
         record_count: reply.words[2] as u32,
         blob_size: reply.words[3] as usize,
     })
+}
+
+// ---- transport glue (the only code that touches the granted channel) ----
+
+/// Positional startup contract with root-manager's SettingsApp launch grants:
+/// handles[6] = Runtime, handles[7] = backup-service public channel, and the
+/// backup grant is appended only when the Runtime grant succeeded, so the
+/// handle count alone disambiguates the tail.
+pub(crate) fn backup_route_position(handle_count: usize) -> Option<usize> {
+    if handle_count >= 8 { Some(7) } else { None }
+}
+
+/// The page shows live controls only while a granted route is trusted.
+pub(crate) fn page_live(backup: &BackupUiState) -> bool {
+    backup.unavailable.is_none()
+}
+
+/// Hard bound on LIST round trips so a misbehaving service cannot stall the
+/// page loop; the window stays capacity-bounded and the surplus is reported
+/// honestly as `+N MORE`.
+const LIST_CALL_CAP: usize = 32;
+
+/// Shared mid-operation transport-failure settle: the route is no longer
+/// trusted (explainer on next render) and the in-flight phase resolves so
+/// the footer can report the failure. Never panics; returns the error the
+/// caller stores in its outcome slot.
+fn note_transport_outcome(backup: &mut BackupUiState) -> BackupOpError {
+    backup.note_transport();
+    backup.phase = BackupPhase::Ready;
+    BackupOpError::Transport
+}
+
+/// Page entry: connect or explain. A granted channel clears the explainer
+/// and refreshes the snapshot list; an absent grant keeps (or restores) the
+/// manual-activation explainer.
+pub(crate) fn on_page_enter(handle: rt::Handle, backup: &mut BackupUiState) {
+    backup.stop_editing();
+    if handle == rt::INVALID_HANDLE {
+        if backup.unavailable.is_none() {
+            backup.unavailable = Some(BackupUnavailable::NoRoute);
+        }
+        return;
+    }
+    backup.unavailable = None;
+    refresh_listing(handle, backup);
+}
+
+/// Page the service's `backups/` directory into the bounded list window.
+pub(crate) fn refresh_listing(handle: rt::Handle, backup: &mut BackupUiState) {
+    backup.begin_listing();
+    for index in 0..LIST_CALL_CAP {
+        let mut request = backup.encode_list_request(index);
+        match rt::channel_call(handle, &mut request) {
+            Ok(reply) => match backup.decode_list_reply(&reply) {
+                Ok(Some(_)) => {}
+                Ok(None) => break,
+                Err(_) => break,
+            },
+            Err(_) => {
+                let _ = note_transport_outcome(backup);
+                break;
+            }
+        }
+    }
+    if backup.phase == BackupPhase::Listing {
+        // Call cap reached without an End status: show what arrived.
+        backup.phase = BackupPhase::Ready;
+    }
+}
+
+/// EXPORT over the granted channel.
+pub(crate) fn perform_export(handle: rt::Handle, backup: &mut BackupUiState, scope_mask: u32) {
+    let mut request = match backup.begin_export(scope_mask) {
+        Ok(request) => request,
+        Err(error) => {
+            backup.phase = BackupPhase::Ready;
+            backup.export_outcome = Some(Err(error));
+            return;
+        }
+    };
+    match rt::channel_call(handle, &mut request) {
+        Ok(reply) => {
+            let _ = backup.on_export_reply(&reply);
+        }
+        Err(_) => {
+            backup.export_outcome = Some(Err(note_transport_outcome(backup)));
+        }
+    }
+}
+
+/// RESTORE dry-run over the granted channel; a clean report opens the
+/// confirm prompt (the machine owns that transition).
+pub(crate) fn perform_restore_dry_run(
+    handle: rt::Handle,
+    backup: &mut BackupUiState,
+    scope_mask: u32,
+) {
+    let mut request = match backup.begin_restore_dry_run(scope_mask) {
+        Ok(request) => request,
+        Err(error) => {
+            backup.phase = BackupPhase::Ready;
+            backup.restore_outcome = Some(Err(error));
+            return;
+        }
+    };
+    match rt::channel_call(handle, &mut request) {
+        Ok(reply) => {
+            let _ = backup.on_restore_reply(&reply);
+        }
+        Err(_) => {
+            backup.restore_outcome = Some(Err(note_transport_outcome(backup)));
+        }
+    }
+}
+
+/// Confirmed RESTORE apply over the granted channel.
+pub(crate) fn perform_restore_apply(
+    handle: rt::Handle,
+    backup: &mut BackupUiState,
+    scope_mask: u32,
+) {
+    let mut request = match backup.confirm_restore_apply(scope_mask) {
+        Ok(request) => request,
+        Err(error) => {
+            backup.phase = BackupPhase::Ready;
+            backup.restore_outcome = Some(Err(error));
+            return;
+        }
+    };
+    match rt::channel_call(handle, &mut request) {
+        Ok(reply) => {
+            let _ = backup.on_restore_reply(&reply);
+        }
+        Err(_) => {
+            backup.restore_outcome = Some(Err(note_transport_outcome(backup)));
+        }
+    }
+}
+
+/// Confirmed DELETE over the granted channel.
+pub(crate) fn perform_delete(handle: rt::Handle, backup: &mut BackupUiState) {
+    let mut request = match backup.confirm_delete() {
+        Ok(request) => request,
+        Err(error) => {
+            backup.phase = BackupPhase::Ready;
+            backup.delete_outcome = Some(Err(error));
+            return;
+        }
+    };
+    match rt::channel_call(handle, &mut request) {
+        Ok(reply) => {
+            let _ = backup.on_delete_reply(&reply);
+        }
+        Err(_) => {
+            backup.delete_outcome = Some(Err(note_transport_outcome(backup)));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -960,11 +1118,69 @@ mod tests {
     }
 
     #[test]
-    fn list_request_capacity_bounded() {
+    fn list_request_layout_matches_service_decode() {
         let state = BackupUiState::new();
-        let request = state.encode_list_request();
+        let request = state.encode_list_request(4);
         assert_eq!(request.tag, BACKUP_TAG_LIST_REQUEST);
         assert_eq!(request.word_count, 1);
-        assert_eq!(request.words[0], BACKUP_LIST_ROWS as u64);
+        assert_eq!(request.words[0], 4);
+    }
+
+    #[test]
+    fn route_position_follows_the_startup_contract() {
+        assert_eq!(backup_route_position(7), None);
+        assert_eq!(backup_route_position(8), Some(7));
+        assert_eq!(backup_route_position(12), Some(7));
+    }
+
+    #[test]
+    fn page_enter_without_grant_keeps_the_honest_explainer() {
+        let mut state = BackupUiState::new();
+        assert_eq!(state.unavailable, Some(BackupUnavailable::NoRoute));
+        on_page_enter(rt::INVALID_HANDLE, &mut state);
+        assert_eq!(state.unavailable, Some(BackupUnavailable::NoRoute));
+        assert!(!page_live(&state));
+        // A prior transport failure is never downgraded to NoRoute.
+        state.unavailable = Some(BackupUnavailable::TransportFailure);
+        on_page_enter(rt::INVALID_HANDLE, &mut state);
+        assert_eq!(state.unavailable, Some(BackupUnavailable::TransportFailure));
+    }
+
+    #[test]
+    fn page_enter_clears_prompts() {
+        let mut state = BackupUiState::new();
+        state.unavailable = None;
+        state.phase = BackupPhase::Ready;
+        state.entries[0] = BackupSnapshotEntry {
+            index: 0,
+            path: [0; BACKUP_PATH_MAX_BYTES],
+            path_len: 0,
+            name: {
+                let mut name = [0; BACKUP_NAME_MAX_BYTES];
+                name[..8].copy_from_slice(b"backup-1");
+                name
+            },
+            name_len: 8,
+        };
+        state.entry_count = 1;
+        state.selected = 0;
+        let _ = state.begin_delete();
+        assert!(state.prompt.is_some());
+        on_page_enter(rt::INVALID_HANDLE, &mut state);
+        assert!(state.prompt.is_none());
+    }
+
+    #[test]
+    fn page_live_switch_drives_the_render_contract() {
+        let mut state = BackupUiState::new();
+        assert!(!page_live(&state));
+        state.unavailable = None;
+        assert!(page_live(&state));
+        // Transport failure flips the page back to the explainer.
+        let error = note_transport_outcome(&mut state);
+        assert_eq!(error, BackupOpError::Transport);
+        assert_eq!(state.phase, BackupPhase::Ready);
+        assert_eq!(state.unavailable, Some(BackupUnavailable::TransportFailure));
+        assert!(!page_live(&state));
     }
 }

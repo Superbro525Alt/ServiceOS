@@ -85,8 +85,7 @@ fn call(bootstrap: rt::Handle, tag: u32, words: &[u64]) -> Result<RawMessage, Pe
     let mut request = RawMessage::empty(tag);
     request.word_count = words.len() as u32;
     request.words[..words.len()].copy_from_slice(words);
-    let response = rt::channel_call(handle, &mut request)
-        .map_err(|_| PeripheralFlow::Transport)?;
+    let response = rt::channel_call(handle, &mut request).map_err(|_| PeripheralFlow::Transport)?;
     if response.word_count < 1 {
         return Err(PeripheralFlow::Transport);
     }
@@ -135,13 +134,13 @@ fn cmd_status(bootstrap: rt::Handle, output: ShellOutput) -> rt::Result<()> {
             output,
             format_args!(
                 "peripherals: devices={} attach={} detach={} events={} printer=unimplemented",
-                reply.words[1],
-                reply.words[2],
-                reply.words[3],
-                reply.words[4],
+                reply.words[1], reply.words[2], reply.words[3], reply.words[4],
             ),
         ),
-        Ok(_) => write_output_linef(output, format_args!("{}", PeripheralFlow::Transport.message())),
+        Ok(_) => write_output_linef(
+            output,
+            format_args!("{}", PeripheralFlow::Transport.message()),
+        ),
         Err(flow) => write_output_linef(output, format_args!("{}", flow.message())),
     }
 }
@@ -152,7 +151,9 @@ fn cmd_list(bootstrap: rt::Handle, output: ShellOutput, filter: Option<&str>) ->
         Some(None) => {
             return write_output_linef(
                 output,
-                format_args!("unknown class; try keyboard|pointer|tablet|block|display|audio|printer"),
+                format_args!(
+                    "unknown class; try keyboard|pointer|tablet|block|display|audio|printer"
+                ),
             );
         }
         None => ([0, 0], "all"),
@@ -181,7 +182,10 @@ fn cmd_list(bootstrap: rt::Handle, output: ShellOutput, filter: Option<&str>) ->
             }
             Ok(())
         }
-        Ok(_) => write_output_linef(output, format_args!("{}", PeripheralFlow::Transport.message())),
+        Ok(_) => write_output_linef(
+            output,
+            format_args!("{}", PeripheralFlow::Transport.message()),
+        ),
         Err(flow) => write_output_linef(output, format_args!("{}", flow.message())),
     }
 }
@@ -218,7 +222,10 @@ fn cmd_events(bootstrap: rt::Handle, output: ShellOutput, count: Option<&str>) -
             }
             Ok(())
         }
-        Ok(_) => write_output_linef(output, format_args!("{}", PeripheralFlow::Transport.message())),
+        Ok(_) => write_output_linef(
+            output,
+            format_args!("{}", PeripheralFlow::Transport.message()),
+        ),
         Err(flow) => write_output_linef(output, format_args!("{}", flow.message())),
     }
 }
@@ -243,13 +250,25 @@ mod tests {
 
     #[test]
     fn class_names_cover_every_known_class_and_reject_junk() {
-        assert_eq!(parse_class_name("keyboard"), Some(DeviceClass::Keyboard as u64));
-        assert_eq!(parse_class_name("pointer"), Some(DeviceClass::Pointer as u64));
+        assert_eq!(
+            parse_class_name("keyboard"),
+            Some(DeviceClass::Keyboard as u64)
+        );
+        assert_eq!(
+            parse_class_name("pointer"),
+            Some(DeviceClass::Pointer as u64)
+        );
         assert_eq!(parse_class_name("tablet"), Some(DeviceClass::Tablet as u64));
         assert_eq!(parse_class_name("block"), Some(DeviceClass::Block as u64));
-        assert_eq!(parse_class_name("display"), Some(DeviceClass::Display as u64));
+        assert_eq!(
+            parse_class_name("display"),
+            Some(DeviceClass::Display as u64)
+        );
         assert_eq!(parse_class_name("audio"), Some(DeviceClass::Audio as u64));
-        assert_eq!(parse_class_name("printer"), Some(DeviceClass::Printer as u64));
+        assert_eq!(
+            parse_class_name("printer"),
+            Some(DeviceClass::Printer as u64)
+        );
         assert_eq!(parse_class_name(""), None);
         assert_eq!(parse_class_name("toaster"), None);
     }
@@ -285,6 +304,10 @@ mod tests {
             PeripheralFlow::Rejected(2).message(),
             "peripheral-service rejected: unknown device"
         );
-        assert!(PeripheralFlow::Transport.message().starts_with("peripheral"));
+        assert!(
+            PeripheralFlow::Transport
+                .message()
+                .starts_with("peripheral")
+        );
     }
 }

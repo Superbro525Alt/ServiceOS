@@ -1,5 +1,5 @@
 use rt::{
-    Handle, RawMessage, STORAGE_MOUNT_TABLE_MAX, STORAGE_MOUNT_PATH_MAX, STORAGE_ROOT_AUTHORITY,
+    Handle, RawMessage, STORAGE_MOUNT_PATH_MAX, STORAGE_MOUNT_TABLE_MAX, STORAGE_ROOT_AUTHORITY,
     StorageEntryKind, StorageMountKind, StorageStatus,
 };
 use serviceos_userspace_runtime as rt;
@@ -241,7 +241,9 @@ pub(crate) fn scan_memory(
             report.warning(CODE_MOUNT_PATH, i as u16, path);
         }
         if mounts[..i].iter().any(|other| {
-            other.occupied && other.path_len == mount.path_len && other.path[..other.path_len] == *path
+            other.occupied
+                && other.path_len == mount.path_len
+                && other.path[..other.path_len] == *path
         }) {
             report.error(CODE_MOUNT_DUPLICATE, i as u16, path);
         }
@@ -327,9 +329,10 @@ pub(crate) fn validate_snapshot_fields(
     if fields.records_offset < block_size
         || fields.total_bytes == 0
         || fields.total_bytes > slot_bytes
-        || fields.data_offset < fields.records_offset
-            + fields.entry_count * crate::PERSISTENT_RECORD_BYTES
-            + fields.mount_count * crate::MOUNT_RECORD_BYTES
+        || fields.data_offset
+            < fields.records_offset
+                + fields.entry_count * crate::PERSISTENT_RECORD_BYTES
+                + fields.mount_count * crate::MOUNT_RECORD_BYTES
     {
         return Some(CODE_SNAPSHOT_HEADER);
     }
@@ -456,11 +459,7 @@ fn log_report(action: &str, apply: bool, report: &FsckReport) {
     );
 }
 
-fn scan_snapshot_slots(
-    store: &PersistentStore,
-    mounts: &MountTable,
-    report: &mut FsckReport,
-) {
+fn scan_snapshot_slots(store: &PersistentStore, mounts: &MountTable, report: &mut FsckReport) {
     let block_size = store.block_size;
     let slot_bytes = store.slot_blocks * block_size;
     let mut generations = [None; 2];
@@ -485,8 +484,15 @@ fn scan_snapshot_slots(
         }
         let magic_ok = block[..crate::PERSISTENT_MAGIC.len()] == crate::PERSISTENT_MAGIC;
         let version = u32::from_le_bytes(block[8..12].try_into().unwrap());
-        let Some((generation, entry_count, mount_count, records_offset, data_offset, total_bytes, stored_checksum)) =
-            parse_header(store, slot, &block, block_size)
+        let Some((
+            generation,
+            entry_count,
+            mount_count,
+            records_offset,
+            data_offset,
+            total_bytes,
+            stored_checksum,
+        )) = parse_header(store, slot, &block, block_size)
         else {
             report.error(CODE_SNAPSHOT_HEADER, slot as u16, b"unparseable");
             continue;
@@ -525,7 +531,11 @@ fn scan_snapshot_slots(
     let stale = generations[store.active_slot ^ 1];
     if let (Some(active_gen), Some(stale_gen)) = (active, stale) {
         if chain_regression(active_gen, stale_gen) {
-            report.error(CODE_GENERATION_REGRESSION, store.active_slot as u16, b"slots");
+            report.error(
+                CODE_GENERATION_REGRESSION,
+                store.active_slot as u16,
+                b"slots",
+            );
         }
     }
 }
@@ -677,7 +687,12 @@ pub(crate) fn handle_fsck_request(
     let authority = message.words[1];
 
     if authority != STORAGE_ROOT_AUTHORITY {
-        send_fsck_reply(reply_handle, StorageStatus::Denied, &FsckReport::new(), false);
+        send_fsck_reply(
+            reply_handle,
+            StorageStatus::Denied,
+            &FsckReport::new(),
+            false,
+        );
         return Ok(());
     }
 
@@ -739,7 +754,10 @@ mod tests {
             ),
         ];
         for (slot, (path, kind, flags)) in mounts.iter_mut().zip(defaults.iter()) {
-            assert!(slot.install(path, *kind, *flags, STORAGE_ROOT_AUTHORITY).is_ok());
+            assert!(
+                slot.install(path, *kind, *flags, STORAGE_ROOT_AUTHORITY)
+                    .is_ok()
+            );
         }
         mounts
     }
@@ -812,14 +830,16 @@ mod tests {
     #[test]
     fn repair_drops_bad_records_and_is_idempotent() {
         let mut mounts = seeded_mounts();
-        assert!(mounts[3]
-            .install(
-                b"extra/",
-                StorageMountKind::Temp,
-                STORAGE_MOUNT_FLAG_WRITABLE,
-                STORAGE_ROOT_AUTHORITY
-            )
-            .is_ok());
+        assert!(
+            mounts[3]
+                .install(
+                    b"extra/",
+                    StorageMountKind::Temp,
+                    STORAGE_MOUNT_FLAG_WRITABLE,
+                    STORAGE_ROOT_AUTHORITY
+                )
+                .is_ok()
+        );
 
         let mut entries = [MutableEntry::empty(); MAX_MUTABLE_ENTRIES];
         entries[0] = file_entry(b"home/keep.txt");

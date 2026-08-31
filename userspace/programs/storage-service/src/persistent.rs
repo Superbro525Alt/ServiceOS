@@ -678,7 +678,11 @@ mod tests {
         let mut scratch = [0u8; BLOCK_BUFFER_BYTES];
         write_batch(&device, TEST_BLOCK_SIZE, 7, &mut scratch).expect("batch writes");
         for index in 0..7 {
-            assert_record(&device, TEST_BLOCK_SIZE + index * PERSISTENT_RECORD_BYTES, index);
+            assert_record(
+                &device,
+                TEST_BLOCK_SIZE + index * PERSISTENT_RECORD_BYTES,
+                index,
+            );
         }
     }
 

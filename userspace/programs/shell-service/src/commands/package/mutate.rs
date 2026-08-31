@@ -449,7 +449,14 @@ where
     let argument = compose_version_argument(&mut argument_buffer, options.version, options.source);
     let mut request = mutation_request(request_tag, service_id, argument)?;
     let reply = if options.verbose {
-        streamed_mutation(bootstrap, output, package_handle, &mut request, op, service_id)?
+        streamed_mutation(
+            bootstrap,
+            output,
+            package_handle,
+            &mut request,
+            op,
+            service_id,
+        )?
     } else {
         rt::channel_call(package_handle, &mut request)?
     };
@@ -910,9 +917,7 @@ mod tests {
 
     #[test]
     fn mutation_options_parse_verbose_flag() {
-        let options = parse_mutation_options(
-            ["1.4.0", "--verbose", "@beta", "--yes"].into_iter(),
-        );
+        let options = parse_mutation_options(["1.4.0", "--verbose", "@beta", "--yes"].into_iter());
         assert!(options.verbose);
         assert!(options.yes);
         assert_eq!(options.version, Some("1.4.0"));

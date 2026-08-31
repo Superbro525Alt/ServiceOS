@@ -285,15 +285,15 @@ fn main() -> u64 {
                     return 0xfc08;
                 }
             }
-                Err(rt::Error::QueueEmpty) => {
-                    // E2E gated synthetic cursor-band cycles exercise the
-                    // partial-present planner on idle boots (no monotonic
-                    // clock dependency); inert without SERVICEOS_E2E_GFX=1.
-                    if matches!(dirty, DirtyState::Clean) {
-                        e2e_probe.maybe_synth_cursor_cycle(&surfaces, &mut dirty);
-                    }
+            Err(rt::Error::QueueEmpty) => {
+                // E2E gated synthetic cursor-band cycles exercise the
+                // partial-present planner on idle boots (no monotonic
+                // clock dependency); inert without SERVICEOS_E2E_GFX=1.
+                if matches!(dirty, DirtyState::Clean) {
+                    e2e_probe.maybe_synth_cursor_cycle(&surfaces, &mut dirty);
                 }
-                Err(_) => return 0xfc0c,
+            }
+            Err(_) => return 0xfc0c,
         }
     }
 }

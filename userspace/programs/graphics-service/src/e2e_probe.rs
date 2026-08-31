@@ -18,8 +18,10 @@
 
 use serviceos_userspace_runtime as rt;
 
-use crate::compose::{plan_band_flush, BandAction};
-use crate::types::{DamageRect, DamageSet, DirtyState, Surfaces, is_cursor_surface, surface_bounds};
+use crate::compose::{BandAction, plan_band_flush};
+use crate::types::{
+    DamageRect, DamageSet, DirtyState, Surfaces, is_cursor_surface, surface_bounds,
+};
 
 /// Builds with SERVICEOS_E2E_GFX=1 run the witness probes.
 pub(crate) fn enabled() -> bool {
@@ -170,7 +172,10 @@ impl GfxProbe {
             BandAction::WholeClip => {
                 let _ = rt::write_logf(
                     "graphics",
-                    format_args!("E2E gfx.cursor-band cycle={} visible=1 whole_clip=1", self.cycles),
+                    format_args!(
+                        "E2E gfx.cursor-band cycle={} visible=1 whole_clip=1",
+                        self.cycles
+                    ),
                 );
             }
         }

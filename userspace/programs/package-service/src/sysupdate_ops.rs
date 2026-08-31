@@ -27,7 +27,10 @@ pub(crate) fn build_plan_ids(
 ) -> usize {
     let mut candidates = [0u32; MAX_SYSUPDATE_STEPS];
     let mut count = 0usize;
-    for slot in packages[..package_count].iter().filter(|slot| slot.occupied) {
+    for slot in packages[..package_count]
+        .iter()
+        .filter(|slot| slot.occupied)
+    {
         if slot.installed.is_none() || count >= candidates.len() {
             continue;
         }
@@ -120,8 +123,7 @@ fn plan_count(
 }
 
 fn plan_flags(storage_handle: rt::Handle) -> u64 {
-    u64::from(load_committed_txn(storage_handle).is_some())
-        * SYSUPDATE_FLAG_COMMITTED_TXN_PRESENT
+    u64::from(load_committed_txn(storage_handle).is_some()) * SYSUPDATE_FLAG_COMMITTED_TXN_PRESENT
 }
 
 fn plan_status(
@@ -209,13 +211,7 @@ fn handle_sysupdate_apply(
         );
     }
     let mut txn = ParsedTxn::empty();
-    txn.total = build_plan_ids(
-        repos,
-        repo_count,
-        packages,
-        package_count,
-        &mut txn.ids,
-    ) as usize;
+    txn.total = build_plan_ids(repos, repo_count, packages, package_count, &mut txn.ids) as usize;
     txn.count = txn.total;
     if txn.total == 0 {
         return send_sysupdate_reply(
@@ -646,8 +642,7 @@ fn handle_sysupdate_history(
             rolled_back,
         } = *row;
         payload[words] = tick;
-        payload[words + 1] =
-            applied | ((u64::from(rolled_back)) << 32);
+        payload[words + 1] = applied | ((u64::from(rolled_back)) << 32);
         words += 2;
     }
     send_sysupdate_reply(
@@ -680,7 +675,10 @@ pub(crate) fn recover_interrupted_sysupdate(
         _ => {
             // Transaction file lost or unreadable: nothing resumable.
             discard_sysupdate(storage_handle, journal);
-            return (PackageStatus::Interrupted, ops_model::RECOVERY_OUTCOME_RESUME_FAILED);
+            return (
+                PackageStatus::Interrupted,
+                ops_model::RECOVERY_OUTCOME_RESUME_FAILED,
+            );
         }
     };
     match txn.state {
@@ -712,12 +710,18 @@ pub(crate) fn recover_interrupted_sysupdate(
                         (PackageStatus::Ok, ops_model::RECOVERY_OUTCOME_RESUMED)
                     } else {
                         discard_sysupdate(storage_handle, journal);
-                        (PackageStatus::Interrupted, ops_model::RECOVERY_OUTCOME_RESUME_FAILED)
+                        (
+                            PackageStatus::Interrupted,
+                            ops_model::RECOVERY_OUTCOME_RESUME_FAILED,
+                        )
                     }
                 }
                 Err(_) => {
                     discard_sysupdate(storage_handle, journal);
-                    (PackageStatus::Interrupted, ops_model::RECOVERY_OUTCOME_RESUME_FAILED)
+                    (
+                        PackageStatus::Interrupted,
+                        ops_model::RECOVERY_OUTCOME_RESUME_FAILED,
+                    )
                 }
             }
         }
@@ -754,7 +758,10 @@ pub(crate) fn recover_interrupted_sysupdate(
                 }
                 Err(_) => {
                     discard_sysupdate(storage_handle, journal);
-                    (PackageStatus::Interrupted, ops_model::RECOVERY_OUTCOME_RESUME_FAILED)
+                    (
+                        PackageStatus::Interrupted,
+                        ops_model::RECOVERY_OUTCOME_RESUME_FAILED,
+                    )
                 }
             }
         }
@@ -768,7 +775,10 @@ pub(crate) fn recover_interrupted_sysupdate(
         }
         _ => {
             discard_sysupdate(storage_handle, journal);
-            (PackageStatus::Interrupted, ops_model::RECOVERY_OUTCOME_RESUME_FAILED)
+            (
+                PackageStatus::Interrupted,
+                ops_model::RECOVERY_OUTCOME_RESUME_FAILED,
+            )
         }
     }
 }

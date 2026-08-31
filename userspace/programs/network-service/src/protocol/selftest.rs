@@ -38,12 +38,7 @@ pub(crate) mod selftest_phase {
 /// Emits one selftest outcome into the shared log stream (same path the
 /// developer/graphics domain feeds consume) with the UDP/TCP sub-outcomes
 /// packed into `arg2`.
-fn emit_phase_record(
-    log_handle: rt::Handle,
-    severity: rt::LogSeverity,
-    phase: u64,
-    detail: u64,
-) {
+fn emit_phase_record(log_handle: rt::Handle, severity: rt::LogSeverity, phase: u64, detail: u64) {
     let _ = rt::send_log_record_ex(
         log_handle,
         rt::ServiceId::Network,

@@ -140,8 +140,11 @@ impl HistorySearch {
         self.query_len -= 1;
         self.query[self.query_len] = 0;
         self.failed = false;
-        self.match_order =
-            find_from(history, self.query(), self.match_order.map(|_| history.count()));
+        self.match_order = find_from(
+            history,
+            self.query(),
+            self.match_order.map(|_| history.count()),
+        );
         true
     }
 
@@ -442,7 +445,10 @@ mod tests {
         let history = Fixture::new(&[]);
         let mut search = HistorySearch::new();
         search.begin();
-        assert!(!search.refine(b'a', &history), "no history: nothing refines");
+        assert!(
+            !search.refine(b'a', &history),
+            "no history: nothing refines"
+        );
         search.cycle_older(&history);
         assert_eq!(find_from(&history, b"a", None), None);
         assert_eq!(search.accept(), None);
@@ -481,9 +487,6 @@ mod tests {
 
         assert!(search.refine(b'z', &history));
         let len = render_search_line(&search, b"stats", &mut buffer);
-        assert_eq!(
-            &buffer[..len],
-            b"(failing reverse-i-search)`statz': stats"
-        );
+        assert_eq!(&buffer[..len], b"(failing reverse-i-search)`statz': stats");
     }
 }

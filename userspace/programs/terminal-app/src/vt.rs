@@ -646,11 +646,7 @@ mod tests {
         grid[line][..cols].iter().map(|cell| cell.ch).collect()
     }
 
-    fn pane_with(
-        line_count: usize,
-        cursor: (usize, usize),
-        saved: (usize, usize),
-    ) -> TerminalPane {
+    fn pane_with(line_count: usize, cursor: (usize, usize), saved: (usize, usize)) -> TerminalPane {
         let mut pane = TerminalPane::empty();
         pane.line_count = line_count;
         pane.cursor_line = cursor.0;

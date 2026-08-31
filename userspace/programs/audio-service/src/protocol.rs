@@ -12,8 +12,7 @@ use serviceos_userspace_runtime as rt;
 
 use crate::{
     consts::{
-        CAPTURE_BLOCK_TICKS, CAPTURE_MAX_READ_FRAMES, CAPTURE_REPLY_HEADER_WORDS,
-        MAX_AUDIO_STREAMS,
+        CAPTURE_BLOCK_TICKS, CAPTURE_MAX_READ_FRAMES, CAPTURE_REPLY_HEADER_WORDS, MAX_AUDIO_STREAMS,
     },
     types::{CaptureStreamState, StreamSlot},
     util::{emit_log, ticks_from_ms},
@@ -201,14 +200,8 @@ pub(crate) fn handle_public_request(
             });
             match negotiated {
                 Some((format, rate, channels)) => {
-                    match allocate_capture_stream(
-                        streams,
-                        pcm,
-                        session_id,
-                        format,
-                        rate,
-                        channels,
-                    ) {
+                    match allocate_capture_stream(streams, pcm, session_id, format, rate, channels)
+                    {
                         Ok((slot, client_handle, capture)) => {
                             reply.words[0] = AudioStatus::Ok as u32 as u64;
                             reply.words[1] = slot as u64;
@@ -611,8 +604,7 @@ fn handle_capture_stream_request(
                 checksum: CHECKSUM_SEED,
             });
             let requested = (request.words[0] as usize).min(CAPTURE_MAX_READ_FRAMES);
-            let blocking =
-                request.words[1] & audio_stream_read_flag::BLOCKING != 0;
+            let blocking = request.words[1] & audio_stream_read_flag::BLOCKING != 0;
             // One reply carries at most the sample payload that fits in
             // the IPC word budget after the header words.
             let payload_words = IPC_MAX_WORDS - CAPTURE_REPLY_HEADER_WORDS;
@@ -637,20 +629,24 @@ fn handle_capture_stream_request(
                     break take;
                 }
                 spins += 1;
-                if !blocking
-                    || now >= deadline
-                    || spins >= CAPTURE_BLOCK_TICKS * 16
-                {
+                if !blocking || now >= deadline || spins >= CAPTURE_BLOCK_TICKS * 16 {
                     break 0;
                 }
                 let _ = rt::yield_current();
                 now = rt::monotonic_now().unwrap_or(0);
             };
             if take > 0 {
-                let first_tick =
-                    capture_frame_tick(capture.start_tick, capture.frames_produced, capture.rate_hz);
-                let packed =
-                    capture_pack_silence(capture.format, capture.channels, take, &mut reply.words[CAPTURE_REPLY_HEADER_WORDS..]);
+                let first_tick = capture_frame_tick(
+                    capture.start_tick,
+                    capture.frames_produced,
+                    capture.rate_hz,
+                );
+                let packed = capture_pack_silence(
+                    capture.format,
+                    capture.channels,
+                    take,
+                    &mut reply.words[CAPTURE_REPLY_HEADER_WORDS..],
+                );
                 capture.checksum = capture_checksum_silence(capture.checksum, take);
                 capture.frames_produced += take as u64;
                 streams[slot_index].capture = Some(capture);

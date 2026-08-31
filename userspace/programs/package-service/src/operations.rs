@@ -12,11 +12,7 @@ fn optional_text<'a>(text: &'a str) -> Option<&'a str> {
 /// journal action codes (JOURNAL_INSTALL/UPDATE/ROLLBACK) and `progress.pack()`
 /// carries the phase/step/total word the operation reply already uses, so the
 /// shell decodes both with the same helpers it applies to final replies.
-fn emit_operation_progress(
-    log_handle: rt::Handle,
-    op: u32,
-    progress: &ops_model::ProgressTracker,
-) {
+fn emit_operation_progress(log_handle: rt::Handle, op: u32, progress: &ops_model::ProgressTracker) {
     let _ = emit_package_event(
         log_handle,
         LogSeverity::Info,

@@ -337,7 +337,12 @@ mod tests {
     fn wait_parks_with_saturated_deadline_when_incomplete() {
         let tracker = FenceTracker::new();
         let decision = decide_fence_wait(tracker.completed(), 3, 1_000, 250);
-        assert_eq!(decision, WaitDecision::Park { deadline_tick: 1_250 });
+        assert_eq!(
+            decision,
+            WaitDecision::Park {
+                deadline_tick: 1_250
+            }
+        );
         // Deadline math saturates instead of wrapping.
         assert_eq!(
             decide_fence_wait(0, u64::MAX - 1, u64::MAX - 10, 100),

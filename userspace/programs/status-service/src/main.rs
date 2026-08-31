@@ -266,7 +266,10 @@ fn main() -> u64 {
             Err(_) => return 0xf410,
         }
 
-        for feed in [developer_feed, graphics_feed, kernel_feed].into_iter().flatten() {
+        for feed in [developer_feed, graphics_feed, kernel_feed]
+            .into_iter()
+            .flatten()
+        {
             let mut stream = RawMessage::empty(0);
             match rt::channel_receive_nonblocking(feed, &mut stream) {
                 Ok(()) if stream.tag == LogTag::StreamRecord as u32 && stream.word_count >= 9 => {
@@ -661,8 +664,7 @@ fn handle_request(
                     return Ok(());
                 }
                 let stats = timeline.service_stats(request.words[1] as u32);
-                let mut stats_reply =
-                    RawMessage::empty(timeline_tag::STATS_REPLY);
+                let mut stats_reply = RawMessage::empty(timeline_tag::STATS_REPLY);
                 let packed = stats.pack_reply_words();
                 stats_reply.word_count = packed.len() as u32;
                 stats_reply.words = packed;

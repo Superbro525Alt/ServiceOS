@@ -66,10 +66,7 @@ pub(crate) struct ScanBand {
 /// Merge half-open row spans into disjoint bands, uniting overlapping or
 /// adjacent spans (damage rects commonly touch row edges). Returns the band
 /// count, or `None` when the merged result would exceed the capacity.
-pub(crate) fn merge_row_spans(
-    spans: &[(u32, u32)],
-    bands: &mut [ScanBand],
-) -> Option<usize> {
+pub(crate) fn merge_row_spans(spans: &[(u32, u32)], bands: &mut [ScanBand]) -> Option<usize> {
     let mut count = 0usize;
     for &(start, end) in spans {
         if end <= start {
@@ -95,7 +92,10 @@ pub(crate) fn merge_row_spans(
                     bands[shift] = bands[shift - 1];
                     shift -= 1;
                 }
-                bands[write] = ScanBand { start_y: start, end_y: end };
+                bands[write] = ScanBand {
+                    start_y: start,
+                    end_y: end,
+                };
                 count += 1;
                 merged_existing = true;
                 break;
@@ -103,7 +103,10 @@ pub(crate) fn merge_row_spans(
             // Overlapping or adjacent: absorb into the existing band.
             start = start.min(band.start_y);
             end = end.max(band.end_y);
-            bands[write] = ScanBand { start_y: start, end_y: end };
+            bands[write] = ScanBand {
+                start_y: start,
+                end_y: end,
+            };
             merged_existing = true;
             // Absorb any later bands the grown span now touches.
             let mut read = write + 1;
@@ -127,7 +130,10 @@ pub(crate) fn merge_row_spans(
             if count >= bands.len() {
                 return None;
             }
-            bands[count] = ScanBand { start_y: start, end_y: end };
+            bands[count] = ScanBand {
+                start_y: start,
+                end_y: end,
+            };
             count += 1;
         }
     }
@@ -157,7 +163,10 @@ impl BandFlushPlan {
     fn full() -> Self {
         Self {
             action: BandAction::WholeClip,
-            bands: [ScanBand { start_y: 0, end_y: 0 }; MAX_FLUSH_BANDS],
+            bands: [ScanBand {
+                start_y: 0,
+                end_y: 0,
+            }; MAX_FLUSH_BANDS],
             band_count: 0,
         }
     }
@@ -191,8 +200,8 @@ pub(crate) fn plan_band_flush(
         let offset = row as usize * stride_bytes;
         // Compare only the clipped column range; anchoring at column 0
         // would read a prefix that can sit entirely outside the damage.
-        let changed =
-            frame[offset + col_start..offset + col_end] != presented[offset + col_start..offset + col_end];
+        let changed = frame[offset + col_start..offset + col_end]
+            != presented[offset + col_start..offset + col_end];
         if changed && run_start.is_none() {
             run_start = Some(row);
         }
@@ -262,20 +271,14 @@ fn flush_span(
             let sy = rect.y.max(0) as u32;
             let ex = ((rect.x.saturating_add(rect.width as i32)).max(0) as usize)
                 .min(output.width as usize);
-            let ey = ((rect.y.saturating_add(rect.height as i32)).max(0) as u32)
-                .min(output.height);
+            let ey = ((rect.y.saturating_add(rect.height as i32)).max(0) as u32).min(output.height);
             (sx, ex, sy, ey)
         }
     };
     if start_x >= end_x || start_y >= end_y {
         return None;
     }
-    Some((
-        start_y,
-        end_y,
-        start_x * bpp,
-        end_x * bpp,
-    ))
+    Some((start_y, end_y, start_x * bpp, end_x * bpp))
 }
 
 pub(crate) fn compose_and_present(
@@ -942,24 +945,39 @@ mod tests {
 
     #[test]
     fn row_spans_merge_overlapping_and_adjacent_rects() {
-        let mut bands = [ScanBand { start_y: 0, end_y: 0 }; MAX_FLUSH_BANDS];
+        let mut bands = [ScanBand {
+            start_y: 0,
+            end_y: 0,
+        }; MAX_FLUSH_BANDS];
         // Two overlapping rects plus one touching edge and one disjoint.
-        let count = merge_row_spans(
-            &[(2, 5), (4, 9), (9, 12), (20, 22)],
-            &mut bands,
-        )
-        .unwrap();
+        let count = merge_row_spans(&[(2, 5), (4, 9), (9, 12), (20, 22)], &mut bands).unwrap();
         assert_eq!(count, 2);
-        assert_eq!(bands[0], ScanBand { start_y: 2, end_y: 12 });
-        assert_eq!(bands[1], ScanBand { start_y: 20, end_y: 22 });
+        assert_eq!(
+            bands[0],
+            ScanBand {
+                start_y: 2,
+                end_y: 12
+            }
+        );
+        assert_eq!(
+            bands[1],
+            ScanBand {
+                start_y: 20,
+                end_y: 22
+            }
+        );
     }
 
     #[test]
     fn row_spans_ignore_empty_and_report_capacity_overflow() {
-        let mut bands = [ScanBand { start_y: 0, end_y: 0 }; MAX_FLUSH_BANDS];
+        let mut bands = [ScanBand {
+            start_y: 0,
+            end_y: 0,
+        }; MAX_FLUSH_BANDS];
         assert_eq!(merge_row_spans(&[(3, 3), (1, 1)], &mut bands), Some(0));
-        let wide: Vec<(u32, u32)> =
-            (0..MAX_FLUSH_BANDS as u32 + 2).map(|y| (y * 10, y * 10 + 5)).collect();
+        let wide: Vec<(u32, u32)> = (0..MAX_FLUSH_BANDS as u32 + 2)
+            .map(|y| (y * 10, y * 10 + 5))
+            .collect();
         assert!(merge_row_spans(&wide, &mut bands).is_none());
     }
 
@@ -1016,8 +1034,14 @@ mod tests {
         assert_eq!(
             plan.bands[..2],
             [
-                ScanBand { start_y: 0, end_y: 1 },
-                ScanBand { start_y: 7, end_y: 8 }
+                ScanBand {
+                    start_y: 0,
+                    end_y: 1
+                },
+                ScanBand {
+                    start_y: 7,
+                    end_y: 8
+                }
             ]
         );
         // Would-flush is all 8 rows (128 bytes); only 32 bytes changed.

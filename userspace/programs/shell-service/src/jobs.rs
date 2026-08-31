@@ -140,7 +140,9 @@ impl JobTable {
     pub fn spawn(&mut self, cmd: &str) -> Result<u32, SpawnError> {
         let slot = match self.free_slot() {
             Some(slot) => slot,
-            None => self.evict_reported_done_slot().ok_or(SpawnError::TableFull)?,
+            None => self
+                .evict_reported_done_slot()
+                .ok_or(SpawnError::TableFull)?,
         };
         let bytes = cmd.as_bytes();
         let len = bytes.len().min(JOB_CMD_BYTES);
@@ -409,7 +411,10 @@ mod tests {
         assert_eq!(first, 1);
         assert_eq!(second, 2);
         let mut buffer = [0u8; JOB_CMD_BYTES];
-        assert_eq!(table.get(second).unwrap().cmd_text(&mut buffer), "logs | count");
+        assert_eq!(
+            table.get(second).unwrap().cmd_text(&mut buffer),
+            "logs | count"
+        );
         assert_eq!(table.get(first).unwrap().state, JobState::Running);
     }
 

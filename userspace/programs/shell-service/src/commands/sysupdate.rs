@@ -3,8 +3,8 @@
 //! The wire layout mirrors the service-side reply in package-service's
 //! `sysupdate_ops` (status/action/count/secondary/flags + packed payload).
 
-use serviceos_userspace_runtime as rt;
 use rt::{RawMessage, ServiceId};
+use serviceos_userspace_runtime as rt;
 
 use crate::util::{
     MAX_VERSION_BYTES, ShellOutput, printable_version, service_name, write_output_linef,
@@ -223,13 +223,14 @@ fn cmd_sysupdate_apply(
                 output,
                 format_args!(
                     "sysupdate interrupted after {} package(s); step {} failed",
-                    decoded.count,
-                    decoded.secondary,
+                    decoded.count, decoded.secondary,
                 ),
             )?;
             write_output_linef(
                 output,
-                format_args!("transaction parked as failed; run `pkg recover` to resume or discard"),
+                format_args!(
+                    "transaction parked as failed; run `pkg recover` to resume or discard"
+                ),
             )
         }
         other => write_output_linef(
@@ -265,23 +266,30 @@ fn cmd_sysupdate_rollback(
                 format_args!(
                     "sysupdate rolled back: {} package(s) restored to prior versions{}",
                     decoded.count,
-                    if cleared { "; commit marker cleared" } else { "" },
+                    if cleared {
+                        "; commit marker cleared"
+                    } else {
+                        ""
+                    },
                 ),
             )
         }
-        PackageStatus::NoRollback => {
-            write_output_linef(output, format_args!("sysupdate rollback: no committed update to roll back"))
-        }
+        PackageStatus::NoRollback => write_output_linef(
+            output,
+            format_args!("sysupdate rollback: no committed update to roll back"),
+        ),
         PackageStatus::Interrupted => {
             write_output_linef(
                 output,
                 format_args!(
                     "sysupdate rollback interrupted after {} restore(s); step {} failed",
-                    decoded.count,
-                    decoded.secondary,
+                    decoded.count, decoded.secondary,
                 ),
             )?;
-            write_output_linef(output, format_args!("run `pkg recover` to resume or discard"))
+            write_output_linef(
+                output,
+                format_args!("run `pkg recover` to resume or discard"),
+            )
         }
         other => write_output_linef(
             output,
@@ -296,14 +304,16 @@ fn cmd_sysupdate_history(bootstrap: rt::Handle, output: ShellOutput) -> rt::Resu
         return Err(rt::Error::InvalidArgument);
     };
     if decoded.count == 0 {
-        return write_output_linef(output, format_args!("sysupdate history: no transactions yet"));
+        return write_output_linef(
+            output,
+            format_args!("sysupdate history: no transactions yet"),
+        );
     }
     write_output_linef(
         output,
         format_args!(
             "sysupdate history: {} transaction(s), showing newest {}",
-            decoded.count,
-            decoded.secondary
+            decoded.count, decoded.secondary
         ),
     )?;
     let words = reply.word_count as usize;
@@ -319,7 +329,11 @@ fn cmd_sysupdate_history(bootstrap: rt::Handle, output: ShellOutput) -> rt::Resu
                 "  tick={:<10} applied={:<3} {}",
                 tick,
                 applied,
-                if rolled_back { "rolled-back" } else { "committed" },
+                if rolled_back {
+                    "rolled-back"
+                } else {
+                    "committed"
+                },
             ),
         )?;
         index += 2;
@@ -371,10 +385,7 @@ mod tests {
 
     #[test]
     fn decode_validates_tag_and_action() {
-        let good = message(
-            rt::PackageTag::MaintenanceReply as u32,
-            &[0, PLAN, 2, 0, 0],
-        );
+        let good = message(rt::PackageTag::MaintenanceReply as u32, &[0, PLAN, 2, 0, 0]);
         assert!(decode_sysupdate_reply(&good, PLAN).is_some());
         assert!(decode_sysupdate_reply(&good, ACTION_APPLY).is_none());
         let wrong_tag = message(rt::PackageTag::ListReply as u32, &[0, PLAN, 2, 0, 0]);

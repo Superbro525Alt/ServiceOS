@@ -3,8 +3,8 @@
 //! op-specific words; every reply fits the 16-word IPC budget.
 
 use serviceos_peripheral_service::{
-    DeviceClass, PeripheralError, PeripheralServiceState, PrinterStatus, MAX_DEVICES,
-    MAX_EVENTS_PER_REPLY, pack_device_record, peripheral_tag, printer_report,
+    DeviceClass, MAX_DEVICES, MAX_EVENTS_PER_REPLY, PeripheralError, PeripheralServiceState,
+    PrinterStatus, pack_device_record, peripheral_tag, printer_report,
 };
 use serviceos_userspace_runtime::RawMessage;
 
@@ -14,7 +14,9 @@ pub struct RequestScratch {
 
 impl RequestScratch {
     pub const fn new() -> Self {
-        Self { devices: [0; MAX_DEVICES] }
+        Self {
+            devices: [0; MAX_DEVICES],
+        }
     }
 }
 

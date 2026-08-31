@@ -354,12 +354,18 @@ mod tests {
             pane_resize_delta(KEY_LEFT, chord),
             Some(-(RATIO_STEP_PERMILLE as i32))
         );
-        assert_eq!(pane_resize_delta(KEY_UP, chord), Some(-(RATIO_STEP_PERMILLE as i32)));
+        assert_eq!(
+            pane_resize_delta(KEY_UP, chord),
+            Some(-(RATIO_STEP_PERMILLE as i32))
+        );
         assert_eq!(
             pane_resize_delta(KEY_RIGHT, chord),
             Some(RATIO_STEP_PERMILLE as i32)
         );
-        assert_eq!(pane_resize_delta(KEY_DOWN, chord), Some(RATIO_STEP_PERMILLE as i32));
+        assert_eq!(
+            pane_resize_delta(KEY_DOWN, chord),
+            Some(RATIO_STEP_PERMILLE as i32)
+        );
         // Missing any chord modifier is not a resize (Ctrl+Alt+arrow is the
         // focus path; plain arrows are view scroll).
         assert_eq!(pane_resize_delta(KEY_LEFT, MOD_CTRL | MOD_ALT), None);

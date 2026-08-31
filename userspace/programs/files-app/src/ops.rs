@@ -343,18 +343,13 @@ pub(crate) fn create_entry(
         _ => rt::StorageEntryKind::File,
     };
     let directory = open_parent_writable(storage, parent)?;
-    let result =
-        rt::storage_directory_create(directory, path_text(name)?, entry_kind);
+    let result = rt::storage_directory_create(directory, path_text(name)?, entry_kind);
     close_ignored(directory);
     result.map_err(OpError::from)
 }
 
 /// Deletes the file or (empty) directory `name` inside `parent`.
-pub(crate) fn delete_entry(
-    storage: rt::Handle,
-    parent: &[u8],
-    name: &[u8],
-) -> OpResult<()> {
+pub(crate) fn delete_entry(storage: rt::Handle, parent: &[u8], name: &[u8]) -> OpResult<()> {
     validate_entry_name(name)?;
     let directory = open_parent_writable(storage, parent)?;
     let result = rt::storage_directory_remove(directory, path_text(name)?);
@@ -382,8 +377,14 @@ pub(crate) fn copy_file(
         return Err(OpError::Exists);
     }
 
-    let outcome =
-        copy_into_new_file(storage, src_blob, total_bytes, dst_parent, dst_name, progress);
+    let outcome = copy_into_new_file(
+        storage,
+        src_blob,
+        total_bytes,
+        dst_parent,
+        dst_name,
+        progress,
+    );
     close_ignored(src_blob);
     outcome
 }
@@ -398,8 +399,7 @@ fn copy_into_new_file(
 ) -> OpResult<usize> {
     let plan = CopyPlan::new(total_bytes, WRITE_CHUNK_MAX);
     let directory = open_parent_writable(storage, dst_parent)?;
-    let opened =
-        rt::storage_directory_open_file(directory, path_text(dst_name)?, true, true);
+    let opened = rt::storage_directory_open_file(directory, path_text(dst_name)?, true, true);
     close_ignored(directory);
     let (dst_blob, _) = opened.map_err(OpError::from)?;
 
@@ -411,9 +411,7 @@ fn copy_into_new_file(
             Some((offset, len)) => {
                 let read = rt::storage_read(src_blob, offset, &mut chunk[..len]);
                 let written = read
-                    .and_then(|_| {
-                        rt::storage_write(dst_blob, offset, total_bytes, &chunk[..len])
-                    });
+                    .and_then(|_| rt::storage_write(dst_blob, offset, total_bytes, &chunk[..len]));
                 if let Err(error) = written {
                     break Err(OpError::from(error));
                 }
@@ -456,12 +454,7 @@ pub(crate) fn copy_tree(
     let mut buffer = [0u8; MAX_STORAGE_PATH];
     let mut child = [0u8; MAX_STORAGE_PATH];
     let outcome: OpResult<()> = loop {
-        match rt::storage_list_directory(
-            storage,
-            path_text(src_path)?,
-            cursor,
-            &mut buffer,
-        ) {
+        match rt::storage_list_directory(storage, path_text(src_path)?, cursor, &mut buffer) {
             Ok(Some((next_cursor, kind, path_len))) => {
                 child[..path_len].copy_from_slice(&buffer[..path_len]);
                 let child = &child[..path_len];
@@ -483,14 +476,9 @@ pub(crate) fn copy_tree(
                         depth + 1,
                         progress,
                     ),
-                    rt::StorageEntryKind::File => copy_file(
-                        storage,
-                        child,
-                        &dst_root[..dst_len],
-                        name,
-                        progress,
-                    )
-                    .map(|_| ()),
+                    rt::StorageEntryKind::File => {
+                        copy_file(storage, child, &dst_root[..dst_len], name, progress).map(|_| ())
+                    }
                 };
                 copied?;
                 if next_cursor <= cursor {
@@ -551,12 +539,7 @@ pub(crate) fn delete_tree(storage: rt::Handle, dir_path: &[u8], depth: usize) ->
     let mut buffer = [0u8; MAX_STORAGE_PATH];
     let mut child = [0u8; MAX_STORAGE_PATH];
     let outcome: OpResult<()> = loop {
-        match rt::storage_list_directory(
-            storage,
-            path_text(dir_path)?,
-            cursor,
-            &mut buffer,
-        ) {
+        match rt::storage_list_directory(storage, path_text(dir_path)?, cursor, &mut buffer) {
             Ok(Some((next_cursor, kind, path_len))) => {
                 child[..path_len].copy_from_slice(&buffer[..path_len]);
                 let child = &child[..path_len];
@@ -573,7 +556,13 @@ pub(crate) fn delete_tree(storage: rt::Handle, dir_path: &[u8], depth: usize) ->
                     rt::StorageEntryKind::Directory => delete_tree(storage, child, depth + 1),
                     rt::StorageEntryKind::File => Ok(()),
                 }
-                .and_then(|()| delete_entry(storage, &segments.parent[..segments.parent_len], &owned_name[..name.len()]));
+                .and_then(|()| {
+                    delete_entry(
+                        storage,
+                        &segments.parent[..segments.parent_len],
+                        &owned_name[..name.len()],
+                    )
+                });
                 deleted?;
                 if next_cursor <= cursor {
                     break Ok(());
@@ -634,15 +623,27 @@ mod tests {
 
     #[test]
     fn friendly_error_covers_every_variant() {
-        assert_eq!(friendly_error(OpError::Denied), "READ-ONLY OR NO PERMISSION");
+        assert_eq!(
+            friendly_error(OpError::Denied),
+            "READ-ONLY OR NO PERMISSION"
+        );
         assert_eq!(friendly_error(OpError::Exists), "NAME ALREADY IN USE");
-        assert_eq!(friendly_error(OpError::Busy), "TARGET BUSY OR DIR NOT EMPTY");
+        assert_eq!(
+            friendly_error(OpError::Busy),
+            "TARGET BUSY OR DIR NOT EMPTY"
+        );
         assert_eq!(friendly_error(OpError::NotFound), "NOT FOUND");
-        assert_eq!(friendly_error(OpError::InvalidName), "BAD NAME (A-Z, 0-9, DOT)");
+        assert_eq!(
+            friendly_error(OpError::InvalidName),
+            "BAD NAME (A-Z, 0-9, DOT)"
+        );
         assert_eq!(friendly_error(OpError::TooLong), "NAME OR PATH TOO LONG");
         assert_eq!(friendly_error(OpError::Transport), "STORAGE ERROR");
         // Unmapped runtime statuses degrade to the generic storage error.
-        assert_eq!(OpError::from(rt::Error::CapacityExceeded), OpError::Transport);
+        assert_eq!(
+            OpError::from(rt::Error::CapacityExceeded),
+            OpError::Transport
+        );
         assert_eq!(OpError::from(rt::Error::PermissionDenied), OpError::Denied);
     }
 
@@ -684,7 +685,10 @@ mod tests {
 
     #[test]
     fn next_available_name_picks_lowest_free_variant_and_gives_up() {
-        assert_eq!(next_available_name(b"notes.txt", |_| false).expect("free"), 0);
+        assert_eq!(
+            next_available_name(b"notes.txt", |_| false).expect("free"),
+            0
+        );
         let pick = next_available_name(b"notes.txt", |candidate| {
             !candidate.windows(3).any(|window| window == b"(4)")
         })

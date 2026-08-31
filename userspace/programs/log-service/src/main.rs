@@ -4,7 +4,7 @@
 mod crashlog;
 
 use crashlog::{
-    build_query_reply, CrashLog, CrashRecord, CRASH_QUERY_REPLY_TAG, CRASH_QUERY_REQUEST_TAG,
+    CRASH_QUERY_REPLY_TAG, CRASH_QUERY_REQUEST_TAG, CrashLog, CrashRecord, build_query_reply,
 };
 use rt::{
     ConfigKey, ControlTag, KernelEventKind, LOG_FILTER_ANY, LifecycleEvent, LogDomain, LogEvent,
@@ -492,7 +492,9 @@ fn drain_kernel_events(
                     severity: LogSeverity::Error,
                     domain: LogDomain::Kernel,
                     event: LogEvent::KernelTrap,
-                    arg0: event.detail0 | (event.detail1 << 32) | ((event.detail4 & 0xffff_ffff) << 16),
+                    arg0: event.detail0
+                        | (event.detail1 << 32)
+                        | ((event.detail4 & 0xffff_ffff) << 16),
                     arg1: event.detail2,
                     arg2: event.detail3,
                 };
@@ -896,8 +898,7 @@ mod tests {
 
     #[test]
     fn pressure_events_map_to_severity_graded_kernel_records() {
-        let record =
-            pressure_record_from_kernel_event(&pressure_event(0, 1)).expect("tight maps");
+        let record = pressure_record_from_kernel_event(&pressure_event(0, 1)).expect("tight maps");
         assert_eq!(record.domain, LogDomain::Kernel);
         assert_eq!(record.event, LogEvent::KernelPressureChanged);
         assert_eq!(record.severity, LogSeverity::Warn);
@@ -906,12 +907,12 @@ mod tests {
         assert_eq!(record.arg0, 0);
         assert_eq!(record.arg1, 1);
 
-        let critical = pressure_record_from_kernel_event(&pressure_event(1, 2))
-            .expect("critical maps");
+        let critical =
+            pressure_record_from_kernel_event(&pressure_event(1, 2)).expect("critical maps");
         assert_eq!(critical.severity, LogSeverity::Error);
 
-        let recovered = pressure_record_from_kernel_event(&pressure_event(2, 0))
-            .expect("recovery maps");
+        let recovered =
+            pressure_record_from_kernel_event(&pressure_event(2, 0)).expect("recovery maps");
         assert_eq!(recovered.severity, LogSeverity::Info);
 
         // Critical records ride the crash feed like every Error kernel event.

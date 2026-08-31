@@ -387,9 +387,7 @@ pub(crate) fn run() -> u64 {
                     "network",
                     format_args!(
                         "rx-ring first frame via shared path copies-avoided={} bytes-saved={} frames-pushed={}",
-                        snapshot.copies_avoided,
-                        snapshot.bytes_saved,
-                        snapshot.frames_pushed
+                        snapshot.copies_avoided, snapshot.bytes_saved, snapshot.frames_pushed
                     ),
                 );
             }
@@ -406,9 +404,7 @@ pub(crate) fn run() -> u64 {
                     "network",
                     format_args!(
                         "tx-ring first flush via shared path tx-copies-avoided={} tx-bytes-saved={} tx-frames-pushed={}",
-                        snapshot.copies_avoided,
-                        snapshot.bytes_saved,
-                        snapshot.frames_pushed
+                        snapshot.copies_avoided, snapshot.bytes_saved, snapshot.frames_pushed
                     ),
                 );
             }
@@ -451,12 +447,7 @@ pub(crate) fn run() -> u64 {
             && loop_ticks >= 1024
         {
             selftest_done = true;
-            run_network_selftest(
-                log_handle,
-                &mut iface,
-                &mut device,
-                runtime_state.gateway,
-            );
+            run_network_selftest(log_handle, &mut iface, &mut device, runtime_state.gateway);
             let snapshot = device::rx_ring_snapshot();
             if snapshot.active {
                 let _ = rt::write_logf(

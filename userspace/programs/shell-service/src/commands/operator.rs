@@ -238,9 +238,7 @@ pub(crate) fn cmd_fg(output: ShellOutput, job_id: u32) -> rt::Result<()> {
             } else {
                 write_output_linef(
                     output,
-                    format_args!(
-                        "[{job_id}] foreground complete (exit failed: {error_text})"
-                    ),
+                    format_args!("[{job_id}] foreground complete (exit failed: {error_text})"),
                 )
             }
         }

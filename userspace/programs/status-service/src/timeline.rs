@@ -588,8 +588,7 @@ impl ServiceStats {
     /// `[4..16]` up to six `(kind | count<<32)` rows.
     pub(crate) fn pack_reply_words(&self) -> [u64; 16] {
         let mut words = [0u64; 16];
-        words[0] =
-            self.service_id as u64 | ((self.total.min(u32::MAX as usize) as u64) << 32);
+        words[0] = self.service_id as u64 | ((self.total.min(u32::MAX as usize) as u64) << 32);
         words[1] = self.per_kind_len as u64;
         words[2] = self.first_tick.unwrap_or(0);
         words[3] = self.last_tick.unwrap_or(0);
@@ -764,12 +763,11 @@ mod tests {
 
         // Matching counts agree with the returned pages.
         for service_id in [SID_A, SID_B] {
-            for kind in [
-                None,
-                Some(event_kind::RESTART),
-                Some(event_kind::CRASH),
-            ] {
-                let filter = TimelineFilter { service_id: Some(service_id), kind };
+            for kind in [None, Some(event_kind::RESTART), Some(event_kind::CRASH)] {
+                let filter = TimelineFilter {
+                    service_id: Some(service_id),
+                    kind,
+                };
                 assert_eq!(timeline.count_filtered(filter), {
                     let mut seen = 0;
                     for slot in 0..5 {
@@ -853,10 +851,7 @@ mod tests {
         assert!(stats.per_kind[..stats.per_kind_len].contains(&(event_kind::RESTART, 1)));
 
         // Unknown service id yields an all-zero stat line.
-        assert_eq!(
-            timeline.service_stats(42),
-            ServiceStats::empty(42)
-        );
+        assert_eq!(timeline.service_stats(42), ServiceStats::empty(42));
 
         // Window bounds hold under ring eviction: first/last reflect the
         // retained window, not total pushes.

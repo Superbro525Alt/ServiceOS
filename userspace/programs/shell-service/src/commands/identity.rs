@@ -26,7 +26,10 @@ pub enum SwitchOutcome {
     },
     /// Credentials refused (or contracts unreachable); any previous binding
     /// is already dropped, so the session is unowned either way.
-    Rejected { had_previous: bool, flow: AccountFlow },
+    Rejected {
+        had_previous: bool,
+        flow: AccountFlow,
+    },
 }
 
 /// Pure state-machine mapping: previous-owner presence + login result ->
@@ -68,7 +71,10 @@ pub(crate) fn cmd_su(
         sessions::unbind_owner(key);
     }
 
-    let outcome = map_switch(previous.is_some(), account::login(bootstrap, name, secret, session_id));
+    let outcome = map_switch(
+        previous.is_some(),
+        account::login(bootstrap, name, secret, session_id),
+    );
     match outcome {
         SwitchOutcome::Bound {
             had_previous,
@@ -133,10 +139,7 @@ mod tests {
 
     #[test]
     fn accepted_logins_map_to_bound_outcomes_regardless_of_history() {
-        assert_eq!(
-            map_switch(false, Ok((7, 0x3))),
-            bound(false, 7, 0x3)
-        );
+        assert_eq!(map_switch(false, Ok((7, 0x3))), bound(false, 7, 0x3));
         assert_eq!(map_switch(true, Ok((2, 0))), bound(true, 2, 0));
     }
 
@@ -149,14 +152,25 @@ mod tests {
             AccountFlow::Rejected(1),
         ] {
             let fresh = map_switch(false, Err(flow));
-            assert_eq!(fresh, SwitchOutcome::Rejected { had_previous: false, flow });
+            assert_eq!(
+                fresh,
+                SwitchOutcome::Rejected {
+                    had_previous: false,
+                    flow
+                }
+            );
             let taken = map_switch(true, Err(flow));
-            assert_eq!(taken, SwitchOutcome::Rejected { had_previous: true, flow });
+            assert_eq!(
+                taken,
+                SwitchOutcome::Rejected {
+                    had_previous: true,
+                    flow
+                }
+            );
         }
         // Bad credentials read back with their specific message so the
         // operator sees why, not just that.
-        let SwitchOutcome::Rejected { flow, .. } =
-            map_switch(true, Err(AccountFlow::Rejected(4)))
+        let SwitchOutcome::Rejected { flow, .. } = map_switch(true, Err(AccountFlow::Rejected(4)))
         else {
             panic!("expected rejection");
         };
@@ -169,15 +183,33 @@ mod tests {
         // owned   -> su ok == switched shape (had_previous true)
         // unowned -> su fail == stays unowned
         // owned   -> su fail == dropped, now unowned
-        assert!(matches!(map_switch(false, Ok((1, 1))), SwitchOutcome::Bound { had_previous: false, .. }));
-        assert!(matches!(map_switch(true, Ok((1, 1))), SwitchOutcome::Bound { had_previous: true, .. }));
+        assert!(matches!(
+            map_switch(false, Ok((1, 1))),
+            SwitchOutcome::Bound {
+                had_previous: false,
+                ..
+            }
+        ));
+        assert!(matches!(
+            map_switch(true, Ok((1, 1))),
+            SwitchOutcome::Bound {
+                had_previous: true,
+                ..
+            }
+        ));
         assert!(matches!(
             map_switch(false, Err(AccountFlow::Unavailable)),
-            SwitchOutcome::Rejected { had_previous: false, .. }
+            SwitchOutcome::Rejected {
+                had_previous: false,
+                ..
+            }
         ));
         assert!(matches!(
             map_switch(true, Err(AccountFlow::Unavailable)),
-            SwitchOutcome::Rejected { had_previous: true, .. }
+            SwitchOutcome::Rejected {
+                had_previous: true,
+                ..
+            }
         ));
     }
 

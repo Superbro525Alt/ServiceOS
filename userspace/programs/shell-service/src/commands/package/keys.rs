@@ -57,7 +57,10 @@ fn push_packed(
         message.words[header_words + slot] = field.len() as u64;
     }
     message.word_count = (header_words + field_count) as u32
-        + rt::pack_bytes(&combined[..cursor], &mut message.words[header_words + field_count..])?;
+        + rt::pack_bytes(
+            &combined[..cursor],
+            &mut message.words[header_words + field_count..],
+        )?;
     Ok(())
 }
 
@@ -94,7 +97,11 @@ fn reply_two_strings<'a>(
     }
     let len_a = words[len_slot] as usize;
     let len_b = words[len_slot + 1] as usize;
-    if len_a.checked_add(len_b).map(|total| total == 0 || total > out.len()) != Some(false) {
+    if len_a
+        .checked_add(len_b)
+        .map(|total| total == 0 || total > out.len())
+        != Some(false)
+    {
         return Err(rt::Error::InvalidArgument);
     }
     rt::unpack_bytes(
@@ -273,7 +280,11 @@ fn cmd_keys_list(bootstrap: rt::Handle, output: ShellOutput) -> rt::Result<()> {
                 id = id_text,
                 alg_name = alg_name(alg),
                 state_name = state_name(state),
-                active = if state == STATE_WORD_ACTIVE { "yes" } else { "no" },
+                active = if state == STATE_WORD_ACTIVE {
+                    "yes"
+                } else {
+                    "no"
+                },
                 tick = retired_tick,
             ),
         )?;
@@ -310,13 +321,11 @@ fn cmd_keys_enroll(
     source: &str,
     hex_pub: &str,
 ) -> rt::Result<()> {
-    if source.is_empty()
-        || source.len() > SOURCE_NAME_MAX
-        || !is_hex_64(hex_pub)
-    {
-        write_output_linef(output, format_args!(
-            "{USAGE_ENROLL} (hex must be 64 hex chars = ed25519 pubkey)"
-        ))
+    if source.is_empty() || source.len() > SOURCE_NAME_MAX || !is_hex_64(hex_pub) {
+        write_output_linef(
+            output,
+            format_args!("{USAGE_ENROLL} (hex must be 64 hex chars = ed25519 pubkey)"),
+        )
     } else {
         let keys = KeysHandle::open(bootstrap)?;
         let lower_owned = to_lower(hex_pub);
@@ -336,7 +345,11 @@ fn cmd_keys_enroll(
                         "enrolled id={} alg=ed25519 state={} active={}",
                         derive_shell_id_preview(hex_pub).as_str(),
                         state_name(state),
-                        if state == STATE_WORD_ACTIVE { "yes" } else { "no" },
+                        if state == STATE_WORD_ACTIVE {
+                            "yes"
+                        } else {
+                            "no"
+                        },
                     ),
                 )
             }
@@ -393,9 +406,9 @@ impl HeaplessId {
 
 fn is_hex_64(text: &str) -> bool {
     text.len() == KEY_HEX_LEN
-        && text
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte) || (b'A'..=b'F').contains(&byte))
+        && text.bytes().all(|byte| {
+            byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte) || (b'A'..=b'F').contains(&byte)
+        })
 }
 
 fn to_lower(text: &str) -> HeaplessHex {
@@ -484,11 +497,7 @@ impl SourceMatch {
 
 /// `pkg keys activate <id>` — promote an enrolled key of any source to
 /// active; the owning source is resolved from the live listing.
-fn cmd_keys_activate(
-    bootstrap: rt::Handle,
-    output: ShellOutput,
-    key_id: &str,
-) -> rt::Result<()> {
+fn cmd_keys_activate(bootstrap: rt::Handle, output: ShellOutput, key_id: &str) -> rt::Result<()> {
     let keys = KeysHandle::open(bootstrap)?;
     let Some(matched) = resolve_id_source(&keys, key_id)? else {
         return write_output_linef(output, format_args!("keys activate failed: unknown key"));
@@ -496,7 +505,12 @@ fn cmd_keys_activate(
     let now = rt::monotonic_now().unwrap_or(0);
     let reply = keys.call(rt::PackageTag::KeysActivateRequest, |request| {
         request.words[0] = now;
-        let _ = push_packed(request, 1, [matched.as_str().as_bytes(), key_id.as_bytes()], 2);
+        let _ = push_packed(
+            request,
+            1,
+            [matched.as_str().as_bytes(), key_id.as_bytes()],
+            2,
+        );
     })?;
     if reply.word_count < 1 {
         return Err(rt::Error::InvalidArgument);
@@ -504,7 +518,11 @@ fn cmd_keys_activate(
     match status_of(&reply) {
         StatusWord::Ok => write_output_linef(
             output,
-            format_args!("activated id={} src={} retired-old=yes", key_id, matched.as_str()),
+            format_args!(
+                "activated id={} src={} retired-old=yes",
+                key_id,
+                matched.as_str()
+            ),
         ),
         StatusWord::End => Err(rt::Error::InvalidArgument),
         StatusWord::Fail(name) => {
@@ -514,11 +532,7 @@ fn cmd_keys_activate(
 }
 
 /// `pkg keys rotate <source>` — promote the newest enrolled standby.
-fn cmd_keys_rotate(
-    bootstrap: rt::Handle,
-    output: ShellOutput,
-    source: &str,
-) -> rt::Result<()> {
+fn cmd_keys_rotate(bootstrap: rt::Handle, output: ShellOutput, source: &str) -> rt::Result<()> {
     let keys = KeysHandle::open(bootstrap)?;
     let now = rt::monotonic_now().unwrap_or(0);
     let reply = keys.call(rt::PackageTag::KeysRotateRequest, |request| {
@@ -569,7 +583,7 @@ fn cmd_keys_gen(
             let state = reply.words[1];
             let mut pair_out = [0u8; KEY_ID_MAX + KEY_HEX_LEN];
             let (id_text, secret_text) =
-    reply_two_strings(&reply.words, reply.word_count, 2, 4, &mut pair_out)?;
+                reply_two_strings(&reply.words, reply.word_count, 2, 4, &mut pair_out)?;
             if show_seed {
                 write_output_linef(
                     output,
@@ -581,7 +595,10 @@ fn cmd_keys_gen(
                     ),
                 )?;
                 write_output_linef(output, format_args!("public=enrolled; see 'pkg keys list'"))?;
-                write_output_linef(output, format_args!("secret-seed={} (shown ONCE; never stored)", secret_text))?;
+                write_output_linef(
+                    output,
+                    format_args!("secret-seed={} (shown ONCE; never stored)", secret_text),
+                )?;
                 write_output_linef(
                     output,
                     format_args!(
@@ -671,8 +688,7 @@ mod tests {
         // Response layout mirrors requests: lens occupy slots 0..2 here.
         let mut buffer = [0u8; SOURCE_NAME_MAX + KEY_ID_MAX];
         let (left, right) =
-            reply_two_strings(&message.words, message.word_count, 1, 1 + 2, &mut buffer)
-                .unwrap();
+            reply_two_strings(&message.words, message.word_count, 1, 1 + 2, &mut buffer).unwrap();
         assert_eq!(left, "src");
         assert_eq!(right, "ident");
     }

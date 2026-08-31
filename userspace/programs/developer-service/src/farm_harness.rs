@@ -16,11 +16,10 @@ use serviceos_userspace_runtime as rt;
 
 use crate::{
     consts::{
-        MAX_JOBS, MAX_PATH, FARM_SELFTEST_PORT, FARM_SELFTEST_REPLY_TAG,
-        FARM_SELFTEST_REQUEST_TAG,
+        FARM_SELFTEST_PORT, FARM_SELFTEST_REPLY_TAG, FARM_SELFTEST_REQUEST_TAG, MAX_JOBS, MAX_PATH,
     },
-    types::{ExportState, FixedBytes, JobSlot},
     routing,
+    types::{ExportState, FixedBytes, JobSlot},
 };
 
 /// Wire magic + version for the minimal job-accept protocol.
@@ -126,10 +125,15 @@ pub(crate) fn validate_ack(response: &[u8], expect_job_id: u64) -> bool {
         return false;
     }
     let tail = &after[3..];
-    let newline_or_end = tail.iter().position(|byte| *byte == b'\n').unwrap_or(tail.len());
+    let newline_or_end = tail
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .unwrap_or(tail.len());
     let mut digits = [0u8; 20];
     let id_len = write_digits(expect_job_id, &mut digits);
-    tail.len() >= newline_or_end && newline_or_end == id_len && &tail[..newline_or_end] == &digits[..id_len]
+    tail.len() >= newline_or_end
+        && newline_or_end == id_len
+        && &tail[..newline_or_end] == &digits[..id_len]
 }
 
 /// Find-or-synthesize state one might have inspected mid-flight (used by
@@ -249,7 +253,11 @@ pub(crate) fn run(
             format_args!("farm-selftest FAIL stage={stage}"),
         );
         let _ = rt::write_logf("developer", format_args!("farm-selftest end ok=0"));
-        HarnessReport { pass: false, stage, spins: 0 }
+        HarnessReport {
+            pass: false,
+            stage,
+            spins: 0,
+        }
     };
 
     // Queue a synthetic remote-target job through the SAME slot/route model
@@ -264,8 +272,7 @@ pub(crate) fn run(
     endpoint_text[..PREFIX.len()].copy_from_slice(PREFIX);
     let mut digits = [0u8; 20];
     let port_len = write_digits(u64::from(FARM_SELFTEST_PORT), &mut digits);
-    endpoint_text[PREFIX.len()..PREFIX.len() + port_len]
-        .copy_from_slice(&digits[..port_len]);
+    endpoint_text[PREFIX.len()..PREFIX.len() + port_len].copy_from_slice(&digits[..port_len]);
     let mut endpoint_bytes = FixedBytes::<MAX_PATH>::empty();
     let _ = endpoint_bytes.set(&endpoint_text[..PREFIX.len() + port_len]);
     jobs[job_index] = JobSlot {
@@ -279,10 +286,17 @@ pub(crate) fn run(
         artifact_handle: rt::INVALID_HANDLE,
         task_handle: rt::INVALID_HANDLE,
         report_handle: rt::INVALID_HANDLE,
-        sandbox: crate::sandbox::SandboxDecision { allowed: false, scope_count: 0 },
-        route: routing::BuildRoute::RemoteFarm { endpoint_id: HARNESS_ENDPOINT_ID },
+        sandbox: crate::sandbox::SandboxDecision {
+            allowed: false,
+            scope_count: 0,
+        },
+        route: routing::BuildRoute::RemoteFarm {
+            endpoint_id: HARNESS_ENDPOINT_ID,
+        },
         mode: routing::ExecutionMode::DirectSpawn,
-        export: ExportState::PendingRemote { endpoint: endpoint_bytes },
+        export: ExportState::PendingRemote {
+            endpoint: endpoint_bytes,
+        },
     };
 
     let Ok(network) = rt::lookup_service(bootstrap, rt::ServiceId::Network) else {
@@ -297,7 +311,11 @@ pub(crate) fn run(
     };
 
     let mut request_frame = [0u8; 64];
-    let request_len = build_job_request(HARNESS_JOB_ID, rt::DeveloperTarget::LinuxX64 as u64, &mut request_frame);
+    let request_len = build_job_request(
+        HARNESS_JOB_ID,
+        rt::DeveloperTarget::LinuxX64 as u64,
+        &mut request_frame,
+    );
 
     // 2. Connect.
     let mut spins = 0u32;
@@ -346,7 +364,11 @@ pub(crate) fn run(
     let _ = emit_job_log(log_handle, rt::LogSeverity::Info, "dispatch");
 
     // 3. Send the dispatch frame.
-    if !send_with_retry(sockets.client, &request_frame[..request_len], SPIN_BUDGET / 8) {
+    if !send_with_retry(
+        sockets.client,
+        &request_frame[..request_len],
+        SPIN_BUDGET / 8,
+    ) {
         return fail("send");
     }
 
@@ -392,9 +414,7 @@ pub(crate) fn run(
                 ReadOutcome::Dead => return fail("client-read"),
             }
         }
-        if ack_sent
-            && got_client > 0
-            && validate_ack(&client_buffer[..got_client], HARNESS_JOB_ID)
+        if ack_sent && got_client > 0 && validate_ack(&client_buffer[..got_client], HARNESS_JOB_ID)
         {
             jobs[job_index].state = rt::DeveloperJobState::Succeeded;
             let _ = emit_job_log(log_handle, rt::LogSeverity::Info, "complete");
@@ -406,7 +426,11 @@ pub(crate) fn run(
             );
             let _ = rt::write_logf("developer", format_args!("farm-selftest end ok=1"));
             drop(sockets);
-            return HarnessReport { pass: true, stage: "done", spins };
+            return HarnessReport {
+                pass: true,
+                stage: "done",
+                spins,
+            };
         }
         let _ = rt::yield_current();
     }
@@ -414,7 +438,11 @@ pub(crate) fn run(
     fail("timeout")
 }
 
-fn emit_job_log(log_handle: rt::Handle, severity: rt::LogSeverity, phase: &'static str) -> rt::Result<()> {
+fn emit_job_log(
+    log_handle: rt::Handle,
+    severity: rt::LogSeverity,
+    phase: &'static str,
+) -> rt::Result<()> {
     let detail = match phase {
         "dispatch" => 1,
         _ => 2,
@@ -492,7 +520,10 @@ mod wire_tests {
             crate::routing::route_kind(jobs[index].route),
             crate::routing::ROUTE_KIND_REMOTE_FARM
         );
-        assert!(matches!(jobs[index].export, ExportState::PendingRemote { .. }));
+        assert!(matches!(
+            jobs[index].export,
+            ExportState::PendingRemote { .. }
+        ));
         assert!(job_state_is(&jobs[index], rt::DeveloperJobState::Queued));
         jobs[index].state = rt::DeveloperJobState::Succeeded;
         assert!(job_state_is(&jobs[index], rt::DeveloperJobState::Succeeded));

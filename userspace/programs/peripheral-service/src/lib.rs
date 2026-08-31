@@ -211,7 +211,13 @@ impl EventLog {
         }
     }
 
-    pub fn record(&mut self, kind: EventKind, device_id: u32, class: DeviceClass, tick: u64) -> u64 {
+    pub fn record(
+        &mut self,
+        kind: EventKind,
+        device_id: u32,
+        class: DeviceClass,
+        tick: u64,
+    ) -> u64 {
         let seq = self.next_seq;
         self.next_seq += 1;
         match kind {
@@ -390,7 +396,8 @@ impl PeripheralServiceState {
     ) -> Result<DeviceRecord, PeripheralError> {
         let class = DeviceClass::classify(family, detail);
         let record = self.registry.attach(class, backend, flags, meta)?;
-        self.events.record(EventKind::Attach, record.id, class, tick);
+        self.events
+            .record(EventKind::Attach, record.id, class, tick);
         Ok(record)
     }
 
@@ -462,7 +469,9 @@ mod tests {
         assert_eq!(registry.get(second.id), Some(second));
 
         // Ids keep climbing after a free slot appears.
-        let third = registry.attach(DeviceClass::Display, 1, 0, 0).expect("attach");
+        let third = registry
+            .attach(DeviceClass::Display, 1, 0, 0)
+            .expect("attach");
         assert_eq!(third.id, 3);
     }
 
@@ -499,7 +508,12 @@ mod tests {
             } else {
                 EventKind::Detach
             };
-            let seq = log.record(kind, (step + 1) as u32, DeviceClass::Pointer, step as u64 * 10);
+            let seq = log.record(
+                kind,
+                (step + 1) as u32,
+                DeviceClass::Pointer,
+                step as u64 * 10,
+            );
             assert_eq!(seq, step as u64 + 1);
         }
         assert_eq!(log.len(), MAX_EVENTS);
@@ -570,10 +584,7 @@ mod tests {
         });
         assert_eq!(kinds, [EventKind::Attach as u64, EventKind::Detach as u64]);
 
-        assert_eq!(
-            state.detach(999, 200),
-            Err(PeripheralError::NotFound),
-        );
+        assert_eq!(state.detach(999, 200), Err(PeripheralError::NotFound),);
 
         // Printer stub: full query shape, honest status.
         let report = printer_report();

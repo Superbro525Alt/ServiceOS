@@ -379,7 +379,11 @@ pub fn network_wifi_scan_parse_reply(
             return Err(Error::InvalidArgument);
         }
         let mut ssid = [0u8; NETWORK_WIFI_SSID_BYTES_MAX];
-        unpack_bytes(&response.words[base + 1..base + WIFI_SCAN_ENTRY_WORDS], ssid_len, &mut ssid)?;
+        unpack_bytes(
+            &response.words[base + 1..base + WIFI_SCAN_ENTRY_WORDS],
+            ssid_len,
+            &mut ssid,
+        )?;
         *entry = NetworkWifiScanEntry {
             bssid: [
                 (bssid48 >> 40) as u8,
@@ -500,7 +504,11 @@ pub fn network_wifi_saved_list_parse_reply(
             return Err(Error::InvalidArgument);
         }
         let mut ssid = [0u8; NETWORK_WIFI_SSID_BYTES_MAX];
-        unpack_bytes(&response.words[base..base + WIFI_SAVED_ENTRY_WORDS], ssid_len, &mut ssid)?;
+        unpack_bytes(
+            &response.words[base..base + WIFI_SAVED_ENTRY_WORDS],
+            ssid_len,
+            &mut ssid,
+        )?;
         *record = NetworkWifiSavedNetwork {
             ssid_len,
             ssid,
@@ -1221,4 +1229,3 @@ mod tests {
         assert!(network_wifi_status_parse_reply(&reply).is_err());
     }
 }
-

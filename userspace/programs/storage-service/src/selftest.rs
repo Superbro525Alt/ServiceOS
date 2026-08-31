@@ -8,10 +8,11 @@ use crate::{
     BlobSession, DirectorySession, EntrySlot, INITIAL_FILE_CAPACITY, MAX_BLOB_SESSIONS,
     MAX_DIRECTORY_SESSIONS, MAX_MUTABLE_ENTRIES, MountTable, MutableEntry, PersistentStore,
     path::find_mutable_entry,
-    persistent::{persist_state, release_blob_session, release_directory_session,
-        release_mutable_entry},
-    root::try_unmount,
+    persistent::{
+        persist_state, release_blob_session, release_directory_session, release_mutable_entry,
+    },
     root::try_rename_entry,
+    root::try_unmount,
 };
 
 const SELFTEST_PREFIX: &[u8] = b"data/";
@@ -378,10 +379,7 @@ fn mutation_probe(mutable_entries: &mut [MutableEntry; MAX_MUTABLE_ENTRIES]) -> 
     let tick = rt::monotonic_now().unwrap_or(0);
 
     // CREATE directory + file entries.
-    let Some(dir_index) = mutable_entries
-        .iter()
-        .position(|entry| !entry.occupied)
-    else {
+    let Some(dir_index) = mutable_entries.iter().position(|entry| !entry.occupied) else {
         return false;
     };
     mutable_entries[dir_index] = MutableEntry::empty();
@@ -392,10 +390,7 @@ fn mutation_probe(mutable_entries: &mut [MutableEntry; MAX_MUTABLE_ENTRIES]) -> 
         slot.path_len = PROBE_DIR.len();
         slot.occupied = true;
     }
-    let Some(file_index) = mutable_entries
-        .iter()
-        .position(|entry| !entry.occupied)
-    else {
+    let Some(file_index) = mutable_entries.iter().position(|entry| !entry.occupied) else {
         release_mutable_entry(&mut mutable_entries[dir_index]);
         return false;
     };
@@ -405,9 +400,8 @@ fn mutation_probe(mutable_entries: &mut [MutableEntry; MAX_MUTABLE_ENTRIES]) -> 
         slot.kind = StorageEntryKind::File;
         slot.path[..PROBE_FILE.len()].copy_from_slice(PROBE_FILE);
         slot.path_len = PROBE_FILE.len();
-        slot.data_handle =
-            rt::memory_create(PROBE_PAYLOAD.len().max(INITIAL_FILE_CAPACITY), true)
-                .unwrap_or(rt::INVALID_HANDLE);
+        slot.data_handle = rt::memory_create(PROBE_PAYLOAD.len().max(INITIAL_FILE_CAPACITY), true)
+            .unwrap_or(rt::INVALID_HANDLE);
         slot.data_capacity = PROBE_PAYLOAD.len().max(INITIAL_FILE_CAPACITY);
         if rt::memory_write(slot.data_handle, 0, PROBE_PAYLOAD).is_ok() {
             slot.data_len = PROBE_PAYLOAD.len();
@@ -531,12 +525,22 @@ fn rename_move_probe(
     let tick = rt::monotonic_now().unwrap_or(0);
 
     // 1. CREATE the working set under the writable `data/` namespace.
-    let created = create_rename_probe_entry(mutable_entries, PROBE_FILE,
-        StorageEntryKind::File, PROBE_PAYLOAD)
-        && create_rename_probe_entry(mutable_entries, PROBE_DIR,
-            StorageEntryKind::Directory, &[])
-        && create_rename_probe_entry(mutable_entries, PROBE_COLLIDE,
-            StorageEntryKind::File, PROBE_PAYLOAD);
+    let created = create_rename_probe_entry(
+        mutable_entries,
+        PROBE_FILE,
+        StorageEntryKind::File,
+        PROBE_PAYLOAD,
+    ) && create_rename_probe_entry(
+        mutable_entries,
+        PROBE_DIR,
+        StorageEntryKind::Directory,
+        &[],
+    ) && create_rename_probe_entry(
+        mutable_entries,
+        PROBE_COLLIDE,
+        StorageEntryKind::File,
+        PROBE_PAYLOAD,
+    );
     if !created {
         fail(1, StorageStatus::NotFound as u32);
         return;
@@ -642,15 +646,7 @@ fn rename_move_probe(
         fail(7, StorageStatus::InvalidPath as u32);
         return;
     }
-    let plan = crate::index::plan_search(
-        snapshot,
-        b"data/",
-        &[b"moved.txt"],
-        0,
-        u64::MAX,
-        0,
-        100,
-    );
+    let plan = crate::index::plan_search(snapshot, b"data/", &[b"moved.txt"], 0, u64::MAX, 0, 100);
     let index_hit = plan.len == 1 && snapshot[plan.order[0]].path() == PROBE_TREE_FILE;
     if !index_hit {
         cleanup(mutable_entries);
@@ -671,10 +667,7 @@ fn create_rename_probe_entry(
     kind: StorageEntryKind,
     payload: &[u8],
 ) -> bool {
-    let Some(slot_index) = mutable_entries
-        .iter()
-        .position(|entry| !entry.occupied)
-    else {
+    let Some(slot_index) = mutable_entries.iter().position(|entry| !entry.occupied) else {
         return false;
     };
     mutable_entries[slot_index] = MutableEntry::empty();

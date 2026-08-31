@@ -26,8 +26,8 @@ use core::cell::UnsafeCell;
 
 use serviceos_userspace_runtime as rt;
 
-use crate::util::ShellOutput;
 use crate::jobs;
+use crate::util::ShellOutput;
 
 pub const MAX_PIPELINE_STAGES: usize = 4;
 pub const MAX_CAPTURE_BYTES: usize = 2048;

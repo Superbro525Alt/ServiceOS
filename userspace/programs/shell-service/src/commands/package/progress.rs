@@ -7,7 +7,7 @@
 use rt::{LogSeverity, RawMessage, ServiceId};
 use serviceos_userspace_runtime as rt;
 
-use crate::util::tables::{TICK_HZ, FOLLOW_MAX_RECORDS};
+use crate::util::tables::{FOLLOW_MAX_RECORDS, TICK_HZ};
 use crate::util::{ShellOutput, service_name, write_output_linef};
 
 use super::mutate::{package_status_name, phase_name, progress_percent, status_from_word};
@@ -73,10 +73,7 @@ pub(in crate::commands) fn decode_progress_record(
 
 /// True when a progress record names the operation being streamed, so a
 /// concurrent unrelated mutation never leaks its lines into this render.
-pub(in crate::commands) fn progress_matches(
-    decoded: (u32, u32, u32, u32),
-    op: u32,
-) -> bool {
+pub(in crate::commands) fn progress_matches(decoded: (u32, u32, u32, u32), op: u32) -> bool {
     decoded.0 == op
 }
 
@@ -150,8 +147,10 @@ fn stream_to_reply(
             &mut records_seen,
             &mut last_activity,
         );
-        let reply_received =
-            matches!(rt::channel_receive_nonblocking(reply_pair.first, &mut response), Ok(()));
+        let reply_received = matches!(
+            rt::channel_receive_nonblocking(reply_pair.first, &mut response),
+            Ok(())
+        );
         match stream_stop(
             reply_received,
             rt::monotonic_now()
@@ -255,11 +254,7 @@ pub(in crate::commands) fn report_mutation_reply(
     if status != rt::PackageStatus::Ok {
         return write_output_linef(
             output,
-            format_args!(
-                "{} failed: {}",
-                verb,
-                package_status_name(status),
-            ),
+            format_args!("{} failed: {}", verb, package_status_name(status),),
         );
     }
     let (phase, step, total) = decode_summary_word(reply);
@@ -348,8 +343,7 @@ mod tests {
     fn phase_entry_matrix_matches_service_shape() {
         // The five phase-entry records an operation emits, in order, with
         // the percent each carries (step counts carry over between phases).
-        let entries: [(u32, u32, u32); 5] =
-            [(0, 0, 5), (1, 1, 5), (2, 2, 5), (3, 3, 5), (4, 4, 5)];
+        let entries: [(u32, u32, u32); 5] = [(0, 0, 5), (1, 1, 5), (2, 2, 5), (3, 3, 5), (4, 4, 5)];
         let mut previous = 0u32;
         for (phase, step, total) in entries {
             let (decoded_op, dp, ds, dt) =

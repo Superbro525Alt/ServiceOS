@@ -67,8 +67,7 @@ fn main() -> u64 {
         announce.words[0] = 1; // protocol version
         announce.handle_count = 1;
         announce.handles[0] = public.second;
-        announce.handle_rights[0] =
-            rt::rights::SEND | rt::rights::DUPLICATE | rt::rights::TRANSFER;
+        announce.handle_rights[0] = rt::rights::SEND | rt::rights::DUPLICATE | rt::rights::TRANSFER;
         let _ = rt::channel_send(startup.handles[0], &announce);
     }
 
@@ -95,7 +94,13 @@ fn serve(state: &mut PeripheralServiceState, request: &RawMessage) {
     let reply_to = request.handles[0];
     let mut response = RawMessage::empty(0);
     let mut scratch = RequestScratch::new();
-    handle_request(state, request, &mut response, &mut scratch, rt::monotonic_now().unwrap_or(0));
+    handle_request(
+        state,
+        request,
+        &mut response,
+        &mut scratch,
+        rt::monotonic_now().unwrap_or(0),
+    );
     if response.tag != 0 && reply_to != 0 {
         let _ = rt::channel_send(reply_to, &response);
     }
@@ -131,14 +136,16 @@ mod tests {
         message
     }
 
-    fn call(
-        state: &mut PeripheralServiceState,
-        tag: u32,
-        words: &[u64],
-    ) -> RawMessage {
+    fn call(state: &mut PeripheralServiceState, tag: u32, words: &[u64]) -> RawMessage {
         let mut response = RawMessage::empty(0);
         let mut scratch = RequestScratch::new();
-        handle_request(state, &request(tag, words), &mut response, &mut scratch, 500);
+        handle_request(
+            state,
+            &request(tag, words),
+            &mut response,
+            &mut scratch,
+            500,
+        );
         response
     }
 
@@ -206,8 +213,7 @@ mod tests {
         assert_eq!(events.words[5], 500);
         assert_eq!(events.words[8], 500);
         assert_eq!(events.words[11], 500);
-        let (kind_first, device_first, class_first) =
-            unpack_event_detail(events.words[6]);
+        let (kind_first, device_first, class_first) = unpack_event_detail(events.words[6]);
         assert_eq!(
             (kind_first, device_first, class_first),
             (
@@ -226,10 +232,7 @@ mod tests {
 
         // Detaching an unknown id reports NotFound.
         let missing = call(&mut state, peripheral_tag::DETACH_REQUEST, &[42]);
-        assert_eq!(
-            missing.words[0],
-            PeripheralError::NotFound.to_code()
-        );
+        assert_eq!(missing.words[0], PeripheralError::NotFound.to_code());
     }
 
     #[test]
@@ -248,7 +251,10 @@ mod tests {
             peripheral_tag::ATTACH_REQUEST,
             &[device_family::BLOCK as u64, 0, 1, 99, 0],
         );
-        assert_eq!(overflow.words[0], PeripheralError::CapacityExceeded.to_code());
+        assert_eq!(
+            overflow.words[0],
+            PeripheralError::CapacityExceeded.to_code()
+        );
 
         let unknown = call(
             &mut state,
@@ -266,10 +272,7 @@ mod tests {
         assert_eq!(status.word_count, 6);
         assert_eq!(status.words[1], 0);
         assert_eq!(status.words[4], 0);
-        assert_eq!(
-            status.words[5],
-            printer_report().status as u64
-        );
+        assert_eq!(status.words[5], printer_report().status as u64);
 
         let printer = call(&mut state, peripheral_tag::PRINTER_QUERY_REQUEST, &[]);
         assert_eq!(printer.tag, peripheral_tag::PRINTER_QUERY_REPLY);

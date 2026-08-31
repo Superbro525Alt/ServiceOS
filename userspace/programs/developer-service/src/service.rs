@@ -3,14 +3,13 @@ use serviceos_userspace_runtime as rt;
 
 use crate::{
     consts::{
-        MAX_JOBS, MAX_TOOLCHAINS, MAX_WORKSPACES, FARM_SELFTEST_REPLY_TAG,
-        FARM_SELFTEST_REQUEST_TAG,
+        FARM_SELFTEST_REPLY_TAG, FARM_SELFTEST_REQUEST_TAG, MAX_JOBS, MAX_TOOLCHAINS,
+        MAX_WORKSPACES,
     },
-    payload,
+    farm_harness, payload,
     protocol::{Catalog, handle_public_request, poll_job_exits, poll_job_reports},
-    types::{JobSlot, ToolchainSlot, WorkspaceSlot},
-    farm_harness,
     registry,
+    types::{JobSlot, ToolchainSlot, WorkspaceSlot},
     util::{emit_log, read_catalog},
 };
 
@@ -105,8 +104,7 @@ pub(crate) fn run() -> u64 {
             Ok(()) => {
                 had_work = true;
                 if request.tag == FARM_SELFTEST_REQUEST_TAG {
-                    let report =
-                        farm_harness::run(bootstrap, log_handle, &mut jobs);
+                    let report = farm_harness::run(bootstrap, log_handle, &mut jobs);
                     if let Some(reply_handle) = request.handles.first().copied() {
                         let reply = farm_harness::build_control_reply(report.pass);
                         let _ = rt::channel_send(reply_handle, &reply);

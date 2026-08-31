@@ -290,7 +290,6 @@ fn http_fetch(
     Ok(())
 }
 
-
 // --- wifi command family (wireless control plane) ---
 
 pub(crate) fn cmd_wifi<'a, I>(
@@ -494,11 +493,7 @@ fn cmd_wifi_saved_add(
     }
 }
 
-fn cmd_wifi_saved_remove(
-    bootstrap: rt::Handle,
-    output: ShellOutput,
-    ssid: &str,
-) -> rt::Result<()> {
+fn cmd_wifi_saved_remove(bootstrap: rt::Handle, output: ShellOutput, ssid: &str) -> rt::Result<()> {
     let network_handle = rt::lookup_service(bootstrap, ServiceId::Network)?;
     let result = rt::network_wifi_saved_remove(network_handle, ssid);
     let _ = rt::handle_close(network_handle);

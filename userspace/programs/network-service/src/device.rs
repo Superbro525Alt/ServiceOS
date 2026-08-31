@@ -114,10 +114,7 @@ impl MappedRxRing {
     fn discard(&mut self, sequence: u64) {
         // SAFETY: single consumer; aligned store into the shared image.
         unsafe {
-            core::ptr::write_unaligned(
-                self.mem.as_ptr().add(OFF_TAIL) as *mut u64,
-                sequence + 1,
-            );
+            core::ptr::write_unaligned(self.mem.as_ptr().add(OFF_TAIL) as *mut u64, sequence + 1);
         }
         self.tail = sequence + 1;
     }
@@ -146,11 +143,10 @@ pub(crate) fn enable_shared_rx(packet_handle: rt::Handle) -> bool {
         slot_stride_bytes: 0,
         total_bytes: 0,
     };
-    let memory_handle =
-        match rt::packet_interface_ring_setup(packet_handle, &mut layout) {
-            Ok(handle) => handle,
-            Err(_) => return false,
-        };
+    let memory_handle = match rt::packet_interface_ring_setup(packet_handle, &mut layout) {
+        Ok(handle) => handle,
+        Err(_) => return false,
+    };
     if layout.magic != RING_MAGIC || layout.version != RING_VERSION || layout.slot_count == 0 {
         return false;
     }
@@ -236,7 +232,9 @@ impl MappedTxRing {
         let index = (sequence % self.slot_count as u64) as usize;
         let data_offset = (index + 1) * RING_PAGE_BYTES + 8;
         // SAFETY: slot data region lies inside the live mapping by layout.
-        unsafe { core::slice::from_raw_parts_mut(self.mem.as_ptr().add(data_offset), MAX_FRAME_BYTES) }
+        unsafe {
+            core::slice::from_raw_parts_mut(self.mem.as_ptr().add(data_offset), MAX_FRAME_BYTES)
+        }
     }
 
     /// Publish a filled slot: write its length, advance head past
@@ -536,7 +534,11 @@ pub(crate) struct KernelRxToken<'a> {
 /// RX ring directly, so every consumer parses the frame in place.
 enum RxFrame<'a> {
     Local(&'a mut [u8]),
-    Shared { ptr: NonNull<u8>, len: usize, sequence: u64 },
+    Shared {
+        ptr: NonNull<u8>,
+        len: usize,
+        sequence: u64,
+    },
 }
 
 pub(crate) struct KernelTxToken<'a> {
@@ -579,14 +581,11 @@ impl Device for KernelPacketDevice {
             // describes the shared frame, NOT bytes in rx_buffer), then we
             // claim again.
             for _ in 0..2 {
-                let sequence = with_rx_ring(|ring| {
-                    ring.as_ref().and_then(MappedRxRing::next_sequence)
-                });
+                let sequence =
+                    with_rx_ring(|ring| ring.as_ref().and_then(MappedRxRing::next_sequence));
                 let Some(sequence) = sequence else {
-                    match rt::packet_interface_receive_nonblocking(
-                        self.handle,
-                        &mut self.rx_buffer,
-                    ) {
+                    match rt::packet_interface_receive_nonblocking(self.handle, &mut self.rx_buffer)
+                    {
                         Ok(0) => return None,
                         Ok(_) => continue, // doorbell: frame published, go claim it
                         Err(_) => return None,
@@ -600,16 +599,11 @@ impl Device for KernelPacketDevice {
                     Some((ptr, len)) => {
                         let ptr = NonNull::new(ptr as *mut u8)?;
                         // SAFETY: claimed slot region inside the live mapping.
-                        let frame =
-                            unsafe { core::slice::from_raw_parts(ptr.as_ptr(), len) };
+                        let frame = unsafe { core::slice::from_raw_parts(ptr.as_ptr(), len) };
                         snoop_arp_frame(frame);
                         return Some((
                             KernelRxToken {
-                                frame: RxFrame::Shared {
-                                    ptr,
-                                    len,
-                                    sequence,
-                                },
+                                frame: RxFrame::Shared { ptr, len, sequence },
                             },
                             KernelTxToken {
                                 handle: self.handle,

@@ -136,9 +136,24 @@ pub(crate) fn bootstrap_resource_for(
     }
 }
 
-pub(crate) fn service_index_path(platform: rt::BootstrapPlatform) -> &'static str {
+pub(crate) fn service_index_path(
+    platform: rt::BootstrapPlatform,
+    boot_mode: crate::bootmode::BootMode,
+    display_present: bool,
+) -> &'static str {
     match platform {
-        rt::BootstrapPlatform::Raspi5 => "services/index.raspi5.txt",
+        rt::BootstrapPlatform::Raspi5 => {
+            if matches!(boot_mode, crate::bootmode::BootMode::Full) && display_present {
+                // Operator selected the graphical graph (SERVICEOS_BOOT_MODE=full)
+                // and the image transferred a display object, so the Pi 5 runs the
+                // normal graphical service graph. Any display absence (mailbox
+                // negotiation failure) or non-full boot mode keeps the
+                // serial-first foundational graph.
+                "services/index.txt"
+            } else {
+                "services/index.raspi5.txt"
+            }
+        }
         _ => "services/index.txt",
     }
 }
@@ -532,4 +547,63 @@ pub(crate) fn fallback_log(message: &str) {
 
 pub(crate) fn fallback_logf(args: core::fmt::Arguments<'_>) -> rt::Result<()> {
     rt::write_logf("service-manager", args)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::service_index_path;
+    use crate::bootmode::BootMode;
+    use serviceos_userspace_runtime as rt;
+
+    const SERIAL_INDEX: &str = "services/index.raspi5.txt";
+    const GRAPHICAL_INDEX: &str = "services/index.txt";
+
+    #[test]
+    fn raspi5_default_build_without_display_stays_serial_first() {
+        assert_eq!(
+            service_index_path(rt::BootstrapPlatform::Raspi5, BootMode::Full, false),
+            SERIAL_INDEX
+        );
+    }
+
+    #[test]
+    fn raspi5_full_with_display_selects_graphical_index() {
+        assert_eq!(
+            service_index_path(rt::BootstrapPlatform::Raspi5, BootMode::Full, true),
+            GRAPHICAL_INDEX
+        );
+    }
+
+    #[test]
+    fn raspi5_non_full_boot_modes_stay_serial_first_even_with_display() {
+        assert_eq!(
+            service_index_path(rt::BootstrapPlatform::Raspi5, BootMode::Reduced, true),
+            SERIAL_INDEX
+        );
+        assert_eq!(
+            service_index_path(rt::BootstrapPlatform::Raspi5, BootMode::Safe, true),
+            SERIAL_INDEX
+        );
+        assert_eq!(
+            service_index_path(rt::BootstrapPlatform::Raspi5, BootMode::Recovery, true),
+            SERIAL_INDEX
+        );
+    }
+
+    #[test]
+    fn other_platforms_always_load_the_graphical_index() {
+        for platform in [
+            rt::BootstrapPlatform::QemuVirtio,
+            rt::BootstrapPlatform::Unknown,
+        ] {
+            assert_eq!(
+                service_index_path(platform, BootMode::Full, false),
+                GRAPHICAL_INDEX
+            );
+            assert_eq!(
+                service_index_path(platform, BootMode::Safe, false),
+                GRAPHICAL_INDEX
+            );
+        }
+    }
 }

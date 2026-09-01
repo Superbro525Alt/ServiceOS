@@ -153,8 +153,12 @@ fn main() -> u64 {
     timing.begin(ServiceId::Storage, storage_start_tick);
     timing.end(ServiceId::Storage, rt::monotonic_now().unwrap_or(0));
 
-    if graph::load_base_service_graph(&mut slots, &mut service_count, service_index_path(platform))
-        .is_err()
+    if graph::load_base_service_graph(
+        &mut slots,
+        &mut service_count,
+        service_index_path(platform, boot_mode, display_resource.is_some()),
+    )
+    .is_err()
     {
         return 0xf605;
     }

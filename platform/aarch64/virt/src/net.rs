@@ -31,8 +31,8 @@ pub struct NetworkBringupSummary {
 
 pub fn initialize(devices: &[VirtioMmioDevice]) -> Option<Arc<dyn PacketBackend>> {
     let (discovered, transport) = discover(devices, DeviceType::Network).into_iter().next()?;
-    let mut device = VirtIONetRaw::<KernelHal, VirtioTransport, NETWORK_QUEUE_SIZE>::new(transport)
-        .ok()?;
+    let mut device =
+        VirtIONetRaw::<KernelHal, VirtioTransport, NETWORK_QUEUE_SIZE>::new(transport).ok()?;
     let mac = device.mac_address();
 
     // Pre-post the receive ring with our own heap buffers (the raw driver has
@@ -198,8 +198,11 @@ impl VirtioPacketState {
             // SAFETY: the same heap slice (full extent) that transmit_begin
             // shared with the device; the device finished with it by the time
             // its token reached the used ring front.
-            if unsafe { self.device.transmit_complete(token, &buffer[..pending.total_len]) }
-                .is_err()
+            if unsafe {
+                self.device
+                    .transmit_complete(token, &buffer[..pending.total_len])
+            }
+            .is_err()
             {
                 self.dropped_packets = self.dropped_packets.saturating_add(1);
                 // The token was not consumed by the device ring; leave the
@@ -289,15 +292,18 @@ impl PacketBackend for VirtioPacketBackend {
             // SAFETY: the same full slice receive_begin shared with the
             // device; the token is at the used-ring front, so the device is
             // done writing it.
-            let completed =
-                unsafe { state.device.receive_complete(token, &mut buffer[..]) };
+            let completed = unsafe { state.device.receive_complete(token, &mut buffer[..]) };
             match completed {
                 Ok((header_len, packet_len)) => {
                     if state.receive_queue.is_empty() {
                         became_ready = true;
                     }
                     let end = (header_len + packet_len).min(NETWORK_BUFFER_BYTES);
-                    if state.receive_queue.push_copy(&buffer[header_len..end]).is_ok() {
+                    if state
+                        .receive_queue
+                        .push_copy(&buffer[header_len..end])
+                        .is_ok()
+                    {
                         state.rx_packets = state.rx_packets.saturating_add(1);
                     } else {
                         state.dropped_packets = state.dropped_packets.saturating_add(1);

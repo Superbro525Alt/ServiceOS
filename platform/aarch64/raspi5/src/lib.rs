@@ -2,6 +2,7 @@
 
 extern crate alloc;
 
+pub mod audio;
 pub mod block;
 pub mod boot;
 pub mod dtb;

@@ -9,7 +9,7 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use serviceos_abi::{BootstrapPlatform, ControlTag, ServiceImageId};
+use serviceos_abi::{BootstrapPlatform, ControlTag, ServiceImageId, bootstrap_resource};
 use serviceos_bundle::BootStore;
 use serviceos_kernel_arch_aarch64::{
     cpu,
@@ -21,12 +21,14 @@ use serviceos_kernel_core::{
     Kernel,
     capability::{CapabilityError, CapabilityRights, TransferMode},
     ipc::{self, IpcError, MessageTag, OutgoingMessage},
-    object::ObjectId,
+    object::{KernelObjectRef, ObjectId},
     syscall,
     task::{ExecutionState, SchedulerError, TaskRole, ThreadId, ThreadMode},
     user::{self as kernel_user, SpawnError, TaskExitStatus},
 };
-use serviceos_platform_raspi5::{boot, dtb::InterruptControllerRegions, framebuffer, timer, uart};
+use serviceos_platform_raspi5::{
+    audio, boot, dtb::InterruptControllerRegions, framebuffer, input, net, timer, uart,
+};
 use serviceos_userspace_catalog::BOOT_STORE_IMAGE;
 use spin::Once;
 
@@ -283,9 +285,16 @@ extern "C" fn serviceos_raspi5_entry(dtb_ptr: usize) -> ! {
 
     // Register the boot framebuffer with the kernel display object registry
     // once the negotiated scanout is mapped; skipping keeps headless mode.
-    if let Some(backend) = framebuffer::initialize_backend() {
+    // The registry always holds the display object (headless serial boots
+    // included); the object is only handed to root-manager when the
+    // graphical graph is selected, which is what switches root-manager onto
+    // the graphical service index.
+    let display_backend = framebuffer::initialize_backend();
+    let display_object = display_backend
+        .clone()
+        .map(|backend| kernel.objects().registry().create_display_output(backend));
+    if let Some(backend) = &display_backend {
         let info = backend.info();
-        let _ = kernel.objects().registry().create_display_output(backend);
         log(
             "display",
             format_args!(
@@ -293,6 +302,72 @@ extern "C" fn serviceos_raspi5_entry(dtb_ptr: usize) -> ! {
                 info.width, info.height, info.stride, info.byte_len
             ),
         );
+    }
+
+    // Graphical bring-up gate. UNTESTED WITHOUT HARDWARE: the mailbox
+    // negotiation above has never run against real BCM2712 firmware, so the
+    // default raspi5 build stays exactly today's serial-first bootstrap
+    // (same startup-message words, same graph) and the normal graphical
+    // service graph is opt-in via SERVICEOS_BOOT_MODE=full at build time.
+    // With full selected, the negotiated display plus honest null
+    // input/network/audio endpoints are transferred to root-manager, which
+    // then loads the graphical service index; if the mailbox failed, no
+    // display transfer happens and root-manager degrades to the serial-first
+    // graph exactly like the default build.
+    let graphical = graphical_selected();
+    if graphical {
+        log_line(
+            "bootstrap",
+            "graphical bring-up selected (SERVICEOS_BOOT_MODE=full); UNTESTED WITHOUT HARDWARE",
+        );
+    }
+    let bootstrap_display = if graphical { display_object } else { None };
+    let bootstrap_input = if graphical {
+        Some(
+            kernel
+                .objects()
+                .registry()
+                .create_input_source(input::null_backend()),
+        )
+    } else {
+        None
+    };
+    let bootstrap_network = if graphical {
+        Some(
+            kernel
+                .objects()
+                .registry()
+                .create_packet_interface(net::null_packet_backend()),
+        )
+    } else {
+        None
+    };
+    let bootstrap_audio = if graphical {
+        Some(
+            kernel
+                .objects()
+                .registry()
+                .create_audio_endpoint(audio::initialize()),
+        )
+    } else {
+        None
+    };
+    if graphical {
+        if bootstrap_display.is_none() {
+            log_line(
+                "display",
+                "no negotiated scanout; graphical graph falls back to serial-first",
+            );
+        }
+        log_line(
+            "input",
+            "backend=null no-usb-hid-in-tree; sessions run service-controlled, operator input stays serial",
+        );
+        log_line(
+            "network",
+            "backend=null no-nic-driver-in-tree; network-backed service graph stays open",
+        );
+        log_line("audio", "backend=null-sink pcm-soft-mix-only");
     }
 
     log_memory_summary(&boot_state.boot_info);
@@ -326,7 +401,13 @@ extern "C" fn serviceos_raspi5_entry(dtb_ptr: usize) -> ! {
     }
     log_line("bootstrap", "starting serial-first userspace graph");
 
-    let summary = match launch_root_manager(&kernel) {
+    let summary = match launch_root_manager(
+        &kernel,
+        bootstrap_network,
+        bootstrap_display,
+        bootstrap_input,
+        bootstrap_audio,
+    ) {
         Ok(summary) => summary,
         Err(error) => panic_with_error("bootstrap", error),
     };
@@ -393,7 +474,44 @@ fn root_boot_mode_word() -> u64 {
     }
 }
 
-fn launch_root_manager(kernel: &Kernel<'_>) -> Result<RootBootstrapSummary, BootstrapError> {
+/// Whether this build selects the normal graphical service graph. On other
+/// platforms the unset default IS full; on the Pi 5 the graphical graph is
+/// opt-in (SERVICEOS_BOOT_MODE=full at build time) because the mailbox
+/// display negotiation behind it is UNTESTED WITHOUT HARDWARE and the
+/// default build must stay exactly today's serial-first bootstrap. With
+/// full selected, the image transfers the negotiated display plus null
+/// input/network/audio endpoints to root-manager; the graphical index is
+/// only loaded when the display transfer actually made it across, so a dead
+/// mailbox degrades to the serial-first graph on its own.
+fn graphical_selected() -> bool {
+    matches!(option_env!("SERVICEOS_BOOT_MODE"), Some("full"))
+}
+
+fn transfer_bootstrap_object(
+    bootstrap_task: &serviceos_kernel_core::task::TaskObject,
+    object: Option<KernelObjectRef>,
+    rights: CapabilityRights,
+) -> Result<Option<serviceos_kernel_core::capability::PreparedTransfer>, BootstrapError> {
+    let Some(object) = object else {
+        return Ok(None);
+    };
+    let handle = bootstrap_task
+        .capability_space()
+        .install(object, rights, None)?;
+    Ok(Some(bootstrap_task.capability_space().prepare_transfer(
+        handle,
+        rights,
+        TransferMode::Move,
+    )?))
+}
+
+fn launch_root_manager(
+    kernel: &Kernel<'_>,
+    bootstrap_network: Option<KernelObjectRef>,
+    bootstrap_display: Option<KernelObjectRef>,
+    bootstrap_input: Option<KernelObjectRef>,
+    bootstrap_audio: Option<KernelObjectRef>,
+) -> Result<RootBootstrapSummary, BootstrapError> {
     let ipc_kernel = ipc::kernel().ok_or(BootstrapError::MissingBootStore)?;
     let bootstrap_task = kernel
         .objects()
@@ -449,23 +567,68 @@ fn launch_root_manager(kernel: &Kernel<'_>) -> Result<RootBootstrapSummary, Boot
         CapabilityRights::bootstrap(),
         TransferMode::Move,
     )?;
+    let network_transfer = transfer_bootstrap_object(
+        bootstrap_task,
+        bootstrap_network,
+        CapabilityRights::packet_interface(),
+    )?;
+    let display_transfer = transfer_bootstrap_object(
+        bootstrap_task,
+        bootstrap_display,
+        CapabilityRights::display_output(),
+    )?;
+    let input_transfer = transfer_bootstrap_object(
+        bootstrap_task,
+        bootstrap_input,
+        CapabilityRights::input_source(),
+    )?;
+    let audio_transfer = transfer_bootstrap_object(
+        bootstrap_task,
+        bootstrap_audio,
+        CapabilityRights::audio_endpoint(),
+    )?;
 
     let root = kernel_user::spawn_builtin_task(
         ServiceImageId::RootManager as u32,
         TaskRole::SystemService,
         Some(root_bootstrap_transfer),
     )?;
-    let startup = OutgoingMessage::new(
+    let mut bootstrap_resource_flags = 0u64;
+    if network_transfer.is_some() {
+        bootstrap_resource_flags |= bootstrap_resource::NETWORK;
+    }
+    if display_transfer.is_some() {
+        bootstrap_resource_flags |= bootstrap_resource::DISPLAY;
+    }
+    if input_transfer.is_some() {
+        bootstrap_resource_flags |= bootstrap_resource::INPUT;
+    }
+    if audio_transfer.is_some() {
+        bootstrap_resource_flags |= bootstrap_resource::AUDIO;
+    }
+    let mut startup = OutgoingMessage::new(
         MessageTag(ControlTag::Startup as u32),
         &[
             boot_store_bytes.len() as u64,
             BootstrapPlatform::Raspi5 as u32 as u64,
-            0,
+            bootstrap_resource_flags,
             root_boot_mode_word(),
         ],
     )?
     .add_transfer(boot_store_transfer)?
     .add_transfer(bootstrap_authority_transfer)?;
+    if let Some(network_transfer) = network_transfer {
+        startup = startup.add_transfer(network_transfer)?;
+    }
+    if let Some(display_transfer) = display_transfer {
+        startup = startup.add_transfer(display_transfer)?;
+    }
+    if let Some(input_transfer) = input_transfer {
+        startup = startup.add_transfer(input_transfer)?;
+    }
+    if let Some(audio_transfer) = audio_transfer {
+        startup = startup.add_transfer(audio_transfer)?;
+    }
     ipc_kernel.send(
         bootstrap_task.capability_space(),
         kernel_bootstrap_handle,

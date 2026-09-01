@@ -261,6 +261,7 @@ dependencies = [
  "serviceos-abi",
  "serviceos-kernel-arch-aarch64",
  "serviceos-kernel-core",
+ "spin",
 ]
 
 [[package]]

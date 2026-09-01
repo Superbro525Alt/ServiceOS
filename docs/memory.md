@@ -81,6 +81,25 @@ Allocator properties:
 - coalesces adjacent free regions
 - still serves as a general bootstrap heap, not a final slab/object allocator
 
+## DMA safety on memory objects
+
+Memory objects carry a kernel-internal DMA-safety classification
+(`kernel/core/src/object/objects.rs::DmaSafety`); it is deliberately not part
+of the `shared/abi` surface, so no `repr(C)` layout moves.
+
+- `Unsafe` (default): no device-access guarantee. Any attempt to fetch a
+  physical device backing through `MemoryObject::device_backing` fails with
+  `MemoryAccessError::DmaPolicyViolation`
+- `PagePinned`: every device-visible access stays inside one whole physical
+  page — the invariant the zero-copy network ring layout requires (a ring
+  slot never straddles a page boundary)
+- `Contiguous`: additionally requires physically contiguous backing frames,
+  verified when the backing is materialized
+
+Device-facing code (ring/frame allocation in the syscall device handlers)
+creates memory as `PagePinned` and gates actual use on `device_backing()`
+succeeding, so unsafe memory can never be handed to a device as DMA backing.
+
 ## Next steps this enables
 
 The kernel now exposes a broader memory-object syscall surface than the

@@ -29,6 +29,9 @@ It is responsible for:
 - reading static host mappings from a storage-backed resource blob
 - maintaining interface, route, resolver, and transport state
 - acquiring or falling back to IPv4 configuration
+- serving the wireless contract (scan/join/leave, saved networks, status)
+  over the kernel wireless backend trait, answering honestly when no radio
+  backend is present
 - exposing resolution, probe, and stream-transport operations over its public
   channel
 
@@ -64,8 +67,20 @@ Backend placement now looks like this:
 Current backend facts:
 
 - tested under QEMU with `virtio-net-pci`
-- uses legacy PCI interrupt delivery to wake packet waiters
-- copies frames between kernel queues and userspace buffers
+- MSI-X interrupt delivery on x86_64: the driver walks the PCI capability,
+  programs a LAPIC-delivered vector (`kernel/core/src/msi.rs` pure layout +
+  `platform/x86_64/qemu_virtio/src/msix.rs` bring-up helper), disables the
+  legacy INTx pin, and falls back to the legacy line with a greppable skip
+  line on any setup failure (`SERVICEOS_MSIX_DISABLE` opts out at build
+  time); virtio-blk shares the model, and the config-change signal steers to
+  its own vector
+- zero-copy packet rings on both directions: an RX ring
+  (`PacketInterfaceRingSetup`, syscall 52) lets the kernel fill
+  memory-object-backed slots the service reads in place, and a TX mirror
+  (`PacketInterfaceTxRingSetup`/`Flush`, 53–54) lets the service publish
+  frames into slots with credit accounting; both fall back to the copied
+  path (negotiation failure, full backlog, or a stall watchdog)
+- one copy remains on each side (device→ring RX, slot→descriptor TX)
 - remains backend-agnostic at the `network-service` boundary
 
 Later backends can add:
@@ -76,9 +91,14 @@ Later backends can add:
 
 without redesigning the public `network-service` contract.
 
-The current Raspberry Pi 5 target only has scaffolding under
-`platform/aarch64/raspi5/net` and `platform/aarch64/raspi5/rp1`. No real Pi
-packet backend exists yet, and the docs are explicit about that.
+The current Raspberry Pi 5 target has no real Pi packet backend yet. Its
+`platform/aarch64/raspi5` net module mints an honest null packet-interface
+backend so the opt-in graphical service graph can boot without fabricating
+device state; the docs remain explicit that no real Pi NIC transport exists.
+On the aarch64 `virt` platform the VirtIO backend's transmit path is
+non-blocking: submit reaps completed TX chains, returns `Busy` on a device
+stall instead of spinning inside the syscall, and reaps completions from the
+poll loop.
 
 ## Interface and address model
 
@@ -93,6 +113,11 @@ The interface model remains intentionally simple:
 The current address model is:
 
 - one active IPv4 address, prefix, gateway, and DNS server per interface
+- one IPv6 link-local address derived from the interface MAC (modified
+  EUI-64, fe80::/64) carried alongside the v4 address, with minimal in-process
+  ICMPv6 neighbor discovery, UDP over IPv6 (`SendToV6`/`ReceiveFromV6`), and
+  literal-address ICMPv6 echo (`Ping6`) — a bounded v0 slice with no global
+  addresses, SLAAC/DHCPv6/DAD, or v6 TCP listeners yet
 - dynamic acquisition via DHCPv4 when enabled
 - static fallback when DHCP acquisition times out
 - one static host mapping file for pinned early aliases and overrides
@@ -122,8 +147,11 @@ Resolution order is:
 The resolver currently:
 
 - uses the interface DNS server from DHCP or static config
-- performs simple request/response lookups without a separate cache daemon
-- returns IPv4 results through the existing `Resolve` service contract
+- runs an in-house DNS-over-UDP client with a TTL-honoring positive/negative
+  cache (A/AAAA/CNAME, bounded CNAME chasing, distinct NXDOMAIN/SERVFAIL/
+  NODATA/timeout codes) and hit/miss counters
+- returns IPv4 results through the existing `Resolve` contract and typed
+  records through `ResolveEx`
 
 That keeps DNS out of clients while avoiding a second service split before it
 is justified.
@@ -149,8 +177,21 @@ The transport boundary is capability-aware:
   client
 
 This is intentionally not POSIX sockets. It is a narrower service-native
-transport surface that future UDP, listeners, and richer connection APIs can
-grow from without changing the kernel packet contract.
+transport surface (TCP stream sessions plus UDP datagrams over
+`SendTo`/`ReceiveFrom` socket contracts) that future listeners and richer
+connection APIs can grow from without changing the kernel packet contract.
+
+## Firewall and address sets
+
+`network-service` enforces an ordered first-match allow/deny firewall at its
+policy boundary (outbound connect/send, inbound accept/receive) with per-rule
+hit counters and a settable default-inbound policy (promoted
+`NetworkTag` variants, historical wire values 0x80e–0x813 frozen by an ABI
+test). Rules carry an additive per-interface qualifier (0 = any interface,
+otherwise interface index + 1) and may qualify by named address sets
+(`FirewallAddrSetDefine` 0x834/0x835): up to 8 sets × 4 CIDR entries of
+mixed v4/v6 prefixes, family-strict matching, and clear-all refused while
+sets are referenced.
 
 ## Capability model
 
@@ -177,6 +218,7 @@ The shell currently exposes:
 - `net resolve <name>`
 - `net ping <name|ip>`
 - `net http <host> [path]`
+- `wifi scan|join|leave|saved|status` (wireless control plane)
 
 These commands all talk to `network-service`. They do not bypass the service
 graph.

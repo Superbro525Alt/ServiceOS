@@ -92,6 +92,13 @@ pub(super) extern "x86-interrupt" fn lapic_spurious_interrupt_handler(_frame: In
     ));
 }
 
+/// IDT gate for message-signaled device interrupts (MSI/MSI-X). These
+/// deliveries never pass through the external controller; the dispatch body
+/// acknowledges via LAPIC EOI only.
+pub(super) extern "x86-interrupt" fn msi_vector_handler(_frame: InterruptStackFrame) {
+    super::dispatch_msi_vector(0);
+}
+
 pub(super) fn register_external_irq_handler(irq_line: u8, handler: fn(u8)) -> bool {
     if irq_line as usize >= EXTERNAL_IRQ_LINES || irq_line == 0 {
         return false;

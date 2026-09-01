@@ -13,6 +13,7 @@ pub mod input;
 pub mod interrupts;
 pub mod ipc;
 pub mod memory;
+pub mod msi;
 pub mod network;
 pub mod object;
 pub mod syscall;

@@ -41,6 +41,17 @@ pub const TIMER_VECTOR: u8 = EXTERNAL_IRQ_VECTOR_BASE;
 pub const SYSCALL_VECTOR: u8 = 0x80;
 pub const TIMER_TICK_HZ: u32 = 100;
 
+/// Vector where message-signaled (MSI/MSI-X) device interrupts land. MSI
+/// writes bypass the external IRQ controller entirely — the device DMA-writes
+/// an address/data pair that the LAPIC turns into this vector — so the only
+/// arch-side requirement is an IDT gate plus a handler table of our own.
+/// 0x50 sits in priority class 5, below the LAPIC timer (0x40) and clear of
+/// the external/PIC range (0x20-0x2F) and the syscall vector (0x80).
+pub const MSI_VECTOR_BASE: u8 = 0x50;
+/// How many message-signaled vectors the arch exposes. v0: one shared vector
+/// is enough for the virtio NIC (config + all queues can share it).
+pub const MSI_VECTORS: usize = 1;
+
 /// Operations the platform image provides for the external IRQ controller
 /// and the reference tick source it programs (see
 /// `serviceos-platform-x86-pc` for the PC implementation). The arch crate
@@ -123,6 +134,7 @@ static IDT: Once<InterruptDescriptorTable> = Once::new();
 static EXTERNAL_IRQ_HANDLERS: spin::Mutex<
     [[Option<fn(u8)>; MAX_EXTERNAL_IRQ_HANDLERS_PER_LINE]; EXTERNAL_IRQ_LINES],
 > = spin::Mutex::new([[None; MAX_EXTERNAL_IRQ_HANDLERS_PER_LINE]; EXTERNAL_IRQ_LINES]);
+static MSI_HANDLERS: spin::Mutex<[Option<fn(u8)>; MSI_VECTORS]> = spin::Mutex::new([None]);
 
 unsafe extern "C" {
     fn serviceos_x86_64_syscall_entry();
@@ -306,6 +318,46 @@ pub fn register_external_irq_handler(irq_line: u8, handler: fn(u8)) -> bool {
     irq::register_external_irq_handler(irq_line, handler)
 }
 
+/// Register a handler for one message-signaled (MSI/MSI-X) vector slot.
+///
+/// Unlike external IRQ lines these vectors never pass through the platform's
+/// external controller: the IDT gate acknowledges via LAPIC EOI only. The
+/// caller still programs the device's message table (address/data/vector
+/// control) through PCI config/MMIO — this only wires the CPU side.
+pub fn register_msi_vector_handler(vector_slot: u8, handler: fn(u8)) -> bool {
+    if usize::from(vector_slot) >= MSI_VECTORS {
+        return false;
+    }
+
+    let mut handlers = MSI_HANDLERS.lock();
+    for existing in handlers[usize::from(vector_slot)].iter().copied() {
+        if core::ptr::fn_addr_eq(existing, handler) {
+            return true;
+        }
+    }
+    if handlers[usize::from(vector_slot)].is_none() {
+        handlers[usize::from(vector_slot)] = Some(handler);
+        return true;
+    }
+    false
+}
+
+pub(crate) fn dispatch_msi_vector(slot: u8) {
+    let vector = MSI_VECTOR_BASE + slot;
+    serviceos_kernel_core::interrupts::note_external_interrupt(InterruptVector(vector as u16));
+    let handler = { MSI_HANDLERS.lock()[usize::from(slot)] };
+    if let Some(handler) = handler {
+        handler(slot);
+    }
+    // MSI deliveries arrive through the LAPIC, so EOI there. Unlike the
+    // external path there is no external controller to acknowledge.
+    unsafe {
+        if crate::lapic::timer().is_initialized() {
+            crate::lapic::send_eoi();
+        }
+    }
+}
+
 pub(crate) fn user_code_selector() -> SegmentSelector {
     let selector = DESCRIPTOR_TABLES
         .get()
@@ -420,6 +472,7 @@ fn install_interrupt_table() {
                 serviceos_x86_64_timer_irq_entry as *const (),
             ));
             idt[lapic::LAPIC_SPURIOUS_VECTOR].set_handler_fn(irq::lapic_spurious_interrupt_handler);
+            idt[MSI_VECTOR_BASE].set_handler_fn(irq::msi_vector_handler);
             idt[EXTERNAL_IRQ_VECTOR_BASE + 1].set_handler_fn(irq::external_irq1_handler);
             idt[EXTERNAL_IRQ_VECTOR_BASE + 2].set_handler_fn(irq::external_irq2_handler);
             idt[EXTERNAL_IRQ_VECTOR_BASE + 3].set_handler_fn(irq::external_irq3_handler);

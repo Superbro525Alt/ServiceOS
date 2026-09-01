@@ -128,25 +128,51 @@ fn kernel_main() -> Status {
             descriptor_state.syscall_vector.0,
         ),
     );
-    if let Some(summary) = network::bringup_summary() {
+    if let Some(reason) = network::MSIX_SETUP_DIAG.get() {
         log(
             "network",
-            format_args!(
-                "backend={:?} pci={:02x}:{:02x}.{} irq={} mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} mtu={}",
-                summary.backend,
-                summary.pci_bus,
-                summary.pci_device,
-                summary.pci_function,
-                summary.interrupt_line,
-                summary.mac[0],
-                summary.mac[1],
-                summary.mac[2],
-                summary.mac[3],
-                summary.mac[4],
-                summary.mac[5],
-                summary.mtu,
-            ),
+            format_args!("msix setup skipped reason={}", reason),
         );
+    }
+    if let Some(summary) = network::bringup_summary() {
+        match summary.interrupt {
+            network::NetworkInterruptModel::Msix(vector) => log(
+                "network",
+                format_args!(
+                    "backend={:?} pci={:02x}:{:02x}.{} irq=msi-x vector={:#04x} mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} mtu={}",
+                    summary.backend,
+                    summary.pci_bus,
+                    summary.pci_device,
+                    summary.pci_function,
+                    vector,
+                    summary.mac[0],
+                    summary.mac[1],
+                    summary.mac[2],
+                    summary.mac[3],
+                    summary.mac[4],
+                    summary.mac[5],
+                    summary.mtu,
+                ),
+            ),
+            network::NetworkInterruptModel::Legacy(line) => log(
+                "network",
+                format_args!(
+                    "backend={:?} pci={:02x}:{:02x}.{} irq={} mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} mtu={}",
+                    summary.backend,
+                    summary.pci_bus,
+                    summary.pci_device,
+                    summary.pci_function,
+                    line,
+                    summary.mac[0],
+                    summary.mac[1],
+                    summary.mac[2],
+                    summary.mac[3],
+                    summary.mac[4],
+                    summary.mac[5],
+                    summary.mtu,
+                ),
+            ),
+        }
     } else {
         log_line("network", "no packet interface detected");
     }

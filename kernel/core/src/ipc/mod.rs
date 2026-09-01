@@ -19,7 +19,7 @@ mod tests {
         capability::{
             CapabilityError, CapabilityHandle, CapabilityRights, CapabilitySpace, TransferMode,
         },
-        object::{KernelObjectRef, ObjectRegistry},
+        object::{DmaSafety, KernelObjectRef, ObjectRegistry},
     };
 
     fn install_endpoint(
@@ -37,7 +37,7 @@ mod tests {
         let kernel = IpcKernel::new();
         let registry = ObjectRegistry::new();
         let (left, right) = registry.create_channel_pair();
-        let shared_memory = registry.create_memory_object(8192, true);
+        let shared_memory = registry.create_memory_object(8192, true, DmaSafety::Unsafe);
         let sender_space = CapabilitySpace::new();
         let receiver_space = CapabilitySpace::new();
 
@@ -167,7 +167,7 @@ mod tests {
         let kernel = IpcKernel::new();
         let registry = ObjectRegistry::new();
         let (left, right) = registry.create_channel_pair();
-        let payload = registry.create_memory_object(4096, true);
+        let payload = registry.create_memory_object(4096, true, DmaSafety::Unsafe);
         let sender_space = CapabilitySpace::new();
         let receiver_space = CapabilitySpace::new();
 
@@ -215,8 +215,8 @@ mod tests {
         let kernel = IpcKernel::new();
         let registry = ObjectRegistry::new();
         let (left, right) = registry.create_channel_pair();
-        let first_payload = registry.create_memory_object(4096, true);
-        let second_payload = registry.create_memory_object(4096, true);
+        let first_payload = registry.create_memory_object(4096, true, DmaSafety::Unsafe);
+        let second_payload = registry.create_memory_object(4096, true, DmaSafety::Unsafe);
         let sender_space = CapabilitySpace::new();
         let receiver_space = CapabilitySpace::new();
 

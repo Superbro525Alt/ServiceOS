@@ -13,6 +13,7 @@ use super::super::{
 };
 use crate::capability::CapabilityRights;
 use crate::network::ring::{self, PageFrameStorage};
+use crate::object::{DmaSafety, MemoryAccessError};
 
 pub(crate) fn handle_block_device_info(context: &SyscallContext) -> SyscallReturn {
     let Ok(current_task) = current_task() else {
@@ -216,13 +217,23 @@ pub(crate) fn handle_packet_interface_ring_setup(context: &SyscallContext) -> Sy
 
     let slot_count = ring::RING_DEFAULT_SLOTS;
     let total_bytes = ring::ring_total_bytes(slot_count);
-    let memory_object = objects.registry().create_memory_object(total_bytes, true);
+    let memory_object =
+        objects
+            .registry()
+            .create_memory_object(total_bytes, true, DmaSafety::PagePinned);
     let Some(memory) = memory_object.memory_object() else {
         return SyscallReturn::error(SyscallError::Busy);
     };
-    // Materialize the real backing pages so both sides share physical frames.
-    let Ok(frames) = memory.page_frames() else {
-        return SyscallReturn::error(SyscallError::Busy);
+    // Materialize the real backing pages so both sides share physical
+    // frames. Each slot owns exactly one whole page (network/ring.rs), so
+    // the PagePinned classification is satisfiable; device_backing enforces
+    // the DMA policy before any physical surface is handed out.
+    let frames = match memory.device_backing() {
+        Ok(frames) => frames,
+        Err(MemoryAccessError::DmaPolicyViolation) => {
+            return SyscallReturn::error(SyscallError::InvalidArgument);
+        }
+        Err(_) => return SyscallReturn::error(SyscallError::Busy),
     };
 
     let mut storage = PageFrameStorage { frames };
@@ -294,13 +305,23 @@ pub(crate) fn handle_packet_interface_tx_ring_setup(context: &SyscallContext) ->
 
     let slot_count = ring::RING_DEFAULT_SLOTS;
     let total_bytes = ring::ring_total_bytes(slot_count);
-    let memory_object = objects.registry().create_memory_object(total_bytes, true);
+    let memory_object =
+        objects
+            .registry()
+            .create_memory_object(total_bytes, true, DmaSafety::PagePinned);
     let Some(memory) = memory_object.memory_object() else {
         return SyscallReturn::error(SyscallError::Busy);
     };
-    // Materialize the real backing pages so both sides share physical frames.
-    let Ok(frames) = memory.page_frames() else {
-        return SyscallReturn::error(SyscallError::Busy);
+    // Materialize the real backing pages so both sides share physical
+    // frames. Each slot owns exactly one whole page (network/ring.rs), so
+    // the PagePinned classification is satisfiable; device_backing enforces
+    // the DMA policy before any physical surface is handed out.
+    let frames = match memory.device_backing() {
+        Ok(frames) => frames,
+        Err(MemoryAccessError::DmaPolicyViolation) => {
+            return SyscallReturn::error(SyscallError::InvalidArgument);
+        }
+        Err(_) => return SyscallReturn::error(SyscallError::Busy),
     };
 
     let mut storage = PageFrameStorage { frames };

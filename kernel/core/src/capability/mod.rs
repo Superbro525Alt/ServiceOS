@@ -10,7 +10,7 @@ pub use types::{
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::object::ObjectRegistry;
+    use crate::object::{DmaSafety, ObjectRegistry};
 
     #[test]
     fn duplicate_restricts_rights_and_preserves_badge() {
@@ -42,7 +42,7 @@ mod tests {
     #[test]
     fn rollback_moved_restores_source_handle_exactly() {
         let registry = ObjectRegistry::new();
-        let object = registry.create_memory_object(4096, true);
+        let object = registry.create_memory_object(4096, true, DmaSafety::Unsafe);
         let space = CapabilitySpace::new();
 
         let source = space
@@ -71,7 +71,7 @@ mod tests {
     #[test]
     fn move_transfer_closes_source_and_reinstalls_in_receiver() {
         let registry = ObjectRegistry::new();
-        let object = registry.create_memory_object(8192, true);
+        let object = registry.create_memory_object(8192, true, DmaSafety::Unsafe);
         let sender = CapabilitySpace::new();
         let receiver = CapabilitySpace::new();
 

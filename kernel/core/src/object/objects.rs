@@ -112,11 +112,31 @@ impl TimerObject {
     }
 }
 
+/// Device-DMA classification for a memory object. Kernel-internal only:
+/// deliberately not part of the shared/abi surface (no repr(C) layout bump).
+///
+/// - `Unsafe` (default): no device-access guarantee; any attempt to fetch a
+///   physical device backing through [`MemoryObject::device_backing`] is a
+///   policy violation.
+/// - `PagePinned`: every device-visible access stays inside one whole
+///   physical page (a ring slot never straddles a page boundary; see the
+///   `network/ring.rs` layout rationale).
+/// - `Contiguous`: additionally the backing frames are physically
+///   contiguous, verified when the backing is materialized.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum DmaSafety {
+    #[default]
+    Unsafe,
+    PagePinned,
+    Contiguous,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MemoryObjectInfo {
     pub size_bytes: usize,
     pub page_count: usize,
     pub writable: bool,
+    pub dma_safety: DmaSafety,
 }
 
 pub struct MemoryObject {
@@ -143,10 +163,11 @@ pub enum MemoryAccessError {
     ReadOnly,
     Busy,
     Unsupported,
+    DmaPolicyViolation,
 }
 
 impl MemoryObject {
-    pub fn new(size_bytes: usize, writable: bool) -> Self {
+    pub fn new(size_bytes: usize, writable: bool, dma_safety: DmaSafety) -> Self {
         let page_count = size_bytes.div_ceil(4096);
         let zeroed = vec![0u8; size_bytes].into_boxed_slice();
 
@@ -155,6 +176,7 @@ impl MemoryObject {
                 size_bytes,
                 page_count,
                 writable,
+                dma_safety,
             },
             storage: if writable {
                 MemoryStorage::Writable(Mutex::new(WritableMemoryState {
@@ -174,6 +196,7 @@ impl MemoryObject {
                 size_bytes,
                 page_count,
                 writable: false,
+                dma_safety: DmaSafety::Unsafe,
             },
             storage: MemoryStorage::ReadOnly(Arc::from(bytes)),
         }
@@ -240,15 +263,51 @@ impl MemoryObject {
             return Err(MemoryAccessError::ReadOnly);
         };
         let mut state = state.lock();
-        match &state.backing {
-            WritableMemoryBacking::PageBacked(frames) => Ok(Arc::clone(frames)),
+        let frames = match &state.backing {
+            WritableMemoryBacking::PageBacked(frames) => Arc::clone(frames),
             WritableMemoryBacking::Linear(bytes) => {
                 let frames = allocate_page_backing(bytes, self.info.page_count)?;
                 state.backing = WritableMemoryBacking::PageBacked(Arc::clone(&frames));
-                Ok(frames)
+                frames
             }
+        };
+        verify_dma_contiguity(self.info.dma_safety, &frames)?;
+        Ok(frames)
+    }
+
+    /// The DMA policy gate: fetch the physical backing for device access.
+    /// Refuses `Unsafe` objects before any physical surface is produced;
+    /// `Contiguous` objects additionally get their physical contiguity
+    /// verified at materialization (see [`Self::page_frames`]). The CPU
+    /// map-range path is unaffected: it goes through [`Self::page_frames`].
+    pub fn device_backing(&self) -> Result<Arc<[PhysicalAddress]>, MemoryAccessError> {
+        if let DmaSafety::Unsafe = self.info.dma_safety {
+            return Err(MemoryAccessError::DmaPolicyViolation);
+        }
+        self.page_frames()
+    }
+}
+
+/// `Contiguous` objects must materialize as one physically contiguous run;
+/// anything else is a policy violation (declared-safe-but-discontiguous).
+fn verify_dma_contiguity(
+    dma_safety: DmaSafety,
+    frames: &[PhysicalAddress],
+) -> Result<(), MemoryAccessError> {
+    if let DmaSafety::Contiguous = dma_safety {
+        if !frames_are_contiguous(frames) {
+            return Err(MemoryAccessError::DmaPolicyViolation);
         }
     }
+    Ok(())
+}
+
+/// True when `frames` form one physically contiguous ascending run. Single-
+/// and zero-frame slices are trivially contiguous.
+pub(super) fn frames_are_contiguous(frames: &[PhysicalAddress]) -> bool {
+    frames
+        .windows(2)
+        .all(|pair| pair[1].as_u64() == pair[0].as_u64() + PAGE_SIZE_BYTES as u64)
 }
 
 fn allocate_page_backing(

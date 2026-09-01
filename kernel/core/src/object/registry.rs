@@ -20,7 +20,9 @@ use crate::{
 use super::{
     KernelObject, KernelObjectRecord, KernelObjectRef, KernelObjectWeak, ObjectHeader, ObjectId,
     ObjectKind,
-    objects::{BootstrapCapabilityObject, EventObject, MemoryObject, PipeObject, TimerObject},
+    objects::{
+        BootstrapCapabilityObject, DmaSafety, EventObject, MemoryObject, PipeObject, TimerObject,
+    },
 };
 
 struct ObjectRegistryState {
@@ -146,13 +148,18 @@ impl ObjectRegistry {
         })
     }
 
-    pub fn create_memory_object(&self, size_bytes: usize, writable: bool) -> KernelObjectRef {
+    pub fn create_memory_object(
+        &self,
+        size_bytes: usize,
+        writable: bool,
+        dma_safety: DmaSafety,
+    ) -> KernelObjectRef {
         self.register(KernelObjectRecord {
             header: ObjectHeader {
                 id: self.allocate_id(ObjectKind::MemoryObject),
                 kind: ObjectKind::MemoryObject,
             },
-            body: KernelObject::MemoryObject(MemoryObject::new(size_bytes, writable)),
+            body: KernelObject::MemoryObject(MemoryObject::new(size_bytes, writable, dma_safety)),
         })
     }
 

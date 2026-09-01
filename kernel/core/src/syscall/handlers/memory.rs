@@ -59,9 +59,11 @@ pub(crate) fn handle_memory_create(context: &SyscallContext) -> SyscallReturn {
         return SyscallReturn::error(SyscallError::InvalidArgument);
     };
     let writable = context.arguments[1] != 0;
-    let object = objects
-        .registry()
-        .create_memory_object(size_bytes, writable);
+    let object = objects.registry().create_memory_object(
+        size_bytes,
+        writable,
+        crate::object::DmaSafety::Unsafe,
+    );
 
     match task
         .capability_space()
@@ -105,6 +107,11 @@ pub(crate) fn handle_memory_write(context: &SyscallContext) -> SyscallReturn {
         Err(crate::object::MemoryAccessError::Busy) => SyscallReturn::error(SyscallError::Busy),
         Err(crate::object::MemoryAccessError::Unsupported) => {
             SyscallReturn::error(SyscallError::Unsupported)
+        }
+        // Writes never fetch a device backing; the DMA policy cannot be
+        // violated here. Arm exists for exhaustiveness.
+        Err(crate::object::MemoryAccessError::DmaPolicyViolation) => {
+            SyscallReturn::error(SyscallError::Busy)
         }
     }
 }
@@ -493,6 +500,12 @@ fn map_memory_object(
         }
         Err(crate::object::MemoryAccessError::Unsupported) => {
             return SyscallReturn::error(SyscallError::Unsupported);
+        }
+        // map-range is a CPU mapping path: it is allowed for any DMA class,
+        // so a declared-Contiguous object whose materialized frames turn out
+        // discontiguous surfaces here as a resource error, not a violation.
+        Err(crate::object::MemoryAccessError::DmaPolicyViolation) => {
+            return SyscallReturn::error(SyscallError::Busy);
         }
     };
     let Some(mapped_frames) = frames.get(page_offset..page_offset + page_count) else {

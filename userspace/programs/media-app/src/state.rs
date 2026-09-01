@@ -34,6 +34,9 @@ pub(crate) const KEY_S: u32 = 31;
 pub(crate) const KEY_SPACE: u32 = 57;
 pub(crate) const KEY_UP: u32 = 103;
 pub(crate) const KEY_DOWN: u32 = 108;
+/// Arrow-left/right: -/+10 seconds on the active stream.
+pub(crate) const KEY_LEFT: u32 = 105;
+pub(crate) const KEY_RIGHT: u32 = 106;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PlayState {

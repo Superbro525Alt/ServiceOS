@@ -1,8 +1,9 @@
 use serviceos_userspace_runtime::AudioSampleFormat;
 
-/// Parsed WAV header. Only uncompressed PCM (format tag 1, bits 8/16/32)
-/// and IEEE float 32 (tag 3) are supported; anything else is rejected
-/// honestly rather than played as noise.
+/// Parsed WAV header. Only uncompressed PCM (format tag 1, bits 8/16/32),
+/// IEEE float 32 (tag 3), and G.711 A-law/mu-law (tags 6/7, always 8-bit
+/// code bytes) are supported; anything else is rejected honestly rather
+/// than played as noise.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct WavInfo {
     pub(crate) channels: u32,
@@ -41,8 +42,12 @@ impl WavInfo {
     }
 
     /// Maps the header onto an audio-service sample format; None when the
-    /// encoding is outside the honest support set.
+    /// encoding is outside the honest support set. G.711 code bytes are
+    /// not raw PCM — the codec registry owns those tags.
     pub(crate) fn sample_format(&self) -> Option<AudioSampleFormat> {
+        if matches!(self.format_tag, 6 | 7) {
+            return None;
+        }
         match (self.is_float, self.bits_per_sample) {
             (false, 8) => Some(AudioSampleFormat::U8),
             (false, 16) => Some(AudioSampleFormat::S16Le),
@@ -121,6 +126,12 @@ pub(crate) fn parse_wav(bytes: &[u8]) -> Option<WavInfo> {
                 3 => {
                     info.is_float = true;
                     if bits != 32 {
+                        return None;
+                    }
+                }
+                6 | 7 => {
+                    // G.711 A-law / mu-law: code bytes are always 8 bits.
+                    if bits != 8 {
                         return None;
                     }
                 }
@@ -352,5 +363,36 @@ mod tests {
             decode_samples(&u8mid, 1, 4, AudioSampleFormat::U8, &mut out),
             1
         );
+    }
+
+    fn g711_fmt(tag: u16, channels: u16, rate: u32) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.extend_from_slice(&tag.to_le_bytes());
+        body.extend_from_slice(&channels.to_le_bytes());
+        body.extend_from_slice(&rate.to_le_bytes());
+        body.extend_from_slice(&(rate * u32::from(channels)).to_le_bytes());
+        body.extend_from_slice(&channels.to_le_bytes());
+        body.extend_from_slice(&8u16.to_le_bytes());
+        body
+    }
+
+    #[test]
+    fn parses_g711_headers_and_rejects_wrong_widths() {
+        let file = riff(&[0u8; 6], &g711_fmt(7, 2, 8000));
+        let info = parse_wav(&file).expect("mulaw wav parses");
+        assert_eq!(info.format_tag, 7);
+        assert_eq!(info.frame_bytes(), 2);
+        assert_eq!(info.frame_count(), 3);
+        // G.711 is not a service sample format; the codec registry owns it.
+        assert_eq!(info.sample_format(), None);
+
+        let alaw = riff(&[0u8; 3], &g711_fmt(6, 1, 8000));
+        let info = parse_wav(&alaw).expect("alaw wav parses");
+        assert_eq!(info.format_tag, 6);
+        assert_eq!(info.frame_count(), 3);
+
+        let mut wide = g711_fmt(7, 1, 8000);
+        wide[14] = 16; // bits per sample must stay 8 for G.711
+        assert_eq!(parse_wav(&riff(&[0u8; 2], &wide)), None);
     }
 }

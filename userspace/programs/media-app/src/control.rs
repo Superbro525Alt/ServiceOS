@@ -5,8 +5,9 @@ use crate::audioclient;
 use crate::library;
 use crate::plan;
 use crate::state::{
-    BUTTON_H, BUTTON_W, BUTTON_Y, FILE_MAX_BYTES, KEY_DOWN, KEY_ENTER, KEY_EQUAL, KEY_MINUS, KEY_P,
-    KEY_S, KEY_SPACE, KEY_UP, LIST_Y, MAX_PATH, MediaState, PLAY_X, PlayState, ROW_HEIGHT, STOP_X,
+    BUTTON_H, BUTTON_W, BUTTON_Y, FILE_MAX_BYTES, KEY_DOWN, KEY_ENTER, KEY_EQUAL, KEY_LEFT,
+    KEY_MINUS, KEY_P, KEY_RIGHT, KEY_S, KEY_SPACE, KEY_UP, LIST_Y, MAX_PATH, MediaState, PLAY_X,
+    PlayState, ROW_HEIGHT, STOP_X,
 };
 use serviceos_userspace_runtime::AudioSampleFormat;
 
@@ -146,6 +147,8 @@ fn handle_key(
         KEY_SPACE | KEY_S => stop_playback(state, "MEDIA stopped"),
         KEY_MINUS => apply_volume(state, -10),
         KEY_EQUAL => apply_volume(state, 10),
+        KEY_LEFT => seek_playback(state, -10, audio_handle),
+        KEY_RIGHT => seek_playback(state, 10, audio_handle),
         _ => false,
     }
 }
@@ -187,7 +190,7 @@ pub(crate) fn play_selected(
     let _ = rt::handle_close(blob);
     state.file_truncated = size > FILE_MAX_BYTES;
 
-    let mut decoder = match codec::Decoder::open(&state.file_bytes[..state.file_len]) {
+    let decoder = match codec::Decoder::open(&state.file_bytes[..state.file_len]) {
         Ok(decoder) => decoder,
         Err(err) => {
             state.set_note(open_error_note(err));
@@ -231,6 +234,71 @@ fn open_error_note(err: CodecError) -> &'static [u8] {
         CodecError::NotWav => b"UNSUPPORTED FORMAT",
         CodecError::UnsupportedEncoding | CodecError::BadHeader => b"CODEC UNSUPPORTED",
     }
+}
+
+/// Jumps the active stream by `delta_secs` (negative = back). The stream
+/// contract has no position primitive, so seeking re-opens the stream
+/// from the new decode offset: no stale pre-seek audio lingers in the
+/// service ring. Per-sample encodings (PCM, G.711) land exactly; block
+/// compressed IMA refuses honestly and playback continues untouched.
+pub(crate) fn seek_playback(
+    state: &mut MediaState,
+    delta_secs: i32,
+    audio_handle: rt::Handle,
+) -> bool {
+    if state.play_state != PlayState::Playing || state.playing_track == usize::MAX {
+        state.set_note(b"NOT PLAYING");
+        return true;
+    }
+    let Some(mut decoder) = state.decoder else {
+        return false;
+    };
+    let target = codec::seek_target_frame(
+        state.frame_cursor,
+        delta_secs,
+        decoder.sample_rate,
+        state.total_frames,
+    );
+    if !decoder.seek_frames(target) {
+        state.set_note(b"SEEK NOT SUPPORTED");
+        return true;
+    }
+    if state.stream_handle != rt::INVALID_HANDLE {
+        let _ = audioclient::stream_close(state.stream_handle);
+        state.stream_handle = rt::INVALID_HANDLE;
+    }
+    let stream = match audioclient::stream_open(audio_handle) {
+        Ok(stream) => stream,
+        Err(_) => {
+            state.play_state = PlayState::Idle;
+            state.set_note(b"AUDIO UNAVAILABLE");
+            return true;
+        }
+    };
+    if audioclient::stream_configure(
+        stream,
+        pipeline_format(),
+        decoder.sample_rate,
+        decoder.channels,
+    )
+    .is_err()
+    {
+        let _ = audioclient::stream_close(stream);
+        state.play_state = PlayState::Idle;
+        state.set_note(b"CONFIG REJECTED");
+        return true;
+    }
+    let _ = audioclient::stream_set_volume(stream, state.volume_percent, state.muted);
+    state.stream_handle = stream;
+    state.frame_cursor = target;
+    state.decoder = Some(decoder);
+    let note: &[u8] = if delta_secs < 0 {
+        b"SEEK -10S"
+    } else {
+        b"SEEK +10S"
+    };
+    state.set_note(note);
+    true
 }
 
 /// Wire format fed into audio-service: decoders normalize to f32.
@@ -428,5 +496,16 @@ mod tests {
         // Every decoder feeds the stream as f32 stereo-capable frames; the
         // service config always uses F32Le regardless of source encoding.
         assert_eq!(pipeline_format(), AudioSampleFormat::F32Le);
+    }
+
+    #[test]
+    fn seek_stays_honest_when_idle() {
+        // Idle seeks reject before any IPC touch, so INVALID handles are
+        // safe here by construction.
+        let mut state = MediaState::new(800, 600, true);
+        assert!(seek_playback(&mut state, 10, rt::INVALID_HANDLE));
+        assert_eq!(state.note_bytes(), b"NOT PLAYING".as_slice());
+        assert_eq!(state.play_state, PlayState::Idle);
+        assert!(state.decoder.is_none());
     }
 }

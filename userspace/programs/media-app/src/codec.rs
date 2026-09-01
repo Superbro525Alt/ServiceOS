@@ -2,13 +2,16 @@ use serviceos_userspace_runtime::AudioSampleFormat;
 
 /// Pluggable decode pipeline. Container sniffing happens on the file
 /// header magic (RIFF/WAVE), then a static registry maps the fmt-chunk
-/// encoding tag onto a decoder: PCM passthrough variants plus a real
-/// block-based IMA-ADPCM decoder. Decoders produce normalized interleaved
-/// f32 frames; anything outside the registry fails honestly.
+/// encoding tag onto a decoder: PCM passthrough variants, per-byte
+/// G.711 A-law/mu-law (tags 6/7), plus a real block-based IMA-ADPCM
+/// decoder. Decoders produce normalized interleaved f32 frames;
+/// anything outside the registry fails honestly.
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DecoderKind {
     Pcm(AudioSampleFormat),
+    MuLaw,
+    ALaw,
     ImaAdpcm,
 }
 
@@ -83,13 +86,17 @@ impl Decoder {
                     .and_then(|info| info.sample_format())
                     .ok_or(CodecError::BadHeader)?,
             ),
+            7 => DecoderKind::MuLaw,
+            6 => DecoderKind::ALaw,
             0x11 => DecoderKind::ImaAdpcm,
             _ => return Err(CodecError::UnsupportedEncoding),
         };
         let info = crate::wav::parse_wav(bytes).ok_or(CodecError::BadHeader)?;
         let channels = info.channels as usize;
         let (promised_frames, block_align, samples_per_block) = match kind {
-            DecoderKind::Pcm(_) => (info.frame_count(), 0usize, 0usize),
+            DecoderKind::Pcm(_) | DecoderKind::MuLaw | DecoderKind::ALaw => {
+                (info.frame_count(), 0usize, 0usize)
+            }
             DecoderKind::ImaAdpcm => {
                 let block_align = info.block_align as usize;
                 // ((blockAlign - 4*ch) * 8) / (4 bits * ch) + 1 per spec.
@@ -141,10 +148,11 @@ impl Decoder {
             return 0;
         }
         let data_end = self.data_offset + self.data_len;
-        let frames_cap = (out.len() / self.channels as usize).min(max_frames);
+        let channels = self.channels as usize;
+        let frames_cap = (out.len() / channels.max(1)).min(max_frames);
         match self.kind {
             DecoderKind::Pcm(format) => {
-                let target = frames_cap * self.channels as usize;
+                let target = frames_cap * channels;
                 let written = crate::wav::decode_samples(
                     bytes,
                     self.data_offset + self.pcm_cursor,
@@ -153,10 +161,48 @@ impl Decoder {
                     &mut out[..target],
                 );
                 self.pcm_cursor += written * crate::wav::sample_width(format);
-                written / self.channels as usize
+                written / channels.max(1)
+            }
+            DecoderKind::MuLaw => {
+                let target = frames_cap * channels;
+                let written = decode_g711(
+                    bytes,
+                    self.data_offset + self.pcm_cursor,
+                    target,
+                    out,
+                    mulaw_to_linear,
+                );
+                self.pcm_cursor += written;
+                written / channels.max(1)
+            }
+            DecoderKind::ALaw => {
+                let target = frames_cap * channels;
+                let written = decode_g711(
+                    bytes,
+                    self.data_offset + self.pcm_cursor,
+                    target,
+                    out,
+                    alaw_to_linear,
+                );
+                self.pcm_cursor += written;
+                written / channels.max(1)
             }
             DecoderKind::ImaAdpcm => self.decode_adpcm(bytes, data_end, frames_cap, out),
         }
+    }
+
+    /// Repositions the decode cursor to `target_frame` for per-sample
+    /// (block-free) encodings: PCM and G.711 are byte-aligned so landing
+    /// frames are exact; block-compressed IMA has no honest mid-stream
+    /// landing spot and refuses, leaving the cursor untouched.
+    pub(crate) fn seek_frames(&mut self, target_frame: usize) -> bool {
+        let frame_bytes = match self.kind {
+            DecoderKind::Pcm(format) => self.channels as usize * crate::wav::sample_width(format),
+            DecoderKind::MuLaw | DecoderKind::ALaw => self.channels as usize,
+            DecoderKind::ImaAdpcm => return false,
+        };
+        self.pcm_cursor = target_frame.min(self.promised_frames) * frame_bytes;
+        true
     }
 
     /// Sequential IMA ADPCM decode following the Microsoft WAV layout:
@@ -255,6 +301,79 @@ impl Decoder {
         let _ = block_count_max;
         written_samples / ch
     }
+}
+
+/// Canonical G.711 mu-law (tag 7) expansion, Sun g711.c form: complement
+/// the code byte, split 3-bit segment exponent and 4-bit mantissa, add the
+/// 0x84 bias and shift by the segment. Golden anchors: 0x00 -> -32124,
+/// 0x80 -> +32124, 0xFF/0x7F -> 0.
+pub(crate) fn mulaw_to_linear(byte: u8) -> i16 {
+    let value = !byte;
+    let mut t = (i32::from(value & 0x0F) << 3) + 0x84;
+    t <<= u32::from((value >> 4) & 0x07);
+    let linear = if value & 0x80 != 0 {
+        0x84 - t
+    } else {
+        t - 0x84
+    };
+    linear as i16
+}
+
+/// Canonical G.711 A-law (tag 6) expansion, Sun g711.c form: XOR the
+/// alternate-bit mask, 3-bit segment, 4-bit mantissa with per-segment
+/// offsets. Golden anchors: 0x00 -> -5504, 0xAA -> +32256, 0xD5 -> +8,
+/// 0x55 -> -8.
+pub(crate) fn alaw_to_linear(byte: u8) -> i16 {
+    let value = byte ^ 0x55;
+    let segment = (value >> 4) & 0x07;
+    let mut t = i32::from(value & 0x0F) << 4;
+    match segment {
+        0 => t += 8,
+        1 => t += 0x108,
+        _ => {
+            t += 0x108;
+            t <<= segment - 1;
+        }
+    }
+    let linear = if value & 0x80 != 0 { t } else { -t };
+    linear as i16
+}
+
+/// Per-byte G.711 decode: converts up to `target_samples` code bytes
+/// starting at `start` into normalized f32 samples. Stops cleanly at the
+/// end of input. Returns the number of samples written.
+fn decode_g711(
+    bytes: &[u8],
+    start: usize,
+    target_samples: usize,
+    out: &mut [f32],
+    expand: fn(u8) -> i16,
+) -> usize {
+    let mut decoded = 0usize;
+    while decoded < target_samples && decoded < out.len() {
+        let Some(byte) = bytes.get(start + decoded) else {
+            break;
+        };
+        out[decoded] = f32::from(expand(*byte)) / 32768.0;
+        decoded += 1;
+    }
+    decoded
+}
+
+/// Pure seek arithmetic shared by the key bindings: `delta_secs` may be
+/// negative; the landing frame clamps to [0, total]. A zero sample rate
+/// (degenerate header) never moves.
+pub(crate) fn seek_target_frame(
+    current_frame: usize,
+    delta_secs: i32,
+    sample_rate: u32,
+    total_frames: usize,
+) -> usize {
+    if sample_rate == 0 {
+        return 0;
+    }
+    let target = current_frame as i64 + i64::from(delta_secs) * i64::from(sample_rate);
+    target.clamp(0, total_frames as i64) as usize
 }
 
 /// One IMA nibble: returns (new predictor, new index) per the spec math.
@@ -540,5 +659,163 @@ mod tests {
         let got = dec.decode_next(&file, 16, &mut big);
         // Two payload bytes = four mono samples plus the header frame.
         assert_eq!(got, 5);
+    }
+
+    fn g711_fmt(tag: u16, channels: u16, rate: u32) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.extend_from_slice(&tag.to_le_bytes());
+        body.extend_from_slice(&channels.to_le_bytes());
+        body.extend_from_slice(&rate.to_le_bytes());
+        body.extend_from_slice(&(rate * u32::from(channels)).to_le_bytes());
+        body.extend_from_slice(&channels.to_le_bytes()); // one byte per sample
+        body.extend_from_slice(&8u16.to_le_bytes());
+        body
+    }
+
+    #[test]
+    fn seek_target_frame_moves_clamps_and_guards() {
+        // +10s at 100 Hz from frame 1000 lands on frame 2000.
+        assert_eq!(seek_target_frame(1000, 10, 100, 5000), 2000);
+        // -10s clamps at the start.
+        assert_eq!(seek_target_frame(100, -10, 100, 5000), 0);
+        // +10s past the end clamps at the final frame.
+        assert_eq!(seek_target_frame(4500, 10, 100, 5000), 5000);
+        // Degenerate header (rate 0) never advances.
+        assert_eq!(seek_target_frame(0, 5, 0, 7), 0);
+    }
+
+    #[test]
+    fn pcm_seek_repositions_the_decode_stream() {
+        let data: Vec<u8> = (10u8..=80).step_by(10).collect(); // 8 frames
+        let file = riff(&data, &pcm_fmt(1, 8000, 8));
+        let mut dec = Decoder::open(&file).expect("pcm opens");
+        let mut out = [0f32; 2];
+        assert_eq!(dec.decode_next(&file, 2, &mut out), 2);
+        assert!(dec.seek_frames(5));
+        let mut resumed = [0f32; 3];
+        assert_eq!(dec.decode_next(&file, 3, &mut resumed), 3);
+        assert!((resumed[0] - (60.0 - 128.0) / 128.0).abs() < 1e-6);
+        assert!((resumed[1] - (70.0 - 128.0) / 128.0).abs() < 1e-6);
+        assert!((resumed[2] - (80.0 - 128.0) / 128.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn pcm_seek_clamps_beyond_the_final_frame() {
+        let file = riff(&[10u8, 20, 30, 40], &pcm_fmt(1, 8000, 8));
+        let mut dec = Decoder::open(&file).expect("pcm opens");
+        assert!(dec.seek_frames(999));
+        let mut out = [0f32; 4];
+        assert_eq!(dec.decode_next(&file, 4, &mut out), 0);
+    }
+
+    #[test]
+    fn seek_denied_honestly_for_block_compressed_input() {
+        let file = riff(&mono_block(0, 0, &[0x00; 4]), &ima_fmt(1, 8000, 8));
+        let mut dec = Decoder::open(&file).expect("ima opens");
+        assert!(!dec.seek_frames(1));
+        // Denied seek leaves the stream untouched at the start.
+        let mut out = [0f32; 2];
+        assert_eq!(dec.decode_next(&file, 2, &mut out), 2);
+        assert_eq!(out[0], 0.0);
+    }
+
+    #[test]
+    fn mulaw_golden_vectors_match_the_published_table() {
+        // Canonical G.711 mu-law expansion (Sun g711.c form):
+        // 0x00 is negative full scale, 0x80 positive full scale,
+        // 0xFF/0x7F are the two zero encodings.
+        assert_eq!(mulaw_to_linear(0x00), -32124);
+        assert_eq!(mulaw_to_linear(0x80), 32124);
+        assert_eq!(mulaw_to_linear(0xFF), 0);
+        assert_eq!(mulaw_to_linear(0x7F), 0);
+    }
+
+    #[test]
+    fn alaw_golden_vectors_match_the_published_table() {
+        // Canonical G.711 A-law expansion: 0x00 is negative full scale
+        // (-5504), 0xAA positive full scale (+32256), 0xD5/0x55 the zeros.
+        assert_eq!(alaw_to_linear(0x00), -5504);
+        assert_eq!(alaw_to_linear(0xAA), 32256);
+        assert_eq!(alaw_to_linear(0xD5), 8);
+        assert_eq!(alaw_to_linear(0x55), -8);
+    }
+
+    #[test]
+    fn g711_registry_dispatch_and_normalized_decode() {
+        let data = [0x00u8, 0x80, 0xFF, 0x7F];
+        let file = riff(&data, &g711_fmt(7, 1, 8000));
+        let mut dec = Decoder::open(&file).expect("mulaw wav opens");
+        assert_eq!(dec.kind_of(), &DecoderKind::MuLaw);
+        assert_eq!(dec.total_frames(), 4);
+        let mut out = [0f32; 4];
+        assert_eq!(dec.decode_next(&file, 4, &mut out), 4);
+        assert_eq!(out[0], -32124.0 / 32768.0);
+        assert_eq!(out[1], 32124.0 / 32768.0);
+        assert_eq!(out[2], 0.0);
+        assert_eq!(out[3], 0.0);
+    }
+
+    #[test]
+    fn g711_stereo_interleaves_per_frame() {
+        let data = [0x00u8, 0x80, 0xFF, 0x7F];
+        let file = riff(&data, &g711_fmt(7, 2, 8000));
+        let mut dec = Decoder::open(&file).expect("stereo mulaw opens");
+        assert_eq!(dec.total_frames(), 2);
+        let mut out = [0f32; 4];
+        assert_eq!(dec.decode_next(&file, 4, &mut out), 2);
+        assert_eq!(out[0], -32124.0 / 32768.0);
+        assert_eq!(out[1], 32124.0 / 32768.0);
+        assert_eq!(out[2], 0.0);
+        assert_eq!(out[3], 0.0);
+    }
+
+    #[test]
+    fn alaw_registry_dispatch_and_normalized_decode() {
+        let data = [0x00u8, 0xAA];
+        let file = riff(&data, &g711_fmt(6, 1, 8000));
+        let mut dec = Decoder::open(&file).expect("alaw wav opens");
+        assert_eq!(dec.kind_of(), &DecoderKind::ALaw);
+        let mut out = [0f32; 2];
+        assert_eq!(dec.decode_next(&file, 2, &mut out), 2);
+        assert_eq!(out[0], -5504.0 / 32768.0);
+        assert_eq!(out[1], 32256.0 / 32768.0);
+    }
+
+    #[test]
+    fn g711_chunked_decode_matches_single_shot() {
+        let data: Vec<u8> = (0u8..32).map(|b| b.rotate_left(1)).collect();
+        let file = riff(&data, &g711_fmt(7, 1, 8000));
+        let mut whole = Decoder::open(&file).expect("opens");
+        let mut full_out = [0f32; 32];
+        assert_eq!(whole.decode_next(&file, 32, &mut full_out), 32);
+
+        let mut pieced = Decoder::open(&file).expect("opens");
+        let mut piece_out = [0f32; 32];
+        let mut filled = 0usize;
+        while filled < 32 {
+            let wrote = pieced.decode_next(&file, 3, &mut piece_out[filled..]);
+            if wrote == 0 {
+                break;
+            }
+            filled += wrote;
+        }
+        assert_eq!(filled, 32);
+        assert_eq!(&full_out[..32], &piece_out[..32]);
+    }
+
+    #[test]
+    fn g711_seek_repositions_byte_accurately() {
+        let data: Vec<u8> = (0u8..16).map(|b| b ^ 0x55).collect();
+        let file = riff(&data, &g711_fmt(7, 1, 8000));
+        let mut dec = Decoder::open(&file).expect("opens");
+        let mut out = [0f32; 4];
+        assert_eq!(dec.decode_next(&file, 4, &mut out), 4);
+        assert!(dec.seek_frames(10));
+        let mut resumed = [0f32; 4];
+        assert_eq!(dec.decode_next(&file, 4, &mut resumed), 4);
+        let want: Vec<f32> = (10u8..14)
+            .map(|b| f32::from(mulaw_to_linear(b ^ 0x55)) / 32768.0)
+            .collect();
+        assert_eq!(&resumed[..], &want[..]);
     }
 }

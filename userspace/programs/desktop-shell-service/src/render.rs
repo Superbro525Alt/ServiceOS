@@ -276,6 +276,7 @@ fn render_launcher_docs(state: &mut DesktopState) -> rt::Result<()> {
         return Ok(());
     }
     let t = theme_of(state);
+    let focus = state.launcher_doc_focus;
     rt::surface_set_label(
         state.chrome.launcher_handle,
         crate::launcher_docs::DOC_HEADER_SLOT,
@@ -286,6 +287,13 @@ fn render_launcher_docs(state: &mut DesktopState) -> rt::Result<()> {
     )?;
     for row in 0..crate::launcher_docs::LAUNCHER_DOCS_MAX {
         let mut line = FixedLogBuffer::<56>::new();
+        // Keyboard focus mirrors the palette selection visual: a "> "
+        // prefix plus the brighter primary text color (pointer hover uses
+        // the same marker during content drags).
+        let focused = crate::launcher_docs::doc_row_focused(focus, row, docs_len);
+        if focused {
+            let _ = write!(&mut line, "> ");
+        }
         if row < docs_len {
             crate::launcher_docs::doc_row_label(&mut line, &state.launcher_docs[row]);
         }
@@ -294,7 +302,7 @@ fn render_launcher_docs(state: &mut DesktopState) -> rt::Result<()> {
             crate::launcher_docs::DOC_ROW_SLOT_BASE + row as u32,
             12,
             crate::launcher_docs::doc_row_y(row),
-            t.text_secondary,
+            if focused { t.text } else { t.text_secondary },
             line.as_str(),
         )?;
     }

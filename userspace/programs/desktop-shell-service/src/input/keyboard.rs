@@ -39,6 +39,18 @@ pub(super) fn handle_key_input(
     }
 
     if action == AppKeyAction::Down {
+        // Launcher document-row keyboard focus (palette-shaped flow): armed
+        // only while no overlay is up, so overlay keys are untouched, and
+        // any overlay opening disarms it. Ctrl+Tab is the entry chord — it
+        // stays outside the global action registry on purpose.
+        if state.overlay_mode != OverlayMode::None {
+            state.launcher_doc_focus = None;
+        } else if modifiers == MOD_CTRL && key_code == KEY_TAB {
+            return crate::launcher_docs::begin_doc_focus(state);
+        } else if state.launcher_doc_focus.is_some() {
+            return crate::launcher_docs::handle_doc_focus_key(state, key_code);
+        }
+
         if key_code == KEY_ESC && state.overlay_mode != OverlayMode::None {
             if state.overlay_mode == OverlayMode::Login {
                 crate::login::reset_login(state);

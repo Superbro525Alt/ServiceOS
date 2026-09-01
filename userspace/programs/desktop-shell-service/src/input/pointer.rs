@@ -1,6 +1,10 @@
 use super::*;
 
 pub(super) fn handle_pointer_down(state: &mut DesktopState, x: i32, y: i32) -> rt::Result<u32> {
+    // Any pointer activity disarms the launcher doc-row keyboard focus.
+    if state.launcher_doc_focus.take().is_some() {
+        state.pending_shell_refresh.set();
+    }
     if state.overlay_mode != OverlayMode::None {
         if let Some(surface_id) = overlay_click(state, x, y)? {
             return Ok(surface_id);
@@ -92,6 +96,10 @@ pub(super) fn handle_pointer_down(state: &mut DesktopState, x: i32, y: i32) -> r
 }
 
 pub(super) fn handle_pointer_move(state: &mut DesktopState, x: i32, y: i32) -> rt::Result<u32> {
+    // Any pointer activity disarms the launcher doc-row keyboard focus.
+    if state.launcher_doc_focus.take().is_some() {
+        state.pending_shell_refresh.set();
+    }
     match state.drag_state {
         Some(DragState::Move {
             app_id,

@@ -177,6 +177,7 @@ fn main() -> u64 {
             line: 0,
         }; crate::launcher_docs::LAUNCHER_DOCS_MAX],
         launcher_docs_len: 0,
+        launcher_doc_focus: None,
         launcher_docs_rendered: 0,
         next_launcher_docs_refresh: 0,
         master_volume: media::MASTER_VOLUME_DEFAULT,

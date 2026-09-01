@@ -376,6 +376,9 @@ pub(crate) struct DesktopState {
     pub(crate) launcher_docs:
         [crate::palette_docs::DocHit; crate::launcher_docs::LAUNCHER_DOCS_MAX],
     pub(crate) launcher_docs_len: usize,
+    /// Keyboard-focused document row while the launcher doc focus mode is
+    /// active (Ctrl+Tab entry); None when pointer-driven or inactive.
+    pub(crate) launcher_doc_focus: Option<usize>,
     pub(crate) launcher_docs_rendered: usize,
     pub(crate) next_launcher_docs_refresh: u64,
     pub(crate) master_volume: u8,

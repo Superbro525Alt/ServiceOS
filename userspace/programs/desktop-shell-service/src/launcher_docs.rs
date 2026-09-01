@@ -3,9 +3,10 @@ use core::{fmt::Write as _, str};
 use serviceos_desktop_ui as ui;
 use serviceos_userspace_runtime as rt;
 
-use crate::DesktopState;
-use crate::palette_docs::{DOC_HITS_MAX, DOC_PATH_MAX, DocHit, doc_kind_icon};
+use crate::palette_docs::{doc_kind_icon, DocHit, DOC_HITS_MAX, DOC_PATH_MAX};
 use crate::windows::open_path_in_files;
+use crate::DesktopState;
+use crate::{KEY_DOWN, KEY_ENTER, KEY_ESC, KEY_UP};
 
 /// Bounded document section under the launcher app grid, ranked from the
 /// files-app recent-files ring (recency-first, move-to-front semantics)
@@ -236,6 +237,80 @@ pub(crate) fn open_launcher_doc(state: &mut DesktopState, row: usize) -> rt::Res
     open_path_in_files(state, path)
 }
 
+// ---- keyboard focus model ----------------------------------------------
+//
+// The app grid is pointer-only (keyboard.rs forwards every key to the
+// focused app when no overlay is up), so there is no grid keyboard model to
+// mirror. Instead the document rows gain a palette-shaped keyboard flow:
+// Ctrl+Tab (no overlay up) arms focus on row 0, Up/Down wrap-cycle the
+// rows, Enter commits through the same `open_launcher_doc` click path, and
+// Esc, any pointer activity, or any overlay opening disarms it. While the
+// mode is armed those keys are consumed by the shell instead of reaching
+// the focused app; keys are untouched when it is not.
+
+/// Pure focus entry: row 0 while documents exist, never over an empty list.
+pub(crate) fn focus_enter(len: usize) -> Option<usize> {
+    (len != 0).then_some(0)
+}
+
+/// Pure focus cycle with wrap-around in both directions. A stale focus row
+/// beyond a shrunken list clamps first; an empty list disarms the mode.
+pub(crate) fn focus_cycle(current: usize, len: usize, delta: isize) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    let current = current.min(len - 1);
+    let next = (current as isize + delta).rem_euclid(len as isize);
+    Some(next as usize)
+}
+
+/// Render-side outline flag: row `row` carries the focus visual only while
+/// it is the armed focus row and the row still exists.
+pub(crate) fn doc_row_focused(focus: Option<usize>, row: usize, docs_len: usize) -> bool {
+    focus == Some(row) && row < docs_len
+}
+
+/// Ctrl+Tab entry point: arms focus on the first document row. With no
+/// documents the launcher keeps its app-only behavior exactly (no-op).
+pub(crate) fn begin_doc_focus(state: &mut DesktopState) -> rt::Result<u32> {
+    state.launcher_doc_focus = focus_enter(state.launcher_docs_len);
+    if state.launcher_doc_focus.is_some() {
+        state.pending_shell_refresh.set();
+    }
+    Ok(crate::windows::focused_surface_id(state))
+}
+
+/// Key handling while the doc focus mode is armed (no overlay up): arrows
+/// cycle with wrap-around, Enter commits, Esc disarms, anything else is a
+/// no-op that keeps the mode.
+pub(crate) fn handle_doc_focus_key(state: &mut DesktopState, key_code: u32) -> rt::Result<u32> {
+    let docs_len = state.launcher_docs_len.min(LAUNCHER_DOCS_MAX);
+    match key_code {
+        KEY_ESC => {
+            state.launcher_doc_focus = None;
+            state.pending_shell_refresh.set();
+            Ok(crate::windows::focused_surface_id(state))
+        }
+        KEY_UP | KEY_DOWN => {
+            let current = state.launcher_doc_focus.take().unwrap_or(0);
+            let delta = if key_code == KEY_UP { -1 } else { 1 };
+            state.launcher_doc_focus = focus_cycle(current, docs_len, delta);
+            if state.launcher_doc_focus.is_some() {
+                state.pending_shell_refresh.set();
+            }
+            Ok(crate::windows::focused_surface_id(state))
+        }
+        KEY_ENTER => {
+            let Some(row) = state.launcher_doc_focus.take() else {
+                return Ok(crate::windows::focused_surface_id(state));
+            };
+            state.pending_shell_refresh.set();
+            open_launcher_doc(state, row)
+        }
+        _ => Ok(crate::windows::focused_surface_id(state)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -446,6 +521,68 @@ mod tests {
         assert_eq!(
             split_scope_and_name(b"a/b/c.bin"),
             (&b"a/b/"[..], &b"c.bin"[..])
+        );
+    }
+
+    // ---- keyboard focus model --------------------------------------------
+
+    #[test]
+    fn focus_enter_arms_row_zero_and_refuses_empty_list() {
+        assert_eq!(focus_enter(4), Some(0));
+        assert_eq!(focus_enter(1), Some(0));
+        assert_eq!(focus_enter(0), None);
+    }
+
+    #[test]
+    fn focus_cycle_wraps_in_both_directions() {
+        // Down from the last row wraps to the first, up from the first wraps
+        // to the last; the row order stays recency rank 0..len.
+        assert_eq!(focus_cycle(0, 4, 1), Some(1));
+        assert_eq!(focus_cycle(1, 4, 1), Some(2));
+        assert_eq!(focus_cycle(2, 4, 1), Some(3));
+        assert_eq!(focus_cycle(3, 4, 1), Some(0));
+        assert_eq!(focus_cycle(0, 4, -1), Some(3));
+        assert_eq!(focus_cycle(3, 4, -1), Some(2));
+        assert_eq!(focus_cycle(2, 4, -1), Some(1));
+        assert_eq!(focus_cycle(1, 4, -1), Some(0));
+    }
+
+    #[test]
+    fn focus_cycle_clamps_stale_rows_and_disarms_on_empty() {
+        // Docs refreshed away while armed: a focus row past the shrunken
+        // list clamps before cycling; a zero-length list disarms.
+        assert_eq!(focus_cycle(3, 2, 1), Some(0));
+        assert_eq!(focus_cycle(3, 1, -1), Some(0));
+        assert_eq!(focus_cycle(0, 0, 1), None);
+        assert_eq!(focus_cycle(0, 0, -1), None);
+    }
+
+    #[test]
+    fn doc_row_focus_flag_tracks_armed_row_only_while_it_exists() {
+        assert!(doc_row_focused(Some(2), 2, 4));
+        assert!(!doc_row_focused(Some(2), 1, 4));
+        assert!(!doc_row_focused(Some(2), 3, 4));
+        assert!(!doc_row_focused(None, 2, 4));
+        // A shrunken list never paints a focus outline on a dead row.
+        assert!(!doc_row_focused(Some(3), 3, 2));
+        assert!(!doc_row_focused(Some(3), 1, 2));
+    }
+
+    #[test]
+    fn focus_key_scancodes_stay_distinct_scancodes() {
+        // The match arms in handle_doc_focus_key branch on raw scancodes;
+        // pin them pairwise distinct so an arm can never shadow another.
+        assert_ne!(KEY_UP, KEY_DOWN);
+        assert_ne!(KEY_UP, KEY_ENTER);
+        assert_ne!(KEY_DOWN, KEY_ENTER);
+        assert_ne!(KEY_ESC, KEY_ENTER);
+        assert_ne!(KEY_ESC, KEY_UP);
+        assert_ne!(KEY_ESC, KEY_DOWN);
+        // Ctrl+Tab is the entry chord and must stay outside the global
+        // action registry (keyboard.rs handles it before the registry).
+        assert_eq!(
+            crate::actions::action_for_binding(crate::MOD_CTRL, crate::KEY_TAB),
+            None
         );
     }
 }

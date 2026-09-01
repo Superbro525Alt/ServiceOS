@@ -155,6 +155,10 @@ pub(in crate::commands) fn status_from_word(word: u64) -> PackageStatus {
         10 => PackageStatus::Unsupported,
         11 => PackageStatus::Offline,
         12 => PackageStatus::Interrupted,
+        13 => PackageStatus::VerificationFailed,
+        14 => PackageStatus::InvalidParameter,
+        15 => PackageStatus::AlreadyExists,
+        16 => PackageStatus::NoKeyPair,
         _ => PackageStatus::VerificationFailed,
     }
 }
@@ -177,6 +181,7 @@ pub(in crate::commands) fn package_status_name(status: PackageStatus) -> &'stati
         PackageStatus::VerificationFailed => "verification-failed",
         PackageStatus::InvalidParameter => "invalid-parameter",
         PackageStatus::AlreadyExists => "already-exists",
+        PackageStatus::NoKeyPair => "no-key-pair",
     }
 }
 
@@ -913,6 +918,21 @@ mod tests {
             trust_explanation(rt::PackageRepositoryTrustMode::SignedKey),
             "signed by the bound ed25519 source key"
         );
+    }
+
+    #[test]
+    fn status_words_cover_full_space_including_no_key_pair() {
+        // 16 = NoKeyPair (trust-root enrollment without a keystore keypair);
+        // 14/15 previously collapsed into the catch-all, now named exactly.
+        assert_eq!(status_from_word(14), rt::PackageStatus::InvalidParameter);
+        assert_eq!(status_from_word(15), rt::PackageStatus::AlreadyExists);
+        assert_eq!(status_from_word(16), rt::PackageStatus::NoKeyPair);
+        assert_eq!(
+            package_status_name(rt::PackageStatus::NoKeyPair),
+            "no-key-pair"
+        );
+        // Unknown words still degrade to verification-failed, never panic.
+        assert_eq!(status_from_word(999), rt::PackageStatus::VerificationFailed);
     }
 
     #[test]

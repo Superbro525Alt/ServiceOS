@@ -2,10 +2,12 @@
 //! Speaks the trust-root protocol (PackageTag 0x732..) directly against
 //! package-service, mirroring the keystore/rollout command blocks.
 //!
-//! Standing model (v0, management layer only — no crypto chaining):
-//! ROOT = key id on the operator-managed root list; DIRECT = enrolled while
-//! a root regime existed (keystore record carries enrolled-at + via);
-//! UNATTESTED = legacy pre-root record, displayed honestly as such.
+//! Standing model (v1, cryptographic chain): ROOT = key id on the
+//! operator-managed root list (must hold its ed25519 keypair in the
+//! keystore — roots sign attestations); DIRECT = enrolled under a root
+//! regime with a root signature that verifies against the CURRENT root
+//! list; UNATTESTED = legacy record, missing/invalid signature, or a
+//! removed/rotated attesting root, displayed honestly as such.
 
 use serviceos_userspace_runtime as rt;
 
@@ -262,7 +264,10 @@ fn cmd_trust_list(bootstrap: rt::Handle, output: ShellOutput) -> rt::Result<()> 
 }
 
 /// `pkg trust add <key-id> [label] --yes` — promote an enrolled key to a
-/// trust root. The key must already exist in the keystore.
+/// trust root. The key must hold its private keypair in the keystore
+/// (roots sign attestations; pubkey-only records are refused). Adding a
+/// root (re-)signs the attestation chain for every attested key citing
+/// it; the reply's additive third word carries how many were signed.
 fn cmd_trust_add(
     bootstrap: rt::Handle,
     output: ShellOutput,
@@ -280,15 +285,31 @@ fn cmd_trust_add(
         return Err(rt::Error::InvalidArgument);
     }
     match status_of(&reply) {
-        StatusWord::Ok => write_output_linef(
-            output,
-            format_args!(
-                "root added id={} label={} (slot {})",
-                key_id,
-                if label.is_empty() { "root" } else { label },
-                reply.words[1],
-            ),
-        ),
+        StatusWord::Ok => {
+            // Verification verdict: word_count 3 = service reported the
+            // (re-)attestation count (additive tail; legacy services omit).
+            let attested = if reply.word_count >= 3 {
+                reply.words[2]
+            } else {
+                0
+            };
+            let verdict = if attested > 0 {
+                "chain verified"
+            } else {
+                "no keys cited this root"
+            };
+            write_output_linef(
+                output,
+                format_args!(
+                    "root added id={} label={} (slot {}) attested={} - {}",
+                    key_id,
+                    if label.is_empty() { "root" } else { label },
+                    reply.words[1],
+                    attested,
+                    verdict,
+                ),
+            )
+        }
         StatusWord::End => Err(rt::Error::InvalidArgument),
         StatusWord::Fail(name) => {
             write_output_linef(output, format_args!("trust add failed: {}", name))

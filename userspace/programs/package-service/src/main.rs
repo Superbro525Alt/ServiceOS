@@ -76,6 +76,34 @@ fn main() -> u64 {
     let _ = storage::load_persisted_repositories(storage_handle, repos, &mut repo_count);
     let _ = storage::load_feed_keystore(storage_handle);
     let _ = storage::load_trust_roots(storage_handle);
+    // Trust-chain verification pass: every attested record's root
+    // signature is re-verified against the freshly loaded root list
+    // (verdict cached in memory only; records are never mutated here).
+    unsafe {
+        let keystore = &mut *core::ptr::addr_of_mut!(FEED_KEYSTORE);
+        crate::signing::refresh_chain_cache(keystore, trust_roots());
+    }
+    // Migration honesty (one-time per load): records attested under the
+    // pre-signature regime carry tick + via but no verifiable signature,
+    // so they derive UNATTESTED with the record intact. Operators
+    // re-establish the chain by re-running `pkg trust add <root-key-id>`.
+    let legacy_attested = unsafe {
+        let keystore = &*core::ptr::addr_of!(FEED_KEYSTORE);
+        keystore.sources[..keystore.source_count]
+            .iter()
+            .flat_map(|entry| &entry.keys[..entry.key_count])
+            .filter(|key| key.is_attested() && !key.chain_valid)
+            .count()
+    };
+    if legacy_attested > 0 {
+        let _ = emit_package_event(
+            log_handle,
+            LogSeverity::Warn,
+            LogEvent::PackageRepairCompleted,
+            legacy_attested as u64,
+            0,
+        );
+    }
     let _ = storage::load_reject_journal(storage_handle);
     let _ = storage::load_rollout_policy(storage_handle);
     for repo_index in 1..repo_count {

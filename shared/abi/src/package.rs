@@ -88,6 +88,10 @@ pub enum PackageStatus {
     VerificationFailed = 13,
     InvalidParameter = 14,
     AlreadyExists = 15,
+    /// Trust-root enrollment refused: the chosen root key id has no private
+    /// keypair in the keystore, so it cannot sign attestations. Additive at
+    /// the END of the status space (legacy readers see an unknown word).
+    NoKeyPair = 16,
 }
 
 #[repr(u32)]
@@ -101,19 +105,25 @@ pub enum PackageTrustState {
 }
 
 /// Provenance standing of an enrolled feed-signing key relative to the
-/// operator-managed trust-root list. v0 is a management/bookkeeping layer:
-/// no cryptographic chaining yet (an open next step roots would sign key
-/// attestations).
+/// operator-managed trust-root list. ROOT is membership on the root list;
+/// DIRECT now requires a verifiable cryptographic chain: the keystore
+/// record carries an ed25519 attestation over the key, signed by the root
+/// key that was authoritative at enrollment, and the chain verifies against
+/// the CURRENT root list. A broken chain (tampered signature, root removed,
+/// root rotated away) honestly drops the standing to Unattested while the
+/// record itself stays intact.
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PackageKeyStanding {
-    /// Legacy record enrolled before trust roots existed (or with no root
-    /// regime configured); grandfathered, displayed honestly as such.
+    /// No valid trust chain: legacy pre-root records, attested records
+    /// whose signature is missing/invalid, or records whose attesting root
+    /// is no longer on the root list. Displayed honestly as such.
     Unattested = 0,
     /// Directly trusted by operator enrollment: the key id is on the ROOT list.
     Root = 1,
-    /// Enrolled while a root regime existed; the keystore record carries the
-    /// attestation (enrolled-at tick + the root that was authoritative).
+    /// Enrolled under a root regime with a verifiable attestation: the
+    /// keystore record carries the enrolled-at tick, the attesting root id,
+    /// and a root-signed ed25519 signature over the canonical attestation.
     Direct = 2,
 }
 
@@ -176,5 +186,13 @@ mod tests {
         assert_eq!(T::RootAddReply as u32, 0x737);
         assert_eq!(T::RootRemoveRequest as u32, 0x738);
         assert_eq!(T::RootRemoveReply as u32, 0x739);
+    }
+
+    /// NoKeyPair extends the status space at the END; pinned so the shell
+    /// mapping (status_from_word) stays in lockstep with the service.
+    #[test]
+    fn package_no_key_pair_status_is_additive_tail() {
+        assert_eq!(super::PackageStatus::AlreadyExists as u32, 15);
+        assert_eq!(super::PackageStatus::NoKeyPair as u32, 16);
     }
 }

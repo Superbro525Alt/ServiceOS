@@ -9,7 +9,10 @@ pub(crate) const MAX_INDEX_BYTES: usize = 512;
 pub(crate) const MAX_PACKAGE_BYTES: usize = 2048;
 pub(crate) const MAX_FEED_BYTES: usize = 4096;
 pub(crate) const MAX_HTTP_BYTES: usize = 4096;
-pub(crate) const MAX_STATE_BYTES: usize = 2048;
+// Keystore records now carry 128-hex attestation signatures and 64-hex
+// seeds per key; 2048 could truncate a fully-attested store mid-line
+// (partial writes are unparseable), so the persisted-state cap grows.
+pub(crate) const MAX_STATE_BYTES: usize = 4096;
 pub(crate) const MAX_PACKAGE_SLOTS: usize = 12;
 pub(crate) const MAX_PACKAGE_VERSIONS: usize = 8;
 pub(crate) const MAX_REPOSITORIES: usize = 4;

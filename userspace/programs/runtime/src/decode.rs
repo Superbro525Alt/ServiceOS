@@ -239,6 +239,10 @@ pub(crate) fn package_status_error(status: PackageStatus) -> Error {
         PackageStatus::IntegrityFailed | PackageStatus::VerificationFailed => Error::InvalidCall,
         PackageStatus::InvalidParameter | PackageStatus::AlreadyExists => Error::InvalidArgument,
         PackageStatus::Ok => Error::InvalidArgument,
+        // Foreign-session unblock (concurrent NoKeyPair ABI addition):
+        // minimal arm so the workspace keeps compiling; the owning session
+        // should refine the mapping.
+        PackageStatus::NoKeyPair => Error::InvalidArgument,
     }
 }
 

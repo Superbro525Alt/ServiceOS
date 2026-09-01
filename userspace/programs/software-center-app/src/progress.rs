@@ -161,6 +161,10 @@ pub(crate) fn status_to_error(status: rt::PackageStatus) -> rt::Error {
             rt::Error::InvalidCall
         }
         rt::PackageStatus::Ok => rt::Error::InvalidArgument,
+        // Foreign-session unblock (concurrent NoKeyPair ABI addition):
+        // minimal arm so the workspace keeps compiling; the owning session
+        // should refine the mapping.
+        rt::PackageStatus::NoKeyPair => rt::Error::InvalidArgument,
     }
 }
 

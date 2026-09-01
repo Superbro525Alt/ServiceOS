@@ -828,6 +828,37 @@ fn keystore_error_word(error: crate::signing::KeystoreError) -> u64 {
     status as u32 as u64
 }
 
+/// Sign an enrollment attestation over `key_id` with the PRIMARY root's
+/// keypair, when a root regime exists and the primary root holds its
+/// private half. None = no signing root available: the record still
+/// carries tick + via (bookkeeping) but stays honestly unsigned until a
+/// RootAdd re-attest run gives it a verifiable chain.
+fn sign_enroll_attestation(
+    keystore: &crate::signing::Keystore,
+    key_id: &str,
+    attested_tick: u64,
+) -> Option<[u8; 64]> {
+    let roots = trust_roots();
+    if roots.count == 0 || attested_tick == 0 {
+        return None;
+    }
+    let primary = roots.primary_key_id();
+    if primary.is_empty() {
+        return None;
+    }
+    let root_slot = roots.find(primary)?;
+    let root_label = roots.roots[root_slot].label.as_str();
+    let root_key = keystore.sources[..keystore.source_count]
+        .iter()
+        .flat_map(|entry| &entry.keys[..entry.key_count])
+        .find(|key| key.key_id.as_str() == primary)?;
+    if !root_key.has_keypair() {
+        return None;
+    }
+    let seed = crate::signing::decode_seed_hex(root_key.seed_hex.as_str())?;
+    crate::signing::sign_attestation(&seed, key_id, root_label, attested_tick, primary)
+}
+
 fn keys_send_reply(reply_handle: rt::Handle, reply: &RawMessage) {
     let _ = rt::channel_send(reply_handle, reply);
     let _ = rt::handle_close(reply_handle);
@@ -1039,7 +1070,9 @@ fn handle_keys_enroll_request(storage_handle: rt::Handle, message: &RawMessage) 
                 let keystore = &mut *core::ptr::addr_of_mut!(FEED_KEYSTORE);
                 // Trust-root bookkeeping: when a root regime exists, the new
                 // key records an attestation (enrolled-at tick + the primary
-                // root that was authoritative). No roots -> unattested.
+                // root that was authoritative) AND the primary root's
+                // signature over the canonical attestation, when that root
+                // holds its keypair. No roots -> unattested.
                 let roots = trust_roots();
                 let attested_tick = if roots.count > 0 {
                     rt::monotonic_now().unwrap_or(0)
@@ -1047,17 +1080,28 @@ fn handle_keys_enroll_request(storage_handle: rt::Handle, message: &RawMessage) 
                     0
                 };
                 let via = roots.primary_key_id();
-                match keystore.ensure_source(source) {
+                let outcome = match keystore.ensure_source(source) {
                     Err(error) => Err(error),
                     Ok(entry) => entry
                         .enroll_ed25519_attested(id_text, key_hex, attested_tick, via)
-                        .map(|_| {
-                            (
-                                PackageStatus::Ok as u32 as u64,
-                                keys_state_word_of(keystore, source, id_text),
-                            )
-                        }),
+                        .map(|_| ()),
+                };
+                if outcome.is_ok() {
+                    if let Some(signature) =
+                        sign_enroll_attestation(keystore, id_text, attested_tick)
+                    {
+                        if let Some(entry) = keystore.source_keys_mut(source) {
+                            let _ = entry.attest_key(id_text, signature);
+                        }
+                    }
+                    crate::signing::refresh_chain_cache(keystore, trust_roots());
                 }
+                outcome.map(|_| {
+                    (
+                        PackageStatus::Ok as u32 as u64,
+                        keys_state_word_of(keystore, source, id_text),
+                    )
+                })
             },
         };
 
@@ -1267,8 +1311,10 @@ fn handle_keys_gen_request(storage_handle: rt::Handle, message: &RawMessage) -> 
 
     unsafe {
         let keystore = &mut *core::ptr::addr_of_mut!(FEED_KEYSTORE);
-        // Same trust-root bookkeeping as KeysEnroll: attested when a root
-        // regime exists, with the primary root as the via reference.
+        // Same trust-root chain as KeysEnroll: attested + SIGNED by the
+        // primary root when a keypair-holding root regime exists. The
+        // private half is persisted with the record so the key can later
+        // act as a trust root itself.
         let roots = trust_roots();
         let attested_tick = if roots.count > 0 {
             rt::monotonic_now().unwrap_or(0)
@@ -1276,12 +1322,24 @@ fn handle_keys_gen_request(storage_handle: rt::Handle, message: &RawMessage) -> 
             0
         };
         let via = roots.primary_key_id();
+        let seed_text = core::str::from_utf8(&seed_hex_array).unwrap_or("");
         let outcome = match keystore.ensure_source(source) {
             Err(error) => Err(error),
             Ok(entry) => entry
                 .enroll_ed25519_attested(id_text, pub_text, attested_tick, via)
                 .map(|_| ()),
         };
+        if outcome.is_ok() {
+            if let Some(entry) = keystore.source_keys_mut(source) {
+                let _ = entry.record_seed(id_text, seed_text);
+            }
+            if let Some(signature) = sign_enroll_attestation(keystore, id_text, attested_tick) {
+                if let Some(entry) = keystore.source_keys_mut(source) {
+                    let _ = entry.attest_key(id_text, signature);
+                }
+            }
+            crate::signing::refresh_chain_cache(keystore, trust_roots());
+        }
         match outcome {
             Err(error) => reply.words[0] = keystore_error_word(error),
             Ok(()) => {
@@ -1705,28 +1763,32 @@ fn trust_root_error_word(error: crate::signing::TrustRootError) -> u64 {
         E::Duplicate => PackageStatus::AlreadyExists,
         E::UnknownKey => PackageStatus::NotFound,
         E::InvalidId => PackageStatus::InvalidParameter,
+        E::NoKeyPair => PackageStatus::NoKeyPair,
     };
     status as u32 as u64
 }
 
 /// One root-list row: [status][index][id_len][label_len][enrolled_tick]
-/// [derived_count][reserved][reserved] + packed(id, label). id+label fit
-/// within the 16-word budget, so rows iterate by flat index like the
-/// keystore list (no page protocol needed).
+/// [derived_count][valid_chains][broken_chains] + packed(id, label). The
+/// last two words were reserved (always 0) and now carry the honest chain
+/// verdict split for keys citing this root — old readers ignore them.
+/// id+label fit within the 16-word budget, so rows iterate by flat index
+/// like the keystore list (no page protocol needed).
 fn fill_root_row(reply: &mut RawMessage, index: usize) {
     let roots = trust_roots();
     let root = &roots.roots[index];
     let id_bytes = root.key_id.as_str().as_bytes();
     let label_bytes = root.label.as_str().as_bytes();
     let keystore = unsafe { &*core::ptr::addr_of!(FEED_KEYSTORE) };
+    let (valid, broken) = roots.chain_counts(keystore, root.key_id.as_str());
     reply.words[0] = PackageStatus::Ok as u32 as u64;
     reply.words[1] = index as u64;
     reply.words[2] = id_bytes.len() as u64;
     reply.words[3] = label_bytes.len() as u64;
     reply.words[4] = root.enrolled_tick;
     reply.words[5] = roots.derived_count(keystore, root.key_id.as_str()) as u64;
-    reply.words[6] = 0;
-    reply.words[7] = 0;
+    reply.words[6] = valid as u64;
+    reply.words[7] = broken as u64;
     reply.word_count = 8;
     let mut combined = [0u8; crate::signing::KEY_ID_MAX + crate::signing::ROOT_LABEL_MAX];
     let mut cursor = 0usize;
@@ -1793,8 +1855,12 @@ fn handle_root_get_request(message: &RawMessage) -> rt::Result<()> {
 }
 
 /// RootAddRequest: words[0]=now_tick, [id_len][label_len] + packed(id,
-/// label). The key must already be enrolled in the keystore. Reply:
-/// [status][index]. Persists the root list.
+/// label). The key must already be enrolled AND hold its private keypair
+/// in the keystore — roots sign attestations, so a pubkey-only record is
+/// refused loudly (NoKeyPair). Re-running RootAdd for an existing root is
+/// the documented RE-ATTEST path: the root signs fresh attestations over
+/// every attested key citing it. Reply: [status][index][attested_count]
+/// (the third word is additive). Persists the root list and keystore.
 fn handle_root_add_request(storage_handle: rt::Handle, message: &RawMessage) -> rt::Result<()> {
     const HEADER_WORDS: u32 = 3; // now tick + two length words
     if message.word_count < HEADER_WORDS || message.handle_count < 1 {
@@ -1820,28 +1886,50 @@ fn handle_root_add_request(storage_handle: rt::Handle, message: &RawMessage) -> 
 
     // The label is operator-supplied; empty decodes to "-" on the wire.
     let label_text = if label.is_empty() { "root" } else { label };
-    unsafe {
+    // Eligibility check on a shared borrow first: the root key must be
+    // enrolled and hold its private half so it can sign attestations.
+    let eligibility = unsafe {
         let keystore = &*core::ptr::addr_of!(FEED_KEYSTORE);
-        let known = keystore.sources[..keystore.source_count]
+        match keystore.sources[..keystore.source_count]
             .iter()
             .flat_map(|entry| &entry.keys[..entry.key_count])
-            .any(|key| key.key_id.as_str() == key_id);
-        let outcome = if known {
-            let roots = &mut *core::ptr::addr_of_mut!(TRUST_ROOTS);
-            roots.add(key_id, label_text, now).map(|_| roots.count - 1)
-        } else {
-            Err(crate::signing::TrustRootError::UnknownKey)
-        };
-        match outcome {
-            Err(error) => reply.words[0] = trust_root_error_word(error),
-            Ok(index) => {
-                reply.words[0] = PackageStatus::Ok as u32 as u64;
-                reply.words[1] = index as u64;
-                persist_needed = true;
-            }
+            .find(|key| key.key_id.as_str() == key_id)
+        {
+            None => Err(crate::signing::TrustRootError::UnknownKey),
+            Some(key) if !key.has_keypair() => Err(crate::signing::TrustRootError::NoKeyPair),
+            Some(_) => Ok(()),
         }
+    };
+    match eligibility {
+        Err(error) => reply.words[0] = trust_root_error_word(error),
+        Ok(()) => unsafe {
+            let roots = &mut *core::ptr::addr_of_mut!(TRUST_ROOTS);
+            // Existing root + RootAdd = re-attest run, not a duplicate
+            // error: fresh signatures land on every citing key.
+            let index = match roots.find(key_id) {
+                Some(slot) => Ok(slot),
+                None => roots.add(key_id, label_text, now).map(|_| roots.count - 1),
+            };
+            match index {
+                Err(error) => reply.words[0] = trust_root_error_word(error),
+                Ok(slot) => {
+                    let keystore = &mut *core::ptr::addr_of_mut!(FEED_KEYSTORE);
+                    let attested = crate::signing::reattest_citing_keys(keystore, roots, key_id);
+                    reply.words[0] = PackageStatus::Ok as u32 as u64;
+                    reply.words[1] = slot as u64;
+                    // Additive tail: how many citing keys this run (re-)signed.
+                    reply.words[2] = attested as u64;
+                    reply.word_count = 3;
+                    persist_needed = true;
+                }
+            }
+        },
     }
     if persist_needed && crate::storage::persist_trust_roots(storage_handle).is_err() {
+        reply.words[0] = PackageStatus::VerificationFailed as u32 as u64;
+        reply.words[1] = 0;
+    }
+    if persist_needed && crate::storage::persist_feed_keystore(storage_handle).is_err() {
         reply.words[0] = PackageStatus::VerificationFailed as u32 as u64;
         reply.words[1] = 0;
     }
@@ -1851,8 +1939,8 @@ fn handle_root_add_request(storage_handle: rt::Handle, message: &RawMessage) -> 
 
 /// RootRemoveRequest: [id_len] + packed(id). Reply: [status][former_index].
 /// Persists the root list; keystore records are untouched (standing is
-/// derived, and a DIRECT key whose via root is gone simply loses the
-/// resolvable reference).
+/// derived, and a DIRECT key whose via root is gone loses its verifiable
+/// chain on the refresh pass — honest UNATTESTED, re-attest with RootAdd).
 fn handle_root_remove_request(storage_handle: rt::Handle, message: &RawMessage) -> rt::Result<()> {
     if message.word_count < 1 || message.handle_count < 1 {
         return Ok(());
@@ -1881,6 +1969,10 @@ fn handle_root_remove_request(storage_handle: rt::Handle, message: &RawMessage) 
                 reply.words[0] = PackageStatus::Ok as u32 as u64;
                 reply.words[1] = index as u64;
                 persist_needed = true;
+                // Honesty pass: keys citing the removed root lose their
+                // verifiable chain immediately (records stay intact).
+                let keystore = &mut *core::ptr::addr_of_mut!(FEED_KEYSTORE);
+                crate::signing::refresh_chain_cache(keystore, roots);
             }
             None => reply.words[0] = PackageStatus::NotFound as u32 as u64,
         }

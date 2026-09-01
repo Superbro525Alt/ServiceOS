@@ -125,6 +125,18 @@ pub struct TrustedKey {
     pub attested_tick: u64,
     /// Root key id that was authoritative at enrollment ("-"/empty = none).
     pub via: FixedText<KEY_ID_MAX>,
+    /// Root-signed ed25519 attestation over [`attestation_message`]; all
+    /// zero = no signature on record (legacy/attested-but-unsigned).
+    pub attested_sig: [u8; 64],
+    /// Private half (64-hex seed) for keys generated in-guest (KeysGen).
+    /// Empty = pubkey-only record (host-enrolled keys cannot sign, so they
+    /// are refused as trust roots). Plaintext-at-rest in the state store,
+    /// same as the legacy FNV secret material.
+    pub seed_hex: FixedText<KEY_HEX_MAX>,
+    /// In-memory verdict cache: the attestation chain verified against the
+    /// current root list + keystore. Not serialized; recomputed on store
+    /// load and after every trust-root or enrollment mutation.
+    pub chain_valid: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -159,6 +171,9 @@ impl TrustedKey {
             retired_tick: 0,
             attested_tick: 0,
             via: FixedText::empty(),
+            attested_sig: [0; 64],
+            seed_hex: FixedText::empty(),
+            chain_valid: false,
         }
     }
 
@@ -166,6 +181,16 @@ impl TrustedKey {
     /// while a root regime existed).
     pub fn is_attested(&self) -> bool {
         self.attested_tick != 0
+    }
+
+    /// True when the record carries a root signature (not all-zero).
+    pub fn has_attested_sig(&self) -> bool {
+        self.attested_sig != [0; 64]
+    }
+
+    /// True when the record can sign (private half present, ed25519).
+    pub fn has_keypair(&self) -> bool {
+        self.alg == KeyAlg::Ed25519 && !self.seed_hex.is_empty()
     }
 }
 
@@ -309,6 +334,33 @@ impl SourceKeys {
         Ok(())
     }
 
+    /// Attach a root-signed attestation to an enrolled key. The signature
+    /// is over [`attestation_message`] with the attesting root's key; the
+    /// verdict cache is refreshed by the caller (`refresh_chain_cache`).
+    pub fn attest_key(&mut self, key_id: &str, signature: [u8; 64]) -> bool {
+        for key in self.keys[..self.key_count].iter_mut() {
+            if key.key_id.as_str() == key_id {
+                key.attested_sig = signature;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Persist the private half of a generated keypair so the key can act
+    /// as a trust root (sign attestations). Ed25519 records only.
+    pub fn record_seed(&mut self, key_id: &str, seed_hex: &str) -> bool {
+        if decode_seed_hex(seed_hex).is_none() {
+            return false;
+        }
+        for key in self.keys[..self.key_count].iter_mut() {
+            if key.key_id.as_str() == key_id && key.alg == KeyAlg::Ed25519 {
+                return key.seed_hex.set(seed_hex);
+            }
+        }
+        false
+    }
+
     /// Promote an already-enrolled key to active and retire the currently
     /// active one at `now`. This is the rotation operation: callers persist
     /// the keystore afterwards, which re-signs the verification config.
@@ -421,6 +473,79 @@ impl Keystore {
 pub const MAX_TRUST_ROOTS: usize = 4;
 pub const ROOT_LABEL_MAX: usize = 24;
 
+/// Canonical attestation message bound to an attested key record:
+/// `key_id bytes ‖ root_label bytes ‖ attested_tick (LE u64) ‖
+/// root_key_id bytes`. No separators: key ids cap at KEY_ID_MAX, labels
+/// at ROOT_LABEL_MAX, the tick is a fixed 8 bytes, and the layout is
+/// pinned by golden tests in this module. Longer inputs are refused.
+pub const ATTESTATION_MSG_MAX: usize = KEY_ID_MAX + ROOT_LABEL_MAX + 8 + KEY_ID_MAX;
+
+/// Build the canonical attestation byte string into `out`; returns the
+/// used length. The label is the ROOT record's label as stored (empty =
+/// zero bytes). Returns None for empty ids or over-length fields.
+pub fn attestation_message(
+    key_id: &str,
+    root_label: &str,
+    attested_tick: u64,
+    root_key_id: &str,
+    out: &mut [u8; ATTESTATION_MSG_MAX],
+) -> Option<usize> {
+    if key_id.is_empty() || key_id.len() > KEY_ID_MAX {
+        return None;
+    }
+    if root_key_id.is_empty() || root_key_id.len() > KEY_ID_MAX {
+        return None;
+    }
+    if root_label.len() > ROOT_LABEL_MAX {
+        return None;
+    }
+    let mut cursor = 0usize;
+    out[..key_id.len()].copy_from_slice(key_id.as_bytes());
+    cursor += key_id.len();
+    out[cursor..cursor + root_label.len()].copy_from_slice(root_label.as_bytes());
+    cursor += root_label.len();
+    out[cursor..cursor + 8].copy_from_slice(&attested_tick.to_le_bytes());
+    cursor += 8;
+    out[cursor..cursor + root_key_id.len()].copy_from_slice(root_key_id.as_bytes());
+    cursor += root_key_id.len();
+    Some(cursor)
+}
+
+/// Sign an attestation over `key_id` with the root's private seed.
+/// Returns R‖S (64 bytes) for storage in the attested key's record.
+pub fn sign_attestation(
+    seed: &[u8; 32],
+    key_id: &str,
+    root_label: &str,
+    attested_tick: u64,
+    root_key_id: &str,
+) -> Option<[u8; 64]> {
+    let mut message = [0u8; ATTESTATION_MSG_MAX];
+    let len = attestation_message(key_id, root_label, attested_tick, root_key_id, &mut message)?;
+    Some(serviceos_crypto::ed25519::sign(seed, &message[..len]))
+}
+
+/// Verify an attestation against the root's hex-encoded public key.
+pub fn verify_attestation(
+    root_pubkey_hex: &str,
+    signature: &[u8; 64],
+    key_id: &str,
+    root_label: &str,
+    attested_tick: u64,
+    root_key_id: &str,
+) -> bool {
+    let Some(root_public) = decode_pubkey_hex(root_pubkey_hex) else {
+        return false;
+    };
+    let mut message = [0u8; ATTESTATION_MSG_MAX];
+    let Some(len) =
+        attestation_message(key_id, root_label, attested_tick, root_key_id, &mut message)
+    else {
+        return false;
+    };
+    serviceos_crypto::ed25519::verify(&root_public, &message[..len], signature)
+}
+
 /// Standing words as spoken on the wire (PackageKeyStanding in the ABI).
 pub const STANDING_UNATTESTED: u64 = 0;
 pub const STANDING_ROOT: u64 = 1;
@@ -459,6 +584,9 @@ pub enum TrustRootError {
     Duplicate,
     UnknownKey,
     InvalidId,
+    /// The chosen root key id has no private keypair in the keystore, so
+    /// it cannot sign attestations (loud refusal at RootAdd).
+    NoKeyPair,
 }
 
 impl TrustRoots {
@@ -512,13 +640,17 @@ impl TrustRoots {
             .unwrap_or("")
     }
 
-    /// Standing of `key` per the v0 derivation matrix:
-    /// root-list membership -> ROOT; attested enrollment record -> DIRECT;
-    /// anything else (legacy records) -> UNATTESTED.
+    /// Standing of `key` per the derivation matrix (v1, cryptographic):
+    /// root-list membership -> ROOT; attested enrollment record with a
+    /// VERIFIED root signature chain -> DIRECT; anything else (legacy
+    /// records, tampered/missing signatures, removed or rotated roots)
+    /// -> UNATTESTED with the record intact. `chain_valid` is the verdict
+    /// cache maintained by [`refresh_chain_cache`] (verified on store load
+    /// and after every trust-root or enrollment mutation).
     pub fn standing_of(&self, key: &TrustedKey) -> u64 {
         if self.find(key.key_id.as_str()).is_some() {
             STANDING_ROOT
-        } else if key.is_attested() {
+        } else if key.is_attested() && key.chain_valid {
             STANDING_DIRECT
         } else {
             STANDING_UNATTESTED
@@ -542,6 +674,142 @@ impl TrustRoots {
             .filter(|key| key.via.as_str() == key_id)
             .count()
     }
+
+    /// Attested keys citing this root, split by current chain verdict:
+    /// (verified, broken). Drives the honest RootGet/RootList markers.
+    pub fn chain_counts(&self, keystore: &Keystore, key_id: &str) -> (usize, usize) {
+        let mut valid = 0usize;
+        let mut broken = 0usize;
+        for key in keystore.sources[..keystore.source_count]
+            .iter()
+            .flat_map(|entry| &entry.keys[..entry.key_count])
+        {
+            if key.via.as_str() == key_id && key.is_attested() {
+                if key.chain_valid {
+                    valid += 1;
+                } else {
+                    broken += 1;
+                }
+            }
+        }
+        (valid, broken)
+    }
+}
+
+/// The keystore key record for `key_id`, in any source (roots and
+/// attested keys may live in different sources).
+fn find_key_anywhere<'a>(keystore: &'a Keystore, key_id: &str) -> Option<&'a TrustedKey> {
+    keystore.sources[..keystore.source_count]
+        .iter()
+        .flat_map(|entry| &entry.keys[..entry.key_count])
+        .find(|key| key.key_id.as_str() == key_id)
+}
+
+/// Does `key` carry a signature that verifies against the root named by
+/// its `via` reference, resolved against the CURRENT root list and
+/// keystore? The attesting root must still be listed and its ed25519
+/// public key must still be enrolled under the same id.
+fn attestation_chain_holds(keystore: &Keystore, roots: &TrustRoots, key: &TrustedKey) -> bool {
+    if key.alg != KeyAlg::Ed25519 || !key.is_attested() || !key.has_attested_sig() {
+        return false;
+    }
+    let via = key.via.as_str();
+    if via.is_empty() {
+        return false;
+    }
+    let Some(root_slot) = roots.find(via) else {
+        return false;
+    };
+    let root = &roots.roots[root_slot];
+    let Some(root_key) = find_key_anywhere(keystore, via) else {
+        return false;
+    };
+    if root_key.alg != KeyAlg::Ed25519 {
+        return false;
+    }
+    verify_attestation(
+        root_key.key_hex.as_str(),
+        &key.attested_sig,
+        key.key_id.as_str(),
+        root.label.as_str(),
+        key.attested_tick,
+        via,
+    )
+}
+
+/// Re-verify every attested key's signature chain against the current
+/// root list + keystore, caching the verdict on each record (in-memory
+/// only, never serialized). Runs on store load and after every trust-
+/// root or enrollment mutation so list/display paths stay lazy.
+pub fn refresh_chain_cache(keystore: &mut Keystore, roots: &TrustRoots) {
+    // Two phases so the verification pass never aliases the mutation
+    // pass: verdicts are computed on shared borrows, then written back.
+    let mut verdicts = [false; MAX_SIGNED_SOURCES * MAX_KEYS_PER_SOURCE];
+    let mut seen = 0usize;
+    for entry in keystore.sources[..keystore.source_count].iter() {
+        for key in entry.keys[..entry.key_count].iter() {
+            verdicts[seen] = attestation_chain_holds(keystore, roots, key);
+            seen += 1;
+        }
+    }
+    let mut index = 0usize;
+    for entry in keystore.sources[..keystore.source_count].iter_mut() {
+        for key in entry.keys[..entry.key_count].iter_mut() {
+            key.chain_valid = verdicts[index];
+            index += 1;
+        }
+    }
+}
+
+/// Re-attest pass behind RootAdd: the root named `root_key_id` (which
+/// must hold its private keypair in the keystore) signs a fresh
+/// attestation over every attested key that cites it, replacing any
+/// stored signature. Returns the number of attestations signed (0 when
+/// the root has no keypair — callers refuse loudly upstream).
+pub fn reattest_citing_keys(
+    keystore: &mut Keystore,
+    roots: &TrustRoots,
+    root_key_id: &str,
+) -> usize {
+    // Snapshot the root's signing material; the shared borrows end here.
+    let Some(root_key) = find_key_anywhere(keystore, root_key_id) else {
+        return 0;
+    };
+    if !root_key.has_keypair() {
+        return 0;
+    }
+    let Some(seed) = decode_seed_hex(root_key.seed_hex.as_str()) else {
+        return 0;
+    };
+    let root_label = roots
+        .find(root_key_id)
+        .map(|slot| roots.roots[slot].label.as_str())
+        .unwrap_or("");
+    let mut count = 0usize;
+    for entry in keystore.sources[..keystore.source_count].iter_mut() {
+        for key in entry.keys[..entry.key_count].iter_mut() {
+            // Roots carry ROOT standing by membership; no self-attestation.
+            if key.key_id.as_str() == root_key_id
+                || key.via.as_str() != root_key_id
+                || !key.is_attested()
+                || key.alg != KeyAlg::Ed25519
+            {
+                continue;
+            }
+            if let Some(signature) = sign_attestation(
+                &seed,
+                key.key_id.as_str(),
+                root_label,
+                key.attested_tick,
+                root_key_id,
+            ) {
+                key.attested_sig = signature;
+                count += 1;
+            }
+        }
+    }
+    refresh_chain_cache(keystore, roots);
+    count
 }
 
 /// Trust-root list persistence: "ptr1" header, then one "root" line per
@@ -817,6 +1085,17 @@ fn decode_hex_bytes<const N: usize>(value: &str) -> Option<[u8; N]> {
 /// Decode an Ed25519 compressed public key from its 64-hex encoding.
 pub fn decode_pubkey_hex(value: &str) -> Option<[u8; 32]> {
     decode_hex_bytes::<32>(value)
+}
+
+/// Decode a 32-byte ed25519 seed from its 64-hex encoding (private half
+/// of generated keypair records; same wire shape as a pubkey).
+pub fn decode_seed_hex(value: &str) -> Option<[u8; 32]> {
+    decode_hex_bytes::<32>(value)
+}
+
+/// Decode a 64-byte ed25519 signature from its 128-hex encoding.
+pub fn decode_sig_hex(value: &str) -> Option<[u8; 64]> {
+    decode_hex_bytes::<64>(value)
 }
 
 pub fn ed25519_key_fingerprint(public: &[u8; 32]) -> u64 {
@@ -1275,13 +1554,27 @@ pub fn serialize_keystore(keystore: &Keystore, append: &mut dyn core::fmt::Write
                 continue;
             }
             // Trailing provenance fields: trust-root standing bookkeeping
-            // (attested tick + via root id, "-" = none). Older parsers stop
-            // after the state word, so extra tokens are ignored by pre-root
-            // readers (additive codec rule).
+            // (attested tick + via root id, "-" = none), the root signature
+            // over the canonical attestation (128 hex, "-" = unsigned), and
+            // the private seed of generated keypairs (64 hex, "-" =
+            // pubkey-only). Older parsers stop after the state word, so
+            // extra tokens are ignored by pre-root readers (additive rule).
             let via = key.via.as_str();
+            let mut sig_hex = [0u8; 128];
+            let sig_text = if key.has_attested_sig() {
+                let len = encode_hex(&key.attested_sig, &mut sig_hex);
+                core::str::from_utf8(&sig_hex[..len]).unwrap_or("-")
+            } else {
+                "-"
+            };
+            let seed_text = if key.seed_hex.is_empty() {
+                "-"
+            } else {
+                key.seed_hex.as_str()
+            };
             let _ = core::writeln!(
                 append,
-                "{} {} {} {} {} {}",
+                "{} {} {} {} {} {} {} {}",
                 if key.alg == KeyAlg::Ed25519 {
                     "ekey"
                 } else {
@@ -1292,6 +1585,8 @@ pub fn serialize_keystore(keystore: &Keystore, append: &mut dyn core::fmt::Write
                 key_state_word(key.state, key.retired_tick),
                 key_attestation_word(key.attested_tick),
                 if via.is_empty() { "-" } else { via },
+                sig_text,
+                seed_text,
             );
         }
     }
@@ -1372,14 +1667,17 @@ pub fn parse_keystore(text: &str) -> Keystore {
         ) else {
             continue;
         };
-        // Optional provenance tail (additive): [attested_tick] [via].
-        // Legacy pre-root lines carry neither; "-" via decodes to empty.
+        // Optional provenance tail (additive): [attested_tick] [via]
+        // [attested_sig hex] [seed hex]. Legacy pre-root lines carry
+        // neither; "-" decodes to none for every optional field.
         let attested_tick = parts
             .next()
             .and_then(|value| value.parse::<u64>().ok())
             .map(key_attestation_from_word)
             .unwrap_or(0);
         let via = parts.next().unwrap_or("-");
+        let attested_sig = parts.next().and_then(decode_sig_hex).unwrap_or([0; 64]);
+        let seed_hex = parts.next().unwrap_or("-");
         let Some(index) = current else { continue };
         let entry = &mut keystore.sources[index];
         let alg = match line_kind {
@@ -1407,6 +1705,10 @@ pub fn parse_keystore(text: &str) -> Keystore {
         slot.retired_tick = retired_tick;
         slot.attested_tick = attested_tick;
         let _ = slot.via.set(if via == "-" { "" } else { via });
+        slot.attested_sig = attested_sig;
+        if seed_hex != "-" {
+            let _ = slot.seed_hex.set(seed_hex);
+        }
         entry.key_count += 1;
     }
     keystore
@@ -2094,8 +2396,9 @@ mod tests {
         let rooted = attested_key("k-root", &hex, 0, "");
         assert_eq!(roots.standing_of(&rooted), STANDING_ROOT);
 
-        // Attested enrollment -> DIRECT.
-        let direct = attested_key("k-direct", &hex, 42, "k-root");
+        // Attested enrollment + VERIFIED chain cache -> DIRECT.
+        let mut direct = attested_key("k-direct", &hex, 42, "k-root");
+        direct.chain_valid = true;
         assert_eq!(roots.standing_of(&direct), STANDING_DIRECT);
         assert_eq!(roots.via_slot_of(&direct), Some(0));
 
@@ -2113,12 +2416,26 @@ mod tests {
         let direct = attested_key("k-direct", &hex, 42, "k-root");
         assert_eq!(roots.via_slot_of(&direct), Some(0));
 
+        // Model the service protocol: the key lives in the keystore with a
+        // verified verdict cached; the record carries a signature that
+        // verified against the root list as it stood.
+        let mut keystore = Keystore::empty();
+        let _ = keystore.ensure_source("alpha");
+        keystore.sources[0].keys[0] = direct;
+        keystore.sources[0].keys[0].chain_valid = true;
+        keystore.sources[0].keys[0].attested_sig = [7; 64];
+        keystore.sources[0].key_count = 1;
+
         let mut roots = roots;
         let _ = roots.remove("k-root");
-        // Standing stays DIRECT (record attested); the via reference simply
-        // no longer resolves to a root slot.
-        assert_eq!(roots.standing_of(&direct), STANDING_DIRECT);
-        assert_eq!(roots.via_slot_of(&direct), None);
+        // RootRemove runs the honesty pass (refresh_chain_cache): the
+        // attesting root is gone, the chain no longer verifies, standing
+        // drops to UNATTESTED (record intact) and the via reference no
+        // longer resolves to a root slot. RootAdd re-attest restores DIRECT.
+        refresh_chain_cache(&mut keystore, &roots);
+        let direct = &keystore.sources[0].keys[0];
+        assert_eq!(roots.standing_of(direct), STANDING_UNATTESTED);
+        assert_eq!(roots.via_slot_of(direct), None);
     }
 
     #[test]
@@ -2154,9 +2471,12 @@ mod tests {
             .find(|line| line.starts_with("ekey k1 "))
             .unwrap();
         let tail: Vec<&str> = line.split(' ').collect();
-        assert_eq!(tail.len(), 6);
+        // id hex state tick via sighex seedhex
+        assert_eq!(tail.len(), 8);
         assert_eq!(tail[4], "777");
         assert_eq!(tail[5], "k-root");
+        assert_eq!(tail[6], "-");
+        assert_eq!(tail[7], "-");
 
         let parsed = parse_keystore(&text);
         let key = &parsed.sources[0].keys[0];
@@ -2184,5 +2504,222 @@ mod tests {
             assert_eq!(key.attested_tick, 0);
             assert!(key.via.is_empty());
         }
+    }
+
+    // --- Trust chain (v1): canonical bytes, sign/verify, broken matrix ---
+
+    fn chain_fixture() -> (Keystore, TrustRoots) {
+        // k-root: generated keypair (seed persisted, as KeysGen does);
+        // k-cite: enrolled under the root regime, cites k-root, not yet signed.
+        let root_pair = ed_pair_for(1);
+        let cite_pair = ed_pair_for(2);
+        let mut keystore = Keystore::empty();
+        let _ = keystore.ensure_source("alpha");
+        let _ = keystore.sources[0].enroll_ed25519_attested(
+            "k-root",
+            &hex_of(&root_pair.public),
+            10,
+            "",
+        );
+        assert!(keystore.sources[0].record_seed("k-root", &hex_of(&root_pair.seed)));
+        let _ = keystore.sources[0].enroll_ed25519_attested(
+            "k-cite",
+            &hex_of(&cite_pair.public),
+            20,
+            "k-root",
+        );
+        let mut roots = TrustRoots::empty();
+        let _ = roots.add("k-root", "vendor", 5);
+        (keystore, roots)
+    }
+
+    #[test]
+    fn attestation_canonical_bytes_golden() {
+        let mut out = [0u8; ATTESTATION_MSG_MAX];
+        let len = attestation_message("k-abc", "vendor", 777, "k-root", &mut out).unwrap();
+        let mut expected = Vec::new();
+        expected.extend_from_slice(b"k-abc");
+        expected.extend_from_slice(b"vendor");
+        expected.extend_from_slice(&777u64.to_le_bytes());
+        expected.extend_from_slice(b"k-root");
+        assert_eq!(&out[..len], &expected[..]);
+        assert_eq!(len, 5 + 6 + 8 + 6);
+        // Empty ids and over-length fields are refused, not truncated.
+        assert!(attestation_message("", "vendor", 1, "k-root", &mut out).is_none());
+        assert!(attestation_message("k-abc", "vendor", 1, "", &mut out).is_none());
+        assert!(attestation_message(&"x".repeat(25), "v", 1, "k-root", &mut out).is_none());
+        assert!(attestation_message("k-abc", &"x".repeat(25), 1, "k-root", &mut out).is_none());
+        assert!(attestation_message("k-abc", "v", 1, &"x".repeat(25), &mut out).is_none());
+    }
+
+    #[test]
+    fn root_signature_chain_yields_direct_standing() {
+        let (mut keystore, roots) = chain_fixture();
+        let attested = reattest_citing_keys(&mut keystore, &roots, "k-root");
+        assert_eq!(attested, 1);
+        let cite = &keystore.sources[0].keys[1];
+        assert!(cite.has_attested_sig());
+        assert!(cite.chain_valid);
+        assert_eq!(roots.standing_of(cite), STANDING_DIRECT);
+        // The root itself stands by membership, no signature needed.
+        let root = &keystore.sources[0].keys[0];
+        assert_eq!(roots.standing_of(root), STANDING_ROOT);
+        assert_eq!(roots.chain_counts(&keystore, "k-root"), (1, 0));
+        // Unattested records stay honestly UNATTESTED even with a root up.
+        let _ = keystore.sources[0].enroll_ed25519("k-plain", &pubkey_hex_for(3));
+        refresh_chain_cache(&mut keystore, &roots);
+        let plain = &keystore.sources[0].keys[2];
+        assert_eq!(roots.standing_of(plain), STANDING_UNATTESTED);
+    }
+
+    #[test]
+    fn tampered_signature_drops_to_unattested_record_intact() {
+        let (mut keystore, roots) = chain_fixture();
+        assert_eq!(reattest_citing_keys(&mut keystore, &roots, "k-root"), 1);
+        keystore.sources[0].keys[1].attested_sig[0] ^= 0xff;
+        refresh_chain_cache(&mut keystore, &roots);
+        let cite = &keystore.sources[0].keys[1];
+        assert_eq!(roots.standing_of(cite), STANDING_UNATTESTED);
+        // The record itself stays intact (tick + via preserved).
+        assert_eq!(cite.attested_tick, 20);
+        assert_eq!(cite.via.as_str(), "k-root");
+        assert_eq!(roots.chain_counts(&keystore, "k-root"), (0, 1));
+    }
+
+    #[test]
+    fn removed_root_breaks_chain_and_readd_reattests() {
+        let (mut keystore, mut roots) = chain_fixture();
+        assert_eq!(reattest_citing_keys(&mut keystore, &roots, "k-root"), 1);
+        let _ = roots.remove("k-root");
+        refresh_chain_cache(&mut keystore, &roots);
+        assert_eq!(
+            roots.standing_of(&keystore.sources[0].keys[1]),
+            STANDING_UNATTESTED
+        );
+        // Re-attest = re-run RootAdd: re-adding the root (RootAdd treats an
+        // existing root as a re-attest run) restores the verifiable chain.
+        let _ = roots.add("k-root", "vendor", 99);
+        assert_eq!(reattest_citing_keys(&mut keystore, &roots, "k-root"), 1);
+        assert!(keystore.sources[0].keys[1].chain_valid);
+        assert_eq!(
+            roots.standing_of(&keystore.sources[0].keys[1]),
+            STANDING_DIRECT
+        );
+    }
+
+    #[test]
+    fn rotated_root_label_invalidates_old_signature() {
+        // Root re-added under a DIFFERENT label: the old signature covers
+        // the old label bytes, so the chain honestly breaks until the
+        // re-attest run re-signs with the current label.
+        let (mut keystore, mut roots) = chain_fixture();
+        assert_eq!(reattest_citing_keys(&mut keystore, &roots, "k-root"), 1);
+        let _ = roots.remove("k-root");
+        let _ = roots.add("k-root", "vendor-v2", 99);
+        refresh_chain_cache(&mut keystore, &roots);
+        assert_eq!(
+            roots.standing_of(&keystore.sources[0].keys[1]),
+            STANDING_UNATTESTED
+        );
+        assert_eq!(reattest_citing_keys(&mut keystore, &roots, "k-root"), 1);
+        assert_eq!(
+            roots.standing_of(&keystore.sources[0].keys[1]),
+            STANDING_DIRECT
+        );
+    }
+
+    #[test]
+    fn keypair_less_root_cannot_reattest() {
+        // Pubkey-only records (host enrollment) cannot sign: re-attest is
+        // refused (0 signed) and citing keys stay honestly unsigned.
+        let (mut keystore, roots) = chain_fixture();
+        keystore.sources[0].keys[0].seed_hex = FixedText::empty();
+        assert_eq!(reattest_citing_keys(&mut keystore, &roots, "k-root"), 0);
+        assert!(!keystore.sources[0].keys[1].has_attested_sig());
+        assert_eq!(
+            roots.standing_of(&keystore.sources[0].keys[1]),
+            STANDING_UNATTESTED
+        );
+    }
+
+    #[test]
+    fn legacy_attested_record_migrates_to_unattested_honestly() {
+        // Pre-signature file: attested tick + via present, no signature
+        // tail. Record parses intact; chain derives UNATTESTED; re-attest
+        // (RootAdd) restores DIRECT without touching the record fields.
+        let cite_pub = hex_of(&ed_pair_for(2).public);
+        let legacy = format!("pks1\nwindow alpha 0\nekey k-cite {cite_pub} 1 20 k-root\n");
+        let mut keystore = parse_keystore(&legacy);
+        let mut roots = TrustRoots::empty();
+        let _ = roots.add("k-root", "vendor", 5);
+        refresh_chain_cache(&mut keystore, &roots);
+        let cite = &keystore.sources[0].keys[0];
+        assert_eq!(cite.attested_tick, 20);
+        assert_eq!(cite.via.as_str(), "k-root");
+        assert!(!cite.has_attested_sig());
+        assert_eq!(roots.standing_of(cite), STANDING_UNATTESTED);
+        // RootAdd flow on the stored root fixes the chain, record intact.
+        let root_pair = ed_pair_for(1);
+        let _ = keystore.sources[0].enroll_ed25519_attested(
+            "k-root",
+            &hex_of(&root_pair.public),
+            10,
+            "",
+        );
+        assert!(keystore.sources[0].record_seed("k-root", &hex_of(&root_pair.seed)));
+        assert_eq!(reattest_citing_keys(&mut keystore, &roots, "k-root"), 1);
+        assert!(keystore.sources[0].keys[0].chain_valid);
+        assert_eq!(
+            roots.standing_of(&keystore.sources[0].keys[0]),
+            STANDING_DIRECT
+        );
+    }
+
+    #[test]
+    fn keystore_roundtrip_preserves_signature_and_seed() {
+        let (mut keystore, roots) = chain_fixture();
+        assert_eq!(reattest_citing_keys(&mut keystore, &roots, "k-root"), 1);
+        let stored_sig = keystore.sources[0].keys[1].attested_sig;
+        let stored_seed = keystore.sources[0].keys[0].seed_hex.as_str();
+
+        let mut text = String::new();
+        serialize_keystore(&keystore, &mut text);
+        // New tails: 128-hex signature and 64-hex seed on the right lines.
+        let root_line = text
+            .lines()
+            .find(|l| l.starts_with("ekey k-root "))
+            .unwrap();
+        assert_eq!(root_line.split(' ').nth(7), Some(stored_seed));
+        let cite_line = text
+            .lines()
+            .find(|l| l.starts_with("ekey k-cite "))
+            .unwrap();
+        assert_eq!(cite_line.split(' ').nth(6).unwrap().len(), 128);
+        assert_eq!(cite_line.split(' ').nth(7), Some("-"));
+
+        let mut parsed = parse_keystore(&text);
+        assert_eq!(parsed.sources[0].keys[1].attested_sig, stored_sig);
+        assert_eq!(parsed.sources[0].keys[0].seed_hex.as_str(), stored_seed);
+        // Parsed records start verdict-less and re-verify to DIRECT.
+        assert!(!parsed.sources[0].keys[1].chain_valid);
+        refresh_chain_cache(&mut parsed, &roots);
+        assert!(parsed.sources[0].keys[1].chain_valid);
+        assert_eq!(
+            roots.standing_of(&parsed.sources[0].keys[1]),
+            STANDING_DIRECT
+        );
+    }
+
+    #[test]
+    fn chain_cache_refresh_never_panics_on_empty_or_legacy() {
+        let mut empty = Keystore::empty();
+        let roots = TrustRoots::empty();
+        refresh_chain_cache(&mut empty, &roots);
+        // Legacy Fnv records are skipped by the verifier entirely.
+        let mut legacy = Keystore::empty();
+        let _ = legacy.ensure_source("old");
+        let _ = legacy.sources[0].enroll("fnv1", "00112233445566778899aabbccddeeff");
+        refresh_chain_cache(&mut legacy, &roots);
+        assert!(!legacy.sources[0].keys[0].chain_valid);
     }
 }

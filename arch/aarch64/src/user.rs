@@ -37,16 +37,21 @@ serviceos_aarch64_resume_user:
     adrp x10, serviceos_aarch64_current_context
     add x10, x10, :lo12:serviceos_aarch64_current_context
     str x0, [x10]
-    // Publish (x0, x1) into the raw_syscall result slot at [sp-16, sp-8],
-    // below the suspended sp, so syscalls that resumed through the
-    // scheduler (blocked receive, yield, wake) deliver their result through
-    // the same memory channel the direct-return path uses.
+    // Re-publish (x0, x1) into the raw_syscall result slot at [sp-16, sp-8]
+    // only when the thread was suspended by the scheduler (the sync stub
+    // arms resume_publish on its kernel-continuation exit). An IRQ-preempted
+    // thread resumes with resume_publish clear so its pending result slot —
+    // possibly not yet consumed by the svc caller — is left untouched.
+    ldr x12, [x0, #0x120]
+    cbz x12, 2f
     ldr x9, [x0, #0xF8]
     sub x9, x9, #16
     ldr x10, [x0]
     ldr x11, [x0, #8]
     str x10, [x9]
     str x11, [x9, #8]
+    str xzr, [x0, #0x120]
+2:
 
     mov x30, x0
     ldr x12, [x30, #0xF8]
@@ -112,6 +117,15 @@ serviceos_aarch64_lower_el_sync:
     mov x0, x11
     bl serviceos_aarch64_handle_user_sync
     cbz x0, 1f
+
+    // Scheduler suspension (block/yield/exit): arm resume_publish so the
+    // next resume_user re-delivers the saved (x0, x1) pair through the
+    // raw_syscall result slot, matching the direct-return memory channel.
+    adrp x10, serviceos_aarch64_current_context
+    add x10, x10, :lo12:serviceos_aarch64_current_context
+    ldr x10, [x10]
+    mov x11, #1
+    str x11, [x10, #0x120]
 
     adrp x10, serviceos_aarch64_kernel_return_sp
     add x10, x10, :lo12:serviceos_aarch64_kernel_return_sp
@@ -201,20 +215,28 @@ serviceos_aarch64_lower_el_sync:
         pub spsr_el1: u64,
         pub esr_el1: u64,
         pub far_el1: u64,
+        /// Set by the sync stub when a syscall suspends the thread through
+        /// the scheduler (block/yield/exit); resume_user re-publishes the
+        /// saved (x0, x1) result pair into the raw_syscall memory slot only
+        /// when this is armed. An IRQ preemption save clears it so a
+        /// preempted thread's pending result slot is left untouched.
+        pub resume_publish: u64,
     }
 
     impl SavedUserContext {
         // The resume/trap asm addresses these fields by fixed byte offsets
         // (x30 at 0xF0, sp_el0 at 0xF8, elr_el1 at 0x100, spsr_el1 at 0x108,
-        // esr_el1 at 0x110, far_el1 at 0x118); keep the repr(C) layout honest.
+        // esr_el1 at 0x110, far_el1 at 0x118, resume_publish at 0x120); keep
+        // the repr(C) layout honest.
         const _LAYOUT_MATCHES_ASM: () = {
-            assert!(core::mem::size_of::<Self>() == 36 * core::mem::size_of::<u64>());
+            assert!(core::mem::size_of::<Self>() == 37 * core::mem::size_of::<u64>());
             assert!(core::mem::offset_of!(Self, x30) == 0xF0);
             assert!(core::mem::offset_of!(Self, sp_el0) == 0xF8);
             assert!(core::mem::offset_of!(Self, elr_el1) == 0x100);
             assert!(core::mem::offset_of!(Self, spsr_el1) == 0x108);
             assert!(core::mem::offset_of!(Self, esr_el1) == 0x110);
             assert!(core::mem::offset_of!(Self, far_el1) == 0x118);
+            assert!(core::mem::offset_of!(Self, resume_publish) == 0x120);
         };
 
         fn initial(entry_point: u64, user_stack_pointer: u64) -> Self {
@@ -255,6 +277,7 @@ serviceos_aarch64_lower_el_sync:
                 spsr_el1: 0,
                 esr_el1: 0,
                 far_el1: 0,
+                resume_publish: 0,
             }
         }
     }
@@ -553,6 +576,25 @@ serviceos_aarch64_lower_el_sync:
         Ok(())
     }
 
+    /// Snapshot a preempted user thread's context into its runtime slot so a
+    /// later run_thread() resumes it from this exact state (x86 mirror of
+    /// arch/x86_64/src/interrupts/irq.rs save_thread_context). Called from
+    /// the timer IRQ handler only; clears resume_publish because an IRQ
+    /// preemption is not a scheduler suspension — the thread's raw_syscall
+    /// result slot, if a result is pending, must stay untouched.
+    pub fn save_thread_context(thread_id: ThreadId, context: &SavedUserContext) -> bool {
+        let mut snapshot = *context;
+        snapshot.resume_publish = 0;
+        let mut runtime = USER_THREADS.lock();
+        match runtime.thread_mut(thread_id) {
+            Some(thread) => {
+                thread.context = snapshot;
+                true
+            }
+            None => false,
+        }
+    }
+
     pub fn run_thread(thread_id: ThreadId) -> Result<(), UserLaunchError> {
         let (page_table_root, context_ptr) = {
             let mut runtime = USER_THREADS.lock();
@@ -663,10 +705,15 @@ mod imp {
     pub fn run_thread(_thread_id: ThreadId) -> Result<(), UserLaunchError> {
         Err(UserLaunchError::Unsupported)
     }
+
+    pub fn save_thread_context(_thread_id: ThreadId, _context: &SavedUserContext) -> bool {
+        false
+    }
 }
 
 pub use imp::{
     SavedUserContext, UserLaunchError, initialize, map_memory_object, prepare_address_space,
     register_address_space, register_thread_launch, release_address_space, release_thread_runtime,
-    run_thread, translate_address, unmap_memory_range, update_memory_protection,
+    run_thread, save_thread_context, translate_address, unmap_memory_range,
+    update_memory_protection,
 };

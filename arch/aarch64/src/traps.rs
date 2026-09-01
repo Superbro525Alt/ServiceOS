@@ -107,7 +107,25 @@ serviceos_aarch64_lower_el_irq:
     stp x26, x27, [sp, #-16]!
     stp x28, x29, [sp, #-16]!
     stp x30, xzr, [sp, #-16]!
+    mov x0, sp
     bl serviceos_aarch64_handle_irq
+    cbz x0, 5f
+    // Preempted: abandon this frame and return into run_thread's kernel
+    // continuation via the shared kernel_return_sp handoff, exactly like
+    // the sync stub's scheduler-suspension exit. The pushed registers are
+    // dead; the handler already snapshotted the interrupted user context.
+    adrp x10, serviceos_aarch64_kernel_return_sp
+    add x10, x10, :lo12:serviceos_aarch64_kernel_return_sp
+    ldr x9, [x10]
+    mov sp, x9
+    ldp x29, x30, [sp], #16
+    ldp x27, x28, [sp], #16
+    ldp x25, x26, [sp], #16
+    ldp x23, x24, [sp], #16
+    ldp x21, x22, [sp], #16
+    ldp x19, x20, [sp], #16
+    ret
+5:
     ldp x30, xzr, [sp], #16
     ldp x28, x29, [sp], #16
     ldp x26, x27, [sp], #16
@@ -159,11 +177,12 @@ serviceos_aarch64_fatal_vector:
     }
 
     #[unsafe(no_mangle)]
-    extern "C" fn serviceos_aarch64_handle_irq() {
+    extern "C" fn serviceos_aarch64_handle_irq(saved_regs: *const u64) -> u64 {
         let Some(irq) = gic::acknowledge() else {
-            return;
+            return 0;
         };
-        if irq.intid == gic::timer_ppi_intid() {
+        let timer_tick = irq.intid == gic::timer_ppi_intid();
+        if timer_tick {
             timer::rearm_periodic_tick();
             interrupts::note_timer_interrupt(interrupts::InterruptVector(irq.intid));
         } else {
@@ -173,6 +192,120 @@ serviceos_aarch64_fatal_vector:
             interrupts::dispatch_external_irq(irq.intid);
         }
         gic::end_of_interrupt(irq);
+
+        // IRQ-return preemption, mirroring
+        // arch/x86_64/src/interrupts/irq.rs::serviceos_x86_64_handle_timer_irq:
+        // only the timer tick preempts, and only an interrupted user-mode
+        // frame whose scheduler slice has expired. Returns 1 to make the asm
+        // stub abandon this frame for run_thread's kernel continuation (the
+        // thread later resumes from the snapshot saved below), or 0 to eret
+        // back into the interrupted context.
+        if !timer_tick {
+            return 0;
+        }
+        let regs = unsafe { &*(saved_regs as *const [u64; 31]) };
+        let (sp_el0, elr_el1, spsr_el1, esr_el1, far_el1): (u64, u64, u64, u64, u64);
+        unsafe {
+            core::arch::asm!(
+                "mrs {sp}, sp_el0",
+                "mrs {elr}, elr_el1",
+                "mrs {spsr}, spsr_el1",
+                "mrs {esr}, esr_el1",
+                "mrs {far}, far_el1",
+                sp = out(reg) sp_el0,
+                elr = out(reg) elr_el1,
+                spsr = out(reg) spsr_el1,
+                esr = out(reg) esr_el1,
+                far = out(reg) far_el1,
+                options(nomem, nostack)
+            );
+        }
+        // SPSR.M == 0b0000 (EL0t) identifies an interrupted user context.
+        // EL1 execution always runs with IRQs masked (no daifclr outside the
+        // executor idle window), so a timer frame can only originate in user
+        // mode or the idle window; the M check rejects both the EL1 window
+        // and the idle window (stale user SPSR while no thread runs, which
+        // the current_thread() check below also rejects).
+        if spsr_el1 & 0xf != 0 {
+            return 0;
+        }
+        // The bootstrap root thread's user stack aliases the kernel boot
+        // stack (its image-declared stack top coincides with the stack the
+        // executor runs on, so sp_el0 == SP_EL1 while it executes). An
+        // IRQ-preempt window there would let kernel frames — the resumed
+        // successor's sync handling, resume_user's callee-saved pushes, the
+        // stub frames themselves — stomp the preempted thread's user-stack
+        // contents (its raw_syscall result slot and saved registers), so
+        // such frames keep the baseline cooperative schedule instead. The
+        // IRQ frame base sits 256 bytes below SP_EL1; a user sp at or above
+        // it means the user stack reaches into the kernel stack region.
+        // Spawned services declare stack tops well below and preempt
+        // normally; x86 needs no equivalent guard because its user stacks
+        // never alias the kernel stack.
+        if sp_el0 as usize >= saved_regs as usize {
+            return 0;
+        }
+        let context = SavedUserContext {
+            x0: regs[0],
+            x1: regs[1],
+            x2: regs[2],
+            x3: regs[3],
+            x4: regs[4],
+            x5: regs[5],
+            x6: regs[6],
+            x7: regs[7],
+            x8: regs[8],
+            x9: regs[9],
+            x10: regs[10],
+            x11: regs[11],
+            x12: regs[12],
+            x13: regs[13],
+            x14: regs[14],
+            x15: regs[15],
+            x16: regs[16],
+            x17: regs[17],
+            x18: regs[18],
+            x19: regs[19],
+            x20: regs[20],
+            x21: regs[21],
+            x22: regs[22],
+            x23: regs[23],
+            x24: regs[24],
+            x25: regs[25],
+            x26: regs[26],
+            x27: regs[27],
+            x28: regs[28],
+            x29: regs[29],
+            x30: regs[30],
+            sp_el0,
+            elr_el1,
+            spsr_el1,
+            esr_el1,
+            far_el1,
+            resume_publish: 0,
+        };
+        let Some(tasks) = system() else {
+            return 0;
+        };
+        let scheduler = tasks.scheduler();
+        if !scheduler.preemption_pending() {
+            return 0;
+        }
+        // The context fields already mirror the interrupted frame; snapshot
+        // the full user context before the frame is abandoned so the thread
+        // resumes from this exact state when it is scheduled again via
+        // run_thread().
+        if let Some(thread_id) = scheduler.current_thread() {
+            crate::user::save_thread_context(thread_id, &context);
+        }
+        // Requeue the current thread and select its successor now so the
+        // executor loop picks up the next thread as soon as the stub's
+        // abandon path returns. preempt_current_if_needed() checks and
+        // clears preemption_pending under the scheduler lock; consuming the
+        // flag separately first would make it early-return and leave the
+        // preempted thread in place forever.
+        let _ = scheduler.preempt_current_if_needed();
+        1
     }
 
     #[unsafe(no_mangle)]

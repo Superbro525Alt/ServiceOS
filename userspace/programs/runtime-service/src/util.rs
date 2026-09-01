@@ -197,6 +197,21 @@ pub(crate) fn sensitive_capabilities(bits: u32) -> u32 {
         | rt::runtime_capability::AUDIO)
 }
 
+/// Boot-local tick for the cross-reboot env store's stamp fields. On the
+/// target this is the monotonic clock; host unit tests cannot issue kernel
+/// syscalls, so they observe 0 (documented, honest — stamps are boot-local
+/// ordering hints, not semantically load-bearing).
+pub(crate) fn now_tick() -> u64 {
+    #[cfg(test)]
+    {
+        0
+    }
+    #[cfg(not(test))]
+    {
+        rt::monotonic_now().unwrap_or(0)
+    }
+}
+
 pub(crate) fn release_run_slot(run: &mut RunSlot) {
     if run.task_handle != rt::INVALID_HANDLE {
         let _ = rt::handle_close(run.task_handle);

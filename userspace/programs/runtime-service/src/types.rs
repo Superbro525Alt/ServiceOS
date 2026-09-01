@@ -8,7 +8,7 @@ use crate::consts::{
     MAX_GUEST_PATH, MAX_LIBS, MAX_MOUNTS, MAX_STORAGE_PATH, MAX_VAR_KEY, MAX_VAR_VALUE, MAX_VARS,
 };
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub(crate) struct FixedBytes<const N: usize> {
     pub(crate) len: usize,
     pub(crate) bytes: [u8; N],
@@ -36,7 +36,7 @@ impl<const N: usize> FixedBytes<N> {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub(crate) struct MountSlot {
     pub(crate) guest: FixedBytes<MAX_GUEST_PATH>,
     pub(crate) source: FixedBytes<MAX_STORAGE_PATH>,
@@ -51,7 +51,7 @@ impl MountSlot {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub(crate) struct VarSlot {
     pub(crate) key: FixedBytes<MAX_VAR_KEY>,
     pub(crate) value: FixedBytes<MAX_VAR_VALUE>,
@@ -66,7 +66,7 @@ impl VarSlot {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub(crate) struct LibSlot {
     pub(crate) name: FixedBytes<MAX_VAR_KEY>,
     pub(crate) guest: FixedBytes<MAX_GUEST_PATH>,
@@ -119,7 +119,7 @@ impl Profile {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub(crate) struct EnvSlot {
     pub(crate) occupied: bool,
     pub(crate) kind: RuntimeKind,
@@ -142,6 +142,12 @@ pub(crate) struct EnvSlot {
     /// matched exactly afterwards). Absent means the launch gate behaves
     /// exactly as before the manifest existed.
     pub(crate) manifest: Option<crate::sandbox::SandboxManifest>,
+    /// Additive cross-reboot persistence fields: boot-local monotonic ticks
+    /// captured at record creation and last durable mutation. Ticks reset
+    /// every boot (honest stamping, not wall-clock time); the cross-reboot
+    /// store carries them so operators can order record ages within a boot.
+    pub(crate) created_tick: u64,
+    pub(crate) updated_tick: u64,
 }
 
 impl EnvSlot {
@@ -162,6 +168,8 @@ impl EnvSlot {
             lib_count: 0,
             active_runs: 0,
             manifest: None,
+            created_tick: 0,
+            updated_tick: 0,
         }
     }
 }

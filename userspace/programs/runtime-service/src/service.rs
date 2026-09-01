@@ -47,12 +47,41 @@ pub(crate) fn run() -> u64 {
     let mut audits = [AuditSlot::empty(); MAX_AUDIT];
     let mut next_audit_sequence = 1u32;
 
+    // Cross-reboot persistence (roadmap row 169): rehydrate environment
+    // records from the service-local store before the first request. Live
+    // state resets honestly (active runs gone; non-Denied lifecycle states
+    // re-derived). A corrupt store still serves rehydrated records but
+    // disables write-through so the evidence is never clobbered.
+    let envstore_writable = match crate::envstore::load_envs(storage_handle, &mut envs) {
+        crate::envstore::RehydrateOutcome::Rehydrated(count) => {
+            let _ = rt::write_logf(
+                "runtime",
+                format_args!("envstore rehydrated {} environment(s)", count),
+            );
+            true
+        }
+        crate::envstore::RehydrateOutcome::Corrupt(corrupt) => {
+            let _ = rt::write_logf(
+                "runtime",
+                format_args!(
+                    "envstore corrupt: {} line(s) skipped; persistence disabled this boot",
+                    corrupt
+                ),
+            );
+            false
+        }
+        crate::envstore::RehydrateOutcome::Empty => true,
+    };
+
     loop {
         if poll_lifecycle(bootstrap).unwrap_or(false) {
             for run in &mut runs {
                 if run.occupied {
                     crate::util::release_run_slot(run);
                 }
+            }
+            if envstore_writable {
+                crate::envstore::persist_envs(storage_handle, &envs);
             }
             let _ = rt::handle_close(storage_handle);
             return 0;
@@ -68,6 +97,7 @@ pub(crate) fn run() -> u64 {
                     storage_handle,
                     log_handle,
                     profile,
+                    envstore_writable,
                     &mut envs,
                     &mut runs,
                     &mut audits,

@@ -10,7 +10,7 @@ use crate::{
     util::emit_log,
 };
 
-mod envs;
+pub(crate) mod envs;
 mod runs;
 mod sessions;
 
@@ -23,17 +23,39 @@ use self::envs::{
 use self::runs::handle_run_launch_request;
 pub(crate) use self::{runs::poll_run_exits, sessions::handle_run_session_request};
 
+use crate::envstore;
+
+/// Tags whose handling may mutate the durable parts of an env record
+/// (create / destroy / approval decision / launch-time manifest latch).
+/// Read-only list and status tags are excluded from the write-through
+/// snapshot entirely.
+fn is_durable_mutation(tag: u32) -> bool {
+    tag == RuntimeTag::EnvCreateRequest as u32
+        || tag == RuntimeTag::EnvDestroyRequest as u32
+        || tag == RuntimeTag::RunLaunchRequest as u32
+        || tag == RuntimeTag::EnvDecisionRequest as u32
+}
+
 pub(crate) fn handle_public_request(
     bootstrap: rt::Handle,
     storage_handle: rt::Handle,
     log_handle: rt::Handle,
     profile: Profile,
+    envstore_writable: bool,
     envs: &mut [EnvSlot; MAX_ENVS],
     runs: &mut [RunSlot; MAX_RUNS],
     audits: &mut [AuditSlot; MAX_AUDIT],
     next_audit_sequence: &mut u32,
     message: &RawMessage,
 ) -> rt::Result<()> {
+    // Write-through baseline: mutating tags snapshot the table first; any
+    // difference after dispatch rewrites the store in full. Read-only tags
+    // never persist.
+    let durable_before = if is_durable_mutation(message.tag) {
+        Some(*envs)
+    } else {
+        None
+    };
     match message.tag {
         x if x == RuntimeTag::EnvCreateRequest as u32 => {
             if message.handle_count < 1 || message.word_count < 1 {
@@ -214,6 +236,11 @@ pub(crate) fn handle_public_request(
     }
 
     poll_run_exits(log_handle, envs, runs);
-    let _ = storage_handle;
+    if let Some(before) = durable_before
+        && *envs != before
+        && envstore_writable
+    {
+        envstore::persist_envs(storage_handle, envs);
+    }
     Ok(())
 }

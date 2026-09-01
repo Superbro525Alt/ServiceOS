@@ -83,7 +83,7 @@ impl DeviceClass {
 }
 
 /// Per-environment sandbox profile stored alongside the environment record.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub(crate) struct SandboxProfile {
     pub(crate) requested: [bool; CLASS_COUNT],
     pub(crate) granted: [bool; CLASS_COUNT],

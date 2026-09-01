@@ -3,6 +3,7 @@
 
 mod abi_image;
 mod consts;
+mod envstore;
 mod linux_abi;
 mod pe;
 mod protocol;

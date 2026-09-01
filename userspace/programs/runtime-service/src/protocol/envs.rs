@@ -27,6 +27,11 @@ pub(crate) fn allocate_env(
         return Err(rt::Error::CapacityExceeded);
     };
     envs[index] = instantiate_env(profile);
+    // Boot-local tick stamps for the cross-reboot store (honest ordering
+    // within a boot; ticks reset every boot).
+    let now = crate::util::now_tick();
+    envs[index].created_tick = now;
+    envs[index].updated_tick = now;
     let pending_caps = sensitive_capabilities(envs[index].capabilities);
     if pending_caps != 0 {
         envs[index].state = rt::RuntimeEnvState::PendingApproval;
@@ -142,6 +147,7 @@ pub(crate) fn handle_env_decision_request(
             env.granted_caps = granted;
             env.state = state;
             env.sandbox.apply_granted_mask(granted);
+            env.updated_tick = crate::util::now_tick();
             record_audit(
                 audits,
                 next_audit_sequence,

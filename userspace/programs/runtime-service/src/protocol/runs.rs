@@ -231,6 +231,7 @@ pub(crate) fn handle_run_launch_request(
                 exit_code: 0,
             };
             env.active_runs = env.active_runs.saturating_add(1);
+            env.updated_tick = crate::util::now_tick();
             reply.words[0] = RuntimeStatus::Ok as u32 as u64;
             reply.words[1] = slot_index as u64;
             let _ = emit_log(
@@ -454,6 +455,7 @@ fn handle_guest_exec_launch(
                 exit_code: 0,
             };
             env.active_runs = env.active_runs.saturating_add(1);
+            env.updated_tick = crate::util::now_tick();
             let mut reply = RawMessage::empty(RuntimeTag::RunLaunchReply as u32);
             reply.word_count = 2;
             reply.words[0] = RuntimeStatus::Ok as u32 as u64;

@@ -48,9 +48,10 @@ pub const TIMER_TICK_HZ: u32 = 100;
 /// 0x50 sits in priority class 5, below the LAPIC timer (0x40) and clear of
 /// the external/PIC range (0x20-0x2F) and the syscall vector (0x80).
 pub const MSI_VECTOR_BASE: u8 = 0x50;
-/// How many message-signaled vectors the arch exposes. v0: one shared vector
-/// is enough for the virtio NIC (config + all queues can share it).
-pub const MSI_VECTORS: usize = 1;
+/// How many message-signaled vectors the arch exposes. v0: the virtio NIC
+/// (config + all queues share slot 0) and the virtio block device (slot 1),
+/// one device-class vector each.
+pub const MSI_VECTORS: usize = 2;
 
 /// Operations the platform image provides for the external IRQ controller
 /// and the reference tick source it programs (see
@@ -134,7 +135,7 @@ static IDT: Once<InterruptDescriptorTable> = Once::new();
 static EXTERNAL_IRQ_HANDLERS: spin::Mutex<
     [[Option<fn(u8)>; MAX_EXTERNAL_IRQ_HANDLERS_PER_LINE]; EXTERNAL_IRQ_LINES],
 > = spin::Mutex::new([[None; MAX_EXTERNAL_IRQ_HANDLERS_PER_LINE]; EXTERNAL_IRQ_LINES]);
-static MSI_HANDLERS: spin::Mutex<[Option<fn(u8)>; MSI_VECTORS]> = spin::Mutex::new([None]);
+static MSI_HANDLERS: spin::Mutex<[Option<fn(u8)>; MSI_VECTORS]> = spin::Mutex::new([None, None]);
 
 unsafe extern "C" {
     fn serviceos_x86_64_syscall_entry();
@@ -473,6 +474,7 @@ fn install_interrupt_table() {
             ));
             idt[lapic::LAPIC_SPURIOUS_VECTOR].set_handler_fn(irq::lapic_spurious_interrupt_handler);
             idt[MSI_VECTOR_BASE].set_handler_fn(irq::msi_vector_handler);
+            idt[MSI_VECTOR_BASE + 1].set_handler_fn(irq::msi_vector_handler_1);
             idt[EXTERNAL_IRQ_VECTOR_BASE + 1].set_handler_fn(irq::external_irq1_handler);
             idt[EXTERNAL_IRQ_VECTOR_BASE + 2].set_handler_fn(irq::external_irq2_handler);
             idt[EXTERNAL_IRQ_VECTOR_BASE + 3].set_handler_fn(irq::external_irq3_handler);

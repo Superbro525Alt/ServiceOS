@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 use core::ptr::NonNull;
 
 use serviceos_abi::{BlockDeviceBackend, BlockDeviceInfo};
-use serviceos_kernel_arch_x86_64::paging::ActivePageTable;
+use serviceos_kernel_arch_x86_64::{interrupts, paging::ActivePageTable};
 use serviceos_kernel_core::{
     block::{BlockBackend, BlockDeviceError},
     memory::{self, PageMapper, PhysicalAddress, VirtualAddress},
@@ -13,14 +13,26 @@ use virtio_drivers::{
     device::blk::{SECTOR_SIZE, VirtIOBlk},
     transport::pci::{
         PciTransport,
-        bus::{Command, ConfigurationAccess, DeviceFunction, HeaderType, PciRoot},
+        bus::{Command, HeaderType, PciRoot},
         virtio_device_type,
     },
 };
-use x86_64::instructions::port::Port;
 
-const PCI_CONFIG_ADDRESS_PORT: u16 = 0xCF8;
-const PCI_CONFIG_DATA_PORT: u16 = 0xCFC;
+use crate::msix::{IoPortPciConfigAccess, MsixOutcome, try_setup_msix};
+
+/// Arch MSI vector slot the virtio block device owns (slot 0 is the NIC's).
+const MSI_VECTOR_SLOT: u8 = 1;
+
+/// How the block device's interrupts reach the kernel.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BlockInterruptModel {
+    /// Legacy INT#x pin emulation: the device keeps its default pin route
+    /// (the driver polls completions, no external handler is registered).
+    Legacy,
+    /// MSI-X: message-signaled interrupt on an arch MSI vector, delivered
+    /// through the LAPIC (no external controller involvement).
+    Msix(u8),
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BlockBringupSummary {
@@ -28,6 +40,7 @@ pub struct BlockBringupSummary {
     pub pci_bus: u8,
     pub pci_device: u8,
     pub pci_function: u8,
+    pub interrupt: BlockInterruptModel,
     pub writable: bool,
     pub block_size: u32,
     pub block_count: u64,
@@ -48,6 +61,33 @@ pub fn initialize() -> Option<Arc<dyn BlockBackend>> {
             command.insert(Command::BUS_MASTER | Command::MEMORY_SPACE);
             root.set_command(device_function, command);
 
+            // Interrupt model: prefer MSI-X on the block device's own vector
+            // (arch slot 1, after the NIC's slot 0) so completion signaling
+            // leaves the shared legacy INT#x line. Same fallback discipline
+            // as the NIC: every fallible MSI-X step happens before the device
+            // is enabled, so a failure leaves the device untouched on its
+            // default (legacy) route. The driver polls completions, so the
+            // MSI-X handler only owns the vector (LAPIC EOI) — QEMU's
+            // virtio-pci MSI-X path signals per event and does not gate
+            // re-delivery on the ISR status register.
+            let interrupt = match try_setup_msix(
+                &mut root,
+                device_function,
+                interrupts::MSI_VECTOR_BASE + MSI_VECTOR_SLOT,
+            ) {
+                MsixOutcome::Ready(vector) => {
+                    if !interrupts::register_msi_vector_handler(MSI_VECTOR_SLOT, handle_block_irq) {
+                        return None;
+                    }
+                    BlockInterruptModel::Msix(vector)
+                }
+                MsixOutcome::Disabled => BlockInterruptModel::Legacy,
+                MsixOutcome::Failed(reason) => {
+                    let _ = BLOCK_MSIX_SETUP_DIAG.call_once(|| reason);
+                    BlockInterruptModel::Legacy
+                }
+            };
+
             let transport = PciTransport::new::<KernelHal, _>(&mut root, device_function).ok()?;
             let device = VirtIOBlk::<KernelHal, _>::new(transport).ok()?;
             let summary = BlockBringupSummary {
@@ -55,6 +95,7 @@ pub fn initialize() -> Option<Arc<dyn BlockBackend>> {
                 pci_bus: device_function.bus,
                 pci_device: device_function.device,
                 pci_function: device_function.function,
+                interrupt,
                 writable: !device.readonly(),
                 block_size: SECTOR_SIZE as u32,
                 block_count: device.capacity(),
@@ -73,6 +114,15 @@ pub fn bringup_summary() -> Option<BlockBringupSummary> {
 }
 
 static BRINGUP_SUMMARY: Once<BlockBringupSummary> = Once::new();
+
+/// Diagnostics for the last skipped MSI-X bring-up (printed once by the
+/// image's storage summary; temporary instrumentation).
+pub static BLOCK_MSIX_SETUP_DIAG: Once<&'static str> = Once::new();
+
+/// MSI-X completion deliveries for the polled block driver: the LAPIC EOI in
+/// the dispatcher is the whole job (see the bring-up comment for why no
+/// device-side ack is needed under MSI-X).
+fn handle_block_irq(_slot: u8) {}
 
 struct VirtioBlockBackend {
     state: Mutex<VirtioBlockState>,
@@ -161,45 +211,6 @@ impl BlockBackend for VirtioBlockBackend {
         state.write_ops = state.write_ops.saturating_add(1);
         Ok(buffer.len())
     }
-}
-
-#[derive(Clone, Copy)]
-struct IoPortPciConfigAccess;
-
-impl ConfigurationAccess for IoPortPciConfigAccess {
-    fn read_word(&self, device_function: DeviceFunction, register_offset: u8) -> u32 {
-        let address = pci_config_address(device_function, register_offset);
-        let mut address_port = Port::<u32>::new(PCI_CONFIG_ADDRESS_PORT);
-        let mut data_port = Port::<u32>::new(PCI_CONFIG_DATA_PORT);
-
-        unsafe {
-            address_port.write(address);
-            data_port.read()
-        }
-    }
-
-    fn write_word(&mut self, device_function: DeviceFunction, register_offset: u8, data: u32) {
-        let address = pci_config_address(device_function, register_offset);
-        let mut address_port = Port::<u32>::new(PCI_CONFIG_ADDRESS_PORT);
-        let mut data_port = Port::<u32>::new(PCI_CONFIG_DATA_PORT);
-
-        unsafe {
-            address_port.write(address);
-            data_port.write(data);
-        }
-    }
-
-    unsafe fn unsafe_clone(&self) -> Self {
-        *self
-    }
-}
-
-fn pci_config_address(device_function: DeviceFunction, register_offset: u8) -> u32 {
-    0x8000_0000
-        | ((device_function.bus as u32) << 16)
-        | ((device_function.device as u32) << 11)
-        | ((device_function.function as u32) << 8)
-        | (register_offset as u32 & 0xfc)
 }
 
 struct KernelHal;

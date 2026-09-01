@@ -176,20 +176,42 @@ fn kernel_main() -> Status {
     } else {
         log_line("network", "no packet interface detected");
     }
-    if let Some(summary) = block::bringup_summary() {
+    if let Some(reason) = block::BLOCK_MSIX_SETUP_DIAG.get() {
         log(
             "storage",
-            format_args!(
-                "block-backend={:?} pci={:02x}:{:02x}.{} blocks={} block-size={} writable={}",
-                summary.backend,
-                summary.pci_bus,
-                summary.pci_device,
-                summary.pci_function,
-                summary.block_count,
-                summary.block_size,
-                summary.writable,
-            ),
+            format_args!("msix setup skipped reason={}", reason),
         );
+    }
+    if let Some(summary) = block::bringup_summary() {
+        match summary.interrupt {
+            block::BlockInterruptModel::Msix(vector) => log(
+                "storage",
+                format_args!(
+                    "block-backend={:?} pci={:02x}:{:02x}.{} irq=msi-x vector={:#04x} blocks={} block-size={} writable={}",
+                    summary.backend,
+                    summary.pci_bus,
+                    summary.pci_device,
+                    summary.pci_function,
+                    vector,
+                    summary.block_count,
+                    summary.block_size,
+                    summary.writable,
+                ),
+            ),
+            block::BlockInterruptModel::Legacy => log(
+                "storage",
+                format_args!(
+                    "block-backend={:?} pci={:02x}:{:02x}.{} irq=legacy blocks={} block-size={} writable={}",
+                    summary.backend,
+                    summary.pci_bus,
+                    summary.pci_device,
+                    summary.pci_function,
+                    summary.block_count,
+                    summary.block_size,
+                    summary.writable,
+                ),
+            ),
+        }
     } else {
         log_line("storage", "no writable block device detected");
     }

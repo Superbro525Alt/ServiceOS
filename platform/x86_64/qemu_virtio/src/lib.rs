@@ -8,6 +8,7 @@ pub mod bluetooth;
 pub mod boot;
 pub mod display;
 pub mod input;
+pub mod msix;
 pub mod network;
 pub mod serial;
 pub mod sound;

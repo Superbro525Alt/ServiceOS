@@ -6,6 +6,7 @@ mod consts;
 mod envstore;
 mod linux_abi;
 mod pe;
+mod policy;
 mod protocol;
 mod sandbox;
 mod service;

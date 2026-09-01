@@ -10,11 +10,17 @@ use crate::{
     util::{emit_log, instantiate_env, pack_pair, sensitive_capabilities},
 };
 
+/// Allocates an environment for `kind_word`. Returns
+/// `(env_id, pending_caps, enforced)`: `pending_caps` is the sensitive mask
+/// still awaiting a decision (0 when the per-kind policy resolved it or none
+/// was requested), and `enforced` is the policy default that resolved a
+/// would-be pending approval (None under the pre-policy Ask flow).
 pub(crate) fn allocate_env(
     envs: &mut [EnvSlot; MAX_ENVS],
     kind_word: u64,
     profile: Profile,
-) -> rt::Result<(u32, u32)> {
+    policy: &crate::policy::PolicyTable,
+) -> rt::Result<(u32, u32, Option<crate::policy::EnvPolicyDefault>)> {
     let requested_kind = match kind_word as u32 {
         x if x == rt::RuntimeKind::Posix as u32 => rt::RuntimeKind::Posix,
         x if x == rt::RuntimeKind::Windows as u32 => rt::RuntimeKind::Windows,
@@ -33,10 +39,18 @@ pub(crate) fn allocate_env(
     envs[index].created_tick = now;
     envs[index].updated_tick = now;
     let pending_caps = sensitive_capabilities(envs[index].capabilities);
-    if pending_caps != 0 {
+    let enforced = if pending_caps != 0 {
         envs[index].state = rt::RuntimeEnvState::PendingApproval;
-    }
-    Ok((index as u32, pending_caps))
+        // Per-kind policy default applies BEFORE anything can surface a
+        // prompt for the new environment: AllowAll auto-approves the full
+        // sensitive mask, DenyAll auto-denies, Ask keeps today's flow.
+        let default = policy.default_for(envs[index].kind);
+        crate::policy::enforce_at_await(&mut envs[index], default)
+    } else {
+        None
+    };
+    let reported_pending = if enforced.is_some() { 0 } else { pending_caps };
+    Ok((index as u32, reported_pending, enforced))
 }
 
 pub(crate) fn encode_env_status(reply: &mut RawMessage, env_id: u32, env: EnvSlot) {

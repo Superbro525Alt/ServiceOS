@@ -46,13 +46,16 @@ pub(crate) fn run() -> u64 {
     let mut runs = [RunSlot::empty(); MAX_RUNS];
     let mut audits = [AuditSlot::empty(); MAX_AUDIT];
     let mut next_audit_sequence = 1u32;
+    let mut policy = crate::policy::PolicyTable::new();
 
     // Cross-reboot persistence (roadmap row 169): rehydrate environment
     // records from the service-local store before the first request. Live
     // state resets honestly (active runs gone; non-Denied lifecycle states
     // re-derived). A corrupt store still serves rehydrated records but
-    // disables write-through so the evidence is never clobbered.
-    let envstore_writable = match crate::envstore::load_envs(storage_handle, &mut envs) {
+    // disables write-through so the evidence is never clobbered. The
+    // additive policy section rehydrates alongside the records.
+    let envstore_writable = match crate::envstore::load_envs(storage_handle, &mut envs, &mut policy)
+    {
         crate::envstore::RehydrateOutcome::Rehydrated(count) => {
             let _ = rt::write_logf(
                 "runtime",
@@ -73,6 +76,18 @@ pub(crate) fn run() -> u64 {
         crate::envstore::RehydrateOutcome::Empty => true,
     };
 
+    // Per-kind policy defaults apply at the boot-time decision-await point
+    // too: persisted PendingApproval envs whose kind carries a non-Ask
+    // default are resolved here, before any surface can mirror them into a
+    // prompt card. Configured tables log one policy line; the all-Ask
+    // default logs nothing (fresh boots stay byte-identical).
+    if crate::policy::enforce_rehydrated(&mut envs, &mut audits, &mut next_audit_sequence, &policy)
+        && envstore_writable
+    {
+        crate::envstore::persist_envs(storage_handle, &envs, &policy);
+    }
+    crate::policy::log_configured(log_handle, &policy);
+
     loop {
         if poll_lifecycle(bootstrap).unwrap_or(false) {
             for run in &mut runs {
@@ -81,7 +96,7 @@ pub(crate) fn run() -> u64 {
                 }
             }
             if envstore_writable {
-                crate::envstore::persist_envs(storage_handle, &envs);
+                crate::envstore::persist_envs(storage_handle, &envs, &policy);
             }
             let _ = rt::handle_close(storage_handle);
             return 0;
@@ -98,6 +113,7 @@ pub(crate) fn run() -> u64 {
                     log_handle,
                     profile,
                     envstore_writable,
+                    &mut policy,
                     &mut envs,
                     &mut runs,
                     &mut audits,

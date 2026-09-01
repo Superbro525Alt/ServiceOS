@@ -24,16 +24,18 @@ use self::runs::handle_run_launch_request;
 pub(crate) use self::{runs::poll_run_exits, sessions::handle_run_session_request};
 
 use crate::envstore;
+use crate::policy::PolicyTable;
 
 /// Tags whose handling may mutate the durable parts of an env record
-/// (create / destroy / approval decision / launch-time manifest latch).
-/// Read-only list and status tags are excluded from the write-through
-/// snapshot entirely.
+/// (create / destroy / approval decision / launch-time manifest latch) or
+/// the policy section of the store (per-kind default set). Read-only list
+/// and status tags are excluded from the write-through snapshot entirely.
 fn is_durable_mutation(tag: u32) -> bool {
     tag == RuntimeTag::EnvCreateRequest as u32
         || tag == RuntimeTag::EnvDestroyRequest as u32
         || tag == RuntimeTag::RunLaunchRequest as u32
         || tag == RuntimeTag::EnvDecisionRequest as u32
+        || tag == crate::consts::ENV_POLICY_SET_REQUEST_TAG
 }
 
 pub(crate) fn handle_public_request(
@@ -42,6 +44,7 @@ pub(crate) fn handle_public_request(
     log_handle: rt::Handle,
     profile: Profile,
     envstore_writable: bool,
+    policy: &mut PolicyTable,
     envs: &mut [EnvSlot; MAX_ENVS],
     runs: &mut [RunSlot; MAX_RUNS],
     audits: &mut [AuditSlot; MAX_AUDIT],
@@ -64,10 +67,32 @@ pub(crate) fn handle_public_request(
             let reply_handle = message.handles[0];
             let mut reply = RawMessage::empty(RuntimeTag::EnvCreateReply as u32);
             reply.word_count = 2;
-            match allocate_env(envs, message.words[0], profile) {
-                Ok((env_id, pending_caps)) => {
+            match allocate_env(envs, message.words[0], profile, policy) {
+                Ok((env_id, pending_caps, enforced)) => {
                     reply.words[0] = RuntimeStatus::Ok as u32 as u64;
                     reply.words[1] = env_id as u64;
+                    if let Some(default) = enforced {
+                        // Policy-derived verdict at the create-time await
+                        // point: audited with the POLICY-DERIVED detail
+                        // marker so history distinguishes it from operator
+                        // decisions.
+                        let env = &envs[env_id as usize];
+                        crate::policy::record_policy_audit(
+                            audits,
+                            next_audit_sequence,
+                            env_id,
+                            env.capabilities,
+                            env.granted_caps,
+                            default,
+                        );
+                        let _ = emit_log(
+                            log_handle,
+                            LogSeverity::Info,
+                            LogEvent::RuntimeApprovalChanged,
+                            env_id as u64,
+                            (env.state as u32 as u64) | ((env.granted_caps as u64) << 32),
+                        );
+                    }
                     if pending_caps != 0 {
                         record_audit(
                             audits,
@@ -85,7 +110,7 @@ pub(crate) fn handle_public_request(
                             env_id as u64,
                             pending_caps as u64,
                         );
-                    } else {
+                    } else if enforced.is_none() {
                         let _ = emit_log(
                             log_handle,
                             LogSeverity::Info,
@@ -165,6 +190,20 @@ pub(crate) fn handle_public_request(
         x if x == RuntimeTag::EnvDecisionRequest as u32 => {
             handle_env_decision_request(log_handle, envs, audits, next_audit_sequence, message)?;
         }
+        x if x == crate::consts::ENV_POLICY_GET_REQUEST_TAG => {
+            crate::policy::handle_env_policy_get(policy, message);
+        }
+        x if x == crate::consts::ENV_POLICY_SET_REQUEST_TAG => {
+            crate::policy::handle_env_policy_set(
+                storage_handle,
+                envstore_writable,
+                envs,
+                policy,
+                audits,
+                next_audit_sequence,
+                message,
+            );
+        }
         x if x == RuntimeTag::AuditListRequest as u32 => {
             handle_audit_list_request(audits, message)?;
         }
@@ -240,7 +279,7 @@ pub(crate) fn handle_public_request(
         && *envs != before
         && envstore_writable
     {
-        envstore::persist_envs(storage_handle, envs);
+        envstore::persist_envs(storage_handle, envs, policy);
     }
     Ok(())
 }

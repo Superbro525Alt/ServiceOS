@@ -15,3 +15,12 @@ pub(crate) const MAX_VAR_KEY: usize = 24;
 pub(crate) const MAX_VAR_VALUE: usize = 64;
 pub(crate) const MAX_PROFILE_BYTES: usize = 512;
 pub(crate) const MAX_AUDIT: usize = 16;
+/// Additive service-local tag pair for the per-env-kind policy defaults
+/// (roadmap row 204 residual), following the house convention of local tag
+/// consts continuing the service's shared range (cf. storage-service
+/// `0x52x`, developer-service `0xd2x`): get = 0xc1e/0xc1f, set = 0xc20/0xc21
+/// appended after the shared `RuntimeTag` enum's `AuditListReply = 0xc1d`.
+pub(crate) const ENV_POLICY_GET_REQUEST_TAG: u32 = 0xc1e;
+pub(crate) const ENV_POLICY_GET_REPLY_TAG: u32 = 0xc1f;
+pub(crate) const ENV_POLICY_SET_REQUEST_TAG: u32 = 0xc20;
+pub(crate) const ENV_POLICY_SET_REPLY_TAG: u32 = 0xc21;

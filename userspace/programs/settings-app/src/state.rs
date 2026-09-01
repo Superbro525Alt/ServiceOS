@@ -43,6 +43,17 @@ pub(crate) const SEC_DENY_X0: i32 = 198;
 pub(crate) const SEC_DENY_X1: i32 = 246;
 pub(crate) const SEC_RESET_X0: i32 = 254;
 pub(crate) const SEC_RESET_X1: i32 = 308;
+/// Per-env-kind policy section (additive, below the audit line): one row per
+/// runtime kind, each with `<`/`>` selectors cycling ask → allow-all →
+/// deny-all.
+pub(crate) const SEC_POLICY_LABEL_Y: i32 = 242;
+pub(crate) const SEC_POLICY_ROW0_Y0: i32 = 250;
+pub(crate) const SEC_POLICY_ROW1_Y0: i32 = 268;
+pub(crate) const SEC_POLICY_ROW_H: i32 = 16;
+pub(crate) const SEC_POLICY_PREV_X0: i32 = 150;
+pub(crate) const SEC_POLICY_PREV_X1: i32 = 182;
+pub(crate) const SEC_POLICY_NEXT_X0: i32 = 190;
+pub(crate) const SEC_POLICY_NEXT_X1: i32 = 222;
 pub(crate) const NET_HOSTNAME_FIELD_X0: i32 = 100;
 pub(crate) const NET_HOSTNAME_FIELD_Y0: i32 = 98;
 pub(crate) const NET_HOSTNAME_FIELD_X1: i32 = 236;

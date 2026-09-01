@@ -7,8 +7,9 @@ use serviceos_userspace_runtime as rt;
 use crate::backup::{self, BACKUP_LIST_ROWS, BackupPrompt, BackupUnavailable};
 use crate::netdiag;
 use crate::security::{
-    PermissionSummary, RuntimeCapSummary, audit_kind_name, first_actionable_runtime, image_name,
-    policy_name, runtime_env_state_name, runtime_grant_summary, security_policy_count,
+    POLICY_KINDS, PermissionSummary, RuntimeCapSummary, audit_kind_name, first_actionable_runtime,
+    image_name, policy_get, policy_kind_label, policy_name, runtime_env_state_name,
+    runtime_grant_summary, security_policy_count,
 };
 use crate::state::*;
 use crate::wifi;
@@ -298,12 +299,17 @@ fn draw_security_page(
         // Additive grant-history detail: approval-changed records carry the
         // granted capability mask; a subset of the sensitive classes is
         // flagged PARTIAL so history discloses what actually activates.
+        // Policy-derived verdicts (per-kind default applied by
+        // runtime-service) are flagged POLICY so they read differently from
+        // operator decisions — including auto-denies, which surface with an
+        // empty granted window.
         if let Some(grant) = runtime_grant_summary(&audit) {
             let _ = write!(
                 &mut line5,
-                " granted={}{}",
+                " granted={}{}{}",
                 RuntimeCapSummary(grant.granted),
                 if grant.partial { " PARTIAL" } else { "" },
+                if grant.policy_derived { " POLICY" } else { "" },
             );
         }
     } else if let Some(audit) = latest_native_audit {
@@ -368,7 +374,80 @@ fn draw_security_page(
         ui::TEXT_MUTED,
         str::from_utf8(line5.as_bytes()).unwrap_or("AUDIT"),
     );
+    draw_env_policy_section(bytes, runtime_handle);
     Ok(())
+}
+
+/// Additive policy section: one row per runtime kind with `<`/`>` selectors
+/// cycling the per-kind default (ask → allow-all → deny-all). The current
+/// default is read from runtime-service through the page's runtime channel
+/// on every render; an unreachable or unresponsive service renders an honest
+/// `n/a` row with inert buttons.
+fn draw_env_policy_section(bytes: &mut [u8], runtime_handle: rt::Handle) {
+    rt::draw_text_rgba8888(
+        bytes,
+        PIXEL_STRIDE,
+        12,
+        SEC_POLICY_LABEL_Y,
+        ui::TEXT_MUTED,
+        "ENV POLICY",
+    );
+    for (index, kind) in POLICY_KINDS.iter().enumerate() {
+        let y0 = if index == 0 {
+            SEC_POLICY_ROW0_Y0
+        } else {
+            SEC_POLICY_ROW1_Y0
+        };
+        let reachable = runtime_handle != rt::INVALID_HANDLE;
+        let current = if reachable {
+            policy_get(runtime_handle, *kind).ok()
+        } else {
+            None
+        };
+        let mut line = FixedLogBuffer::<40>::new();
+        let _ = write!(
+            &mut line,
+            "{} {}",
+            policy_kind_label(*kind),
+            match current {
+                Some(default) => default.name(),
+                None => "n/a",
+            }
+        );
+        rt::draw_text_rgba8888(
+            bytes,
+            PIXEL_STRIDE,
+            12,
+            y0 + 6,
+            if current.is_some() {
+                ui::TEXT_SECONDARY
+            } else {
+                ui::TEXT_MUTED
+            },
+            line.as_str(),
+        );
+        let active = current.is_some();
+        draw_button(
+            bytes,
+            SEC_POLICY_PREV_X0,
+            y0,
+            SEC_POLICY_PREV_X1,
+            y0 + SEC_POLICY_ROW_H,
+            if active { ui::ACCENT_DIM } else { ui::BG_PANEL },
+            "<",
+            ui::TEXT_PRIMARY,
+        );
+        draw_button(
+            bytes,
+            SEC_POLICY_NEXT_X0,
+            y0,
+            SEC_POLICY_NEXT_X1,
+            y0 + SEC_POLICY_ROW_H,
+            if active { ui::ACCENT_DIM } else { ui::BG_PANEL },
+            ">",
+            ui::TEXT_PRIMARY,
+        );
+    }
 }
 
 #[allow(clippy::too_many_lines)]

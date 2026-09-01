@@ -3,10 +3,12 @@
 //! under `state/runtime/` capturing each occupied `EnvSlot` additively
 //! (kind, lifecycle state, capabilities, granted subset, syscall-ABI mode,
 //! sandbox class masks, mounts, vars, bundled libs, latched workload
-//! manifest, boot-local tick stamps). Write-through happens on the mutating
-//! ops (create / env-decision / run-launch manifest latch / destroy) via a
-//! before/after record snapshot in the dispatcher; startup rehydrates the
-//! table so env ids (slot indices) stay stable across restarts.
+//! manifest, boot-local tick stamps) plus the per-env-kind policy defaults
+//! (additive `policy` section; see `policy.rs`). Write-through happens on
+//! the mutating ops (create / env-decision / run-launch manifest latch /
+//! destroy / policy set) via a before/after record snapshot in the
+//! dispatcher; startup rehydrates the table so env ids (slot indices) stay
+//! stable across restarts.
 //!
 //! Honesty contracts:
 //! - live-only state is never persisted: `active_runs` resets to 0 on
@@ -27,6 +29,7 @@ use crate::{
         MAX_ENVS, MAX_GUEST_PATH, MAX_LIBS, MAX_MOUNTS, MAX_STORAGE_PATH, MAX_VAR_KEY,
         MAX_VAR_VALUE, MAX_VARS,
     },
+    policy::{EnvPolicyDefault, PolicyTable},
     sandbox::{
         CLASS_COUNT, DEVICE_CLASSES, SANDBOX_MANIFEST_VERSION, SandboxManifest, SandboxProfile,
     },
@@ -64,15 +67,31 @@ pub(crate) enum RehydrateOutcome {
 }
 
 /// Serialize the occupied env records into `buffer` (keystore-codec style:
-/// one magic line, then `env` header lines with `mount`/`var`/`lib`/
-/// `manifest` detail lines). Returns the byte length written.
+/// one magic line, then `policy` section lines for configured env-kind
+/// defaults, then `env` header lines with `mount`/`var`/`lib`/`manifest`
+/// detail lines). Returns the byte length written.
 pub(crate) fn format_envs(
     envs: &[EnvSlot; MAX_ENVS],
+    policy: &PolicyTable,
     buffer: &mut [u8],
 ) -> Result<usize, rt::Error> {
     let mut cursor = FormatCursor::new(buffer);
     cursor.push_str(ENVSTORE_MAGIC);
     cursor.push(b'\n');
+    // Additive policy section: only configured (non-Ask) kinds are written,
+    // so a default-state table serializes byte-identically to the pre-policy
+    // grammar and fresh boots write nothing.
+    for kind in PolicyTable::kinds() {
+        let default = policy.default_for(kind);
+        if matches!(default, EnvPolicyDefault::Ask) {
+            continue;
+        }
+        cursor.push_str("policy ");
+        cursor.push_decimal(kind as u32 as u64);
+        cursor.push(b' ');
+        cursor.push_decimal(default.word());
+        cursor.push(b'\n');
+    }
     for (id, env) in envs.iter().enumerate() {
         if !env.occupied {
             continue;
@@ -135,13 +154,19 @@ pub(crate) fn format_envs(
     cursor.finish()
 }
 
-/// Rehydrate env records from previously formatted store text. Corrupt
-/// lines are skipped and counted (keystore precedent: a partial write must
-/// never lock every record out). Returns (rehydrated, corrupt_lines).
-pub(crate) fn parse_envs(text: &str, envs: &mut [EnvSlot; MAX_ENVS]) -> (usize, usize) {
+/// Rehydrate env records and the policy table from previously formatted
+/// store text. Corrupt lines are skipped and counted (keystore precedent: a
+/// partial write must never lock every record out). Returns
+/// (rehydrated, corrupt_lines).
+pub(crate) fn parse_envs(
+    text: &str,
+    envs: &mut [EnvSlot; MAX_ENVS],
+    policy: &mut PolicyTable,
+) -> (usize, usize) {
     let mut rehydrated = 0usize;
     let mut corrupt = 0usize;
     let mut magic_seen = false;
+    let mut policy_seen = [false; 2];
     // Index of the env record the current detail lines attach to.
     let mut current: Option<usize> = None;
     for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
@@ -151,6 +176,14 @@ pub(crate) fn parse_envs(text: &str, envs: &mut [EnvSlot; MAX_ENVS]) -> (usize, 
             } else {
                 corrupt += 1;
             }
+            continue;
+        }
+        // Top-level policy section lines: kind defaults are global state, so
+        // unlike mount/var/lib/manifest details they do not attach to the
+        // current env record. Duplicate kind lines are corrupt (an ambiguous
+        // store must not be rewritten).
+        if let Some(rest) = line.strip_prefix("policy ") {
+            corrupt += apply_policy(policy, &mut policy_seen, rest);
             continue;
         }
         if let Some(rest) = line.strip_prefix("env ") {
@@ -197,6 +230,7 @@ pub(crate) fn parse_envs(text: &str, envs: &mut [EnvSlot; MAX_ENVS]) -> (usize, 
 pub(crate) fn load_envs(
     storage_handle: rt::Handle,
     envs: &mut [EnvSlot; MAX_ENVS],
+    policy: &mut PolicyTable,
 ) -> RehydrateOutcome {
     let (blob, len) = match rt::storage_open(storage_handle, ENVSTORE_PATH) {
         Ok(opened) => opened,
@@ -228,7 +262,7 @@ pub(crate) fn load_envs(
         return RehydrateOutcome::Corrupt(1);
     };
     let text = text.trim_end_matches('\0');
-    let (rehydrated, corrupt) = parse_envs(text, envs);
+    let (rehydrated, corrupt) = parse_envs(text, envs, policy);
     if corrupt != 0 {
         RehydrateOutcome::Corrupt(corrupt)
     } else if rehydrated == 0 {
@@ -241,7 +275,11 @@ pub(crate) fn load_envs(
 /// Write-through: serialize the table and rewrite the store file in full
 /// (the storage write path truncates to the written length). Silent on
 /// storage failure, matching the account-service persist precedent.
-pub(crate) fn persist_envs(storage_handle: rt::Handle, envs: &[EnvSlot; MAX_ENVS]) {
+pub(crate) fn persist_envs(
+    storage_handle: rt::Handle,
+    envs: &[EnvSlot; MAX_ENVS],
+    policy: &PolicyTable,
+) {
     let Ok(dir) = ensure_envstore_dir(storage_handle) else {
         return;
     };
@@ -253,7 +291,7 @@ pub(crate) fn persist_envs(storage_handle: rt::Handle, envs: &[EnvSlot; MAX_ENVS
         }
     };
     let mut buffer = [0u8; MAX_ENVSTORE_BYTES];
-    if let Ok(total) = format_envs(envs, &mut buffer) {
+    if let Ok(total) = format_envs(envs, policy, &mut buffer) {
         let mut offset = 0usize;
         while offset < total {
             let chunk_len = (total - offset).min((rt::IPC_MAX_WORDS - 3) * 8);
@@ -280,6 +318,41 @@ fn ensure_envstore_dir(storage_handle: rt::Handle) -> Result<rt::Handle, rt::Err
 }
 
 // ---- line parsers -------------------------------------------------------
+
+/// `"<kind> <default>"` after the `policy ` prefix (kind word 1 = posix,
+/// 2 = windows; default word 0 = ask, 1 = allow-all, 2 = deny-all). Only
+/// non-Ask kinds are ever serialized, but Ask parses fine (idempotent
+/// re-assertion of the default). Returns 1 when the line was dropped as
+/// corrupt, else 0.
+fn apply_policy(policy: &mut PolicyTable, policy_seen: &mut [bool; 2], rest: &str) -> usize {
+    let mut fields = rest.split(' ');
+    let (Some(kind_word), Some(default_word), None) = (fields.next(), fields.next(), fields.next())
+    else {
+        return 1;
+    };
+    let (Some(kind_word), Some(default_word)) =
+        (parse_u64(kind_word).ok(), parse_u64(default_word).ok())
+    else {
+        return 1;
+    };
+    let kind = match kind_word as u32 {
+        x if x == rt::RuntimeKind::Posix as u32 => rt::RuntimeKind::Posix,
+        x if x == rt::RuntimeKind::Windows as u32 => rt::RuntimeKind::Windows,
+        _ => return 1,
+    };
+    let index = kind as u32 as usize - 1;
+    if policy_seen[index] {
+        return 1;
+    }
+    match crate::policy::EnvPolicyDefault::from_word(default_word) {
+        Some(default) => {
+            policy_seen[index] = true;
+            policy.set(kind, default);
+            0
+        }
+        None => 1,
+    }
+}
 
 /// `"<id> <kind> <state> <caps> <granted> <linux> <req> <grt> <created>
 /// <updated>"` after the `env ` prefix. Rebuilds the record with live state
@@ -731,11 +804,11 @@ mod tests {
         envs[2].updated_tick = 4242;
 
         let mut buffer = [0u8; MAX_ENVSTORE_BYTES];
-        let total = format_envs(&envs, &mut buffer).expect("serialize");
+        let total = format_envs(&envs, &policy_table(), &mut buffer).expect("serialize");
         let text = core::str::from_utf8(&buffer[..total]).unwrap();
 
         let mut rehydrated = [EnvSlot::empty(); MAX_ENVS];
-        let (count, corrupt) = parse_envs(text, &mut rehydrated);
+        let (count, corrupt) = parse_envs(text, &mut rehydrated, &mut policy_table());
         assert_eq!((count, corrupt), (1, 0));
         assert_env_equal(&envs[2], &rehydrated[2]);
         assert!(rehydrated[0].occupied == false && rehydrated[1].occupied == false);
@@ -747,10 +820,10 @@ mod tests {
         envs[0] = instantiate_env(sample_profile());
         envs[0].manifest = Some(manifest(None));
         let mut buffer = [0u8; MAX_ENVSTORE_BYTES];
-        let total = format_envs(&envs, &mut buffer).expect("serialize");
+        let total = format_envs(&envs, &policy_table(), &mut buffer).expect("serialize");
         let text = core::str::from_utf8(&buffer[..total]).unwrap();
         let mut rehydrated = [EnvSlot::empty(); MAX_ENVS];
-        let (count, corrupt) = parse_envs(text, &mut rehydrated);
+        let (count, corrupt) = parse_envs(text, &mut rehydrated, &mut policy_table());
         assert_eq!((count, corrupt), (1, 0));
         assert_eq!(envs[0].manifest, rehydrated[0].manifest);
     }
@@ -763,10 +836,10 @@ mod tests {
         // the service, so the rehydrated record must start at zero.
         envs[1].active_runs = 2;
         let mut buffer = [0u8; MAX_ENVSTORE_BYTES];
-        let total = format_envs(&envs, &mut buffer).expect("serialize");
+        let total = format_envs(&envs, &policy_table(), &mut buffer).expect("serialize");
         let text = core::str::from_utf8(&buffer[..total]).unwrap();
         let mut rehydrated = [EnvSlot::empty(); MAX_ENVS];
-        let (count, corrupt) = parse_envs(text, &mut rehydrated);
+        let (count, corrupt) = parse_envs(text, &mut rehydrated, &mut policy_table());
         assert_eq!((count, corrupt), (1, 0));
         assert_eq!(rehydrated[1].active_runs, 0);
         assert!(rehydrated[1].occupied);
@@ -779,10 +852,10 @@ mod tests {
         envs[3].state = RuntimeEnvState::Denied;
         envs[3].granted_caps = 0;
         let mut buffer = [0u8; MAX_ENVSTORE_BYTES];
-        let total = format_envs(&envs, &mut buffer).expect("serialize");
+        let total = format_envs(&envs, &policy_table(), &mut buffer).expect("serialize");
         let text = core::str::from_utf8(&buffer[..total]).unwrap();
         let mut rehydrated = [EnvSlot::empty(); MAX_ENVS];
-        let (count, corrupt) = parse_envs(text, &mut rehydrated);
+        let (count, corrupt) = parse_envs(text, &mut rehydrated, &mut policy_table());
         assert_eq!((count, corrupt), (1, 0));
         assert!(matches!(rehydrated[3].state, RuntimeEnvState::Denied));
     }
@@ -800,10 +873,10 @@ mod tests {
         envs[0].state = RuntimeEnvState::Ready;
         assert!(matches!(envs[0].state, RuntimeEnvState::Ready));
         let mut buffer = [0u8; MAX_ENVSTORE_BYTES];
-        let total = format_envs(&envs, &mut buffer).expect("serialize");
+        let total = format_envs(&envs, &policy_table(), &mut buffer).expect("serialize");
         let text = core::str::from_utf8(&buffer[..total]).unwrap();
         let mut rehydrated = [EnvSlot::empty(); MAX_ENVS];
-        let (count, corrupt) = parse_envs(text, &mut rehydrated);
+        let (count, corrupt) = parse_envs(text, &mut rehydrated, &mut policy_table());
         assert_eq!((count, corrupt), (1, 0));
         assert!(matches!(
             rehydrated[0].state,
@@ -822,10 +895,10 @@ mod tests {
         envs[1] = instantiate_env(sample_profile());
         envs[3] = instantiate_env(sample_profile());
         let mut buffer = [0u8; MAX_ENVSTORE_BYTES];
-        let total = format_envs(&envs, &mut buffer).expect("serialize");
+        let total = format_envs(&envs, &policy_table(), &mut buffer).expect("serialize");
         let text = core::str::from_utf8(&buffer[..total]).unwrap();
         let mut rehydrated = [EnvSlot::empty(); MAX_ENVS];
-        let (count, corrupt) = parse_envs(text, &mut rehydrated);
+        let (count, corrupt) = parse_envs(text, &mut rehydrated, &mut policy_table());
         assert_eq!((count, corrupt), (2, 0));
         assert!(!rehydrated[0].occupied && rehydrated[1].occupied);
         assert!(!rehydrated[2].occupied && rehydrated[3].occupied);
@@ -838,10 +911,10 @@ mod tests {
         // EnvDestroy semantics: slot emptied, next format has no records.
         envs[0] = EnvSlot::empty();
         let mut buffer = [0u8; MAX_ENVSTORE_BYTES];
-        let total = format_envs(&envs, &mut buffer).expect("serialize");
+        let total = format_envs(&envs, &policy_table(), &mut buffer).expect("serialize");
         let text = core::str::from_utf8(&buffer[..total]).unwrap();
         let mut rehydrated = [EnvSlot::empty(); MAX_ENVS];
-        let (count, corrupt) = parse_envs(text, &mut rehydrated);
+        let (count, corrupt) = parse_envs(text, &mut rehydrated, &mut policy_table());
         assert_eq!((count, corrupt), (0, 0));
     }
 
@@ -850,12 +923,12 @@ mod tests {
         let mut envs = [EnvSlot::empty(); MAX_ENVS];
         envs[1] = instantiate_env(sample_profile());
         let mut buffer = [0u8; MAX_ENVSTORE_BYTES];
-        let total = format_envs(&envs, &mut buffer).expect("serialize");
+        let total = format_envs(&envs, &policy_table(), &mut buffer).expect("serialize");
         let mut text = core::str::from_utf8(&buffer[..total]).unwrap().to_string();
         text.push_str("this is not a store line\n");
         text.push_str("mount zz\n");
         let mut rehydrated = [EnvSlot::empty(); MAX_ENVS];
-        let (count, corrupt) = parse_envs(&text, &mut rehydrated);
+        let (count, corrupt) = parse_envs(&text, &mut rehydrated, &mut policy_table());
         assert_eq!((count, corrupt), (1, 2));
         assert_eq!(rehydrated[1].mount_count, envs[1].mount_count);
     }
@@ -863,8 +936,11 @@ mod tests {
     #[test]
     fn missing_magic_header_rehydrates_nothing() {
         let mut rehydrated = [EnvSlot::empty(); MAX_ENVS];
-        let (count, corrupt) =
-            parse_envs("env 0 1 1 00000000 00000000 0 0 0 1 2\n", &mut rehydrated);
+        let (count, corrupt) = parse_envs(
+            "env 0 1 1 00000000 00000000 0 0 0 1 2\n",
+            &mut rehydrated,
+            &mut policy_table(),
+        );
         assert_eq!((count, corrupt), (0, 1));
         assert!(!rehydrated[0].occupied);
     }
@@ -873,7 +949,7 @@ mod tests {
     fn foreign_version_manifest_line_is_corrupt() {
         let text = "runtime-envs1\nenv 0 1 1 00000000 00000000 0 0 0 1 2\nmanifest 99 f -\n";
         let mut rehydrated = [EnvSlot::empty(); MAX_ENVS];
-        let (count, corrupt) = parse_envs(text, &mut rehydrated);
+        let (count, corrupt) = parse_envs(text, &mut rehydrated, &mut policy_table());
         assert_eq!((count, corrupt), (1, 1));
         assert!(rehydrated[0].manifest.is_none());
     }
@@ -882,7 +958,7 @@ mod tests {
     fn duplicate_env_header_is_corrupt() {
         let text = "runtime-envs1\nenv 0 1 1 00000000 00000000 0 0 0 1 2\nenv 0 1 1 00000000 00000000 0 0 0 1 2\n";
         let mut rehydrated = [EnvSlot::empty(); MAX_ENVS];
-        let (count, corrupt) = parse_envs(text, &mut rehydrated);
+        let (count, corrupt) = parse_envs(text, &mut rehydrated, &mut policy_table());
         assert_eq!((count, corrupt), (1, 1));
     }
 
@@ -890,7 +966,7 @@ mod tests {
     fn detail_lines_without_header_are_corrupt() {
         let text = "runtime-envs1\nmount 2f6461746120 2f6461746120\n";
         let mut rehydrated = [EnvSlot::empty(); MAX_ENVS];
-        let (count, corrupt) = parse_envs(text, &mut rehydrated);
+        let (count, corrupt) = parse_envs(text, &mut rehydrated, &mut policy_table());
         assert_eq!((count, corrupt), (0, 1));
     }
 
@@ -901,7 +977,7 @@ mod tests {
             "runtime-envs1\nenv 0 1 1 00000000 00000000 0 0 0 1 2\nmount {long_guest} 2f64617461\n"
         );
         let mut rehydrated = [EnvSlot::empty(); MAX_ENVS];
-        let (count, corrupt) = parse_envs(&text, &mut rehydrated);
+        let (count, corrupt) = parse_envs(&text, &mut rehydrated, &mut policy_table());
         assert_eq!((count, corrupt), (1, 1));
         assert_eq!(rehydrated[0].mount_count, 0);
     }
@@ -913,15 +989,17 @@ mod tests {
         // persist; the rehydrated record carries the granted subset and the
         // Ready state, and the id (slot index) is unchanged.
         let mut envs = [EnvSlot::empty(); MAX_ENVS];
-        let (env_id, pending) = allocate_env(
+        let (env_id, pending, enforced) = allocate_env(
             &mut envs,
             rt::RuntimeKind::Posix as u32 as u64,
             sample_profile(),
+            &policy_table(),
         )
         .ok()
         .unwrap();
         assert_eq!(env_id, 0);
         assert!(pending != 0);
+        assert_eq!(enforced, None);
         let (state, granted) = apply_decision(
             envs[0].capabilities,
             envs[0].granted_caps,
@@ -933,10 +1011,10 @@ mod tests {
         envs[env_id as usize].sandbox.apply_granted_mask(granted);
 
         let mut buffer = [0u8; MAX_ENVSTORE_BYTES];
-        let total = format_envs(&envs, &mut buffer).expect("serialize");
+        let total = format_envs(&envs, &policy_table(), &mut buffer).expect("serialize");
         let text = core::str::from_utf8(&buffer[..total]).unwrap();
         let mut rehydrated = [EnvSlot::empty(); MAX_ENVS];
-        let (count, corrupt) = parse_envs(text, &mut rehydrated);
+        let (count, corrupt) = parse_envs(text, &mut rehydrated, &mut policy_table());
         assert_eq!((count, corrupt), (1, 0));
         assert!(matches!(rehydrated[0].state, RuntimeEnvState::Ready));
         assert_eq!(rehydrated[0].granted_caps, granted);
@@ -945,5 +1023,79 @@ mod tests {
                 .sandbox
                 .class_granted(crate::sandbox::DeviceClass::Network)
         );
+    }
+
+    fn policy_table() -> crate::policy::PolicyTable {
+        crate::policy::PolicyTable::new()
+    }
+
+    #[test]
+    fn codec_roundtrip_policy_section() {
+        use crate::policy::EnvPolicyDefault;
+
+        let mut policy = PolicyTable::new();
+        policy.set(rt::RuntimeKind::Posix, EnvPolicyDefault::AllowAll);
+        policy.set(rt::RuntimeKind::Windows, EnvPolicyDefault::DenyAll);
+
+        let envs = [EnvSlot::empty(); MAX_ENVS];
+        let mut buffer = [0u8; MAX_ENVSTORE_BYTES];
+        let total = format_envs(&envs, &policy, &mut buffer).expect("serialize");
+        let text = core::str::from_utf8(&buffer[..total]).unwrap();
+        assert!(text.contains("policy 1 1\n"));
+        assert!(text.contains("policy 2 2\n"));
+
+        let mut rehydrated_policy = PolicyTable::new();
+        let mut rehydrated = [EnvSlot::empty(); MAX_ENVS];
+        let (count, corrupt) = parse_envs(text, &mut rehydrated, &mut rehydrated_policy);
+        assert_eq!((count, corrupt), (0, 0));
+        assert_eq!(rehydrated_policy, policy);
+    }
+
+    #[test]
+    fn default_policy_serializes_byte_identically_to_pre_policy_grammar() {
+        // All-Ask is the additive baseline: no policy lines, empty store
+        // text stays exactly what the pre-policy build produced.
+        let envs = [EnvSlot::empty(); MAX_ENVS];
+        let mut buffer = [0u8; MAX_ENVSTORE_BYTES];
+        let total = format_envs(&envs, &PolicyTable::new(), &mut buffer).expect("serialize");
+        let text = core::str::from_utf8(&buffer[..total]).unwrap();
+        assert_eq!(text, "runtime-envs1\n");
+        assert!(!text.contains("policy "));
+    }
+
+    #[test]
+    fn policy_lines_parse_before_any_env_header() {
+        use crate::policy::EnvPolicyDefault;
+
+        let text = "runtime-envs1\npolicy 1 1\nenv 0 1 1 00000000 00000000 0 0 0 1 2\nmount 2f64617461 2f64617461\n";
+        let mut rehydrated = [EnvSlot::empty(); MAX_ENVS];
+        let mut policy = PolicyTable::new();
+        let (count, corrupt) = parse_envs(text, &mut rehydrated, &mut policy);
+        assert_eq!((count, corrupt), (1, 0));
+        assert!(matches!(
+            policy.default_for(rt::RuntimeKind::Posix),
+            EnvPolicyDefault::AllowAll
+        ));
+        // Detail lines still attach to the env header that follows them.
+        assert_eq!(rehydrated[0].mount_count, 1);
+    }
+
+    #[test]
+    fn malformed_policy_lines_are_corrupt() {
+        for line in [
+            "policy 1\n",
+            "policy 1 2 3\n",
+            "policy 3 1\n",
+            "policy 1 7\n",
+            "policy x 1\n",
+            "policy 1 x\n",
+            "policy 1 1\npolicy 1 1\n",
+        ] {
+            let text = format!("runtime-envs1\n{line}");
+            let mut rehydrated = [EnvSlot::empty(); MAX_ENVS];
+            let mut policy = PolicyTable::new();
+            let (count, corrupt) = parse_envs(&text, &mut rehydrated, &mut policy);
+            assert_eq!((count, corrupt), (0, 1), "line {line} must be corrupt");
+        }
     }
 }

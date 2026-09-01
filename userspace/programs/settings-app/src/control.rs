@@ -6,7 +6,10 @@ use serviceos_userspace_runtime as rt;
 
 use crate::netdiag;
 use crate::render::render;
-use crate::security::{first_actionable_runtime, security_policy_count, update_policy};
+use crate::security::{
+    POLICY_KINDS, first_actionable_runtime, next_policy_default, policy_get, policy_set,
+    prev_policy_default, security_policy_count, update_policy,
+};
 use crate::state::*;
 use crate::wifi;
 
@@ -254,7 +257,53 @@ fn handle_pointer_down(
         }
         return Ok(true);
     }
+    if let Some(step) = env_policy_step(x, y) {
+        let kind = POLICY_KINDS[step.row];
+        // The selector cycles from the service's current default so the
+        // button always means "one step" from what the page shows, and a
+        // failed read never writes a blind value.
+        if let Ok(current) = policy_get(runtime_handle, kind) {
+            let next = match step.direction {
+                PolicyStepDirection::Next => next_policy_default(current),
+                PolicyStepDirection::Prev => prev_policy_default(current),
+            };
+            let _ = policy_set(runtime_handle, kind, next);
+        }
+        return Ok(true);
+    }
     Ok(true)
+}
+
+/// Pointer direction + row for the per-kind policy selector buttons.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PolicyStepDirection {
+    Prev,
+    Next,
+}
+
+struct PolicyStep {
+    row: usize,
+    direction: PolicyStepDirection,
+}
+
+/// Hitbox decode for the ENV POLICY rows: `<`/`>` buttons per kind row.
+/// Pure so host tests cover the geometry without handles.
+fn env_policy_step(x: i32, y: i32) -> Option<PolicyStep> {
+    let rows = [(SEC_POLICY_ROW0_Y0, 0), (SEC_POLICY_ROW1_Y0, 1)];
+    for (y0, row) in rows {
+        if y < y0 || y >= y0 + SEC_POLICY_ROW_H {
+            continue;
+        }
+        let direction = if x >= SEC_POLICY_PREV_X0 && x < SEC_POLICY_PREV_X1 {
+            PolicyStepDirection::Prev
+        } else if x >= SEC_POLICY_NEXT_X0 && x < SEC_POLICY_NEXT_X1 {
+            PolicyStepDirection::Next
+        } else {
+            continue;
+        };
+        return Some(PolicyStep { row, direction });
+    }
+    None
 }
 
 /// Feed one text event into the active editor (note field on System,

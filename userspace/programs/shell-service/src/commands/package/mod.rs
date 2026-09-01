@@ -6,6 +6,7 @@ pub(in crate::commands) mod progress;
 pub(in crate::commands) mod query;
 mod repos;
 mod rollout;
+mod trust;
 
 use serviceos_userspace_runtime as rt;
 
@@ -99,6 +100,7 @@ where
         },
         Some("keys") => keys::cmd_pkg_keys(bootstrap, output, parts),
         Some("rollout") => rollout::cmd_pkg_rollout(bootstrap, output, parts),
+        Some("trust") => trust::cmd_pkg_trust(bootstrap, output, parts),
         Some("verify") => {
             mutate::cmd_pkg_maintenance(bootstrap, output, rt::PackageMaintenanceAction::Validate)
         }
@@ -115,7 +117,7 @@ where
         _ => write_output_linef(
             output,
             format_args!(
-                "usage: pkg <list|catalog|repos|repo|info|install|update|remove|rollback|history|provenance|policy|keys|rollout|pin|channel|ring|verify|repair|recover|gc|sideload> ..."
+                "usage: pkg <list|catalog|repos|repo|info|install|update|remove|rollback|history|provenance|policy|keys|rollout|trust|pin|channel|ring|verify|repair|recover|gc|sideload> ..."
             ),
         ),
     }

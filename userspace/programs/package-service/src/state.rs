@@ -159,6 +159,12 @@ pub(crate) static mut REJECT_JOURNAL: crate::signing::RejectJournal =
     crate::signing::RejectJournal::empty();
 pub(crate) static mut ROLLOUT_POLICY: crate::rollout::RolloutPolicy =
     crate::rollout::RolloutPolicy::empty();
+pub(crate) static mut TRUST_ROOTS: crate::signing::TrustRoots = crate::signing::TrustRoots::empty();
+
+/// Operator-managed trust-root list (service-local v0; no crypto chaining).
+pub(crate) fn trust_roots() -> &'static crate::signing::TrustRoots {
+    unsafe { &*core::ptr::addr_of!(TRUST_ROOTS) }
+}
 
 /// Keys pinned for a feed source, if any.
 pub(crate) fn feed_keys_for(source: &str) -> Option<&'static crate::signing::SourceKeys> {

@@ -137,6 +137,14 @@ pub(crate) fn handle_request(
         x if x == PackageTag::RolloutStatusRequest as u32 => {
             handle_rollout_status_request(repos, *repo_count, packages, *package_count, message)
         }
+        x if x == PackageTag::RootListRequest as u32 => handle_root_list_request(message),
+        x if x == PackageTag::RootGetRequest as u32 => handle_root_get_request(message),
+        x if x == PackageTag::RootAddRequest as u32 => {
+            handle_root_add_request(storage_handle, message)
+        }
+        x if x == PackageTag::RootRemoveRequest as u32 => {
+            handle_root_remove_request(storage_handle, message)
+        }
         _ => Ok(()),
     }
 }
@@ -921,6 +929,28 @@ fn handle_keys_list_request(message: &RawMessage) -> rt::Result<()> {
         cursor += chunk.len();
     }
     reply.word_count += pack_bytes(&combined[..total], &mut reply.words[8..])?;
+    // Additive provenance tail: trust-root standing word (low byte =
+    // PackageKeyStanding, next byte = via/own root slot+1, 0 = none) plus
+    // the key fingerprint so shells can map provenance replies onto
+    // keystore rows. Pre-root readers consume only the packed bytes above
+    // and ignore trailing words.
+    let tail_base = reply.word_count as usize;
+    if tail_base + 2 <= IPC_MAX_WORDS {
+        let roots = trust_roots();
+        let standing = roots.standing_of(key);
+        let root_slot = match standing {
+            crate::signing::STANDING_ROOT => roots.find(key.key_id.as_str()),
+            _ => roots.via_slot_of(key),
+        };
+        let fingerprint = if key.alg == crate::signing::KeyAlg::Ed25519 {
+            crate::signing::ed25519_key_fingerprint_hex(key.key_hex.as_str()).unwrap_or(0)
+        } else {
+            0
+        };
+        reply.words[tail_base] = standing | (root_slot.map_or(0, |slot| slot as u64 + 1) << 8);
+        reply.words[tail_base + 1] = fingerprint;
+        reply.word_count += 2;
+    }
     keys_send_reply(reply_handle, &reply);
     Ok(())
 }
@@ -1007,14 +1037,26 @@ fn handle_keys_enroll_request(storage_handle: rt::Handle, message: &RawMessage) 
             Err(_) => Err(crate::signing::KeystoreError::InvalidKeyId),
             Ok(id_text) => unsafe {
                 let keystore = &mut *core::ptr::addr_of_mut!(FEED_KEYSTORE);
+                // Trust-root bookkeeping: when a root regime exists, the new
+                // key records an attestation (enrolled-at tick + the primary
+                // root that was authoritative). No roots -> unattested.
+                let roots = trust_roots();
+                let attested_tick = if roots.count > 0 {
+                    rt::monotonic_now().unwrap_or(0)
+                } else {
+                    0
+                };
+                let via = roots.primary_key_id();
                 match keystore.ensure_source(source) {
                     Err(error) => Err(error),
-                    Ok(entry) => entry.enroll_ed25519(id_text, key_hex).map(|_| {
-                        (
-                            PackageStatus::Ok as u32 as u64,
-                            keys_state_word_of(keystore, source, id_text),
-                        )
-                    }),
+                    Ok(entry) => entry
+                        .enroll_ed25519_attested(id_text, key_hex, attested_tick, via)
+                        .map(|_| {
+                            (
+                                PackageStatus::Ok as u32 as u64,
+                                keys_state_word_of(keystore, source, id_text),
+                            )
+                        }),
                 }
             },
         };
@@ -1225,9 +1267,20 @@ fn handle_keys_gen_request(storage_handle: rt::Handle, message: &RawMessage) -> 
 
     unsafe {
         let keystore = &mut *core::ptr::addr_of_mut!(FEED_KEYSTORE);
+        // Same trust-root bookkeeping as KeysEnroll: attested when a root
+        // regime exists, with the primary root as the via reference.
+        let roots = trust_roots();
+        let attested_tick = if roots.count > 0 {
+            rt::monotonic_now().unwrap_or(0)
+        } else {
+            0
+        };
+        let via = roots.primary_key_id();
         let outcome = match keystore.ensure_source(source) {
             Err(error) => Err(error),
-            Ok(entry) => entry.enroll_ed25519(id_text, pub_text).map(|_| ()),
+            Ok(entry) => entry
+                .enroll_ed25519_attested(id_text, pub_text, attested_tick, via)
+                .map(|_| ()),
         };
         match outcome {
             Err(error) => reply.words[0] = keystore_error_word(error),
@@ -1636,4 +1689,206 @@ fn blocked_reason(
         return crate::rollout::RolloutReason::NoUpdate;
     }
     update_gate_reason(repos, slot, target, false)
+}
+
+/// Trust-root block (PackageTag 0x732..0x739). The ROOT list is the
+/// operator-managed trust anchor set: an enrolled key on the list stands as
+/// ROOT, a key enrolled while a regime existed stands as DIRECT (attestation
+/// recorded in the keystore), and pre-root records stand as UNATTESTED.
+/// Pure bookkeeping above the keystore — sync/replay enforcement is
+/// untouched.
+
+fn trust_root_error_word(error: crate::signing::TrustRootError) -> u64 {
+    use crate::signing::TrustRootError as E;
+    let status = match error {
+        E::Full => PackageStatus::Busy,
+        E::Duplicate => PackageStatus::AlreadyExists,
+        E::UnknownKey => PackageStatus::NotFound,
+        E::InvalidId => PackageStatus::InvalidParameter,
+    };
+    status as u32 as u64
+}
+
+/// One root-list row: [status][index][id_len][label_len][enrolled_tick]
+/// [derived_count][reserved][reserved] + packed(id, label). id+label fit
+/// within the 16-word budget, so rows iterate by flat index like the
+/// keystore list (no page protocol needed).
+fn fill_root_row(reply: &mut RawMessage, index: usize) {
+    let roots = trust_roots();
+    let root = &roots.roots[index];
+    let id_bytes = root.key_id.as_str().as_bytes();
+    let label_bytes = root.label.as_str().as_bytes();
+    let keystore = unsafe { &*core::ptr::addr_of!(FEED_KEYSTORE) };
+    reply.words[0] = PackageStatus::Ok as u32 as u64;
+    reply.words[1] = index as u64;
+    reply.words[2] = id_bytes.len() as u64;
+    reply.words[3] = label_bytes.len() as u64;
+    reply.words[4] = root.enrolled_tick;
+    reply.words[5] = roots.derived_count(keystore, root.key_id.as_str()) as u64;
+    reply.words[6] = 0;
+    reply.words[7] = 0;
+    reply.word_count = 8;
+    let mut combined = [0u8; crate::signing::KEY_ID_MAX + crate::signing::ROOT_LABEL_MAX];
+    let mut cursor = 0usize;
+    for field in [id_bytes, label_bytes] {
+        let _ = copy_into(&mut combined[cursor..], field);
+        cursor += field.len();
+    }
+    if let Ok(packed) = pack_bytes(&combined[..cursor], &mut reply.words[8..]) {
+        reply.word_count += packed;
+    }
+}
+
+/// RootListRequest: words[0] = flat index over the root list.
+fn handle_root_list_request(message: &RawMessage) -> rt::Result<()> {
+    if message.word_count < 1 || message.handle_count < 1 {
+        return Ok(());
+    }
+    let reply_handle = message.handles[0];
+    let target_index = message.words[0] as usize;
+    let roots = trust_roots();
+
+    let mut reply = RawMessage::empty(PackageTag::RootListReply as u32);
+    if target_index < roots.count {
+        fill_root_row(&mut reply, target_index);
+    } else {
+        reply.word_count = 1;
+        reply.words[0] = PackageStatus::End as u32 as u64;
+    }
+    keys_send_reply(reply_handle, &reply);
+    Ok(())
+}
+
+/// RootGetRequest: [id_len] + packed(id). Same row shape as the list
+/// reply; NotFound when the id is not a root.
+fn handle_root_get_request(message: &RawMessage) -> rt::Result<()> {
+    if message.word_count < 1 || message.handle_count < 1 {
+        return Ok(());
+    }
+    let reply_handle = message.handles[0];
+    let mut field_bytes = [0u8; crate::signing::SOURCE_NAME_MAX];
+    let Some(key_id) = keys_read_one_field(
+        &message.words[1..message.word_count as usize],
+        &mut field_bytes,
+    ) else {
+        keys_reject(
+            reply_handle,
+            PackageTag::RootGetReply,
+            PackageStatus::InvalidParameter,
+        );
+        return Ok(());
+    };
+    let roots = trust_roots();
+
+    let mut reply = RawMessage::empty(PackageTag::RootGetReply as u32);
+    match roots.find(key_id) {
+        Some(index) => fill_root_row(&mut reply, index),
+        None => {
+            reply.word_count = 1;
+            reply.words[0] = PackageStatus::NotFound as u32 as u64;
+        }
+    }
+    keys_send_reply(reply_handle, &reply);
+    Ok(())
+}
+
+/// RootAddRequest: words[0]=now_tick, [id_len][label_len] + packed(id,
+/// label). The key must already be enrolled in the keystore. Reply:
+/// [status][index]. Persists the root list.
+fn handle_root_add_request(storage_handle: rt::Handle, message: &RawMessage) -> rt::Result<()> {
+    const HEADER_WORDS: u32 = 3; // now tick + two length words
+    if message.word_count < HEADER_WORDS || message.handle_count < 1 {
+        return Ok(());
+    }
+    let reply_handle = message.handles[0];
+    let now = message.words[0];
+    let fields_words = &message.words[HEADER_WORDS as usize - 2..message.word_count as usize];
+    // keys_read_two_fields requires the keystore-field scratch capacity.
+    let mut field_bytes = [0u8; crate::signing::SOURCE_NAME_MAX + crate::signing::KEY_HEX_MAX];
+    let Some((key_id, label)) = keys_read_two_fields(fields_words, &mut field_bytes) else {
+        keys_reject(
+            reply_handle,
+            PackageTag::RootAddReply,
+            PackageStatus::InvalidParameter,
+        );
+        return Ok(());
+    };
+
+    let mut reply = RawMessage::empty(PackageTag::RootAddReply as u32);
+    reply.word_count = 2;
+    let mut persist_needed = false;
+
+    // The label is operator-supplied; empty decodes to "-" on the wire.
+    let label_text = if label.is_empty() { "root" } else { label };
+    unsafe {
+        let keystore = &*core::ptr::addr_of!(FEED_KEYSTORE);
+        let known = keystore.sources[..keystore.source_count]
+            .iter()
+            .flat_map(|entry| &entry.keys[..entry.key_count])
+            .any(|key| key.key_id.as_str() == key_id);
+        let outcome = if known {
+            let roots = &mut *core::ptr::addr_of_mut!(TRUST_ROOTS);
+            roots.add(key_id, label_text, now).map(|_| roots.count - 1)
+        } else {
+            Err(crate::signing::TrustRootError::UnknownKey)
+        };
+        match outcome {
+            Err(error) => reply.words[0] = trust_root_error_word(error),
+            Ok(index) => {
+                reply.words[0] = PackageStatus::Ok as u32 as u64;
+                reply.words[1] = index as u64;
+                persist_needed = true;
+            }
+        }
+    }
+    if persist_needed && crate::storage::persist_trust_roots(storage_handle).is_err() {
+        reply.words[0] = PackageStatus::VerificationFailed as u32 as u64;
+        reply.words[1] = 0;
+    }
+    keys_send_reply(reply_handle, &reply);
+    Ok(())
+}
+
+/// RootRemoveRequest: [id_len] + packed(id). Reply: [status][former_index].
+/// Persists the root list; keystore records are untouched (standing is
+/// derived, and a DIRECT key whose via root is gone simply loses the
+/// resolvable reference).
+fn handle_root_remove_request(storage_handle: rt::Handle, message: &RawMessage) -> rt::Result<()> {
+    if message.word_count < 1 || message.handle_count < 1 {
+        return Ok(());
+    }
+    let reply_handle = message.handles[0];
+    let mut field_bytes = [0u8; crate::signing::SOURCE_NAME_MAX];
+    let Some(key_id) = keys_read_one_field(
+        &message.words[0..message.word_count as usize],
+        &mut field_bytes,
+    ) else {
+        keys_reject(
+            reply_handle,
+            PackageTag::RootRemoveReply,
+            PackageStatus::InvalidParameter,
+        );
+        return Ok(());
+    };
+
+    let mut reply = RawMessage::empty(PackageTag::RootRemoveReply as u32);
+    reply.word_count = 2;
+    let mut persist_needed = false;
+    unsafe {
+        let roots = &mut *core::ptr::addr_of_mut!(TRUST_ROOTS);
+        match roots.remove(key_id) {
+            Some(index) => {
+                reply.words[0] = PackageStatus::Ok as u32 as u64;
+                reply.words[1] = index as u64;
+                persist_needed = true;
+            }
+            None => reply.words[0] = PackageStatus::NotFound as u32 as u64,
+        }
+    }
+    if persist_needed && crate::storage::persist_trust_roots(storage_handle).is_err() {
+        reply.words[0] = PackageStatus::VerificationFailed as u32 as u64;
+        reply.words[1] = 0;
+    }
+    keys_send_reply(reply_handle, &reply);
+    Ok(())
 }

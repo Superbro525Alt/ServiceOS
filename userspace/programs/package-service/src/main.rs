@@ -75,6 +75,7 @@ fn main() -> u64 {
     let mut repo_count = 1usize;
     let _ = storage::load_persisted_repositories(storage_handle, repos, &mut repo_count);
     let _ = storage::load_feed_keystore(storage_handle);
+    let _ = storage::load_trust_roots(storage_handle);
     let _ = storage::load_reject_journal(storage_handle);
     let _ = storage::load_rollout_policy(storage_handle);
     for repo_index in 1..repo_count {

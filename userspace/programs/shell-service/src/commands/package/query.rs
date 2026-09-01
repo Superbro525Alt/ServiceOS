@@ -243,15 +243,27 @@ pub(super) fn cmd_pkg_info(
 
     if let Ok(provenance) = provenance {
         let source_text = core::str::from_utf8(&source[..provenance.source_len]).unwrap_or("?");
+        let key_standing = if provenance.trust_state == rt::PackageTrustState::SignedKeyTrusted {
+            super::keys::standing_word_for_fingerprint(bootstrap, provenance.signed_key_fingerprint)
+                .map(super::keys::standing_name)
+        } else {
+            None
+        };
+        let (standing_prefix, standing_name) = match key_standing {
+            Some(name) => (" key-standing=", name),
+            None => ("", ""),
+        };
         write_output_linef(
             output,
             format_args!(
-                "  trust={} signing={} channel={} ring={} source={}",
+                "  trust={} signing={} channel={} ring={} source={}{}{}",
                 trust_state_name(provenance.trust_state),
                 signing_state_name(provenance.trust_state),
                 channel_name(provenance.channel),
                 ring_name(provenance.ring),
                 source_text,
+                standing_prefix,
+                standing_name,
             ),
         )?;
         write_output_linef(
@@ -399,10 +411,26 @@ pub(super) fn cmd_pkg_provenance(
     )?;
     let _ = rt::handle_close(package_handle);
 
+    // Trust-root standing of the bound signing key (additive display; needs
+    // the KeysList provenance tail, absent on pre-root services).
+    let standing_suffix = if info.trust_state == rt::PackageTrustState::SignedKeyTrusted {
+        match super::keys::standing_word_for_fingerprint(bootstrap, info.signed_key_fingerprint) {
+            Some(word) => match word {
+                super::keys::STANDING_ROOT => " key-standing=root",
+                super::keys::STANDING_DIRECT => " key-standing=direct",
+                super::keys::STANDING_UNATTESTED => " key-standing=unattested",
+                _ => "",
+            },
+            None => "",
+        }
+    } else {
+        ""
+    };
+
     write_output_linef(
         output,
         format_args!(
-            "{} repo={} trust={} channel={} ring={} installed={} active={} rollback={} latest={} source={}",
+            "{} repo={} trust={} channel={} ring={} installed={} active={} rollback={} latest={} source={}{standing}",
             service_name(service_id),
             info.repo_index,
             trust_state_name(info.trust_state),
@@ -426,6 +454,7 @@ pub(super) fn cmd_pkg_provenance(
             ),
             core::str::from_utf8(&source[..info.source_len])
                 .map_err(|_| rt::Error::InvalidArgument)?,
+            standing = standing_suffix,
         ),
     )
 }

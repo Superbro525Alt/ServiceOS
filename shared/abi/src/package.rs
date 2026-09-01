@@ -56,6 +56,17 @@ pub enum PackageTag {
     RolloutSetReply = 0x72f,
     RolloutStatusRequest = 0x730,
     RolloutStatusReply = 0x731,
+    /// Trust-root enrollment layer (additive, shell-driven): the
+    /// operator-managed ROOT list from which enrolled feed-signing keys
+    /// derive their standing. List/get one root row, add/remove roots.
+    RootListRequest = 0x732,
+    RootListReply = 0x733,
+    RootGetRequest = 0x734,
+    RootGetReply = 0x735,
+    RootAddRequest = 0x736,
+    RootAddReply = 0x737,
+    RootRemoveRequest = 0x738,
+    RootRemoveReply = 0x739,
 }
 
 #[repr(u32)]
@@ -87,6 +98,23 @@ pub enum PackageTrustState {
     Unverified = 3,
     VerificationFailed = 4,
     SignedKeyTrusted = 5,
+}
+
+/// Provenance standing of an enrolled feed-signing key relative to the
+/// operator-managed trust-root list. v0 is a management/bookkeeping layer:
+/// no cryptographic chaining yet (an open next step roots would sign key
+/// attestations).
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PackageKeyStanding {
+    /// Legacy record enrolled before trust roots existed (or with no root
+    /// regime configured); grandfathered, displayed honestly as such.
+    Unattested = 0,
+    /// Directly trusted by operator enrollment: the key id is on the ROOT list.
+    Root = 1,
+    /// Enrolled while a root regime existed; the keystore record carries the
+    /// attestation (enrolled-at tick + the root that was authoritative).
+    Direct = 2,
 }
 
 #[repr(u32)]
@@ -129,4 +157,24 @@ pub enum PackageMaintenanceAction {
     Validate = 1,
     Repair = 2,
     GarbageCollect = 3,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PackageTag as T;
+
+    /// Wire contract: the trust-root block must stay pinned at the END of the
+    /// package tag space; renumbering any package tag breaks the protocol.
+    #[test]
+    fn package_trust_root_tag_wire_values() {
+        assert_eq!(T::RolloutStatusReply as u32, 0x731);
+        assert_eq!(T::RootListRequest as u32, 0x732);
+        assert_eq!(T::RootListReply as u32, 0x733);
+        assert_eq!(T::RootGetRequest as u32, 0x734);
+        assert_eq!(T::RootGetReply as u32, 0x735);
+        assert_eq!(T::RootAddRequest as u32, 0x736);
+        assert_eq!(T::RootAddReply as u32, 0x737);
+        assert_eq!(T::RootRemoveRequest as u32, 0x738);
+        assert_eq!(T::RootRemoveReply as u32, 0x739);
+    }
 }

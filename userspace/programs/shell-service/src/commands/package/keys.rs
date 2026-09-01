@@ -15,6 +15,12 @@ const ALG_WORD_ED25519: u64 = 2;
 const STATE_WORD_ACTIVE: u64 = 1;
 const STATE_WORD_RETIRED: u64 = 2;
 
+/// Trust-root standing words (PackageKeyStanding in the ABI); mirrors the
+/// service's signing.rs constants.
+pub(in crate::commands) const STANDING_UNATTESTED: u64 = 0;
+pub(in crate::commands) const STANDING_ROOT: u64 = 1;
+pub(in crate::commands) const STANDING_DIRECT: u64 = 2;
+
 fn alg_name(word: u64) -> &'static str {
     match word {
         ALG_WORD_FNV => "fnv",
@@ -272,10 +278,23 @@ fn cmd_keys_list(bootstrap: rt::Handle, output: ShellOutput) -> rt::Result<()> {
         let mut names = [0u8; SOURCE_NAME_MAX + KEY_ID_MAX];
         let (source_text, id_text) =
             reply_two_strings(&reply.words, reply.word_count, 5, 8, &mut names)?;
+        // Additive provenance tail (trust-root standing + fingerprint) may
+        // ride after the packed bytes; pre-tail services omit it.
+        let packed_words = (reply.words[5] as usize + reply.words[6] as usize).div_ceil(8);
+        let standing_text = if reply.word_count as usize > 8 + packed_words {
+            match reply.words[8 + packed_words] & 0xff {
+                STANDING_ROOT => " standing=root",
+                STANDING_DIRECT => " standing=direct",
+                STANDING_UNATTESTED => " standing=unattested",
+                _ => "",
+            }
+        } else {
+            ""
+        };
         write_output_linef(
             output,
             format_args!(
-                "#{index} src={source} id={id} alg={alg_name} state={state_name} active={active} retired-tick={tick}",
+                "#{index} src={source} id={id} alg={alg_name} state={state_name} active={active} retired-tick={tick}{standing}",
                 source = source_text,
                 id = id_text,
                 alg_name = alg_name(alg),
@@ -286,6 +305,7 @@ fn cmd_keys_list(bootstrap: rt::Handle, output: ShellOutput) -> rt::Result<()> {
                     "no"
                 },
                 tick = retired_tick,
+                standing = standing_text,
             ),
         )?;
         index += 1;
@@ -311,6 +331,51 @@ fn status_of(reply: &rt::RawMessage) -> StatusWord {
         StatusWord::End
     } else {
         StatusWord::Fail(package_status_name(status))
+    }
+}
+
+pub(in crate::commands) fn standing_name(word: u64) -> &'static str {
+    match word {
+        STANDING_ROOT => "root",
+        STANDING_DIRECT => "direct",
+        STANDING_UNATTESTED => "unattested",
+        _ => "unknown",
+    }
+}
+
+/// Trust-root standing of the keystore key carrying `fingerprint`, via the
+/// KeysList provenance tail. None when the tail is absent (pre-root
+/// service), the fingerprint is unbound, or the key is not Ed25519.
+pub(in crate::commands) fn standing_word_for_fingerprint(
+    bootstrap: rt::Handle,
+    fingerprint: u64,
+) -> Option<u64> {
+    if fingerprint == 0 {
+        return None;
+    }
+    let keys = KeysHandle::open(bootstrap).ok()?;
+    let mut index = 0u64;
+    loop {
+        let reply = keys
+            .call(rt::PackageTag::KeysListRequest, |request| {
+                request.word_count = 1;
+                request.words[0] = index;
+            })
+            .ok()?;
+        if reply.word_count < 8 {
+            return None;
+        }
+        match status_of(&reply) {
+            StatusWord::End => return None,
+            StatusWord::Ok => {}
+            StatusWord::Fail(_) => return None,
+        }
+        let packed_words = (reply.words[5] as usize + reply.words[6] as usize).div_ceil(8);
+        let tail_base = 8 + packed_words;
+        if reply.word_count as usize > tail_base + 1 && reply.words[tail_base + 1] == fingerprint {
+            return Some(reply.words[tail_base] & 0xff);
+        }
+        index += 1;
     }
 }
 
@@ -691,5 +756,40 @@ mod tests {
             reply_two_strings(&message.words, message.word_count, 1, 1 + 2, &mut buffer).unwrap();
         assert_eq!(left, "src");
         assert_eq!(right, "ident");
+    }
+
+    #[test]
+    fn standing_names_cover_wire_words() {
+        assert_eq!(standing_name(STANDING_ROOT), "root");
+        assert_eq!(standing_name(STANDING_DIRECT), "direct");
+        assert_eq!(standing_name(STANDING_UNATTESTED), "unattested");
+        assert_eq!(standing_name(9), "unknown");
+    }
+
+    #[test]
+    fn standing_tail_detected_only_beyond_packed_bytes() {
+        // Mirror the KeysList row: lens at words[5]/[6], packed bytes from
+        // words[8]; the tail rides beyond the packed span.
+        let mut reply = rt::RawMessage::empty(0x721);
+        reply.words[0] = 0;
+        reply.words[5] = 2;
+        reply.words[6] = 7;
+        let packed = rt::pack_bytes(b"srcident5", &mut reply.words[8..]).unwrap();
+        assert_eq!(packed, 2);
+        reply.word_count = 8 + 2;
+        let packed_words = (reply.words[5] as usize + reply.words[6] as usize).div_ceil(8);
+        assert_eq!(packed_words, 2);
+        reply.words[8 + packed_words] = STANDING_DIRECT | (1 << 8);
+        reply.word_count += 2;
+        assert_eq!(reply.words[10] & 0xff, STANDING_DIRECT);
+
+        // Without the tail the detection must report absence.
+        let mut legacy = rt::RawMessage::empty(0x721);
+        legacy.words[5] = 4;
+        legacy.words[6] = 4;
+        let packed = rt::pack_bytes(b"src2key2", &mut legacy.words[8..]).unwrap();
+        legacy.word_count = 8 + packed as u32;
+        let packed_words = (legacy.words[5] as usize + legacy.words[6] as usize).div_ceil(8);
+        assert!(!(legacy.word_count as usize > 8 + packed_words));
     }
 }

@@ -120,6 +120,11 @@ pub struct TrustedKey {
     pub alg: KeyAlg,
     pub state: KeyState,
     pub retired_tick: u64,
+    /// Trust-root provenance: tick at which the key was enrolled under a
+    /// root regime (0 = legacy/unattested record).
+    pub attested_tick: u64,
+    /// Root key id that was authoritative at enrollment ("-"/empty = none).
+    pub via: FixedText<KEY_ID_MAX>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -152,7 +157,15 @@ impl TrustedKey {
             alg: KeyAlg::Fnv,
             state: KeyState::Retired,
             retired_tick: 0,
+            attested_tick: 0,
+            via: FixedText::empty(),
         }
+    }
+
+    /// True when the record carries trust-root provenance (was enrolled
+    /// while a root regime existed).
+    pub fn is_attested(&self) -> bool {
+        self.attested_tick != 0
     }
 }
 
@@ -273,6 +286,29 @@ impl SourceKeys {
         Ok(())
     }
 
+    /// Enroll an Ed25519 key, recording trust-root provenance when a root
+    /// regime exists (see TrustRoots). `via` is the authoritative root key
+    /// id at enrollment time; empty/absent means unattested.
+    pub fn enroll_ed25519_attested(
+        &mut self,
+        key_id: &str,
+        pubkey_hex: &str,
+        attested_tick: u64,
+        via: &str,
+    ) -> Result<(), KeystoreError> {
+        self.enroll_ed25519(key_id, pubkey_hex)?;
+        if attested_tick != 0 {
+            for key in self.keys[..self.key_count].iter_mut() {
+                if key.key_id.as_str() == key_id {
+                    key.attested_tick = attested_tick;
+                    let _ = key.via.set(via);
+                    break;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Promote an already-enrolled key to active and retire the currently
     /// active one at `now`. This is the rotation operation: callers persist
     /// the keystore afterwards, which re-signs the verification config.
@@ -380,6 +416,184 @@ impl Keystore {
         self.source_count += 1;
         Ok(&mut self.sources[self.source_count - 1])
     }
+}
+
+pub const MAX_TRUST_ROOTS: usize = 4;
+pub const ROOT_LABEL_MAX: usize = 24;
+
+/// Standing words as spoken on the wire (PackageKeyStanding in the ABI).
+pub const STANDING_UNATTESTED: u64 = 0;
+pub const STANDING_ROOT: u64 = 1;
+pub const STANDING_DIRECT: u64 = 2;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TrustRoot {
+    pub key_id: FixedText<KEY_ID_MAX>,
+    pub label: FixedText<ROOT_LABEL_MAX>,
+    pub enrolled_tick: u64,
+}
+
+impl TrustRoot {
+    pub const fn empty() -> Self {
+        Self {
+            key_id: FixedText::empty(),
+            label: FixedText::empty(),
+            enrolled_tick: 0,
+        }
+    }
+}
+
+/// Operator-managed ROOT list: the trust anchors from which enrolled
+/// feed-signing keys derive their standing. Service-local v0 — no crypto
+/// chaining yet; the root list and per-key attestations are the
+/// bookkeeping a real chain would slot into.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TrustRoots {
+    pub roots: [TrustRoot; MAX_TRUST_ROOTS],
+    pub count: usize,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub enum TrustRootError {
+    Full,
+    Duplicate,
+    UnknownKey,
+    InvalidId,
+}
+
+impl TrustRoots {
+    pub const fn empty() -> Self {
+        Self {
+            roots: [TrustRoot::empty(); MAX_TRUST_ROOTS],
+            count: 0,
+        }
+    }
+
+    pub fn find(&self, key_id: &str) -> Option<usize> {
+        self.roots[..self.count]
+            .iter()
+            .position(|root| root.key_id.as_str() == key_id)
+    }
+
+    /// Add `key_id` as a trust root. The key must already be enrolled in the
+    /// keystore (roots certify enrolled signing keys, not free-form ids).
+    pub fn add(&mut self, key_id: &str, label: &str, now: u64) -> Result<(), TrustRootError> {
+        if key_id.is_empty() || key_id.len() > KEY_ID_MAX {
+            return Err(TrustRootError::InvalidId);
+        }
+        if self.find(key_id).is_some() {
+            return Err(TrustRootError::Duplicate);
+        }
+        if self.count == MAX_TRUST_ROOTS {
+            return Err(TrustRootError::Full);
+        }
+        self.roots[self.count].key_id.set(key_id);
+        let _ = self.roots[self.count].label.set(label);
+        self.roots[self.count].enrolled_tick = now;
+        self.count += 1;
+        Ok(())
+    }
+
+    /// Remove a root; returns its former index (None = not a root).
+    pub fn remove(&mut self, key_id: &str) -> Option<usize> {
+        let index = self.find(key_id)?;
+        self.roots[index] = TrustRoot::empty();
+        self.roots[index..self.count].rotate_left(1);
+        self.count -= 1;
+        Some(index)
+    }
+
+    /// The first root is the primary anchor: it is the "via" reference
+    /// recorded on keys enrolled while the regime exists.
+    pub fn primary_key_id(&self) -> &str {
+        self.roots
+            .first()
+            .map(|root| root.key_id.as_str())
+            .unwrap_or("")
+    }
+
+    /// Standing of `key` per the v0 derivation matrix:
+    /// root-list membership -> ROOT; attested enrollment record -> DIRECT;
+    /// anything else (legacy records) -> UNATTESTED.
+    pub fn standing_of(&self, key: &TrustedKey) -> u64 {
+        if self.find(key.key_id.as_str()).is_some() {
+            STANDING_ROOT
+        } else if key.is_attested() {
+            STANDING_DIRECT
+        } else {
+            STANDING_UNATTESTED
+        }
+    }
+
+    /// Root-list slot (0-based) of the via reference recorded on `key`,
+    /// resolved against the CURRENT roots; None once that root is removed.
+    pub fn via_slot_of(&self, key: &TrustedKey) -> Option<usize> {
+        if key.via.is_empty() {
+            return None;
+        }
+        self.find(key.via.as_str())
+    }
+
+    /// Number of keystore keys whose attestation cites this root.
+    pub fn derived_count(&self, keystore: &Keystore, key_id: &str) -> usize {
+        keystore.sources[..keystore.source_count]
+            .iter()
+            .flat_map(|entry| &entry.keys[..entry.key_count])
+            .filter(|key| key.via.as_str() == key_id)
+            .count()
+    }
+}
+
+/// Trust-root list persistence: "ptr1" header, then one "root" line per
+/// root. Malformed lines are skipped so a partial write can never wedge the
+/// list; unknown ids re-validate lazily against the keystore on use.
+pub fn serialize_trust_roots(roots: &TrustRoots, append: &mut dyn core::fmt::Write) {
+    let _ = core::writeln!(append, "ptr1");
+    for root in roots.roots[..roots.count].iter() {
+        if root.key_id.is_empty() {
+            continue;
+        }
+        let label = root.label.as_str();
+        let _ = core::writeln!(
+            append,
+            "root {} {} {}",
+            root.key_id.as_str(),
+            if label.is_empty() { "-" } else { label },
+            root.enrolled_tick
+        );
+    }
+}
+
+/// Parse a serialized root list; malformed lines are skipped.
+pub fn parse_trust_roots(text: &str) -> TrustRoots {
+    let mut roots = TrustRoots::empty();
+    for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        if line == "ptr1" {
+            continue;
+        }
+        let Some(payload) = line.strip_prefix("root ") else {
+            continue;
+        };
+        let mut parts = payload.split(' ');
+        let (Some(key_id), Some(label), Some(tick)) = (
+            parts.next(),
+            parts.next(),
+            parts.next().and_then(|value| value.parse::<u64>().ok()),
+        ) else {
+            continue;
+        };
+        if key_id.len() > KEY_ID_MAX || label.len() > ROOT_LABEL_MAX {
+            continue;
+        }
+        if roots.count == MAX_TRUST_ROOTS {
+            break;
+        }
+        roots.roots[roots.count].key_id.set(key_id);
+        let _ = roots.roots[roots.count].label.set(label);
+        roots.roots[roots.count].enrolled_tick = tick;
+        roots.count += 1;
+    }
+    roots
 }
 
 /// Wire encoding for key algorithm words: 1 = keyed FNV digest, 2 =
@@ -1060,25 +1274,36 @@ pub fn serialize_keystore(keystore: &Keystore, append: &mut dyn core::fmt::Write
             if key.key_id.is_empty() {
                 continue;
             }
-            if key.alg == KeyAlg::Ed25519 {
-                let _ = core::writeln!(
-                    append,
-                    "ekey {} {} {}",
-                    key.key_id.as_str(),
-                    key.key_hex.as_str(),
-                    key_state_word(key.state, key.retired_tick)
-                );
-            } else {
-                let _ = core::writeln!(
-                    append,
-                    "key {} {} {}",
-                    key.key_id.as_str(),
-                    key.key_hex.as_str(),
-                    key_state_word(key.state, key.retired_tick)
-                );
-            }
+            // Trailing provenance fields: trust-root standing bookkeeping
+            // (attested tick + via root id, "-" = none). Older parsers stop
+            // after the state word, so extra tokens are ignored by pre-root
+            // readers (additive codec rule).
+            let via = key.via.as_str();
+            let _ = core::writeln!(
+                append,
+                "{} {} {} {} {} {}",
+                if key.alg == KeyAlg::Ed25519 {
+                    "ekey"
+                } else {
+                    "key"
+                },
+                key.key_id.as_str(),
+                key.key_hex.as_str(),
+                key_state_word(key.state, key.retired_tick),
+                key_attestation_word(key.attested_tick),
+                if via.is_empty() { "-" } else { via },
+            );
         }
     }
+}
+
+/// Provenance tail word: enrolled-at tick, or 0 for unattested records.
+fn key_attestation_word(attested_tick: u64) -> u64 {
+    attested_tick.min(u64::MAX >> 2)
+}
+
+fn key_attestation_from_word(word: u64) -> u64 {
+    word.min(u64::MAX >> 2)
 }
 
 fn key_state_word(state: KeyState, retired_tick: u64) -> u64 {
@@ -1147,6 +1372,14 @@ pub fn parse_keystore(text: &str) -> Keystore {
         ) else {
             continue;
         };
+        // Optional provenance tail (additive): [attested_tick] [via].
+        // Legacy pre-root lines carry neither; "-" via decodes to empty.
+        let attested_tick = parts
+            .next()
+            .and_then(|value| value.parse::<u64>().ok())
+            .map(key_attestation_from_word)
+            .unwrap_or(0);
+        let via = parts.next().unwrap_or("-");
         let Some(index) = current else { continue };
         let entry = &mut keystore.sources[index];
         let alg = match line_kind {
@@ -1172,6 +1405,8 @@ pub fn parse_keystore(text: &str) -> Keystore {
         let (state, retired_tick) = key_state_from_word(state_word);
         slot.state = state;
         slot.retired_tick = retired_tick;
+        slot.attested_tick = attested_tick;
+        let _ = slot.via.set(if via == "-" { "" } else { via });
         entry.key_count += 1;
     }
     keystore
@@ -1776,5 +2011,178 @@ mod tests {
             entry.rotate_source(2),
             Err(KeystoreError::UnknownKey)
         ));
+    }
+
+    // ---- Trust-root layer (v0 standing model) ----
+
+    fn roots_with(entries: &[(&str, &str, u64)]) -> TrustRoots {
+        let mut roots = TrustRoots::empty();
+        for (key_id, label, tick) in entries {
+            roots.add(key_id, label, *tick).unwrap();
+        }
+        roots
+    }
+
+    fn attested_key(key_id: &str, pubkey_hex: &str, tick: u64, via: &str) -> TrustedKey {
+        let mut entry = SourceKeys::empty();
+        let _ = entry.enroll_ed25519_attested(key_id, pubkey_hex, tick, via);
+        entry.keys[0]
+    }
+
+    #[test]
+    fn trust_roots_serialize_roundtrip_preserves_rows() {
+        let roots = roots_with(&[("k-anchor", "vendor-root", 111), ("k-second", "-", 222)]);
+        let mut text = String::new();
+        serialize_trust_roots(&roots, &mut text);
+        assert!(text.starts_with("ptr1\n"));
+        assert!(text.contains("root k-anchor vendor-root 111\n"));
+        assert!(text.contains("root k-second - 222\n"));
+
+        let parsed = parse_trust_roots(&text);
+        assert_eq!(parsed, roots);
+    }
+
+    #[test]
+    fn trust_roots_parse_skips_malformed_and_extra_lines() {
+        let parsed =
+            parse_trust_roots("ptr1\nroot good label 7\ngarbage\nroot onlyone\nroot bad ok 1\n");
+        assert_eq!(parsed.count, 2);
+        assert_eq!(parsed.roots[0].key_id.as_str(), "good");
+        assert_eq!(parsed.roots[1].key_id.as_str(), "bad");
+    }
+
+    #[test]
+    fn trust_root_add_rejects_duplicate_overflow_and_bad_id() {
+        let mut roots = roots_with(&[("k-a", "root", 5)]);
+        assert_eq!(roots.add("k-a", "dup", 6), Err(TrustRootError::Duplicate));
+        assert_eq!(roots.add("", "empty", 6), Err(TrustRootError::InvalidId));
+        let mut long = [b'k'; KEY_ID_MAX + 1];
+        long[0] = b'x';
+        // 25-char ids cannot fit FixedText<24>; set() silently truncates via
+        // label but add() must refuse ids over the cap outright.
+        let long_id = core::str::from_utf8(&long).unwrap();
+        assert_eq!(
+            roots.add(long_id, "long", 6),
+            Err(TrustRootError::InvalidId)
+        );
+    }
+
+    #[test]
+    fn trust_root_remove_compacts_and_reports_former_index() {
+        let mut roots = roots_with(&[
+            ("k-a", "first", 1),
+            ("k-b", "second", 2),
+            ("k-c", "third", 3),
+        ]);
+        assert_eq!(roots.remove("k-b"), Some(1));
+        assert_eq!(roots.count, 2);
+        assert_eq!(roots.find("k-a"), Some(0));
+        assert_eq!(roots.find("k-b"), None);
+        assert_eq!(roots.find("k-c"), Some(1));
+        assert_eq!(roots.remove("missing"), None);
+        assert_eq!(roots.primary_key_id(), "k-a");
+        let _ = roots.remove("k-a");
+        assert_eq!(roots.primary_key_id(), "k-c");
+    }
+
+    #[test]
+    fn standing_matrix_root_direct_unattested() {
+        let roots = roots_with(&[("k-root", "primary", 10)]);
+        let hex = pubkey_hex_for(9);
+
+        // On the root list -> ROOT, regardless of attestation record.
+        let rooted = attested_key("k-root", &hex, 0, "");
+        assert_eq!(roots.standing_of(&rooted), STANDING_ROOT);
+
+        // Attested enrollment -> DIRECT.
+        let direct = attested_key("k-direct", &hex, 42, "k-root");
+        assert_eq!(roots.standing_of(&direct), STANDING_DIRECT);
+        assert_eq!(roots.via_slot_of(&direct), Some(0));
+
+        // Legacy record (no attestation tail) -> UNATTESTED.
+        let mut entry = SourceKeys::empty();
+        let _ = entry.enroll_ed25519("k-legacy", &hex);
+        assert_eq!(roots.standing_of(&entry.keys[0]), STANDING_UNATTESTED);
+        assert_eq!(roots.via_slot_of(&entry.keys[0]), None);
+    }
+
+    #[test]
+    fn via_slot_dissolves_when_root_is_removed() {
+        let roots = roots_with(&[("k-root", "primary", 10)]);
+        let hex = pubkey_hex_for(9);
+        let direct = attested_key("k-direct", &hex, 42, "k-root");
+        assert_eq!(roots.via_slot_of(&direct), Some(0));
+
+        let mut roots = roots;
+        let _ = roots.remove("k-root");
+        // Standing stays DIRECT (record attested); the via reference simply
+        // no longer resolves to a root slot.
+        assert_eq!(roots.standing_of(&direct), STANDING_DIRECT);
+        assert_eq!(roots.via_slot_of(&direct), None);
+    }
+
+    #[test]
+    fn derived_count_cites_only_matching_via() {
+        let hex = pubkey_hex_for(9);
+        let mut keystore = Keystore::empty();
+        let _ = keystore.ensure_source("alpha");
+        let _ = keystore.sources[0].enroll_ed25519_attested("k1", &hex, 1, "k-root");
+        let _ = keystore.sources[0].enroll_ed25519("k2", &hex);
+        let _ = keystore.ensure_source("beta");
+        let _ = keystore.sources[1].enroll_ed25519_attested("k3", &hex, 2, "k-root");
+        let _ = keystore.sources[1].enroll_ed25519_attested("k4", &hex, 3, "k-other");
+
+        let roots = roots_with(&[("k-root", "primary", 1)]);
+        assert_eq!(roots.derived_count(&keystore, "k-root"), 2);
+        assert_eq!(roots.derived_count(&keystore, "k-other"), 1);
+        assert_eq!(roots.derived_count(&keystore, "k-none"), 0);
+    }
+
+    #[test]
+    fn keystore_roundtrip_preserves_attestation_tail() {
+        let hex = pubkey_hex_for(11);
+        let mut keystore = Keystore::empty();
+        let _ = keystore.ensure_source("alpha");
+        let _ = keystore.sources[0].enroll_ed25519_attested("k1", &hex, 777, "k-root");
+        let _ = keystore.sources[0].enroll_ed25519("k2", &hex);
+
+        let mut text = String::new();
+        serialize_keystore(&keystore, &mut text);
+        assert!(text.contains("ekey k1 "));
+        let line = text
+            .lines()
+            .find(|line| line.starts_with("ekey k1 "))
+            .unwrap();
+        let tail: Vec<&str> = line.split(' ').collect();
+        assert_eq!(tail.len(), 6);
+        assert_eq!(tail[4], "777");
+        assert_eq!(tail[5], "k-root");
+
+        let parsed = parse_keystore(&text);
+        let key = &parsed.sources[0].keys[0];
+        assert_eq!(key.attested_tick, 777);
+        assert_eq!(key.via.as_str(), "k-root");
+        // Unattested sibling keeps the honest zero/empty markers.
+        let plain = &parsed.sources[0].keys[1];
+        assert_eq!(plain.attested_tick, 0);
+        assert!(plain.via.is_empty());
+    }
+
+    #[test]
+    fn legacy_keystore_lines_parse_as_unattested() {
+        // Pre-root files carry exactly three payload tokens per key line;
+        // they must decode with empty provenance.
+        let hex = pubkey_hex_for(12);
+        let legacy = format!(
+            "pks1\nwindow src 5\nekey ed1 {hex} 1\nkey old1 00112233445566778899aabbccddeeff 2\n"
+        );
+        let parsed = parse_keystore(&legacy);
+        assert_eq!(parsed.source_count, 1);
+        let entry = &parsed.sources[0];
+        assert_eq!(entry.key_count, 2);
+        for key in &entry.keys[..entry.key_count] {
+            assert_eq!(key.attested_tick, 0);
+            assert!(key.via.is_empty());
+        }
     }
 }

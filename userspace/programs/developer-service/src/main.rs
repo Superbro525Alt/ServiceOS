@@ -10,6 +10,7 @@ mod registry;
 mod routing;
 mod sandbox;
 mod service;
+mod timing;
 mod types;
 mod util;
 

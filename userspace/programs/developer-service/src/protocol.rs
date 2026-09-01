@@ -6,12 +6,12 @@ use serviceos_userspace_runtime as rt;
 
 use crate::{
     consts::{
-        BUILDER_REPORT_TAG, IDE_JOB_INFO_REPLY_TAG, IDE_JOB_INFO_REQUEST_TAG, MAX_JOBS,
-        MAX_TOOLCHAINS,
+        BUILDER_REPORT_TAG, DEV_PROFILE_REPLY_TAG, DEV_PROFILE_REQUEST_TAG, IDE_JOB_INFO_REPLY_TAG,
+        IDE_JOB_INFO_REQUEST_TAG, MAX_JOBS, MAX_TOOLCHAINS,
     },
     farm,
     registry::{self, RegistryRecord},
-    routing, sandbox,
+    routing, sandbox, timing,
     types::{ExportState, FixedBytes, JobSlot, ToolchainSlot, WorkspaceSlot},
     util::{
         allocate_job, create_memory_from_bytes, duplicate_artifact_for_reply, emit_log,
@@ -76,6 +76,7 @@ pub(crate) fn handle_public_request(
         x if x == IDE_JOB_INFO_REQUEST_TAG => {
             reply_ide_job_info(catalog.workspaces, catalog.workspace_count, jobs, message)
         }
+        x if x == DEV_PROFILE_REQUEST_TAG => reply_job_profile(jobs, message),
         x if x == DeveloperTag::ArtifactOpenRequest as u32 => {
             handle_artifact_open_request(log_handle, jobs, message)
         }
@@ -447,6 +448,13 @@ fn handle_build_request(
                             return Ok(());
                         }
                     };
+                    // A routed job skips the visible queue stop: the record
+                    // exists and starts running in the same instant, so the
+                    // queue->start delta is honestly zero.
+                    let now = timing::now_tick();
+                    let mut job_timing = timing::JobTiming::empty();
+                    job_timing.record_queue(now);
+                    job_timing.record_start(now);
                     jobs[job_id] = JobSlot {
                         occupied: true,
                         workspace_id: workspace_id as u32,
@@ -468,6 +476,7 @@ fn handle_build_request(
                         route,
                         mode: candidate,
                         export: ExportState::Local,
+                        timing: job_timing,
                     };
                     emit_log(
                         log_handle,
@@ -597,6 +606,10 @@ fn handle_build_request(
 
     match task_handle {
         Ok(task_handle) => {
+            let now = timing::now_tick();
+            let mut job_timing = timing::JobTiming::empty();
+            job_timing.record_queue(now);
+            job_timing.record_start(now);
             jobs[job_id] = JobSlot {
                 occupied: true,
                 workspace_id: workspace_id as u32,
@@ -612,6 +625,7 @@ fn handle_build_request(
                 route,
                 mode,
                 export: ExportState::Local,
+                timing: job_timing,
             };
             reply.words[0] = DeveloperStatus::Ok as u32 as u64;
             reply.words[1] = job_id as u64;
@@ -717,6 +731,8 @@ fn reply_remote_target_build(
             let endpoint_id = record.map(|(index, _)| index).unwrap_or(0);
             let mut export_endpoint = FixedBytes::<{ crate::consts::MAX_PATH }>::empty();
             let _ = export_endpoint.set(endpoint_bytes);
+            let mut job_timing = timing::JobTiming::empty();
+            job_timing.record_queue(timing::now_tick());
             jobs[job_id] = JobSlot {
                 occupied: true,
                 workspace_id: workspace_id as u32,
@@ -739,6 +755,7 @@ fn reply_remote_target_build(
                 export: ExportState::PendingRemote {
                     endpoint: export_endpoint,
                 },
+                timing: job_timing,
             };
             reply.words[0] = DeveloperStatus::Ok as u32 as u64;
             reply.words[1] = job_id as u64;
@@ -791,17 +808,21 @@ fn reply_job_list(
         reply.words[5] = job.format as u32 as u64;
         reply.words[6] = job.artifact_size as u64;
         // IDE tail (additive): [magic|field_count][phase][toolchain][flags]
-        // phase = state | route_kind<<8 | export_state<<16; toolchain is the
-        // resolved descriptor index or u32::MAX; flags bit0 has artifact
-        // handle, bits 8.. name length.
-        if ide_tail_fits(reply.word_count, 3) {
+        // [duration][rate|valid]. Fields 1..3 are the original grammar;
+        // duration is the queue-to-finish span in ticks (0 while running),
+        // and the rate word packs the service tick rate (low 32 bits, 100 =
+        // 10 ms per tick) with the recorded-phase valid mask at bits 32..
+        // so old readers decoding exactly three fields keep working.
+        if ide_tail_fits(reply.word_count, 5) {
             let base = reply.word_count as usize;
-            reply.word_count += 4;
-            reply.words[base] = ide_tail_magic(3);
+            reply.word_count += 6;
+            reply.words[base] = ide_tail_magic(5);
             reply.words[base + 1] = pack_job_phase(&job);
             reply.words[base + 2] = job_toolchain_index(workspaces, workspace_count, &job) as u64;
             reply.words[base + 3] = (job.artifact_handle != rt::INVALID_HANDLE) as u64
                 | ((job.artifact_name.len as u64) << 8);
+            reply.words[base + 4] = job.timing.duration_ticks();
+            reply.words[base + 5] = timing::pack_timing_words(&job.timing)[timing::PHASE_COUNT];
         }
     }
     let _ = rt::channel_send(reply_handle, &reply);
@@ -921,6 +942,39 @@ fn reply_ide_job_info(
     Ok(())
 }
 
+/// Per-run phase-accounting profile (local tag 0xd24 -> 0xd25). Reply
+/// shape: w0 status, w1 job_id, w2 IDE-tail magic with field count 6,
+/// then [queue][start][tool-exit][artifact][finish][rate|valid] — one
+/// boot-local monotonic tick per lifecycle phase plus a word packing the
+/// tick rate (low 32 bits, 100 Hz = 10 ms per tick) and the recorded-
+/// phase valid mask (bits 32..37). Unreached phases report tick 0 and a
+/// clear mask bit so readers stay honest about partial runs. The shared
+/// JobInfoReply tail cannot carry these fields: its budget is 16 IPC
+/// words total, and fixed words + packed name already leave room only for
+/// the existing five-field tail on short names.
+fn reply_job_profile(jobs: &[JobSlot; MAX_JOBS], message: &RawMessage) -> rt::Result<()> {
+    if message.handle_count < 1 || message.word_count < 1 {
+        return Ok(());
+    }
+    let reply_handle = message.handles[0];
+    let mut reply = RawMessage::empty(DEV_PROFILE_REPLY_TAG as u32);
+    reply.word_count = 2;
+    reply.words[0] = DeveloperStatus::NotFound as u32 as u64;
+    let index = message.words[0] as usize;
+    if let Some(job) = jobs.get(index).copied().filter(|job| job.occupied) {
+        reply.words[0] = DeveloperStatus::Ok as u32 as u64;
+        reply.words[1] = index as u64;
+        let timing_words = timing::pack_timing_words(&job.timing);
+        reply.words[2] = ide_tail_magic(timing::PHASE_COUNT + 1);
+        let base = 3;
+        reply.word_count = (base + timing_words.len()) as u32;
+        reply.words[base..base + timing_words.len()].copy_from_slice(&timing_words);
+    }
+    let _ = rt::channel_send(reply_handle, &reply);
+    let _ = rt::handle_close(reply_handle);
+    Ok(())
+}
+
 fn handle_artifact_open_request(
     log_handle: rt::Handle,
     jobs: &[JobSlot; MAX_JOBS],
@@ -995,6 +1049,13 @@ pub(crate) fn poll_job_reports(log_handle: rt::Handle, jobs: &mut [JobSlot; MAX_
         let mut report = RawMessage::empty(0);
         match rt::channel_receive_nonblocking(job.report_handle, &mut report) {
             Ok(()) if report.tag == BUILDER_REPORT_TAG && report.word_count >= 4 => {
+                // The report IS the build-tool exit: whatever it carries
+                // (artifact, refusal, failure) lands at the same instant,
+                // so tool-exit and artifact-save share a tick for
+                // report-driven runs. Deltas stay monotonic by
+                // construction; the profile table reads 0 there.
+                let now = timing::now_tick();
+                job.timing.record_tool_exit(now);
                 let result = report.words[0] as u32;
                 job.format = match report.words[1] as u32 {
                     x if x == DeveloperArtifactFormat::Elf64 as u32 => {
@@ -1019,6 +1080,8 @@ pub(crate) fn poll_job_reports(log_handle: rt::Handle, jobs: &mut [JobSlot; MAX_
                 if result == 0 && report.handle_count > 0 {
                     job.state = DeveloperJobState::Succeeded;
                     job.artifact_handle = report.handles[0];
+                    job.timing.record_artifact(now);
+                    job.timing.record_finish(now);
                     let _ = emit_log(
                         log_handle,
                         LogSeverity::Info,
@@ -1028,6 +1091,7 @@ pub(crate) fn poll_job_reports(log_handle: rt::Handle, jobs: &mut [JobSlot; MAX_
                     );
                 } else if result == 1 {
                     job.state = DeveloperJobState::Unsupported;
+                    job.timing.record_finish(now);
                     let _ = emit_log(
                         log_handle,
                         LogSeverity::Warn,
@@ -1037,6 +1101,7 @@ pub(crate) fn poll_job_reports(log_handle: rt::Handle, jobs: &mut [JobSlot; MAX_
                     );
                 } else if result == sandbox::BUILDER_STATUS_SANDBOX_DENIED as u32 {
                     job.state = DeveloperJobState::Failed;
+                    job.timing.record_finish(now);
                     let _ = emit_log(
                         log_handle,
                         LogSeverity::Warn,
@@ -1048,6 +1113,7 @@ pub(crate) fn poll_job_reports(log_handle: rt::Handle, jobs: &mut [JobSlot; MAX_
                     );
                 } else {
                     job.state = DeveloperJobState::Failed;
+                    job.timing.record_finish(now);
                     let route_bits = match job.route {
                         routing::BuildRoute::DirectSpawn => 0u64,
                         routing::BuildRoute::RuntimeEnv { env_id } => {
@@ -1089,6 +1155,11 @@ pub(crate) fn poll_job_exits(log_handle: rt::Handle, jobs: &mut [JobSlot; MAX_JO
                 let _ = rt::handle_close(job.task_handle);
                 job.task_handle = rt::INVALID_HANDLE;
                 if job.state == DeveloperJobState::Running {
+                    // Exited without a parseable report: the tool did exit
+                    // (tool-exit stamp) but no artifact ever arrived.
+                    let now = timing::now_tick();
+                    job.timing.record_tool_exit(now);
+                    job.timing.record_finish(now);
                     job.state = DeveloperJobState::Failed;
                     let _ = emit_log(
                         log_handle,
@@ -1330,5 +1401,62 @@ mod tests {
         assert_eq!(export_state_code(&job), EXPORT_STATE_PENDING);
         assert!(job.exported_pending());
         assert_eq!(job.endpoint_bytes(), b"farm@host");
+    }
+
+    #[test]
+    fn profile_reply_tail_roundtrips_all_fields() {
+        let mut job = JobSlot::empty();
+        job.occupied = true;
+        job.timing.record_queue(100);
+        job.timing.record_start(120);
+        job.timing.record_finish(200);
+        // Reply words w2.. are [magic|6][five ticks][rate|valid].
+        let magic = ide_tail_magic(timing::PHASE_COUNT + 1);
+        assert_eq!((magic >> 32) & 0xFF, 6);
+        let words = timing::pack_timing_words(&job.timing);
+        assert_eq!(words[timing::PHASE_QUEUE], 100);
+        assert_eq!(words[timing::PHASE_START], 120);
+        assert_eq!(words[timing::PHASE_TOOL_EXIT], 0);
+        assert_eq!(words[timing::PHASE_FINISH], 200);
+        let rate = words[timing::PHASE_COUNT];
+        assert_eq!(rate & 0xFFFF_FFFF, timing::TICK_HZ);
+        assert_eq!(
+            (rate >> 32) & 0xFFFF_FFFF,
+            u64::from(job.timing.valid_mask())
+        );
+    }
+
+    #[test]
+    fn job_list_tail_grows_additively_old_reader_reads_prefix() {
+        let mut job = JobSlot::empty();
+        job.occupied = true;
+        job.timing.record_queue(10);
+        job.timing.record_finish(50);
+        let base = 7usize;
+        let mut words = [0u64; 16];
+        words[base] = ide_tail_magic(5);
+        words[base + 1] = pack_job_phase(&job);
+        words[base + 2] = job_toolchain_index(&[], 0, &job) as u64;
+        words[base + 3] = 0;
+        words[base + 4] = job.timing.duration_ticks();
+        words[base + 5] = timing::pack_timing_words(&job.timing)[timing::PHASE_COUNT];
+        // Old reader (three-field grammar): phase prefix still decodes.
+        assert_eq!(words[base + 1] & 0xFF, DeveloperJobState::Queued as u64);
+        assert_eq!((words[base + 1] >> 8) & 0xFF, routing::ROUTE_KIND_DIRECT);
+        // New reader (five fields): duration + rate/valid land.
+        assert_eq!((words[base] >> 32) & 0xFF, 5);
+        assert_eq!(words[base + 4], 40);
+        assert_eq!(words[base + 5] & 0xFFFF_FFFF, timing::TICK_HZ);
+    }
+
+    #[test]
+    fn timing_persists_with_the_job_record() {
+        let mut job = JobSlot::empty();
+        job.occupied = true;
+        job.timing.record_queue(7);
+        job.timing.record_start(9);
+        let copied = job; // JobSlot is Copy: the record rides the job.
+        assert_eq!(copied.timing.ticks[timing::PHASE_QUEUE], 7);
+        assert_eq!(copied.timing.ticks[timing::PHASE_START], 9);
     }
 }

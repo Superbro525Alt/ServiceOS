@@ -124,10 +124,12 @@ fn unpack_into(words: &[u64], len: usize, destination: &mut [u8]) {
     }
 }
 
-/// Optional 3-field IDE tail: [phase][toolchain][flags].
+/// Optional additive IDE tail: [phase][toolchain][flags] with the grammar
+/// grown to [..][duration][rate|valid] (field count 5). The panel reads
+/// the self-describing prefix and skips the new trailing fields.
 fn apply_list_tail(job: &mut DevJob, words: &[u64]) {
     let fields = ide_tail_field_count(words[7]);
-    if fields != Some(3) || words.len() < 11 {
+    if !matches!(fields, Some(3) | Some(5)) || words.len() < 11 {
         return;
     }
     let tail = &words[8..11];
@@ -593,6 +595,33 @@ mod tests {
         assert_eq!(job.phase, None);
         assert_eq!(job.toolchain, None);
         assert!(!job.has_artifact);
+    }
+
+    #[test]
+    fn job_list_reply_reads_prefix_of_grown_tail() {
+        let mut words = [0u64; 16];
+        words[0] = STATUS_OK as u64;
+        words[1] = 5;
+        words[2] = 2;
+        words[3] = 3; // target windows-x64
+        words[4] = 3; // succeeded
+        words[5] = 1;
+        words[6] = 512;
+        words[7] = tail_magic(5);
+        words[8] = phase_word(3, ROUTE_KIND_DIRECT, EXPORT_STATE_LOCAL);
+        words[9] = 0;
+        words[10] = 1 | (8 << 8);
+        // Additive fields: queue-to-finish duration plus rate/valid mask.
+        words[11] = 240;
+        words[12] = 100 | (0b1_1111u64 << 32);
+        let job = decode_job_list_reply(TAG_JOB_LIST_REPLY, &words).expect("decode");
+        let phase = job.phase.expect("prefix phase still decoded");
+        assert_eq!(phase.state, 3);
+        assert_eq!(phase.route_kind, ROUTE_KIND_DIRECT);
+        assert_eq!(job.toolchain, Some(0));
+        assert!(job.has_artifact);
+        assert_eq!(job.name_len, 8);
+        assert!(job.exec_mode.is_none());
     }
 
     #[test]

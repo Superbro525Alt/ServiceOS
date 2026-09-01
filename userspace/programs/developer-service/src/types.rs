@@ -121,6 +121,9 @@ pub(crate) struct JobSlot {
     /// environment exec vs routed-then-fallback), recorded at launch.
     pub(crate) mode: ExecutionMode,
     pub(crate) export: ExportState,
+    /// Additive per-run phase accounting (queue/start/tool-exit/artifact/
+    /// finish stamps); lives and dies with the job record.
+    pub(crate) timing: crate::timing::JobTiming,
 }
 
 impl JobSlot {
@@ -143,6 +146,7 @@ impl JobSlot {
             route: routing::BuildRoute::DirectSpawn,
             mode: routing::ExecutionMode::DirectSpawn,
             export: ExportState::Local,
+            timing: crate::timing::JobTiming::empty(),
         }
     }
 

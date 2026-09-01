@@ -275,6 +275,8 @@ pub(crate) fn run(
     endpoint_text[PREFIX.len()..PREFIX.len() + port_len].copy_from_slice(&digits[..port_len]);
     let mut endpoint_bytes = FixedBytes::<MAX_PATH>::empty();
     let _ = endpoint_bytes.set(&endpoint_text[..PREFIX.len() + port_len]);
+    let mut job_timing = crate::timing::JobTiming::empty();
+    job_timing.record_queue(crate::timing::now_tick());
     jobs[job_index] = JobSlot {
         occupied: true,
         workspace_id: 0,
@@ -297,6 +299,7 @@ pub(crate) fn run(
         export: ExportState::PendingRemote {
             endpoint: endpoint_bytes,
         },
+        timing: job_timing,
     };
 
     let Ok(network) = rt::lookup_service(bootstrap, rt::ServiceId::Network) else {
@@ -417,6 +420,9 @@ pub(crate) fn run(
         if ack_sent && got_client > 0 && validate_ack(&client_buffer[..got_client], HARNESS_JOB_ID)
         {
             jobs[job_index].state = rt::DeveloperJobState::Succeeded;
+            jobs[job_index]
+                .timing
+                .record_finish(crate::timing::now_tick());
             let _ = emit_job_log(log_handle, rt::LogSeverity::Info, "complete");
             let _ = rt::write_logf(
                 "developer",

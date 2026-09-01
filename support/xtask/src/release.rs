@@ -27,7 +27,7 @@ const VERIFY_KEY_ENV: &str = "SERVICEOS_RELEASE_VERIFY_KEY";
 /// Documented signing scheme, embedded in the manifest notes whenever the
 /// manifest is actually signed (the unsigned manifest stays byte-identical
 /// to the pre-signing format and carries no signing prose).
-const SIGNING_SCHEME_NOTE: &str = "; when SERVICEOS_RELEASE_SIGNING_KEY is set the manifest gains a trailing signature member computed as ed25519 (RFC 8032) over the sha256 of this exact manifest text with the signature member removed (the canonical pre-signature serialization, including this notes text); the signature key_id is the fnv1a64 of the 32-byte ed25519 public key rendered as 16 hex characters; installer images are not signed yet";
+const SIGNING_SCHEME_NOTE: &str = "; when SERVICEOS_RELEASE_SIGNING_KEY is set the manifest gains a trailing signature member computed as ed25519 (RFC 8032) over the sha256 of this exact manifest text with the signature member removed (the canonical pre-signature serialization, including this notes text); the signature key_id is the fnv1a64 of the 32-byte ed25519 public key rendered as 16 hex characters; installer image entries are emitted inside the canonical bytes and are covered by the signature when present";
 
 #[derive(Debug)]
 enum ReleaseStatus {
@@ -69,25 +69,54 @@ struct ArtifactRecord {
     sha256: String,
 }
 
+/// Data-volume size for the composed installer image, mirroring the fresh
+/// data image `create_qemu_disk_image` stages beside the boot disk.
+const INSTALLER_DATA_IMAGE_SIZE_MB: u64 = 128;
+
+const INSTALLER_FIRST_BOOT_NOTE: &str = "fresh empty data volume; first boot runs the setup wizard with headless silent defaults, and the admin marker persists on the data volume";
+
+struct InstallerRecord {
+    platform: String,
+    directory: String,
+    first_boot: &'static str,
+    files: Vec<ArtifactRecord>,
+}
+
 pub fn run_release() -> Result<(), Box<dyn Error>> {
     let root = workspace_root();
     let out_dir = root.join("target").join("release");
     fs::create_dir_all(&out_dir)?;
 
     let mut entries: Vec<PlatformEntry> = Vec::new();
+    let mut installers: Vec<InstallerRecord> = Vec::new();
+    let mut installer_error: Option<String> = None;
     for spec in PlatformSpec::all().iter().copied() {
         println!("\n=== release build: {} ===", spec.name);
-        entries.push(release_platform(spec));
+        let entry = release_platform(spec);
+        match stage_installer(&root, &entry) {
+            Ok(Some(record)) => installers.push(record),
+            Ok(None) => {}
+            Err(error) => {
+                // Degrade like the per-platform build path does: keep
+                // building and manifesting the remaining platforms, but
+                // still fail the release loudly at the end.
+                installer_error = Some(error.to_string());
+                println!("  installer staging FAILED: {}", error);
+            }
+        }
+        entries.push(entry);
     }
 
     let total_artifacts: usize = entries.iter().map(|entry| entry.artifacts.len()).sum();
     let manifest_path = out_dir.join("RELEASE-MANIFEST.json");
-    write_manifest(&manifest_path, &entries)?;
+    write_manifest(&manifest_path, &entries, &installers)?;
     println!(
-        "\nWrote artifact manifest: {} ({} files across {} platforms)",
+        "\nWrote artifact manifest: {} ({} files across {} platforms, {} installer image{})",
         manifest_path.display(),
         total_artifacts,
-        entries.len()
+        entries.len(),
+        installers.len(),
+        if installers.len() == 1 { "" } else { "s" }
     );
 
     let mut any_failed = false;
@@ -101,6 +130,9 @@ pub fn run_release() -> Result<(), Box<dyn Error>> {
     // is reported in the manifest; only total failure blocks success.
     if any_failed {
         return Err("one or more platforms failed to produce release artifacts".into());
+    }
+    if let Some(error) = installer_error {
+        return Err(format!("installer staging failed: {error}").into());
     }
     Ok(())
 }
@@ -270,6 +302,140 @@ fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), Box<dyn Error
     Ok(())
 }
 
+/// Stage the installer artifact for a released platform: the existing
+/// bootable composition (kernel + boot store + services inside the boot
+/// disk) paired with a freshly composed EMPTY data volume, so first boot on
+/// a new machine runs the documented setup-wizard chain. Reuses the
+/// artifacts the release build already staged — zero rebuilds. Only the
+/// qemu-virtio platform is staged this round; other platforms' boot media
+/// shapes differ and remain open.
+fn stage_installer(
+    root: &Path,
+    entry: &PlatformEntry,
+) -> Result<Option<InstallerRecord>, Box<dyn Error>> {
+    if entry.spec.name != "qemu-virtio" {
+        return Ok(None);
+    }
+    if !matches!(entry.status, ReleaseStatus::FullRelease) {
+        println!(
+            "  installer staging skipped for {}: platform status is '{}'",
+            entry.spec.name,
+            entry.status_name()
+        );
+        return Ok(None);
+    }
+    let image_root = entry.spec.image_root(root, "release");
+    let boot_image = image_root.join("serviceos.img");
+    if !boot_image.exists() {
+        return Err(format!(
+            "qemu-virtio installer staging: boot image missing: {}",
+            boot_image.display()
+        )
+        .into());
+    }
+    let installer_dir = root
+        .join("target")
+        .join("release")
+        .join("installer")
+        .join(entry.spec.name);
+    let files = compose_installer(root, &installer_dir, &boot_image)?;
+    let directory = installer_dir
+        .strip_prefix(root)
+        .unwrap_or(&installer_dir)
+        .to_string_lossy()
+        .into_owned();
+    println!(
+        "  installer image staged at {} ({} files, fresh data volume)",
+        installer_dir.display(),
+        files.len()
+    );
+    Ok(Some(InstallerRecord {
+        platform: entry.spec.name.to_string(),
+        directory,
+        first_boot: INSTALLER_FIRST_BOOT_NOTE,
+        files,
+    }))
+}
+
+/// Compose the installer directory: wipe any previous composition (a stale
+/// data volume may have been mutated by earlier boots — the installer must
+/// always ship data-fresh), copy the boot disk, create a fresh sparse data
+/// volume, and write the README. Returns manifest records for every file in
+/// the directory.
+fn compose_installer(
+    root: &Path,
+    installer_dir: &Path,
+    boot_image: &Path,
+) -> Result<Vec<ArtifactRecord>, Box<dyn Error>> {
+    if installer_dir.exists() {
+        fs::remove_dir_all(installer_dir)?;
+    }
+    fs::create_dir_all(installer_dir)?;
+
+    let staged_boot = installer_dir.join("serviceos.img");
+    fs::copy(boot_image, &staged_boot)?;
+
+    let data_image = installer_dir.join("serviceos-data.img");
+    let file = fs::File::create(&data_image)?;
+    file.set_len(INSTALLER_DATA_IMAGE_SIZE_MB * 1024 * 1024)?;
+    drop(file);
+
+    fs::write(installer_dir.join("README.txt"), installer_readme())?;
+
+    let mut files: Vec<PathBuf> = Vec::new();
+    collect_files(installer_dir, &mut files)?;
+    files.sort();
+    let mut records = Vec::new();
+    for file in files {
+        let metadata = file.metadata()?;
+        let sha256 = sha256_hex(&sha256_file(&file)?);
+        let relative_path = file
+            .strip_prefix(root)
+            .unwrap_or(&file)
+            .to_string_lossy()
+            .into_owned();
+        println!(
+            "  installer {:<48} {:>10} B sha256={}",
+            relative_path,
+            metadata.len(),
+            sha256
+        );
+        records.push(ArtifactRecord {
+            relative_path,
+            size: metadata.len(),
+            hash: fnv1a64_file(&file)?,
+            sha256,
+        });
+    }
+    Ok(records)
+}
+
+/// README shipped inside the installer directory, telling a fresh machine
+/// what it is looking at and what first boot does.
+fn installer_readme() -> String {
+    let mut text = String::new();
+    text.push_str("ServiceOS installer image (qemu-virtio)\n");
+    text.push_str("========================================\n\n");
+    text.push_str("Contents\n");
+    text.push_str("  serviceos.img       boot disk (UEFI ESP: kernel + boot store + services)\n");
+    text.push_str("  serviceos-data.img  empty data volume, freshly composed at release time\n\n");
+    text.push_str("First boot\n");
+    text.push_str("  Attach the boot disk and the data volume to the machine and boot.\n");
+    text.push_str("  The empty data volume triggers the documented first-boot chain:\n");
+    text.push_str("  the setup wizard runs with headless silent defaults, records the\n");
+    text.push_str("  hostname and timezone, creates the admin account, and writes\n");
+    text.push_str("  state/setup-wizard/firstboot.done on the data volume. The admin\n");
+    text.push_str("  marker persists on the data volume; later boots skip setup and go\n");
+    text.push_str("  straight to the desktop.\n\n");
+    text.push_str("QEMU smoke\n");
+    text.push_str("  cargo xtask run --platform qemu-virtio --release boots this exact\n");
+    text.push_str("  composition (delete target/images/release/qemu-virtio/serviceos-data.img\n");
+    text.push_str("  first to reproduce the fresh-data condition). Manual QEMU runs need\n");
+    text.push_str("  UEFI firmware (OVMF) and two virtio-blk drives: boot disk, then data\n");
+    text.push_str("  volume, in that order.\n");
+    text
+}
+
 /// FNV-1a 64-bit over the file bytes. Retained alongside sha256 for
 /// backcompat with existing manifest readers; the manifest names both
 /// algorithms explicitly.
@@ -332,14 +498,18 @@ fn json_escape(value: &str) -> String {
     escaped
 }
 
-fn write_manifest(path: &Path, entries: &[PlatformEntry]) -> Result<(), Box<dyn Error>> {
+fn write_manifest(
+    path: &Path,
+    entries: &[PlatformEntry],
+    installers: &[InstallerRecord],
+) -> Result<(), Box<dyn Error>> {
     let signing_key = match std::env::var(SIGNING_KEY_ENV) {
         Ok(value) if !value.trim().is_empty() => Some(PathBuf::from(value.trim())),
         Ok(_) => None,
         Err(std::env::VarError::NotPresent) => None,
         Err(err) => return Err(format!("{SIGNING_KEY_ENV}: {err}").into()),
     };
-    write_manifest_with_signing(path, entries, signing_key.as_deref())
+    write_manifest_with_signing(path, entries, installers, signing_key.as_deref())
 }
 
 /// Write the manifest, optionally signed. `signing_key` (when given) is a
@@ -349,6 +519,7 @@ fn write_manifest(path: &Path, entries: &[PlatformEntry]) -> Result<(), Box<dyn 
 fn write_manifest_with_signing(
     path: &Path,
     entries: &[PlatformEntry],
+    installers: &[InstallerRecord],
     signing_key: Option<&Path>,
 ) -> Result<(), Box<dyn Error>> {
     let seed = signing_key
@@ -356,7 +527,11 @@ fn write_manifest_with_signing(
         .transpose()
         .map_err(|reason| -> Box<dyn Error> { reason.into() })?;
 
-    let unsigned_json = build_manifest_json(entries, seed.is_some().then_some(SIGNING_SCHEME_NOTE));
+    let unsigned_json = build_manifest_json(
+        entries,
+        installers,
+        seed.is_some().then_some(SIGNING_SCHEME_NOTE),
+    );
     let manifest_text = match &seed {
         Some(seed) => {
             let public = serviceos_crypto::ed25519::public_key(seed);
@@ -376,8 +551,14 @@ fn write_manifest_with_signing(
 /// Build the canonical manifest JSON. `signing_scheme_note` (when given) is
 /// appended to the reproducibility notes so the signed manifest documents
 /// its own verification scheme; the unsigned manifest omits it, keeping the
-/// default output byte-identical to the pre-signing format.
-fn build_manifest_json(entries: &[PlatformEntry], signing_scheme_note: Option<&str>) -> String {
+/// default output byte-identical to the pre-signing format. `installers`
+/// (when non-empty) is emitted as an additive trailing array; the empty
+/// case keeps the output byte-identical to the pre-installer format.
+fn build_manifest_json(
+    entries: &[PlatformEntry],
+    installers: &[InstallerRecord],
+    signing_scheme_note: Option<&str>,
+) -> String {
     let mut json = String::from("{\n");
     json.push_str("  \"manifest\": \"serviceos-release\",\n");
     json.push_str("  \"profile\": \"release\",\n");
@@ -445,6 +626,56 @@ fn build_manifest_json(entries: &[PlatformEntry], signing_scheme_note: Option<&s
         json.push_str(&format!(
             "    }}{}\n",
             if index + 1 < entries.len() { "," } else { "" }
+        ));
+    }
+    if installers.is_empty() {
+        json.push_str("  ]\n}\n");
+        return json;
+    }
+    json.push_str("  ],\n");
+    json.push_str("  \"installers\": [\n");
+    for (index, installer) in installers.iter().enumerate() {
+        json.push_str("    {\n");
+        json.push_str(&format!(
+            "      \"platform\": \"{}\",\n",
+            json_escape(&installer.platform)
+        ));
+        json.push_str(&format!(
+            "      \"directory\": \"{}\",\n",
+            json_escape(&installer.directory)
+        ));
+        json.push_str(&format!(
+            "      \"first_boot\": \"{}\",\n",
+            json_escape(installer.first_boot)
+        ));
+        json.push_str("      \"artifacts\": [");
+        if installer.files.is_empty() {
+            json.push_str("]\n");
+        } else {
+            json.push('\n');
+            for (artifact_index, record) in installer.files.iter().enumerate() {
+                json.push_str(&format!(
+                    "        {{\"path\": \"{}\", \"size\": {}, \"hash\": \"{:016x}\", \"sha256\": \"{}\"}}{}\n",
+                    json_escape(&record.relative_path),
+                    record.size,
+                    record.hash,
+                    record.sha256,
+                    if artifact_index + 1 < installer.files.len() {
+                        ","
+                    } else {
+                        ""
+                    }
+                ));
+            }
+            json.push_str("      ]\n");
+        }
+        json.push_str(&format!(
+            "    }}{}\n",
+            if index + 1 < installers.len() {
+                ","
+            } else {
+                ""
+            }
         ));
     }
     json.push_str("  ]\n}\n");
@@ -745,7 +976,7 @@ mod tests {
     fn signature_roundtrip_on_fixture_manifest() {
         let seed = fixture_seed();
         let public = serviceos_crypto::ed25519::public_key(&seed);
-        let unsigned = build_manifest_json(&fixture_entries(), Some(SIGNING_SCHEME_NOTE));
+        let unsigned = build_manifest_json(&fixture_entries(), &[], Some(SIGNING_SCHEME_NOTE));
         let signed = append_manifest_signature(&unsigned, &seed);
 
         assert!(signed.contains("\"signature\": {"));
@@ -765,7 +996,7 @@ mod tests {
     fn tampered_manifest_rejected() {
         let seed = fixture_seed();
         let public = serviceos_crypto::ed25519::public_key(&seed);
-        let unsigned = build_manifest_json(&fixture_entries(), Some(SIGNING_SCHEME_NOTE));
+        let unsigned = build_manifest_json(&fixture_entries(), &[], Some(SIGNING_SCHEME_NOTE));
         let signed = append_manifest_signature(&unsigned, &seed);
 
         // Flip one content byte (a platform name character).
@@ -784,7 +1015,7 @@ mod tests {
 
     #[test]
     fn unsigned_manifest_has_no_signature_member() {
-        let unsigned = build_manifest_json(&fixture_entries(), None);
+        let unsigned = build_manifest_json(&fixture_entries(), &[], None);
         assert!(!unsigned.contains("\"signature\": {"));
         assert!(!unsigned.contains("\"key_id\""));
         assert!(split_manifest_signature(&unsigned).is_none());
@@ -801,7 +1032,7 @@ mod tests {
 
     #[test]
     fn canonical_scheme_is_stable() {
-        let unsigned = build_manifest_json(&fixture_entries(), Some(SIGNING_SCHEME_NOTE));
+        let unsigned = build_manifest_json(&fixture_entries(), &[], Some(SIGNING_SCHEME_NOTE));
         let seed = fixture_seed();
         // Same key and content sign deterministically.
         let signed_a = append_manifest_signature(&unsigned, &seed);
@@ -873,11 +1104,94 @@ mod tests {
         let pub_path = env::temp_dir().join("serviceos-artsign-pubkey.hex");
         fs::write(&pub_path, format!("{pub_hex}\n")).expect("write pubkey fixture");
         let manifest_path = env::temp_dir().join("serviceos-artsign-manifest.json");
-        write_manifest_with_signing(&manifest_path, &fixture_entries(), Some(&key_path))
+        write_manifest_with_signing(&manifest_path, &fixture_entries(), &[], Some(&key_path))
             .expect("write signed manifest fixture");
         println!("FIXTURE-KEYFILE {}", key_path.display());
         println!("FIXTURE-MANIFEST {}", manifest_path.display());
         println!("FIXTURE-PUBKEY-FILE {}", pub_path.display());
         println!("FIXTURE-PUBKEY {pub_hex}");
+    }
+
+    // --- installer images ---
+
+    #[test]
+    fn installer_composition_is_self_contained_with_fresh_data() {
+        let root =
+            env::temp_dir().join(format!("serviceos-xtask-installer-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let image_root = root.join("target/images/release/qemu-virtio");
+        fs::create_dir_all(&image_root).expect("create image root");
+        let boot_image = image_root.join("serviceos.img");
+        fs::write(&boot_image, b"boot-disk-bytes").expect("write boot fixture");
+
+        let installer_dir = root.join("target/release/installer/qemu-virtio");
+        let records = compose_installer(&root, &installer_dir, &boot_image).expect("compose");
+
+        let names: Vec<&str> = records
+            .iter()
+            .map(|record| record.relative_path.rsplit('/').next().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["README.txt", "serviceos-data.img", "serviceos.img"]
+        );
+        let boot_record = &records[2];
+        assert_eq!(boot_record.size, b"boot-disk-bytes".len() as u64);
+        assert_eq!(boot_record.sha256.len(), 64);
+        assert_ne!(boot_record.hash, 0);
+
+        // The data volume ships fresh: right size, zeroed content, even when
+        // a previous composition had been mutated by an earlier boot.
+        let data_image = installer_dir.join("serviceos-data.img");
+        fs::write(&data_image, [0xffu8; 64]).expect("dirty the data volume");
+        let _ = compose_installer(&root, &installer_dir, &boot_image).expect("recompose");
+        let metadata = data_image.metadata().expect("data image metadata");
+        assert_eq!(metadata.len(), INSTALLER_DATA_IMAGE_SIZE_MB * 1024 * 1024);
+        // The full dirtied region must read back as zeros, pinning the
+        // recreate-from-scratch behavior (not an in-place truncate).
+        let mut dirty_region = [0xffu8; 64];
+        let mut opened = fs::File::open(&data_image).expect("open data image");
+        std::io::Read::read_exact(&mut opened, &mut dirty_region).expect("read dirty region");
+        assert!(dirty_region.iter().all(|byte| *byte == 0));
+
+        let readme = fs::read_to_string(installer_dir.join("README.txt")).expect("read README");
+        assert!(readme.contains("setup wizard"), "{readme}");
+        assert!(readme.contains("serviceos-data.img"), "{readme}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn installer_manifest_records_are_additive_and_signable() {
+        let installers = vec![InstallerRecord {
+            platform: "qemu-virtio".to_string(),
+            directory: "target/release/installer/qemu-virtio".to_string(),
+            first_boot: INSTALLER_FIRST_BOOT_NOTE,
+            files: vec![ArtifactRecord {
+                relative_path: "target/release/installer/qemu-virtio/serviceos.img".to_string(),
+                size: 4096,
+                hash: 0xdead_beef_cafe_babe,
+                sha256: "bb".repeat(32),
+            }],
+        }];
+
+        let with_installers = build_manifest_json(&fixture_entries(), &installers, None);
+        assert!(with_installers.contains("\"installers\": ["));
+        assert!(with_installers.contains("\"platform\": \"qemu-virtio\""));
+        assert!(
+            with_installers.contains("\"directory\": \"target/release/installer/qemu-virtio\"")
+        );
+        assert!(with_installers.contains(INSTALLER_FIRST_BOOT_NOTE));
+        // Installers ride inside the signed canonical bytes, not after them.
+        let seed = fixture_seed();
+        let public = serviceos_crypto::ed25519::public_key(&seed);
+        let signed = append_manifest_signature(&with_installers, &seed);
+        let (_, canonical) = split_manifest_signature(&signed).expect("split signed");
+        assert_eq!(canonical, with_installers);
+        verify_manifest_signature(&signed, &public)
+            .expect("signed manifest with installers verifies");
+
+        // No installers -> byte-identical to the pre-installer format.
+        let without = build_manifest_json(&fixture_entries(), &[], None);
+        assert!(!without.contains("installers"));
     }
 }

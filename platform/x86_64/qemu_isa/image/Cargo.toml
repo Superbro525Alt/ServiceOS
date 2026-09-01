@@ -21,4 +21,5 @@ serviceos-userspace-catalog = { path = "../../../../userspace/catalog" }
 serviceos-kernel-arch-x86_64 = { path = "../../../../arch/x86_64" }
 serviceos-kernel-core = { path = "../../../../kernel/core" }
 serviceos-platform-qemu-isa = { path = ".." }
+serviceos-platform-x86-pc = { path = "../../pc" }
 spin = "0.9"

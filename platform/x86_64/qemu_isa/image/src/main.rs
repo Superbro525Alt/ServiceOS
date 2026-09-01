@@ -22,6 +22,7 @@ use serviceos_kernel_core::{
     syscall, user as kernel_user,
 };
 use serviceos_platform_qemu_isa::serial;
+use serviceos_platform_x86_pc as x86_pc;
 use serviceos_userspace_catalog::BOOT_STORE_IMAGE;
 use spin::Once;
 
@@ -136,7 +137,7 @@ extern "C" fn isa_entry(hvm_info: *const HvmStartInfo) -> ! {
         Err(error) => panic_with_error("boot", &error),
     };
     log_line("probe", "S3");
-    let descriptor_state = interrupts::initialize();
+    let descriptor_state = interrupts::initialize(x86_pc::external_ops());
     log_line("probe", "S4");
     log(
         "interrupt",
@@ -145,8 +146,8 @@ extern "C" fn isa_entry(hvm_info: *const HvmStartInfo) -> ! {
             descriptor_state.idt_loaded,
             descriptor_state.gdt_loaded,
             descriptor_state.tss_loaded,
-            descriptor_state.pic_remapped,
-            descriptor_state.pit_programmed,
+            descriptor_state.external_controller_ready,
+            descriptor_state.tick_source_programmed,
             descriptor_state.timer_hz,
             descriptor_state.syscall_vector.0,
         ),

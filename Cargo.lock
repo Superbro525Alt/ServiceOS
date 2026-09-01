@@ -178,6 +178,7 @@ dependencies = [
  "serviceos-kernel-arch-x86_64",
  "serviceos-kernel-core",
  "serviceos-platform-qemu-isa",
+ "serviceos-platform-x86-pc",
  "serviceos-userspace-catalog",
  "spin",
 ]
@@ -225,6 +226,7 @@ dependencies = [
  "serviceos-kernel-arch-x86_64",
  "serviceos-kernel-core",
  "serviceos-platform-qemu-virtio",
+ "serviceos-platform-x86-pc",
  "spin",
  "uefi",
 ]
@@ -278,6 +280,14 @@ dependencies = [
  "serviceos-kernel-core",
  "spin",
  "virtio-drivers",
+]
+
+[[package]]
+name = "serviceos-platform-x86-pc"
+version = "0.1.0"
+dependencies = [
+ "serviceos-kernel-arch-x86_64",
+ "x86_64",
 ]
 
 [[package]]

@@ -102,14 +102,15 @@ impl LapicTimer {
 
     /// Enable the local APIC as an interrupt controller (virtual-wire mode).
     ///
-    /// Sets the global-enable bit in IA32_APIC_BASE (bit 11), routes PIC
-    /// interrupts through LINT0 as ExtINT so the 8259 PIC keeps working,
-    /// software-enables the APIC via the spurious-interrupt vector register
-    /// (bit 8), accepts all interrupt priorities by clearing TPR, and masks
-    /// the LAPIC timer on its own distinct vector. The PIT/PIC remains the
-    /// system tick source until [`Self::calibrate_against_pit`] and
+    /// Sets the global-enable bit in IA32_APIC_BASE (bit 11), routes external
+    /// controller interrupts through LINT0 as ExtINT so the platform's
+    /// external IRQ controller keeps working, software-enables the APIC via
+    /// the spurious-interrupt vector register (bit 8), accepts all interrupt
+    /// priorities by clearing TPR, and masks the LAPIC timer on its own
+    /// distinct vector. The platform's reference tick source remains the
+    /// system tick source until [`Self::calibrate_against_reference`] and
     /// [`Self::arm_periodic`] succeed, so the timer can never fire into the
-    /// PIC timer vector (0x20) while calibration is pending or failed.
+    /// timer vector (0x20) while calibration is pending or failed.
     ///
     /// # Safety
     /// The IDT must already contain a spurious-interrupt handler for
@@ -152,17 +153,18 @@ impl LapicTimer {
         self.initialized = true;
     }
 
-    /// Measure the LAPIC counter frequency against the PIT over a short
-    /// window and return the counter ticks elapsed per millisecond.
+    /// Measure the LAPIC counter frequency against the platform's reference
+    /// tick source over a short window and return the counter ticks elapsed
+    /// per millisecond.
     ///
-    /// The PIT must already be running in periodic mode at `tick_hz`. The
-    /// LAPIC timer is started at its maximum initial count with a divide
-    /// value of 16 while this function busy-polls the latched PIT channel 0
-    /// counter for `pit_ticks` full period wraps (latching does not disturb
-    /// the running count). On any timeout or nonsensical reading the timer is
-    /// stopped again and `None` is returned so callers stay on the PIT.
-    pub fn calibrate_against_pit(&mut self, tick_hz: u32, pit_ticks: u32) -> Option<u32> {
-        if !self.initialized || pit_ticks == 0 {
+    /// The reference source must already be running in periodic mode at
+    /// `tick_hz`. The LAPIC timer is started at its maximum initial count
+    /// with a divide value of 16 while this function busy-polls the source
+    /// for `ref_ticks` full period wraps. On any timeout or nonsensical
+    /// reading the timer is stopped again and `None` is returned so callers
+    /// stay on the reference source.
+    pub fn calibrate_against_reference(&mut self, tick_hz: u32, ref_ticks: u32) -> Option<u32> {
+        if !self.initialized || ref_ticks == 0 {
             return None;
         }
 
@@ -173,7 +175,7 @@ impl LapicTimer {
         }
         let start_count = unsafe { self.read_reg(LAPIC_TIMER_CCR) };
 
-        if !super::interrupts::pit_wait_for_tick_wraps(pit_ticks) {
+        if !(super::interrupts::external_irq_ops().wait_tick_wraps)(ref_ticks) {
             unsafe { self.write_reg(LAPIC_TIMER_ICR, 0) };
             return None;
         }
@@ -184,7 +186,7 @@ impl LapicTimer {
         // The counter only ever counts down from the maximum we programmed,
         // so a plain subtraction measures the elapsed ticks.
         let elapsed = start_count.wrapping_sub(end_count) as u64;
-        let window_ms = (pit_ticks as u64 * 1000) / tick_hz.max(1) as u64;
+        let window_ms = (ref_ticks as u64 * 1000) / tick_hz.max(1) as u64;
         if window_ms == 0 || elapsed < 1000 {
             return None;
         }

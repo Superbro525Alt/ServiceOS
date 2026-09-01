@@ -227,7 +227,7 @@ unsafe fn start_application_processors(targets: &[(usize, u8)]) -> bool {
             core::ptr::write_volatile(PARAM_CPU_ID as *mut u64, cpu_id as u64);
             lapic::send_init_ipi(apic_id);
         }
-        interrupts::pit_wait_for_tick_wraps(init_delay_ticks);
+        (interrupts::external_irq_ops().wait_tick_wraps)(init_delay_ticks);
         unsafe {
             lapic::send_startup_ipi(apic_id, SIPI_VECTOR);
         }
@@ -244,12 +244,12 @@ unsafe fn start_application_processors(targets: &[(usize, u8)]) -> bool {
     true
 }
 
-/// Poll the online counter once per PIT tick until it reaches the expected
-/// count or `max_ticks` periods elapse.
+/// Poll the online counter once per reference tick until it reaches the
+/// expected count or `max_ticks` periods elapse.
 fn wait_for_online(max_ticks: u32) -> bool {
     #[allow(clippy::never_loop)]
     for _ in 0..max_ticks {
-        interrupts::pit_wait_for_tick_wraps(1);
+        (interrupts::external_irq_ops().wait_tick_wraps)(1);
         if APS_ONLINE.load(Ordering::SeqCst) == APS_EXPECTED.load(Ordering::SeqCst) {
             return true;
         }

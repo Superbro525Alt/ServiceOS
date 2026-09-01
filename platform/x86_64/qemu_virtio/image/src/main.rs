@@ -18,6 +18,7 @@ use serviceos_kernel_arch_x86_64::{
 };
 use serviceos_kernel_core::{Kernel, syscall, task as kernel_task, user as kernel_user};
 use serviceos_platform_qemu_virtio::{audio, block, boot, display, input, network, serial, sound};
+use serviceos_platform_x86_pc as x86_pc;
 use spin::Once;
 use uefi::{Status, entry};
 
@@ -42,7 +43,7 @@ fn kernel_main() -> Status {
             cpu::halt_loop()
         }
     };
-    let descriptor_state = interrupts::initialize();
+    let descriptor_state = interrupts::initialize(x86_pc::external_ops());
     smp::bring_up_application_processors(boot_info.rsdp_address);
     // Second kernel-thread wave for the APs to steal.
     kthread::spawn_pingpong_demo();
@@ -121,8 +122,8 @@ fn kernel_main() -> Status {
             descriptor_state.idt_loaded,
             descriptor_state.gdt_loaded,
             descriptor_state.tss_loaded,
-            descriptor_state.pic_remapped,
-            descriptor_state.pit_programmed,
+            descriptor_state.external_controller_ready,
+            descriptor_state.tick_source_programmed,
             descriptor_state.timer_hz,
             descriptor_state.syscall_vector.0,
         ),

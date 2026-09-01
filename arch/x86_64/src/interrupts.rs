@@ -1,6 +1,5 @@
 mod faults;
 mod irq;
-mod pic;
 mod syscall;
 mod syscall_fast;
 
@@ -23,9 +22,6 @@ use x86_64::{
 
 use crate::{cpu, lapic, msr};
 
-/// Busy-wait reference interval helper exposed for LAPIC timer calibration.
-pub(crate) use pic::pit_wait_for_tick_wraps;
-
 global_asm!(include_str!("timer_irq_entry.S"));
 global_asm!(include_str!("syscall_entry.S"));
 global_asm!(include_str!("syscall_fast_entry.S"));
@@ -37,19 +33,51 @@ const PRIVILEGE_STACK_SIZE: usize = 16 * 1024;
 const EXTERNAL_IRQ_LINES: usize = 16;
 const MAX_EXTERNAL_IRQ_HANDLERS_PER_LINE: usize = 4;
 
-pub const PIC_PRIMARY_OFFSET: u8 = 0x20;
-pub const PIC_SECONDARY_OFFSET: u8 = 0x28;
-pub const TIMER_VECTOR: u8 = PIC_PRIMARY_OFFSET;
+/// Vector where the platform's external IRQ lines land after bring-up. The
+/// platform remap must place the 16 legacy lines at this base; secondary
+/// controller offsets are platform-internal details.
+pub const EXTERNAL_IRQ_VECTOR_BASE: u8 = 0x20;
+pub const TIMER_VECTOR: u8 = EXTERNAL_IRQ_VECTOR_BASE;
 pub const SYSCALL_VECTOR: u8 = 0x80;
 pub const TIMER_TICK_HZ: u32 = 100;
+
+/// Operations the platform image provides for the external IRQ controller
+/// and the reference tick source it programs (see
+/// `serviceos-platform-x86-pc` for the PC implementation). The arch crate
+/// orchestrates the ordering but owns none of the controller details.
+pub struct ExternalInterruptOps {
+    /// Remap and enable the external IRQ controller in its boot mode.
+    pub bring_up: fn(),
+    /// Program the reference tick source to interrupt at `hz`.
+    pub program_tick_source: fn(hz: u32),
+    /// Mask one external IRQ line (0-15).
+    pub mask_line: fn(irq_line: u8),
+    /// Unmask one external IRQ line (0-15).
+    pub unmask_line: fn(irq_line: u8),
+    /// Acknowledge (EOI) an external vector so further deliveries flow.
+    pub acknowledge_vector: fn(vector: u8),
+    /// Busy-wait until the reference tick source has wrapped `wraps` times;
+    /// false on timeout (source not counting).
+    pub wait_tick_wraps: fn(wraps: u32) -> bool,
+}
+
+static EXTERNAL_IRQ_OPS: Once<&'static ExternalInterruptOps> = Once::new();
+
+/// The platform-provided external IRQ operations, installed by
+/// [`initialize`]. Every caller runs during or after kernel bring-up.
+pub fn external_irq_ops() -> &'static ExternalInterruptOps {
+    EXTERNAL_IRQ_OPS
+        .get()
+        .expect("external IRQ ops must be installed before use")
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DescriptorState {
     pub gdt_loaded: bool,
     pub idt_loaded: bool,
     pub tss_loaded: bool,
-    pub pic_remapped: bool,
-    pub pit_programmed: bool,
+    pub external_controller_ready: bool,
+    pub tick_source_programmed: bool,
     pub timer_hz: u32,
     pub syscall_vector: InterruptVector,
 }
@@ -60,8 +88,8 @@ impl DescriptorState {
             gdt_loaded: false,
             idt_loaded: false,
             tss_loaded: false,
-            pic_remapped: false,
-            pit_programmed: false,
+            external_controller_ready: false,
+            tick_source_programmed: false,
             timer_hz: 0,
             syscall_vector: InterruptVector(SYSCALL_VECTOR as u16),
         }
@@ -101,12 +129,13 @@ unsafe extern "C" {
     fn serviceos_x86_64_timer_irq_entry();
 }
 
-pub fn initialize() -> DescriptorState {
+pub fn initialize(external: &'static ExternalInterruptOps) -> DescriptorState {
     install_descriptor_tables();
     install_interrupt_table();
     initialize_lapic();
-    pic::initialize_pic();
-    pic::initialize_pit(TIMER_TICK_HZ);
+    EXTERNAL_IRQ_OPS.call_once(|| external);
+    (external.bring_up)();
+    (external.program_tick_source)(TIMER_TICK_HZ);
     initialize_syscall_sysret();
     initialize_per_cpu();
     initialize_lapic_timer_source();
@@ -121,8 +150,8 @@ pub fn initialize() -> DescriptorState {
         gdt_loaded: true,
         idt_loaded: true,
         tss_loaded: true,
-        pic_remapped: true,
-        pit_programmed: true,
+        external_controller_ready: true,
+        tick_source_programmed: true,
         timer_hz: TIMER_TICK_HZ,
         syscall_vector: InterruptVector(SYSCALL_VECTOR as u16),
     }
@@ -130,22 +159,24 @@ pub fn initialize() -> DescriptorState {
 
 fn initialize_lapic() {
     // Enable the local APIC as an interrupt controller in virtual-wire mode
-    // so the PIC keeps delivering and LAPIC EOIs are meaningful. The PIT/PIC
-    // remains the system tick source; the LAPIC timer entry stays masked on
-    // its own vector until it is calibrated against the PIT.
+    // so the platform's external controller keeps delivering and LAPIC EOIs
+    // are meaningful. The platform tick source remains the system tick; the
+    // LAPIC timer entry stays masked on its own vector until it is
+    // calibrated against that reference.
     unsafe {
         lapic::initialize();
     }
 }
 
-/// Calibrate the LAPIC timer against the running PIT and, on success, arm it
-/// as the system tick source (masking the PIC's IRQ0 so ticks are counted
-/// exactly once). On failure the system silently stays on the PIT.
+/// Calibrate the LAPIC timer against the platform's running tick source and,
+/// on success, arm it as the system tick source (masking the external IRQ
+/// line 0 so ticks are counted exactly once). On failure the system silently
+/// stays on the platform tick source.
 fn initialize_lapic_timer_source() {
-    const CALIBRATION_PIT_TICKS: u32 = 3;
+    const CALIBRATION_TICKS: u32 = 3;
 
     let mut timer = lapic::timer();
-    let Some(ticks_per_ms) = timer.calibrate_against_pit(TIMER_TICK_HZ, CALIBRATION_PIT_TICKS)
+    let Some(ticks_per_ms) = timer.calibrate_against_reference(TIMER_TICK_HZ, CALIBRATION_TICKS)
     else {
         crate::serial::write_args(format_args!(
             "serviceos: lapic-timer: calibration failed; staying on PIT @{}Hz\n",
@@ -165,7 +196,7 @@ fn initialize_lapic_timer_source() {
         return;
     }
 
-    pic::mask_pic_irq_line(0);
+    (external_irq_ops().mask_line)(0);
     crate::serial::write_args(format_args!(
         "serviceos: lapic-timer: calibrated {} ticks/ms; armed periodic on vector {:#04x}; PIT IRQ0 masked\n",
         ticks_per_ms,
@@ -389,21 +420,21 @@ fn install_interrupt_table() {
                 serviceos_x86_64_timer_irq_entry as *const (),
             ));
             idt[lapic::LAPIC_SPURIOUS_VECTOR].set_handler_fn(irq::lapic_spurious_interrupt_handler);
-            idt[PIC_PRIMARY_OFFSET + 1].set_handler_fn(irq::external_irq1_handler);
-            idt[PIC_PRIMARY_OFFSET + 2].set_handler_fn(irq::external_irq2_handler);
-            idt[PIC_PRIMARY_OFFSET + 3].set_handler_fn(irq::external_irq3_handler);
-            idt[PIC_PRIMARY_OFFSET + 4].set_handler_fn(irq::external_irq4_handler);
-            idt[PIC_PRIMARY_OFFSET + 5].set_handler_fn(irq::external_irq5_handler);
-            idt[PIC_PRIMARY_OFFSET + 6].set_handler_fn(irq::external_irq6_handler);
-            idt[PIC_PRIMARY_OFFSET + 7].set_handler_fn(irq::external_irq7_handler);
-            idt[PIC_SECONDARY_OFFSET].set_handler_fn(irq::external_irq8_handler);
-            idt[PIC_SECONDARY_OFFSET + 1].set_handler_fn(irq::external_irq9_handler);
-            idt[PIC_SECONDARY_OFFSET + 2].set_handler_fn(irq::external_irq10_handler);
-            idt[PIC_SECONDARY_OFFSET + 3].set_handler_fn(irq::external_irq11_handler);
-            idt[PIC_SECONDARY_OFFSET + 4].set_handler_fn(irq::external_irq12_handler);
-            idt[PIC_SECONDARY_OFFSET + 5].set_handler_fn(irq::external_irq13_handler);
-            idt[PIC_SECONDARY_OFFSET + 6].set_handler_fn(irq::external_irq14_handler);
-            idt[PIC_SECONDARY_OFFSET + 7].set_handler_fn(irq::external_irq15_handler);
+            idt[EXTERNAL_IRQ_VECTOR_BASE + 1].set_handler_fn(irq::external_irq1_handler);
+            idt[EXTERNAL_IRQ_VECTOR_BASE + 2].set_handler_fn(irq::external_irq2_handler);
+            idt[EXTERNAL_IRQ_VECTOR_BASE + 3].set_handler_fn(irq::external_irq3_handler);
+            idt[EXTERNAL_IRQ_VECTOR_BASE + 4].set_handler_fn(irq::external_irq4_handler);
+            idt[EXTERNAL_IRQ_VECTOR_BASE + 5].set_handler_fn(irq::external_irq5_handler);
+            idt[EXTERNAL_IRQ_VECTOR_BASE + 6].set_handler_fn(irq::external_irq6_handler);
+            idt[EXTERNAL_IRQ_VECTOR_BASE + 7].set_handler_fn(irq::external_irq7_handler);
+            idt[EXTERNAL_IRQ_VECTOR_BASE + 8].set_handler_fn(irq::external_irq8_handler);
+            idt[EXTERNAL_IRQ_VECTOR_BASE + 9].set_handler_fn(irq::external_irq9_handler);
+            idt[EXTERNAL_IRQ_VECTOR_BASE + 10].set_handler_fn(irq::external_irq10_handler);
+            idt[EXTERNAL_IRQ_VECTOR_BASE + 11].set_handler_fn(irq::external_irq11_handler);
+            idt[EXTERNAL_IRQ_VECTOR_BASE + 12].set_handler_fn(irq::external_irq12_handler);
+            idt[EXTERNAL_IRQ_VECTOR_BASE + 13].set_handler_fn(irq::external_irq13_handler);
+            idt[EXTERNAL_IRQ_VECTOR_BASE + 14].set_handler_fn(irq::external_irq14_handler);
+            idt[EXTERNAL_IRQ_VECTOR_BASE + 15].set_handler_fn(irq::external_irq15_handler);
             idt[SYSCALL_VECTOR]
                 .set_handler_addr(VirtAddr::from_ptr(
                     serviceos_x86_64_syscall_entry as *const (),

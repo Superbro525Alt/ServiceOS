@@ -3,8 +3,8 @@ use serviceos_kernel_core::task;
 use x86_64::structures::idt::InterruptStackFrame;
 
 use super::{
-    EXTERNAL_IRQ_HANDLERS, EXTERNAL_IRQ_LINES, PIC_PRIMARY_OFFSET, TIMER_VECTOR,
-    pic::{acknowledge_pic, unmask_pic_irq_line},
+    EXTERNAL_IRQ_HANDLERS, EXTERNAL_IRQ_LINES, EXTERNAL_IRQ_VECTOR_BASE, TIMER_VECTOR,
+    external_irq_ops,
 };
 use crate::user::SavedUserContext;
 
@@ -31,17 +31,18 @@ extern "C" fn serviceos_x86_64_handle_timer_irq(frame: *mut TimerIrqFrame) -> u6
     let frame = unsafe { &mut *frame };
 
     // The system tick is delivered either by the LAPIC timer on its own
-    // vector (once calibrated and armed) or by the PIT routed through the
-    // 8259 PIC. Only the active source is acknowledged: the LAPIC always
-    // requires an EOI for deliveries that pass through it, while the PIC
-    // must be acknowledged or it will not deliver further timer interrupts.
+    // vector (once calibrated and armed) or by the platform's external tick
+    // line. Only the active source is acknowledged: the LAPIC always
+    // requires an EOI for deliveries that pass through it, while the
+    // external controller must be acknowledged or it will not deliver
+    // further timer interrupts.
     if crate::lapic::timer().is_armed() {
         unsafe {
             crate::lapic::send_eoi();
         }
     } else {
         unsafe {
-            acknowledge_pic(TIMER_VECTOR);
+            (external_irq_ops().acknowledge_vector)(TIMER_VECTOR);
             if crate::lapic::timer().is_initialized() {
                 crate::lapic::send_eoi();
             }
@@ -101,30 +102,30 @@ pub(super) fn register_external_irq_handler(irq_line: u8, handler: fn(u8)) -> bo
     for existing in line_handlers.iter().flatten().copied() {
         if core::ptr::fn_addr_eq(existing, handler) {
             drop(handlers);
-            unmask_pic_irq_line(irq_line);
+            (external_irq_ops().unmask_line)(irq_line);
             return true;
         }
     }
     if let Some(slot) = line_handlers.iter_mut().find(|slot| slot.is_none()) {
         *slot = Some(handler);
         drop(handlers);
-        unmask_pic_irq_line(irq_line);
+        (external_irq_ops().unmask_line)(irq_line);
         return true;
     }
     false
 }
 
 fn dispatch_external_irq(irq_line: u8) {
-    let vector = PIC_PRIMARY_OFFSET + irq_line;
+    let vector = EXTERNAL_IRQ_VECTOR_BASE + irq_line;
     interrupts::note_external_interrupt(InterruptVector(vector as u16));
     let handlers = EXTERNAL_IRQ_HANDLERS.lock();
     for handler in handlers[irq_line as usize].iter().flatten().copied() {
         handler(irq_line);
     }
-    // The LAPIC is enabled in virtual-wire mode, so external PIC deliveries
+    // The LAPIC is enabled in virtual-wire mode, so external deliveries
     // may pass through it; acknowledge both controllers like the timer path.
     unsafe {
-        acknowledge_pic(vector);
+        (external_irq_ops().acknowledge_vector)(vector);
         if crate::lapic::timer().is_initialized() {
             crate::lapic::send_eoi();
         }

@@ -10,6 +10,7 @@ members = [
     "arch/aarch64",
     "arch/riscv64",
     "platform/x86_64/qemu_virtio",
+    "platform/x86_64/pc",
     "platform/aarch64/raspi5",
     "platform/x86_64/qemu_virtio/image",
     "platform/aarch64/raspi5/image",

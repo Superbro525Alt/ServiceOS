@@ -126,15 +126,36 @@ pub fn handle_request(
             response.words[3] = report.queue_capacity as u64;
             response.words[4] = PrinterStatus::Unimplemented as u64;
         }
+        x if x == peripheral_tag::INPUT_EVENT_REQUEST => {
+            response.tag = peripheral_tag::INPUT_EVENT_REPLY;
+            let device_id = *request.words.first().unwrap_or(&0) as u32;
+            let kind = *request.words.get(1).unwrap_or(&0) as u32;
+            let code = *request.words.get(2).unwrap_or(&0) as u32;
+            let value0 = *request.words.get(3).unwrap_or(&0) as u32 as i32;
+            let value1 = *request.words.get(4).unwrap_or(&0) as u32 as i32;
+            match state.queue_client_input(device_id, kind, code, value0, value1) {
+                Ok(_) => {
+                    response.word_count = 2;
+                    response.words[0] = 0;
+                    response.words[1] = state.bridge.accepted;
+                }
+                Err(error) => fail(response, error),
+            }
+        }
         x if x == peripheral_tag::STATUS_REQUEST => {
             response.tag = peripheral_tag::STATUS_REPLY;
-            response.word_count = 6;
+            // Bridge counters are an additive tail (accepted/forwarded/
+            // dropped); existing readers of the leading words are unaffected.
+            response.word_count = 9;
             response.words[0] = 0;
             response.words[1] = state.registry.count_matching(None) as u64;
             response.words[2] = state.events.attach_total();
             response.words[3] = state.events.detach_total();
             response.words[4] = state.events.next_seq().saturating_sub(1);
             response.words[5] = printer_report().status as u64;
+            response.words[6] = state.bridge.accepted;
+            response.words[7] = state.bridge.forwarded;
+            response.words[8] = state.bridge.dropped;
         }
         _ => {}
     }

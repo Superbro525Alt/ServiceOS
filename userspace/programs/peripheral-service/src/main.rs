@@ -1,6 +1,8 @@
 //! Peripheral service: device registry (classify/attach/detach over the
-//! kernel's enumeration vocabulary), bounded attach/detach event log, and
-//! the printer class query stub (honestly Unimplemented).
+//! kernel's enumeration vocabulary), bounded attach/detach event log, the
+//! printer class query stub (honestly Unimplemented), and the INPUT-slice
+//! bridge that relays client-reported input-class device events into the
+//! session service's client-source input channel.
 //!
 //! Activation (manual, not in the default boot graph): the image is built
 //! into the boot store as `services/peripheral-service/program.img` and
@@ -12,11 +14,12 @@
 //! delivery the spawner arranges.
 //!
 //! Honest hardware note: manual-activation services receive no kernel device
-//! transports at spawn, so the v0 registry fills only through its own ATTACH
+//! transports at spawn, so the registry fills through its own ATTACH
 //! contract — clients that hold real input/block/display handles report the
-//! descriptors and the service classifies them into known classes. With no
-//! registrants it honestly reports zero devices; a transport-injection path
-//! can light up live enumeration later without tag changes.
+//! descriptors and the service classifies them into known classes. Input
+//! device events are likewise client-reported (the INPUT_EVENT contract)
+//! and relayed to the session input pipeline; with no registrants the
+//! registry honestly reports zero devices.
 
 #![cfg_attr(not(test), no_std)]
 #![cfg_attr(not(test), no_main)]
@@ -24,7 +27,7 @@
 mod protocol;
 
 use rt::{ControlTag, LifecycleEvent, RawMessage};
-use serviceos_peripheral_service::PeripheralServiceState;
+use serviceos_peripheral_service::{ClientInputEvent, PeripheralServiceState};
 
 use crate::protocol::{RequestScratch, handle_request};
 
@@ -33,6 +36,26 @@ use serviceos_userspace_runtime as rt;
 const EXIT_OK: u64 = 0;
 const EXIT_STARTUP: u64 = 0xfc01;
 const EXIT_LOOP: u64 = 0xfc02;
+
+/// Session service's client-source input tag (session-service-owned local
+/// extension range 0x980..; mirrored here so the bridge can feed the real
+/// session input pipeline without a shared-ABI edit).
+const SESSION_CLIENT_INPUT_REQUEST: u32 = 0x98c;
+
+/// Cached send-right for the session service's public channel. Resolved
+/// lazily on the first bridged event and invalidated on send failure so a
+/// session restart self-heals on the next event.
+struct BridgeRelay {
+    session_handle: Option<rt::Handle>,
+}
+
+impl BridgeRelay {
+    fn new() -> Self {
+        Self {
+            session_handle: None,
+        }
+    }
+}
 
 #[cfg(not(test))]
 rt::entry!(main);
@@ -50,7 +73,10 @@ fn main() -> u64 {
     let mut state = PeripheralServiceState::new();
     // Registry starts empty and stays that way until a client holding real
     // transports reports descriptors over the ATTACH contract.
-    let _ = rt::debug_log(b"peripheral-service ready; registry empty; printer=unimplemented");
+    let _ = rt::debug_log(
+        b"peripheral-service ready; registry empty; printer=unimplemented; input bridge armed",
+    );
+    let mut relay = BridgeRelay::new();
 
     // Public control channel. Launch handshake (mirrors account-service's
     // wizard path): when the spawner passed a startup handle, its send-half
@@ -79,7 +105,7 @@ fn main() -> u64 {
 
         let mut request = RawMessage::empty(0);
         match rt::channel_receive_nonblocking(public.first, &mut request) {
-            Ok(()) => serve(&mut state, &request),
+            Ok(()) => serve(bootstrap, &mut relay, &mut state, &request),
             Err(rt::Error::QueueEmpty) => {}
             Err(_) => return EXIT_LOOP,
         }
@@ -90,7 +116,12 @@ fn main() -> u64 {
     }
 }
 
-fn serve(state: &mut PeripheralServiceState, request: &RawMessage) {
+fn serve(
+    bootstrap: rt::Handle,
+    relay: &mut BridgeRelay,
+    state: &mut PeripheralServiceState,
+    request: &RawMessage,
+) {
     let reply_to = request.handles[0];
     let mut response = RawMessage::empty(0);
     let mut scratch = RequestScratch::new();
@@ -103,6 +134,49 @@ fn serve(state: &mut PeripheralServiceState, request: &RawMessage) {
     );
     if response.tag != 0 && reply_to != 0 {
         let _ = rt::channel_send(reply_to, &response);
+    }
+    while let Some(event) = state.take_bridge_outbox() {
+        relay_client_input(bootstrap, relay, state, &event);
+    }
+}
+
+/// Relay one client-reported device event into the session input pipeline.
+/// Fire-and-forget: the session applies its own isolation policy, so no
+/// reply is expected. Lookup/send failures drop the event (counted) and
+/// drop the cached handle so the next event re-resolves.
+fn relay_client_input(
+    bootstrap: rt::Handle,
+    relay: &mut BridgeRelay,
+    state: &mut PeripheralServiceState,
+    event: &ClientInputEvent,
+) {
+    let handle = match relay.session_handle {
+        Some(handle) => handle,
+        None => match rt::lookup_service(bootstrap, rt::ServiceId::Session) {
+            Ok(handle) => {
+                relay.session_handle = Some(handle);
+                handle
+            }
+            Err(_) => {
+                state.note_bridge_relay(false);
+                return;
+            }
+        },
+    };
+    let mut message = RawMessage::empty(SESSION_CLIENT_INPUT_REQUEST);
+    message.word_count = 5;
+    message.words[0] = event.device_id as u64;
+    message.words[1] = event.kind as u64;
+    message.words[2] = event.code as u64;
+    message.words[3] = event.value0 as u32 as u64;
+    message.words[4] = event.value1 as u32 as u64;
+    match rt::channel_send(handle, &message) {
+        Ok(()) => state.note_bridge_relay(true),
+        Err(_) => {
+            let _ = rt::handle_close(handle);
+            relay.session_handle = None;
+            state.note_bridge_relay(false);
+        }
     }
 }
 
@@ -269,10 +343,13 @@ mod tests {
         let mut state = PeripheralServiceState::new();
         let status = call(&mut state, peripheral_tag::STATUS_REQUEST, &[]);
         assert_eq!(status.tag, peripheral_tag::STATUS_REPLY);
-        assert_eq!(status.word_count, 6);
+        assert_eq!(status.word_count, 9);
         assert_eq!(status.words[1], 0);
         assert_eq!(status.words[4], 0);
         assert_eq!(status.words[5], printer_report().status as u64);
+        assert_eq!(status.words[6], 0);
+        assert_eq!(status.words[7], 0);
+        assert_eq!(status.words[8], 0);
 
         let printer = call(&mut state, peripheral_tag::PRINTER_QUERY_REQUEST, &[]);
         assert_eq!(printer.tag, peripheral_tag::PRINTER_QUERY_REPLY);
@@ -286,5 +363,114 @@ mod tests {
         let silent = call(&mut state, 0x7fff, &[]);
         assert_eq!(silent.tag, 0);
         assert_eq!(silent.word_count, 0);
+    }
+
+    fn attach_input(state: &mut PeripheralServiceState, detail: u64) -> u64 {
+        let reply = call(
+            state,
+            peripheral_tag::ATTACH_REQUEST,
+            &[device_family::INPUT as u64, detail, 1, 0, 0],
+        );
+        assert_eq!(reply.words[0], 0);
+        reply.words[1]
+    }
+
+    fn inject(state: &mut PeripheralServiceState, words: &[u64]) -> RawMessage {
+        call(state, peripheral_tag::INPUT_EVENT_REQUEST, words)
+    }
+
+    #[test]
+    fn client_input_for_registered_keyboard_queues_bridge_outbox() {
+        let mut state = PeripheralServiceState::new();
+        let keyboard_id = attach_input(&mut state, 1);
+
+        let reply = inject(
+            &mut state,
+            &[keyboard_id, 3, 30, 1, 0], // key press, code 30
+        );
+        assert_eq!(reply.tag, peripheral_tag::INPUT_EVENT_REPLY);
+        assert_eq!(reply.word_count, 2);
+        assert_eq!(reply.words[0], 0);
+        assert_eq!(reply.words[1], 1);
+
+        let event = state.take_bridge_outbox().expect("queued for relay");
+        assert_eq!(event.device_id, keyboard_id as u32);
+        assert_eq!(event.kind, 3);
+        assert_eq!(event.code, 30);
+        assert_eq!(event.value0, 1);
+        assert_eq!(event.value1, 0);
+        assert!(state.take_bridge_outbox().is_none());
+
+        state.note_bridge_relay(true);
+        let status = call(&mut state, peripheral_tag::STATUS_REQUEST, &[]);
+        assert_eq!(status.word_count, 9);
+        assert_eq!(status.words[6], 1); // accepted
+        assert_eq!(status.words[7], 1); // forwarded
+        assert_eq!(status.words[8], 0); // dropped
+    }
+
+    #[test]
+    fn client_input_rejects_unknown_noninput_and_bad_kind() {
+        let mut state = PeripheralServiceState::new();
+        let pointer_id = attach_input(&mut state, 2);
+        let block_id = {
+            let reply = call(
+                &mut state,
+                peripheral_tag::ATTACH_REQUEST,
+                &[device_family::BLOCK as u64, 0, 1, 0, 0],
+            );
+            reply.words[1]
+        };
+
+        // Unknown device id.
+        assert_eq!(inject(&mut state, &[99, 3, 0, 0, 0]).words[0], 2);
+        // Registered but non-input class never bridges (class filtering).
+        assert_eq!(inject(&mut state, &[block_id, 3, 0, 0, 0]).words[0], 1);
+        // Unknown event kind word.
+        assert_eq!(inject(&mut state, &[pointer_id, 6, 0, 0, 0]).words[0], 1);
+        assert_eq!(inject(&mut state, &[pointer_id, 0, 0, 0, 0]).words[0], 1);
+        assert!(state.take_bridge_outbox().is_none());
+        assert_eq!(state.bridge.accepted, 0);
+
+        let status = call(&mut state, peripheral_tag::STATUS_REQUEST, &[]);
+        assert_eq!(status.words[6], 0);
+        assert_eq!(status.words[7], 0);
+        assert_eq!(status.words[8], 0);
+    }
+
+    #[test]
+    fn client_input_detach_is_teardown() {
+        let mut state = PeripheralServiceState::new();
+        let tablet_id = attach_input(&mut state, 3);
+        assert_eq!(inject(&mut state, &[tablet_id, 1, 0, 100, 200]).words[0], 0);
+        assert!(state.take_bridge_outbox().is_some());
+
+        let detach = call(&mut state, peripheral_tag::DETACH_REQUEST, &[tablet_id]);
+        assert_eq!(detach.words[0], 0);
+
+        assert_eq!(inject(&mut state, &[tablet_id, 1, 0, 100, 200]).words[0], 2);
+        assert!(state.take_bridge_outbox().is_none());
+
+        // A re-attached device with the same class bridges again under a
+        // fresh id (ids never reused).
+        let reattached = attach_input(&mut state, 3);
+        assert_ne!(reattached, tablet_id);
+        assert_eq!(inject(&mut state, &[reattached, 1, 0, 5, 6]).words[0], 0);
+        assert!(state.take_bridge_outbox().is_some());
+    }
+
+    #[test]
+    fn client_input_pointer_and_scroll_shapes_accepted() {
+        let mut state = PeripheralServiceState::new();
+        let pointer_id = attach_input(&mut state, 2);
+        // Absolute motion and scroll words are in the kernel vocabulary.
+        assert_eq!(
+            inject(&mut state, &[pointer_id, 1, 0, 32768, 32768]).words[0],
+            0
+        );
+        assert!(state.take_bridge_outbox().is_some());
+        assert_eq!(inject(&mut state, &[pointer_id, 5, 1, 0, 120]).words[0], 0);
+        assert!(state.take_bridge_outbox().is_some());
+        assert_eq!(state.bridge.accepted, 2);
     }
 }

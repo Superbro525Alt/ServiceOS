@@ -3,13 +3,16 @@
 //!
 //! Honest scope note: manual-activation services receive no kernel device
 //! handles at spawn (device transports are injected only into graph
-//! services), so this v0 registry is populated through its own ATTACH
+//! services), so this registry is populated through its own ATTACH
 //! contract — clients that hold real transports report descriptors built
 //! from the kernel's enumeration vocabulary (input device classes from the
 //! shared ABI, block/display backend words) and the service classifies and
-//! tracks them. With no registrants the registry honestly reports zero
-//! devices. The printer class ships as a full query shape with an explicit
-//! `Unimplemented` status; no print pipeline exists.
+//! tracks them. The INPUT slice bridges client-reported device events for
+//! input-class ATTACHes into the session service's client-source input
+//! channel, so a scripted keyboard/pointer device's events reach the real
+//! desktop input pipeline; live kernel enumeration and real transport
+//! injection remain open. The printer class ships as a full query shape
+//! with an explicit `Unimplemented` status; no print pipeline exists.
 
 #![cfg_attr(not(test), no_std)]
 
@@ -37,6 +40,14 @@ pub mod peripheral_tag {
     pub const EVENTS_REPLY: u32 = 0x269;
     pub const PRINTER_QUERY_REQUEST: u32 = 0x26A;
     pub const PRINTER_QUERY_REPLY: u32 = 0x26B;
+    /// Client-reported device event intake: a client that ATTACHed an
+    /// input-class device feeds one device event (key/button/motion) tagged
+    /// with the device id from its ATTACH reply. Accepted events land in the
+    /// bridge outbox; the running binary relays them to the session
+    /// service's client-source input channel so they reach the real
+    /// desktop input pipeline.
+    pub const INPUT_EVENT_REQUEST: u32 = 0x26C;
+    pub const INPUT_EVENT_REPLY: u32 = 0x26D;
 }
 
 /// Transport family hints reported by clients on ATTACH. The input family
@@ -374,6 +385,45 @@ pub const fn printer_report() -> PrinterReport {
 pub struct PeripheralServiceState {
     pub registry: DeviceRegistry,
     pub events: EventLog,
+    pub bridge: BridgeState,
+}
+
+/// One client-reported device event queued for relay into the session
+/// input pipeline. Fields mirror the kernel's `InputEventInfo` shape so the
+/// session can rebuild the event verbatim (`source_id` carries the
+/// peripheral device id).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ClientInputEvent {
+    pub device_id: u32,
+    pub kind: u32,
+    pub code: u32,
+    pub value0: i32,
+    pub value1: i32,
+}
+
+/// Kernel `InputEventKind` vocabulary (shared ABI graphics.rs): pointer
+/// motion=1, pointer button=2, key=3, pointer delta=4, pointer scroll=5.
+pub const fn client_input_kind_valid(kind: u32) -> bool {
+    matches!(kind, 1..=5)
+}
+
+const fn is_input_class(class: DeviceClass) -> bool {
+    matches!(
+        class,
+        DeviceClass::Keyboard | DeviceClass::Pointer | DeviceClass::Tablet
+    )
+}
+
+/// Bridge counters plus the single-slot outbox the running binary drains
+/// after each protocol turn. Counters separate protocol acceptance (the
+/// event is well-formed and the device is a registered input) from relay
+/// outcomes (session lookup/send success or drop).
+#[derive(Debug, Default)]
+pub struct BridgeState {
+    pub outbox: Option<ClientInputEvent>,
+    pub accepted: u64,
+    pub forwarded: u64,
+    pub dropped: u64,
 }
 
 impl PeripheralServiceState {
@@ -381,6 +431,12 @@ impl PeripheralServiceState {
         Self {
             registry: DeviceRegistry::new(),
             events: EventLog::new(),
+            bridge: BridgeState {
+                outbox: None,
+                accepted: 0,
+                forwarded: 0,
+                dropped: 0,
+            },
         }
     }
 
@@ -407,6 +463,53 @@ impl PeripheralServiceState {
         self.events
             .record(EventKind::Detach, record.id, record.class, tick);
         Ok(record)
+    }
+
+    /// Validate and queue one client-reported device event for the session
+    /// bridge. Only registered input-class devices (keyboard/pointer/tablet)
+    /// with a kernel `InputEventKind` word are accepted; anything else is
+    /// rejected so the desktop pipeline never sees phantom or non-input
+    /// traffic. A detach is the teardown: once the record is gone its id
+    /// stops bridging immediately.
+    pub fn queue_client_input(
+        &mut self,
+        device_id: u32,
+        kind: u32,
+        code: u32,
+        value0: i32,
+        value1: i32,
+    ) -> Result<ClientInputEvent, PeripheralError> {
+        let record = self
+            .registry
+            .get(device_id)
+            .ok_or(PeripheralError::NotFound)?;
+        if !is_input_class(record.class) || !client_input_kind_valid(kind) {
+            return Err(PeripheralError::InvalidArgument);
+        }
+        let event = ClientInputEvent {
+            device_id,
+            kind,
+            code,
+            value0,
+            value1,
+        };
+        self.bridge.outbox = Some(event);
+        self.bridge.accepted += 1;
+        Ok(event)
+    }
+
+    /// Hand the running binary the queued bridge event, if any.
+    pub fn take_bridge_outbox(&mut self) -> Option<ClientInputEvent> {
+        self.bridge.outbox.take()
+    }
+
+    /// Record the relay outcome for the last taken outbox event.
+    pub fn note_bridge_relay(&mut self, forwarded: bool) {
+        if forwarded {
+            self.bridge.forwarded += 1;
+        } else {
+            self.bridge.dropped += 1;
+        }
     }
 }
 

@@ -1,5 +1,5 @@
-#![no_std]
-#![no_main]
+#![cfg_attr(not(test), no_std)]
+#![cfg_attr(not(test), no_main)]
 
 use rt::{
     ControlTag, DesktopInputAction, InputButton, InputEventKind, LifecycleEvent, LogDomain,
@@ -19,6 +19,12 @@ const CURRENT_SESSION_REQUEST: u32 = 0x988;
 const CURRENT_SESSION_REPLY: u32 = 0x989;
 const REGISTER_SESSION_REQUEST: u32 = 0x98a;
 const REGISTER_SESSION_REPLY: u32 = 0x98b;
+/// Client-source input channel: peripheral-service relays client-reported
+/// events for its ATTACHed input-class devices here (words: device id plus
+/// the kernel InputEventInfo shape). Fire-and-forget — the session applies
+/// the same isolation policy as hardware input and forwards accepted events
+/// through the desktop route; no reply handle is used.
+const CLIENT_INPUT_REQUEST: u32 = 0x98c;
 
 const SESSION_ID: u32 = 1;
 const MOD_SHIFT: u32 = 1 << 0;
@@ -112,7 +118,7 @@ fn main() -> u64 {
             match rt::channel_receive_nonblocking(public.first, &mut request) {
                 Ok(()) => {
                     did_work = true;
-                    if handle_request(&request, log_handle, &mut state).is_err() {
+                    if handle_request(bootstrap, &request, log_handle, &mut state).is_err() {
                         return 0xfd06;
                     }
                     request_budget = request_budget.saturating_sub(1);
@@ -159,6 +165,7 @@ struct SessionState {
 }
 
 fn handle_request(
+    bootstrap: rt::Handle,
     request: &RawMessage,
     log_handle: rt::Handle,
     state: &mut SessionState,
@@ -338,10 +345,69 @@ fn handle_request(
             let _ = rt::channel_send(reply_handle, &reply);
             let _ = rt::handle_close(reply_handle);
         }
+        x if x == CLIENT_INPUT_REQUEST => {
+            let event = match decode_client_input(request) {
+                ClientInputVerdict::Malformed => return Ok(()),
+                ClientInputVerdict::Routed(event) => event,
+            };
+            // Same isolation gate as the hardware path: client-sourced events
+            // only reach the desktop while this session's route is active.
+            if !client_input_routable(state.registry.classify_input()) {
+                return Ok(());
+            }
+            let mut pending_pointer_move = false;
+            route_input_event(bootstrap, state, event, &mut pending_pointer_move)?;
+            if pending_pointer_move {
+                flush_pointer_move(bootstrap, state)?;
+            }
+        }
         _ => {}
     }
 
     Ok(())
+}
+
+/// Verdict for one client-sourced input message.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ClientInputVerdict {
+    /// Wrong shape or unknown event kind: drop silently.
+    Malformed,
+    /// Well-formed event; `source_id` carries the peripheral device id.
+    Routed(rt::InputEventInfo),
+}
+
+/// Decode the client-source input wire shape
+/// (`[device_id, kind, code, value0, value1]`) against the kernel
+/// `InputEventKind` vocabulary. Malformed frames never reach the desktop.
+fn decode_client_input(request: &RawMessage) -> ClientInputVerdict {
+    if request.word_count < 5 {
+        return ClientInputVerdict::Malformed;
+    }
+    let kind = request.words[1] as u32;
+    let known = matches!(
+        kind,
+        x if x == InputEventKind::PointerMotion as u32
+            || x == InputEventKind::PointerButton as u32
+            || x == InputEventKind::Key as u32
+            || x == InputEventKind::PointerDelta as u32
+            || x == InputEventKind::PointerScroll as u32
+    );
+    if !known {
+        return ClientInputVerdict::Malformed;
+    }
+    ClientInputVerdict::Routed(rt::InputEventInfo {
+        kind,
+        code: request.words[2] as u32,
+        value0: request.words[3] as u32 as i32,
+        value1: request.words[4] as u32 as i32,
+        source_id: request.words[0] as u32,
+    })
+}
+
+/// Isolation-gate mapping for client-sourced input: only an active routed
+/// session may receive events, mirroring the hardware drain-and-drop rule.
+fn client_input_routable(decision: InputDecision) -> bool {
+    matches!(decision, InputDecision::RouteToDesktop(_))
 }
 
 fn session_kind_hint(_request: &RawMessage) -> SessionKind {
@@ -432,31 +498,7 @@ fn poll_input(
             remaining = remaining.saturating_sub(1);
             continue;
         }
-        match event.kind {
-            x if x == InputEventKind::PointerMotion as u32 => {
-                state.pointer_x = scale_input_axis(event.value0, state.output_width);
-                state.pointer_y = scale_input_axis(event.value1, state.output_height);
-                pending_pointer_move = true;
-            }
-            x if x == InputEventKind::PointerDelta as u32 => {
-                state.pointer_x = clamp_axis(
-                    state.pointer_x.saturating_add(event.value0),
-                    state.output_width,
-                );
-                state.pointer_y = clamp_axis(
-                    state.pointer_y.saturating_add(event.value1),
-                    state.output_height,
-                );
-                pending_pointer_move = true;
-            }
-            _ => {
-                if pending_pointer_move {
-                    flush_pointer_move(bootstrap, state)?;
-                    pending_pointer_move = false;
-                }
-                process_input_event(bootstrap, state, event)?;
-            }
-        }
+        route_input_event(bootstrap, state, event, &mut pending_pointer_move)?;
         remaining = remaining.saturating_sub(1);
         if remaining == 0 {
             if pending_pointer_move {
@@ -465,6 +507,44 @@ fn poll_input(
             return Ok(processed);
         }
     }
+}
+
+/// Apply one input event (hardware or client-sourced) to the session state
+/// and the desktop route. Pointer motion/delta accumulate into pointer_x/y
+/// with `pending` set so coalesced moves flush once per drain batch; every
+/// other kind flushes any pending move first, then dispatches.
+fn route_input_event(
+    bootstrap: rt::Handle,
+    state: &mut SessionState,
+    event: rt::InputEventInfo,
+    pending: &mut bool,
+) -> rt::Result<()> {
+    match event.kind {
+        x if x == InputEventKind::PointerMotion as u32 => {
+            state.pointer_x = scale_input_axis(event.value0, state.output_width);
+            state.pointer_y = scale_input_axis(event.value1, state.output_height);
+            *pending = true;
+        }
+        x if x == InputEventKind::PointerDelta as u32 => {
+            state.pointer_x = clamp_axis(
+                state.pointer_x.saturating_add(event.value0),
+                state.output_width,
+            );
+            state.pointer_y = clamp_axis(
+                state.pointer_y.saturating_add(event.value1),
+                state.output_height,
+            );
+            *pending = true;
+        }
+        _ => {
+            if *pending {
+                *pending = false;
+                flush_pointer_move(bootstrap, state)?;
+            }
+            process_input_event(bootstrap, state, event)?;
+        }
+    }
+    Ok(())
 }
 
 fn flush_pointer_move(bootstrap: rt::Handle, state: &mut SessionState) -> rt::Result<()> {
@@ -708,6 +788,105 @@ fn emit_log(
         arg0,
         arg1,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn client_input_frame(words: &[u64]) -> RawMessage {
+        let mut message = RawMessage::empty(CLIENT_INPUT_REQUEST);
+        message.word_count = words.len() as u32;
+        message.words[..words.len()].copy_from_slice(words);
+        message
+    }
+
+    #[test]
+    fn decode_client_input_maps_kernel_event_vocabulary() {
+        // Key press for peripheral device 3: full shape survives the decode.
+        let routed = match decode_client_input(&client_input_frame(&[3, 3, 30, 1, 0])) {
+            ClientInputVerdict::Routed(event) => event,
+            ClientInputVerdict::Malformed => panic!("key frame must decode"),
+        };
+        assert_eq!(routed.kind, InputEventKind::Key as u32);
+        assert_eq!(routed.code, 30);
+        assert_eq!(routed.value0, 1);
+        assert_eq!(routed.value1, 0);
+        assert_eq!(routed.source_id, 3);
+
+        // Negative axis values round-trip through the word packing.
+        let delta = match decode_client_input(&client_input_frame(&[
+            1,
+            InputEventKind::PointerDelta as u64,
+            0,
+            (-12i32) as u32 as u64,
+            40,
+        ])) {
+            ClientInputVerdict::Routed(event) => event,
+            ClientInputVerdict::Malformed => panic!("delta frame must decode"),
+        };
+        assert_eq!(delta.value0, -12);
+        assert_eq!(delta.value1, 40);
+
+        for kind in 1..=5u64 {
+            let frame = client_input_frame(&[1, kind, 0, 0, 0]);
+            assert!(matches!(
+                decode_client_input(&frame),
+                ClientInputVerdict::Routed(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn decode_client_input_rejects_malformed_frames() {
+        // Short frame.
+        assert_eq!(
+            decode_client_input(&client_input_frame(&[1, 3, 30])),
+            ClientInputVerdict::Malformed
+        );
+        // Empty frame.
+        assert_eq!(
+            decode_client_input(&client_input_frame(&[])),
+            ClientInputVerdict::Malformed
+        );
+        // Unknown kind words: 0, 6, and far out of range.
+        for kind in [0u64, 6, 99, u64::MAX] {
+            assert_eq!(
+                decode_client_input(&client_input_frame(&[1, kind, 0, 0, 0])),
+                ClientInputVerdict::Malformed
+            );
+        }
+    }
+
+    #[test]
+    fn client_input_gate_mirrors_hardware_isolation() {
+        assert!(client_input_routable(InputDecision::RouteToDesktop(1)));
+        assert!(!client_input_routable(InputDecision::DropInactive(1)));
+        assert!(!client_input_routable(InputDecision::DropHandoff));
+        assert!(!client_input_routable(InputDecision::DropNoSession));
+    }
+
+    #[test]
+    fn client_input_drop_path_never_touches_the_desktop_route() {
+        // Empty registry -> DropNoSession: the handler must return Ok
+        // without attempting any desktop lookup (host-safe: no rt calls).
+        let mut state = SessionState {
+            registry: SessionRegistry::empty(),
+            input_source: SessionInputSource::ServiceControl,
+            input_handle: 0,
+            desktop_handle: rt::INVALID_HANDLE,
+            output_width: 1024,
+            output_height: 768,
+            pointer_x: 512,
+            pointer_y: 384,
+            modifiers: 0,
+        };
+        handle_request(0, &client_input_frame(&[1, 3, 30, 1, 0]), 0, &mut state)
+            .expect("isolated client input is silently dropped");
+        // Pointer state untouched by the drop.
+        assert_eq!(state.pointer_x, 512);
+        assert_eq!(state.pointer_y, 384);
+    }
 }
 
 #[cfg(test)]

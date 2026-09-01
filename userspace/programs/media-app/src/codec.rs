@@ -58,6 +58,11 @@ pub(crate) struct Decoder {
     block_pending: bool,
     /// Samples decoded per channel within the pending block.
     tick: [usize; 2],
+    /// Frames to decode-and-drop after a seek before emitting again.
+    discard_pending: usize,
+    /// wSamplesPerBlock came from the header (not the block_align
+    /// formula), so frame→block arithmetic is trustworthy.
+    spb_from_header: bool,
 }
 
 impl Decoder {
@@ -93,9 +98,9 @@ impl Decoder {
         };
         let info = crate::wav::parse_wav(bytes).ok_or(CodecError::BadHeader)?;
         let channels = info.channels as usize;
-        let (promised_frames, block_align, samples_per_block) = match kind {
+        let (promised_frames, block_align, samples_per_block, spb_from_header) = match kind {
             DecoderKind::Pcm(_) | DecoderKind::MuLaw | DecoderKind::ALaw => {
-                (info.frame_count(), 0usize, 0usize)
+                (info.frame_count(), 0usize, 0usize, true)
             }
             DecoderKind::ImaAdpcm => {
                 let block_align = info.block_align as usize;
@@ -103,17 +108,18 @@ impl Decoder {
                 let formula = (block_align - channels * 4) * 8 / (4 * channels.max(1)) + 1;
                 let hint = info.samples_per_block as usize;
                 // Header hint wins when present and physically plausible.
-                let spb = if hint > 1 && hint <= formula {
-                    hint
+                let (spb, hinted) = if hint > 1 && hint <= formula {
+                    (hint, true)
                 } else if hint == 0 || hint > formula {
-                    formula
+                    (formula, false)
                 } else {
-                    hint
+                    (hint, true)
                 };
                 (
                     info.data_len.div_ceil(block_align) * spb,
                     block_align,
                     spb.max(1),
+                    hinted,
                 )
             }
         };
@@ -132,6 +138,8 @@ impl Decoder {
             samples_per_block,
             block_pending: false,
             tick: [0; 2],
+            discard_pending: 0,
+            spb_from_header,
         })
     }
 
@@ -191,17 +199,49 @@ impl Decoder {
         }
     }
 
-    /// Repositions the decode cursor to `target_frame` for per-sample
-    /// (block-free) encodings: PCM and G.711 are byte-aligned so landing
-    /// frames are exact; block-compressed IMA has no honest mid-stream
-    /// landing spot and refuses, leaving the cursor untouched.
+    /// Repositions the decode cursor to `target_frame`. Per-sample
+    /// encodings (PCM, G.711) are byte-aligned so landing frames are
+    /// exact. Block-compressed IMA lands on the boundary of the block
+    /// at-or-before the target: the decoder re-seeds from that block's
+    /// per-channel header and, when the header's wSamplesPerBlock is
+    /// trustworthy, drops frames inside the block to hit the exact
+    /// target on the next decode. Without a usable wSamplesPerBlock the
+    /// landing is block-granular (no intra-block discard) because the
+    /// frame↔byte map cannot be trusted. A target at-or-past the last
+    /// block parks the cursor at end-of-stream for a clean finish.
     pub(crate) fn seek_frames(&mut self, target_frame: usize) -> bool {
-        let frame_bytes = match self.kind {
-            DecoderKind::Pcm(format) => self.channels as usize * crate::wav::sample_width(format),
-            DecoderKind::MuLaw | DecoderKind::ALaw => self.channels as usize,
-            DecoderKind::ImaAdpcm => return false,
-        };
-        self.pcm_cursor = target_frame.min(self.promised_frames) * frame_bytes;
+        match self.kind {
+            DecoderKind::Pcm(format) => {
+                let frame_bytes = self.channels as usize * crate::wav::sample_width(format);
+                self.pcm_cursor = target_frame.min(self.promised_frames) * frame_bytes;
+            }
+            DecoderKind::MuLaw | DecoderKind::ALaw => {
+                self.pcm_cursor = target_frame.min(self.promised_frames) * self.channels as usize;
+            }
+            DecoderKind::ImaAdpcm => {
+                let target = target_frame.min(self.promised_frames);
+                let (byte_offset, intra, past_end) = ima_seek_math(
+                    target,
+                    self.samples_per_block,
+                    self.block_align,
+                    self.data_len,
+                );
+                self.block_pending = false;
+                self.tick = [0; 2];
+                self.pred = [0; 2];
+                self.index = [0; 2];
+                if past_end {
+                    self.data_cursor = self.data_len;
+                    self.discard_pending = 0;
+                } else {
+                    self.data_cursor = byte_offset;
+                    // Intra-block discard only when the frame→block map
+                    // came from the header; otherwise the landing is the
+                    // block boundary itself (documented granularity).
+                    self.discard_pending = if self.spb_from_header { intra } else { 0 };
+                }
+            }
+        }
         true
     }
 
@@ -219,6 +259,24 @@ impl Decoder {
         out: &mut [f32],
     ) -> usize {
         let ch = self.channels as usize;
+        // A seek landed on a block boundary and must drop `discard_pending`
+        // frames inside it before output resumes; decoding them into a
+        // scratch buffer re-seeds the predictor/step-index chain honestly.
+        // Truncated data ends the discard early and the stream reads as
+        // exhausted from there.
+        if self.discard_pending > 0 {
+            let mut left = self.discard_pending;
+            self.discard_pending = 0;
+            let mut scratch = [0f32; 256];
+            while left > 0 {
+                let cap = left.min(scratch.len() / ch.max(1));
+                let dropped = self.decode_adpcm(bytes, data_end, cap, &mut scratch[..cap * ch]);
+                if dropped == 0 {
+                    break;
+                }
+                left -= dropped;
+            }
+        }
         let target_samples = frames_cap * ch;
         let mut written_samples = 0usize;
         // Address everything relative to the data chunk.
@@ -376,6 +434,25 @@ pub(crate) fn seek_target_frame(
     target.clamp(0, total_frames as i64) as usize
 }
 
+/// Frame→block seek arithmetic for IMA-ADPCM. Block `b` holds frames
+/// `[b*spb, (b+1)*spb)` with the block's initial predictor emitted as
+/// its first frame, so the landing byte is `target/spb * blockAlign`
+/// and `target%spb` frames must be dropped inside that block. Returns
+/// `(byte_offset, intra_block_frames, past_end)`; `past_end` means the
+/// landing byte sits at-or-beyond the data chunk and the stream should
+/// park at end-of-data for a clean finish.
+fn ima_seek_math(
+    target: usize,
+    samples_per_block: usize,
+    block_align: usize,
+    data_len: usize,
+) -> (usize, usize, bool) {
+    let spb = samples_per_block.max(1);
+    let block = target / spb;
+    let byte_offset = block.saturating_mul(block_align.max(1));
+    (byte_offset, target % spb, byte_offset >= data_len)
+}
+
 /// One IMA nibble: returns (new predictor, new index) per the spec math.
 fn ima_step(mut pred: i32, mut index: i8, code: usize) -> (i32, i8) {
     let step = STEP_TABLE[index.clamp(0, 88) as usize];
@@ -435,6 +512,18 @@ mod tests {
     }
 
     fn ima_fmt(channels: u16, rate: u32, block_align: u16) -> Vec<u8> {
+        let spb = if block_align >= channels * 4 {
+            ((u32::from(block_align) - u32::from(channels) * 4) * 8 / (4 * u32::from(channels)) + 1)
+                as u16
+        } else {
+            0
+        };
+        ima_fmt_hint(channels, rate, block_align, spb)
+    }
+
+    /// IMA fmt chunk with an explicit wSamplesPerBlock (0 = absent, the
+    /// malformed-header fallback case).
+    fn ima_fmt_hint(channels: u16, rate: u32, block_align: u16, spb: u16) -> Vec<u8> {
         let mut body = Vec::new();
         body.extend_from_slice(&0x11u16.to_le_bytes());
         body.extend_from_slice(&channels.to_le_bytes());
@@ -444,10 +533,7 @@ mod tests {
         body.extend_from_slice(&block_align.to_le_bytes());
         body.extend_from_slice(&4u16.to_le_bytes());
         body.extend_from_slice(&2u16.to_le_bytes()); // cbSize
-        if block_align >= channels * 4 {
-            let spb = ((block_align - channels * 4) * 8 / (4 * channels)) + 1;
-            body.extend_from_slice(&(spb as u16).to_le_bytes()); // wSamplesPerBlock
-        }
+        body.extend_from_slice(&spb.to_le_bytes()); // wSamplesPerBlock
         body
     }
 
@@ -709,14 +795,223 @@ mod tests {
     }
 
     #[test]
-    fn seek_denied_honestly_for_block_compressed_input() {
+    fn ima_seek_frame_block_math_matrix() {
+        // Mono, 8-byte blocks: 4-byte header + 4 payload bytes = 9 frames.
+        // Stereo, 16-byte blocks: same 9 frames from two 4-byte payloads.
+        // Mono, 12-byte blocks ("odd" two-sub-block payload): 17 frames.
+        for (spb, align, ch, target, want_block, want_intra) in [
+            (9usize, 8usize, 1usize, 0usize, 0usize, 0usize),
+            (9, 8, 1, 8, 0, 8),
+            (9, 8, 1, 9, 1, 0),
+            (9, 8, 1, 44, 4, 8),
+            (9, 16, 2, 12, 1, 3),
+            (17, 12, 1, 17, 1, 0),
+            (17, 12, 1, 25, 1, 8),
+        ] {
+            let (off, intra, past) = ima_seek_math(target, spb, align, align * 5);
+            assert_eq!(off, want_block * align, "block byte offset t={target}");
+            assert_eq!(intra, want_intra, "intra frames t={target}");
+            assert!(!past, "in-range t={target} ch={ch}");
+        }
+        // Truncated final block: landing byte at-or-past data_len parks
+        // at end-of-data (mono align 8, only 6 bytes present).
+        let (off, intra, past) = ima_seek_math(9, 9, 8, 6);
+        assert_eq!(off, 8);
+        assert_eq!(intra, 0);
+        assert!(past);
+        // Last in-range block still lands even though data is short.
+        let (off, intra, past) = ima_seek_math(5, 9, 8, 6);
+        assert_eq!(off, 0);
+        assert_eq!(intra, 5);
+        assert!(!past);
+    }
+
+    #[test]
+    fn ima_seek_re_seeds_from_block_header_exactly() {
+        // Re-seed parity: decode starting at block N after a seek must be
+        // bit-identical to decoding from 0 and discarding N*spb frames,
+        // because the block header fully restores predictor/step-index.
+        let payload = [0x21u8, 0x43, 0x65, 0x87];
+        let mut data = Vec::new();
+        for round in 0..6u16 {
+            let mut block = mono_block(
+                i16::try_from(300 * i32::from(round)).unwrap_or(30000),
+                u8::try_from((2 + round) % 60).unwrap_or(0),
+                &payload,
+            );
+            data.append(&mut block);
+        }
+        let file = riff(&data, &ima_fmt(1, 8000, 8));
+        let mut whole = Decoder::open(&file).expect("opens");
+        let mut full = [0f32; 64];
+        let total = whole.decode_next(&file, 60, &mut full);
+        assert_eq!(total, 54); // 6 blocks x 9 frames
+
+        for boundary in [0usize, 9, 27] {
+            let mut seeked = Decoder::open(&file).expect("opens");
+            assert!(seeked.seek_frames(boundary));
+            let mut got = [0f32; 64];
+            let frames = seeked.decode_next(&file, 60, &mut got);
+            assert_eq!(frames, total - boundary);
+            assert_eq!(
+                &got[..frames],
+                &full[boundary..total],
+                "boundary {boundary}"
+            );
+        }
+    }
+
+    #[test]
+    fn ima_seek_intra_block_discard_lands_exactly() {
+        // Targets strictly inside blocks: the seek drops frames within
+        // the re-seeded block so output resumes on the exact frame.
+        let payload = [0x91u8, 0xD2, 0x43, 0x65];
+        let mut data = Vec::new();
+        for round in 0..4u16 {
+            let mut block = mono_block(
+                i16::try_from(500 * i32::from(round) - 300).unwrap_or(30000),
+                u8::try_from((5 * round + 3) % 60).unwrap_or(0),
+                &payload,
+            );
+            data.append(&mut block);
+        }
+        let file = riff(&data, &ima_fmt(1, 8000, 8));
+        let mut whole = Decoder::open(&file).expect("opens");
+        let mut full = [0f32; 40];
+        let total = whole.decode_next(&file, 40, &mut full);
+        assert_eq!(total, 36);
+
+        for target in [1usize, 4, 5, 10, 17, 35] {
+            let mut seeked = Decoder::open(&file).expect("opens");
+            assert!(seeked.seek_frames(target));
+            let mut got = [0f32; 40];
+            let frames = seeked.decode_next(&file, 40, &mut got);
+            assert_eq!(frames, total - target, "target {target}");
+            assert_eq!(&got[..frames], &full[target..total], "target {target}");
+        }
+    }
+
+    #[test]
+    fn ima_seek_stereo_discard_is_frame_exact() {
+        // Stereo seek: both channels re-seed from their own 4-byte
+        // headers and discard in per-frame lockstep.
+        let pay0 = [0x70u8, 0x11, 0x22, 0x33];
+        let pay1 = [0x8Fu8, 0x44, 0x55, 0x66];
+        let mut data = Vec::new();
+        for round in 0..3u16 {
+            let mut block = stereo_block(
+                i16::try_from(200 * i32::from(round)).unwrap_or(30000),
+                u8::try_from((3 * round + 1) % 60).unwrap_or(0),
+                &pay0,
+                i16::try_from(-150 * i32::from(round)).unwrap_or(-30000),
+                u8::try_from((7 * round + 5) % 60).unwrap_or(0),
+                &pay1,
+            );
+            data.append(&mut block);
+        }
+        let file = riff(&data, &ima_fmt(2, 16000, 16));
+        let mut whole = Decoder::open(&file).expect("opens");
+        let mut full = [0f32; 64];
+        let total = whole.decode_next(&file, 32, &mut full);
+        assert_eq!(total, 27); // 3 blocks x 9 frames
+
+        for target in [1usize, 5, 9, 12, 20] {
+            let mut seeked = Decoder::open(&file).expect("opens");
+            assert!(seeked.seek_frames(target));
+            let mut got = [0f32; 64];
+            let frames = seeked.decode_next(&file, 32, &mut got);
+            assert_eq!(frames, total - target, "target {target}");
+            assert_eq!(
+                &got[..frames * 2],
+                &full[target * 2..total * 2],
+                "target {target}"
+            );
+        }
+    }
+
+    #[test]
+    fn ima_seek_clamps_and_parks_cleanly_at_eof() {
         let file = riff(&mono_block(0, 0, &[0x00; 4]), &ima_fmt(1, 8000, 8));
         let mut dec = Decoder::open(&file).expect("ima opens");
-        assert!(!dec.seek_frames(1));
-        // Denied seek leaves the stream untouched at the start.
-        let mut out = [0f32; 2];
-        assert_eq!(dec.decode_next(&file, 2, &mut out), 2);
-        assert_eq!(out[0], 0.0);
+        // Beyond the final frame clamps to end-of-stream: nothing more
+        // decodes and the stream reads as finished.
+        assert!(dec.seek_frames(999));
+        let mut out = [0f32; 4];
+        assert_eq!(dec.decode_next(&file, 4, &mut out), 0);
+        // Exactly the final frame count is end-of-stream too.
+        assert!(dec.seek_frames(9));
+        assert_eq!(dec.decode_next(&file, 4, &mut out), 0);
+        // Seeking back to 0 after EOF re-opens from the top.
+        assert!(dec.seek_frames(0));
+        let mut restart = [0f32; 2];
+        assert_eq!(dec.decode_next(&file, 2, &mut restart), 2);
+        assert_eq!(restart[0], 0.0);
+    }
+
+    #[test]
+    fn ima_seek_without_header_hint_lands_on_block_boundary() {
+        // wSamplesPerBlock absent (0): the frame->block map cannot be
+        // trusted for intra-block arithmetic, so the seek lands on the
+        // block boundary at-or-before the target and no frames are
+        // dropped inside it. Documented block-granular fallback.
+        let payload = [0x21u8, 0x43, 0x65, 0x87];
+        let mut data = Vec::new();
+        for round in 0..4u16 {
+            let mut block = mono_block(100 * i16::try_from(round).unwrap_or(0), 3, &payload);
+            data.append(&mut block);
+        }
+        let file = riff(&data, &ima_fmt_hint(1, 8000, 8, 0));
+        let mut whole = Decoder::open(&file).expect("opens");
+        let mut full = [0f32; 40];
+        let total = whole.decode_next(&file, 40, &mut full);
+        assert_eq!(total, 36);
+
+        // Mid-block target 5 lands on the block-0 boundary (frame 0).
+        let mut seeked = Decoder::open(&file).expect("opens");
+        assert!(seeked.seek_frames(5));
+        let mut got = [0f32; 40];
+        let frames = seeked.decode_next(&file, 40, &mut got);
+        assert_eq!(frames, total);
+        assert_eq!(&got[..frames], &full[..total]);
+
+        // Mid-block target 12 lands on the block-1 boundary (frame 9).
+        let mut seeked = Decoder::open(&file).expect("opens");
+        assert!(seeked.seek_frames(12));
+        let mut got = [0f32; 40];
+        let frames = seeked.decode_next(&file, 40, &mut got);
+        assert_eq!(frames, total - 9);
+        assert_eq!(&got[..frames], &full[9..total]);
+    }
+
+    #[test]
+    fn ima_seek_repositions_mid_stream_with_honest_header() {
+        // The old honest-refusal case: IMA seek now repositions and the
+        // resumed stream continues exactly where the sequential decode
+        // would be. (Replaces the former SEEK-NOT-SUPPORTED behavior.)
+        let payload = [0x70u8, 0x00, 0x00, 0x00];
+        let mut data = Vec::new();
+        for round in 0..3u16 {
+            let mut block = mono_block(
+                i16::try_from(50 * i32::from(round)).unwrap_or(0),
+                0,
+                &payload,
+            );
+            data.append(&mut block);
+        }
+        let file = riff(&data, &ima_fmt(1, 8000, 8));
+        let mut whole = Decoder::open(&file).expect("opens");
+        let mut full = [0f32; 32];
+        let total = whole.decode_next(&file, 32, &mut full);
+        assert_eq!(total, 27);
+
+        let mut dec = Decoder::open(&file).expect("ima opens");
+        let mut warm = [0f32; 2];
+        assert_eq!(dec.decode_next(&file, 2, &mut warm), 2);
+        assert!(dec.seek_frames(10));
+        let mut resumed = [0f32; 32];
+        let frames = dec.decode_next(&file, 32, &mut resumed);
+        assert_eq!(frames, total - 10);
+        assert_eq!(&resumed[..frames], &full[10..total]);
     }
 
     #[test]

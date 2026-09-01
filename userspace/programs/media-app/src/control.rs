@@ -239,8 +239,10 @@ fn open_error_note(err: CodecError) -> &'static [u8] {
 /// Jumps the active stream by `delta_secs` (negative = back). The stream
 /// contract has no position primitive, so seeking re-opens the stream
 /// from the new decode offset: no stale pre-seek audio lingers in the
-/// service ring. Per-sample encodings (PCM, G.711) land exactly; block
-/// compressed IMA refuses honestly and playback continues untouched.
+/// service ring. Per-sample encodings (PCM, G.711) land exactly;
+/// block-compressed IMA lands on the containing block boundary and
+/// drops intra-block frames when the header's wSamplesPerBlock backs
+/// the frame→block math (block-granular landing otherwise).
 pub(crate) fn seek_playback(
     state: &mut MediaState,
     delta_secs: i32,

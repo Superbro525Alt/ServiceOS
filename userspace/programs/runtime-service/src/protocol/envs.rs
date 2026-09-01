@@ -50,7 +50,11 @@ pub(crate) fn encode_env_status(reply: &mut RawMessage, env_id: u32, env: EnvSlo
     // Additive word 12: guest syscall-ABI mode of the environment
     // (1 = linux-syscall translation, 0 = native numbering).
     reply.words[12] = env.linux_syscall as u64;
-    reply.word_count = 13;
+    // Additive word 13: guest syscall table rows the kernel-side mapping
+    // carries for this build's architecture (13 on x86_64, 12 on aarch64,
+    // 0 = no guest table); mode-independent availability signal.
+    reply.words[13] = crate::linux_abi::guest_table_rows_for_build();
+    reply.word_count = 14;
 }
 
 pub(crate) fn decision_policy(decision: u64) -> PermissionPolicyState {
@@ -413,27 +417,38 @@ mod tests {
 
     #[test]
     fn env_status_surfaces_linux_syscall_mode_in_additive_word() {
-        // Native env: word 12 = 0, word count 13 (was 12 before the mode).
+        // Native env: word 12 = 0, word count 14 (was 13 before the table
+        // availability word).
         let mut native = EnvSlot::empty();
         native.occupied = true;
         let mut reply = RawMessage::empty(0);
         encode_env_status(&mut reply, 3, native);
-        assert_eq!(reply.word_count, 13);
+        assert_eq!(reply.word_count, 14);
         assert_eq!(reply.words[12], 0);
 
-        // linux-syscall env: word 12 = 1.
+        // linux-syscall env: word 12 = 1; word 13 is the same
+        // mode-independent per-arch table count in both replies.
         native.linux_syscall = true;
         let mut flagged = RawMessage::empty(0);
         encode_env_status(&mut flagged, 3, native);
-        assert_eq!(flagged.word_count, 13);
+        assert_eq!(flagged.word_count, 14);
         assert_eq!(flagged.words[12], 1);
+        assert_eq!(flagged.words[13], reply.words[13]);
 
-        // Words 0..12 are unchanged from the legacy layout.
+        // Word 13 reports this build's guest table (host arch decides).
+        #[cfg(target_arch = "x86_64")]
+        assert_eq!(flagged.words[13], 13);
+        #[cfg(target_arch = "aarch64")]
+        assert_eq!(flagged.words[13], 12);
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        assert_eq!(flagged.words[13], 0);
+
+        // Words 0..13 are unchanged from the legacy+mode layout.
         let mut legacy = EnvSlot::empty();
         legacy.occupied = true;
         let mut untouched = RawMessage::empty(0);
         encode_env_status(&mut untouched, 3, legacy);
-        assert_eq!(untouched.words[0..12], reply.words[0..12]);
+        assert_eq!(untouched.words[0..13], reply.words[0..13]);
     }
 
     #[test]

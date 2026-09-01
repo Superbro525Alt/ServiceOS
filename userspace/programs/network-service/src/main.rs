@@ -435,6 +435,7 @@ pub(crate) fn run() -> u64 {
             tcp_handles,
             &mut sockets,
             &mut firewall,
+            crate::consts::SINGLE_INTERFACE_INDEX,
         )
         .is_err()
         {
@@ -568,6 +569,7 @@ pub(crate) fn run() -> u64 {
                     &mut next_query_id,
                     &mut resolver_cache,
                     &mut firewall,
+                    crate::consts::SINGLE_INTERFACE_INDEX,
                     &mut transports,
                     tcp_handles,
                     &mut next_local_port,
@@ -637,6 +639,7 @@ pub(crate) fn run() -> u64 {
                         &mut udp_slots[index],
                         &datagram_request,
                         &mut firewall,
+                        crate::consts::SINGLE_INTERFACE_INDEX,
                     )
                     .is_err()
                     {

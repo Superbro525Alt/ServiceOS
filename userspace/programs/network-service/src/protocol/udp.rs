@@ -118,6 +118,7 @@ pub(crate) fn handle_datagram_request(
     slot: &mut UdpDatagramSlot,
     request: &RawMessage,
     firewall: &mut FirewallState,
+    iface_index: u16,
 ) -> rt::Result<()> {
     if request.handle_count < 1 {
         return Ok(());
@@ -165,21 +166,21 @@ pub(crate) fn handle_datagram_request(
             reply
         }
         x if x == NetworkSocketTag::SendToRequest as u32 => {
-            send_datagram(sockets, slot, request, firewall)
+            send_datagram(sockets, slot, request, firewall, iface_index)
         }
         x if x == NetworkSocketTag::SendToV6Request as u32 => {
-            send_datagram_v6(sockets, slot, request, firewall)
+            send_datagram_v6(sockets, slot, request, firewall, iface_index)
         }
         x if x == NetworkSocketTag::ReceiveRequest as u32
             || x == NetworkSocketTag::ReceiveFromRequest as u32 =>
         {
-            let reply = receive_datagram(sockets, slot, request, firewall)?;
+            let reply = receive_datagram(sockets, slot, request, firewall, iface_index)?;
             let _ = rt::channel_send(reply_handle, &reply);
             let _ = rt::handle_close(reply_handle);
             return Ok(());
         }
         x if x == NetworkSocketTag::ReceiveFromV6Request as u32 => {
-            let reply = receive_datagram_v6(sockets, slot, request, firewall)?;
+            let reply = receive_datagram_v6(sockets, slot, request, firewall, iface_index)?;
             let _ = rt::channel_send(reply_handle, &reply);
             let _ = rt::handle_close(reply_handle);
             return Ok(());
@@ -208,6 +209,7 @@ fn send_datagram(
     slot: &mut UdpDatagramSlot,
     request: &RawMessage,
     firewall: &mut FirewallState,
+    iface_index: u16,
 ) -> RawMessage {
     let mut reply = RawMessage::empty(NetworkSocketTag::SendToReply as u32);
     reply.word_count = 2;
@@ -245,7 +247,13 @@ fn send_datagram(
         reply.words[1] = 0;
         return reply;
     };
-    if !firewall.decide(Direction::Outbound, Proto::Udp, slot.local_port, port) {
+    if !firewall.decide(
+        Direction::Outbound,
+        Proto::Udp,
+        slot.local_port,
+        port,
+        iface_index,
+    ) {
         let _ = rt::write_logf(
             "network",
             format_args!(
@@ -280,6 +288,7 @@ fn receive_datagram(
     slot: &mut UdpDatagramSlot,
     request: &RawMessage,
     firewall: &mut FirewallState,
+    iface_index: u16,
 ) -> rt::Result<RawMessage> {
     let mut reply = RawMessage::empty(NetworkSocketTag::ReceiveFromReply as u32);
     reply.word_count = 3;
@@ -319,6 +328,7 @@ fn receive_datagram(
                 Proto::Udp,
                 slot.local_port,
                 metadata.endpoint.port,
+                iface_index,
             ) {
                 // Consume-and-drop: the datagram is counted as filtered.
                 let _ = rt::write_logf(
@@ -369,6 +379,7 @@ fn send_datagram_v6(
     slot: &mut UdpDatagramSlot,
     request: &RawMessage,
     firewall: &mut FirewallState,
+    iface_index: u16,
 ) -> RawMessage {
     let mut reply = RawMessage::empty(NetworkSocketTag::SendToV6Reply as u32);
     reply.word_count = 2;
@@ -413,7 +424,13 @@ fn send_datagram_v6(
         reply.words[1] = 0;
         return reply;
     }
-    if !firewall.decide(Direction::Outbound, Proto::Udp, slot.local_port, port) {
+    if !firewall.decide(
+        Direction::Outbound,
+        Proto::Udp,
+        slot.local_port,
+        port,
+        iface_index,
+    ) {
         let _ = rt::write_logf(
             "network",
             format_args!(
@@ -459,6 +476,7 @@ fn receive_datagram_v6(
     slot: &mut UdpDatagramSlot,
     request: &RawMessage,
     firewall: &mut FirewallState,
+    iface_index: u16,
 ) -> rt::Result<RawMessage> {
     let mut reply = RawMessage::empty(NetworkSocketTag::ReceiveFromV6Reply as u32);
     reply.word_count = 5;
@@ -489,7 +507,13 @@ fn receive_datagram_v6(
                     return Ok(reply);
                 }
             };
-            if !firewall.decide(Direction::Inbound, Proto::Udp, slot.local_port, source_port) {
+            if !firewall.decide(
+                Direction::Inbound,
+                Proto::Udp,
+                slot.local_port,
+                source_port,
+                iface_index,
+            ) {
                 let _ = rt::write_logf(
                     "network",
                     format_args!(

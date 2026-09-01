@@ -178,6 +178,7 @@ pub(crate) fn pump_listeners(
     tcp_handles: [SocketHandle; crate::consts::MAX_TCP_SOCKETS],
     sockets: &mut SocketSet<'_>,
     firewall: &mut FirewallState,
+    iface_index: u16,
 ) -> rt::Result<()> {
     for listener_index in 0..listeners.len() {
         if !listeners[listener_index].active {
@@ -242,7 +243,13 @@ pub(crate) fn pump_listeners(
         let Some((remote_address, remote_port, local_port)) = endpoints else {
             continue;
         };
-        if !firewall.decide(Direction::Inbound, Proto::Tcp, local_port, remote_port) {
+        if !firewall.decide(
+            Direction::Inbound,
+            Proto::Tcp,
+            local_port,
+            remote_port,
+            iface_index,
+        ) {
             sockets.get_mut::<tcp::Socket>(socket_handle).abort();
             listeners[listener_index].socket_handle = None;
             let _ = rt::write_logf(

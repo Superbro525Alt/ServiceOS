@@ -61,6 +61,10 @@ pub(crate) const MAX_TXT_BYTES: usize = 64;
 // Table size is bounded so a full rules+counters dump fits one IPC message
 // (4 summary words + 2 words per rule <= IPC_MAX_WORDS = 16).
 pub(crate) const MAX_FIREWALL_RULES: usize = 6;
+/// 0-based index of the one interface this service instance manages
+/// (InterfaceStatusRequest reports it as index 0; eth0). Firewall rules
+/// qualify on this identity.
+pub(crate) const SINGLE_INTERFACE_INDEX: u16 = 0;
 
 // --- Promoted network-contract tags (formal NetworkTag variants) ---
 //

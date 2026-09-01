@@ -1,6 +1,6 @@
 //! Firewall rule table: ordered allow/deny rules over (protocol, direction,
-//! port) with per-rule hit counters and a configurable default inbound
-//! policy. Pure decision logic, host-unit-testable.
+//! port, interface) with per-rule hit counters and a configurable default
+//! inbound policy. Pure decision logic, host-unit-testable.
 
 use crate::consts::MAX_FIREWALL_RULES;
 
@@ -91,6 +91,11 @@ pub(crate) struct FirewallRule {
     /// 0 = any port. Inbound rules compare against the local service port,
     /// outbound rules against the remote port.
     pub(crate) port: u16,
+    /// Interface qualifier: `Some(index)` restricts the rule to that
+    /// interface (0-based, as reported by InterfaceStatusRequest; the
+    /// single boot interface is eth0 = index 0), `None` matches every
+    /// interface (legacy behavior, byte-compatible with old rule words).
+    pub(crate) interface: Option<u16>,
     pub(crate) enabled: bool,
     /// Times this rule produced a decision.
     pub(crate) hits: u64,
@@ -103,6 +108,7 @@ impl FirewallRule {
             proto: Proto::Any,
             direction: Direction::Inbound,
             port: 0,
+            interface: None,
             enabled: false,
             hits: 0,
         }
@@ -114,8 +120,15 @@ impl FirewallRule {
         proto: Proto,
         local_port: u16,
         remote_port: u16,
+        iface_index: u16,
     ) -> bool {
-        if !self.enabled || self.direction != direction || !self.proto.matches(proto) {
+        if !self.enabled
+            || self.direction != direction
+            || !self.proto.matches(proto)
+            || self
+                .interface
+                .map_or(false, |interface| interface != iface_index)
+        {
             return false;
         }
         let subject_port = match direction {
@@ -126,26 +139,33 @@ impl FirewallRule {
     }
 
     /// Pack for IPC reply: action | proto<<8 | direction<<16 | enabled<<24 |
-    /// port<<32 | hits<<40 is too wide; hits ride in the following word.
+    /// port<<32 | interface-qualifier<<48; hits ride in the following word.
+    /// The qualifier field holds 0 for "any interface" or `index + 1` for a
+    /// rule pinned to one interface, so legacy zero words decode as
+    /// unqualified.
     pub(crate) fn pack(&self) -> [u64; 2] {
         [
             self.action.word()
                 | (self.proto.word() << 8)
                 | (self.direction.word() << 16)
                 | ((self.enabled as u64) << 24)
-                | ((self.port as u64) << 32),
+                | ((self.port as u64) << 32)
+                | (self.interface.map_or(0, |interface| interface as u64 + 1) << 48),
             self.hits,
         ]
     }
 
-    /// Decode from one packed request word (action/proto/direction/port);
-    /// `enabled` comes from the caller's flag word.
+    /// Decode from one packed request word (action/proto/direction/port and
+    /// the trailing interface qualifier at bits [48..64); 0 = any interface,
+    /// else `index + 1`); `enabled` comes from the caller's flag word.
     pub(crate) fn unpack(word: u64, enabled: bool) -> Option<Self> {
+        let qualifier = (word >> 48) as u16;
         Some(Self {
             action: RuleAction::from_word(word & 0xff)?,
             proto: Proto::from_word((word >> 8) & 0xff)?,
             direction: Direction::from_word((word >> 16) & 0xff)?,
             port: (word >> 32) as u16,
+            interface: qualifier.checked_sub(1),
             enabled,
             hits: 0,
         })
@@ -176,16 +196,20 @@ impl FirewallState {
 
     /// First-match-wins decision over enabled rules; falls back to the
     /// default policy (deny-able only for inbound). Increments counters.
+    /// `iface_index` is the 0-based interface the traffic rides on; rules
+    /// pinned to another interface (or unqualified rules) are the only
+    /// candidates besides it.
     pub(crate) fn decide(
         &mut self,
         direction: Direction,
         proto: Proto,
         local_port: u16,
         remote_port: u16,
+        iface_index: u16,
     ) -> bool {
         let index = self.rules[..self.rule_count]
             .iter()
-            .position(|rule| rule.matches(direction, proto, local_port, remote_port));
+            .position(|rule| rule.matches(direction, proto, local_port, remote_port, iface_index));
         let allowed = match index {
             Some(index) => {
                 self.rules[index].hits = self.rules[index].hits.saturating_add(1);
@@ -210,7 +234,8 @@ impl FirewallState {
     }
 
     /// Replace the whole table from packed request words
-    /// (words[i*2] = rule fields, words[i*2+1] = enable flag).
+    /// (words[i*2] = rule fields incl. the trailing interface qualifier,
+    /// words[i*2+1] = enable flag).
     /// Returns InvalidArgument-shaped error via Ok(None).
     pub(crate) fn replace_all(&mut self, words: &[u64], count: usize) -> Option<()> {
         if count > MAX_FIREWALL_RULES || count * 2 > words.len() {
@@ -248,7 +273,10 @@ impl FirewallState {
 
     /// Encode the table + summary into reply words starting at `words[0]`.
     /// Layout: [status][count][default_inbound_allow][inbound_denied<<32|outbound_denied]
-    /// then 2 words per rule.
+    /// then 2 words per rule (the rule word carries the interface qualifier
+    /// at bits [48..64), so qualified rules round-trip additively; the
+    /// global deny counters stay summary-wide — no trailing budget exists
+    /// for per-interface counters at IPC_MAX_WORDS=16 with 6 rules).
     pub(crate) fn encode_reply(&self, reply_words: &mut [u64]) -> usize {
         reply_words[1] = self.rule_count as u64;
         reply_words[2] = self.default_inbound_allow as u64;
@@ -275,6 +303,7 @@ mod tests {
             proto,
             direction,
             port,
+            interface: None,
             enabled: true,
             hits: 0,
         }
@@ -293,8 +322,8 @@ mod tests {
     #[test]
     fn empty_table_default_inbound_allow() {
         let mut state = FirewallState::new();
-        assert!(state.decide(Direction::Inbound, Proto::Tcp, 80, 44_000));
-        assert!(state.decide(Direction::Outbound, Proto::Tcp, 0, 80));
+        assert!(state.decide(Direction::Inbound, Proto::Tcp, 80, 44_000, 0));
+        assert!(state.decide(Direction::Outbound, Proto::Tcp, 0, 80, 0));
         assert_eq!(state.inbound_denied_total, 0);
     }
 
@@ -302,10 +331,10 @@ mod tests {
     fn empty_table_default_inbound_deny() {
         let mut state = FirewallState::new();
         state.set_default_inbound_allow(false);
-        assert!(!state.decide(Direction::Inbound, Proto::Tcp, 22, 44_000));
+        assert!(!state.decide(Direction::Inbound, Proto::Tcp, 22, 44_000, 0));
         assert_eq!(state.inbound_denied_total, 1);
         assert!(
-            state.decide(Direction::Outbound, Proto::Udp, 53_000, 53),
+            state.decide(Direction::Outbound, Proto::Udp, 53_000, 53, 0),
             "outbound unaffected by default-inbound deny"
         );
     }
@@ -326,13 +355,13 @@ mod tests {
         ];
         for (proto, port, expected) in cases {
             assert_eq!(
-                state.decide(Direction::Inbound, proto, port, 40_000),
+                state.decide(Direction::Inbound, proto, port, 40_000, 0),
                 expected,
                 "proto={proto:?} port={port}"
             );
         }
         // Outbound same port/proto passes (direction mismatch).
-        assert!(state.decide(Direction::Outbound, Proto::Tcp, 0, 80));
+        assert!(state.decide(Direction::Outbound, Proto::Tcp, 0, 80, 0));
         assert_eq!(
             state.rules[0].hits, 1,
             "only the matching case hit the rule"
@@ -346,10 +375,10 @@ mod tests {
             &mut state,
             &[rule(RuleAction::Deny, Proto::Udp, Direction::Outbound, 0)],
         );
-        assert!(!state.decide(Direction::Outbound, Proto::Udp, 50_000, 53));
-        assert!(!state.decide(Direction::Outbound, Proto::Udp, 50_000, 123));
-        assert!(state.decide(Direction::Outbound, Proto::Tcp, 0, 80));
-        assert!(state.decide(Direction::Inbound, Proto::Udp, 53, 40_000));
+        assert!(!state.decide(Direction::Outbound, Proto::Udp, 50_000, 53, 0));
+        assert!(!state.decide(Direction::Outbound, Proto::Udp, 50_000, 123, 0));
+        assert!(state.decide(Direction::Outbound, Proto::Tcp, 0, 80, 0));
+        assert!(state.decide(Direction::Inbound, Proto::Udp, 53, 40_000, 0));
         assert_eq!(state.outbound_denied_total, 2);
     }
 
@@ -363,8 +392,8 @@ mod tests {
                 rule(RuleAction::Deny, Proto::Tcp, Direction::Inbound, 0),
             ],
         );
-        assert!(state.decide(Direction::Inbound, Proto::Tcp, 8080, 9));
-        assert!(!state.decide(Direction::Inbound, Proto::Tcp, 9999, 9));
+        assert!(state.decide(Direction::Inbound, Proto::Tcp, 8080, 9, 0));
+        assert!(!state.decide(Direction::Inbound, Proto::Tcp, 9999, 9, 0));
         assert_eq!(state.rules[0].hits, 1);
         assert_eq!(state.rules[1].hits, 1);
     }
@@ -375,7 +404,7 @@ mod tests {
         let mut denied = rule(RuleAction::Deny, Proto::Tcp, Direction::Inbound, 80);
         denied.enabled = false;
         load(&mut state, &[denied]);
-        assert!(state.decide(Direction::Inbound, Proto::Tcp, 80, 9));
+        assert!(state.decide(Direction::Inbound, Proto::Tcp, 80, 9, 0));
         assert_eq!(state.rules[0].hits, 0);
     }
 
@@ -386,8 +415,8 @@ mod tests {
             &mut state,
             &[rule(RuleAction::Deny, Proto::Icmp, Direction::Outbound, 0)],
         );
-        assert!(!state.decide(Direction::Outbound, Proto::Icmp, 0, 0));
-        assert!(!state.decide(Direction::Outbound, Proto::Icmp, 0, 0));
+        assert!(!state.decide(Direction::Outbound, Proto::Icmp, 0, 0, 0));
+        assert!(!state.decide(Direction::Outbound, Proto::Icmp, 0, 0, 0));
         assert_eq!(state.rules[0].hits, 2);
         assert_eq!(state.outbound_denied_total, 2);
     }
@@ -417,6 +446,7 @@ mod tests {
             proto: Proto::Udp,
             direction: Direction::Outbound,
             port: 5353,
+            interface: Some(1),
             enabled: true,
             hits: 77,
         };
@@ -426,6 +456,7 @@ mod tests {
         assert_eq!(unpacked.proto, original.proto);
         assert_eq!(unpacked.direction, original.direction);
         assert_eq!(unpacked.port, original.port);
+        assert_eq!(unpacked.interface, original.interface);
         assert_eq!(packed[1], 77);
     }
 
@@ -440,7 +471,7 @@ mod tests {
             ],
         );
         state.set_default_inbound_allow(false);
-        assert!(!state.decide(Direction::Outbound, Proto::Tcp, 0, 25));
+        assert!(!state.decide(Direction::Outbound, Proto::Tcp, 0, 25, 0));
         let mut words = [0u64; 32];
         let used = state.encode_reply(&mut words);
         assert_eq!(used, 4 + 2 * 2);
@@ -448,5 +479,143 @@ mod tests {
         assert_eq!(words[2], 0);
         assert_eq!(words[3] >> 32, 0);
         assert_eq!(words[3] & 0xffff_ffff, 1);
+    }
+
+    fn qualified_rule(
+        action: RuleAction,
+        proto: Proto,
+        direction: Direction,
+        port: u16,
+        interface: u16,
+    ) -> FirewallRule {
+        let mut rule = rule(action, proto, direction, port);
+        rule.interface = Some(interface);
+        rule
+    }
+
+    #[test]
+    fn legacy_words_decode_unqualified() {
+        // A pre-qualifier rule word must decode to `interface: None`.
+        let legacy = rule(RuleAction::Deny, Proto::Tcp, Direction::Inbound, 80);
+        let word = legacy.pack()[0];
+        assert_eq!(word >> 48, 0, "legacy words leave the qualifier field zero");
+        let decoded = FirewallRule::unpack(word, true).unwrap();
+        assert_eq!(decoded.interface, None);
+        assert_eq!(decoded.port, 80);
+    }
+
+    #[test]
+    fn qualified_rule_matches_only_named_interface() {
+        let mut state = FirewallState::new();
+        load(
+            &mut state,
+            &[qualified_rule(
+                RuleAction::Deny,
+                Proto::Tcp,
+                Direction::Inbound,
+                80,
+                1,
+            )],
+        );
+        // eth0 (index 0): unqualified -> default allow.
+        assert!(state.decide(Direction::Inbound, Proto::Tcp, 80, 9, 0));
+        // eth1 (index 1): the rule matches -> deny.
+        assert!(!state.decide(Direction::Inbound, Proto::Tcp, 80, 9, 1));
+        // eth1, other port/proto: rule misses, default allows.
+        assert!(state.decide(Direction::Inbound, Proto::Tcp, 81, 9, 1));
+        assert!(state.decide(Direction::Inbound, Proto::Udp, 80, 9, 1));
+        // eth1 outbound: direction mismatch, default (outbound always allow).
+        assert!(state.decide(Direction::Outbound, Proto::Tcp, 0, 80, 1));
+        assert_eq!(state.rules[0].hits, 1, "only the eth1 inbound :80 case hit");
+    }
+
+    #[test]
+    fn qualified_rule_isolation_between_interfaces() {
+        // eth0 denies inbound TCP :22; eth1 denies inbound UDP any port.
+        let mut state = FirewallState::new();
+        load(
+            &mut state,
+            &[
+                qualified_rule(RuleAction::Deny, Proto::Tcp, Direction::Inbound, 22, 0),
+                qualified_rule(RuleAction::Deny, Proto::Udp, Direction::Inbound, 0, 1),
+            ],
+        );
+        // Cross-traffic flows: each deny applies only to its own interface.
+        assert!(state.decide(Direction::Inbound, Proto::Tcp, 22, 9, 1));
+        assert!(state.decide(Direction::Inbound, Proto::Udp, 53, 9, 0));
+        assert!(!state.decide(Direction::Inbound, Proto::Tcp, 22, 9, 0));
+        assert!(!state.decide(Direction::Inbound, Proto::Udp, 53, 9, 1));
+        assert_eq!(state.inbound_denied_total, 2);
+    }
+
+    #[test]
+    fn qualified_first_match_wins_across_interfaces() {
+        // Per-interface scoping re-enables traffic the global deny would
+        // block, when an earlier allow rule names the receiving interface.
+        let mut state = FirewallState::new();
+        load(
+            &mut state,
+            &[
+                qualified_rule(RuleAction::Allow, Proto::Tcp, Direction::Inbound, 8080, 1),
+                rule(RuleAction::Deny, Proto::Tcp, Direction::Inbound, 0),
+            ],
+        );
+        // eth1 :8080 hits the qualified allow (first match wins).
+        assert!(state.decide(Direction::Inbound, Proto::Tcp, 8080, 9, 1));
+        // eth0 :8080 skips the qualified allow, falls to the global deny.
+        assert!(!state.decide(Direction::Inbound, Proto::Tcp, 8080, 9, 0));
+        // eth1 other port falls to the global deny too.
+        assert!(!state.decide(Direction::Inbound, Proto::Tcp, 9999, 9, 1));
+        assert_eq!(state.rules[0].hits, 1);
+        assert_eq!(state.rules[1].hits, 2);
+    }
+
+    #[test]
+    fn qualified_replace_all_and_reply_round_trip() {
+        let mut state = FirewallState::new();
+        load(
+            &mut state,
+            &[
+                qualified_rule(RuleAction::Deny, Proto::Udp, Direction::Outbound, 53, 0),
+                rule(RuleAction::Allow, Proto::Any, Direction::Inbound, 443),
+            ],
+        );
+        let mut words = [0u64; 32];
+        let used = state.encode_reply(&mut words);
+        assert_eq!(used, 4 + 2 * 2);
+        // Qualified rule word round-trips through the reply word.
+        let reply_rule = FirewallRule::unpack(words[4], true).unwrap();
+        assert_eq!(reply_rule.interface, Some(0));
+        assert_eq!(reply_rule.proto, Proto::Udp);
+        // Unqualified rule word stays zero in the qualifier field.
+        let plain_rule = FirewallRule::unpack(words[6], true).unwrap();
+        assert_eq!(plain_rule.interface, None);
+        // Re-feeding the reply words back must reproduce the same table.
+        let mut replay = FirewallState::new();
+        let request_words = [words[4], 1, words[6], 1];
+        assert!(replay.replace_all(&request_words, 2).is_some());
+        assert_eq!(replay.rules[0].interface, Some(0));
+        assert_eq!(replay.rules[1].interface, None);
+        assert!(!replay.decide(Direction::Outbound, Proto::Udp, 0, 53, 0));
+        assert!(replay.decide(Direction::Outbound, Proto::Udp, 0, 53, 1));
+    }
+
+    #[test]
+    fn qualified_rule_for_unknown_interface_never_matches() {
+        // Rules may name interfaces that do not exist yet; they simply never
+        // match (mirrors "interface not present" semantics, not an error).
+        let mut state = FirewallState::new();
+        load(
+            &mut state,
+            &[qualified_rule(
+                RuleAction::Deny,
+                Proto::Any,
+                Direction::Inbound,
+                0,
+                7,
+            )],
+        );
+        assert!(state.decide(Direction::Inbound, Proto::Tcp, 22, 9, 0));
+        assert!(state.decide(Direction::Inbound, Proto::Tcp, 22, 9, 1));
     }
 }

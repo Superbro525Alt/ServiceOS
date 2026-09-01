@@ -71,6 +71,7 @@ pub(crate) fn handle_public_request(
     next_query_id: &mut u16,
     resolver_cache: &mut ResolverCache,
     firewall: &mut FirewallState,
+    iface_index: u16,
     transports: &mut [TcpTransportSlot; MAX_TCP_SOCKETS],
     tcp_handles: [SocketHandle; MAX_TCP_SOCKETS],
     next_local_port: &mut u16,
@@ -372,7 +373,7 @@ pub(crate) fn handle_public_request(
                 )? {
                     outcome if outcome.detail.is_success() => {
                         let address = ipv4_from_word(outcome.address.unwrap_or(0));
-                        if !firewall.decide(Direction::Outbound, Proto::Icmp, 0, 0) {
+                        if !firewall.decide(Direction::Outbound, Proto::Icmp, 0, 0, iface_index) {
                             let _ = rt::write_logf(
                                 "network",
                                 format_args!(
@@ -453,7 +454,7 @@ pub(crate) fn handle_public_request(
                     let words = rt::ipv6_addr_words(target_addr.octets());
                     reply.words[1] = words[0];
                     reply.words[2] = words[1];
-                    if !firewall.decide(Direction::Outbound, Proto::Icmp, 0, 0) {
+                    if !firewall.decide(Direction::Outbound, Proto::Icmp, 0, 0, iface_index) {
                         let _ = rt::write_logf(
                             "network",
                             format_args!(
@@ -519,6 +520,7 @@ pub(crate) fn handle_public_request(
                     next_query_id,
                     resolver_cache,
                     firewall,
+                    iface_index,
                     transports,
                     tcp_handles,
                     next_local_port,
@@ -684,7 +686,7 @@ pub(crate) fn handle_public_request(
                 )? {
                     outcome if outcome.detail.is_success() => {
                         let address = ipv4_from_word(outcome.address.unwrap_or(0));
-                        if !firewall.decide(Direction::Outbound, Proto::Icmp, 0, 0) {
+                        if !firewall.decide(Direction::Outbound, Proto::Icmp, 0, 0, iface_index) {
                             reply.words[0] = NetworkStatus::Denied as u32 as u64;
                             reply.words[1] = ipv4_to_u32(address) as u64;
                         } else {
@@ -967,6 +969,7 @@ fn handle_socket_open_request(
     next_query_id: &mut u16,
     resolver_cache: &mut ResolverCache,
     firewall: &mut FirewallState,
+    iface_index: u16,
     transports: &mut [TcpTransportSlot; MAX_TCP_SOCKETS],
     tcp_handles: [SocketHandle; MAX_TCP_SOCKETS],
     next_local_port: &mut u16,
@@ -1010,7 +1013,7 @@ fn handle_socket_open_request(
         )? {
             outcome if outcome.detail.is_success() => {
                 let remote_address = ipv4_from_word(outcome.address.unwrap_or(0));
-                if !firewall.decide(Direction::Outbound, Proto::Tcp, 0, remote_port) {
+                if !firewall.decide(Direction::Outbound, Proto::Tcp, 0, remote_port, iface_index) {
                     let _ = rt::write_logf(
                         "network",
                         format_args!(

@@ -636,6 +636,85 @@ pub fn network_firewall_summary_parse_reply(
     })
 }
 
+/// Firewall policy surface for the replace-all op of
+/// [`NetworkTag::FirewallRulesSetRequest`]. `interface: None` leaves the rule
+/// matching every interface (legacy behavior); `Some(index)` pins it to the
+/// interface reported by [`NetworkTag::InterfaceStatusRequest`] at that
+/// 0-based index (the boot interface is index 0, eth0). The wire encoding
+/// rides the existing rule word: bits [48..64) hold `0` for any interface or
+/// `index + 1` for a pinned one.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NetworkFirewallRule {
+    /// `false` = allow, `true` = deny.
+    pub deny: bool,
+    pub proto: NetworkFirewallProto,
+    pub direction: NetworkFirewallDirection,
+    /// 0 = any port (inbound compares the local service port, outbound the
+    /// remote port).
+    pub port: u16,
+    pub interface: Option<u16>,
+    pub enabled: bool,
+}
+
+#[repr(u64)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NetworkFirewallProto {
+    Any = 0,
+    Tcp = 1,
+    Udp = 2,
+    Icmp = 3,
+}
+
+#[repr(u64)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NetworkFirewallDirection {
+    Inbound = 0,
+    Outbound = 1,
+}
+
+/// Pack a rule into the FirewallRulesSetRequest record word. Mirrors the
+/// service-side decode bit-for-bit (action/proto/direction/enabled/port and
+/// the trailing interface qualifier).
+pub(crate) fn pack_firewall_rule_word(rule: &NetworkFirewallRule) -> u64 {
+    (rule.deny as u64)
+        | ((rule.proto as u64) << 8)
+        | ((rule.direction as u64) << 16)
+        | ((rule.enabled as u64) << 24)
+        | ((rule.port as u64) << 32)
+        | (rule.interface.map_or(0, |index| index as u64 + 1) << 48)
+}
+
+/// Build the replace-all request body (FirewallRulesSetRequest op 0). At
+/// most 7 rules fit one IPC message (2 header words + 2 record words each);
+/// the service side further caps the table at its own maximum and answers
+/// [`NetworkStatus::InvalidTarget`] beyond it.
+pub(crate) fn firewall_replace_request(rules: &[NetworkFirewallRule]) -> Result<RawMessage> {
+    if 2 + rules.len() * 2 > IPC_MAX_WORDS {
+        return Err(Error::BufferTooSmall);
+    }
+    let mut request = RawMessage::empty(NetworkTag::FirewallRulesSetRequest as u32);
+    request.word_count = (2 + rules.len() * 2) as u32;
+    request.words[0] = 0;
+    request.words[1] = rules.len() as u64;
+    for (index, rule) in rules.iter().enumerate() {
+        let base = 2 + index * 2;
+        request.words[base] = pack_firewall_rule_word(rule);
+        request.words[base + 1] = rule.enabled as u64;
+    }
+    Ok(request)
+}
+
+/// Replace the whole firewall table (FirewallRulesSetRequest op 0) and
+/// return the fresh summary from the FirewallRulesReply.
+pub fn network_firewall_rules_replace(
+    network_handle: Handle,
+    rules: &[NetworkFirewallRule],
+) -> Result<NetworkFirewallSummary> {
+    let mut request = firewall_replace_request(rules)?;
+    let response = channel_call(network_handle, &mut request)?;
+    network_firewall_summary_parse_reply(&response)
+}
+
 pub fn network_resolve(network_handle: Handle, name: &str, addresses: &mut [u32]) -> Result<usize> {
     let name_bytes = name.as_bytes();
     let max_inline_bytes = (IPC_MAX_WORDS.saturating_sub(1)) * 8;
@@ -1227,5 +1306,100 @@ mod tests {
         reply.words[0] = NetworkStatus::Ok as u32 as u64;
         reply.words[1] = 42;
         assert!(network_wifi_status_parse_reply(&reply).is_err());
+    }
+
+    #[test]
+    fn firewall_rule_word_packs_qualifier_bits() {
+        // Legacy shape: no interface qualifier -> bits [48..64) stay zero.
+        let legacy = NetworkFirewallRule {
+            deny: true,
+            proto: NetworkFirewallProto::Tcp,
+            direction: NetworkFirewallDirection::Inbound,
+            port: 80,
+            interface: None,
+            enabled: true,
+        };
+        let word = pack_firewall_rule_word(&legacy);
+        assert_eq!(word & 0xff, 1, "deny");
+        assert_eq!((word >> 8) & 0xff, NetworkFirewallProto::Tcp as u64);
+        assert_eq!(
+            (word >> 16) & 0xff,
+            NetworkFirewallDirection::Inbound as u64
+        );
+        assert_eq!((word >> 24) & 1, 1, "enabled");
+        assert_eq!((word >> 32) & 0xffff, 80);
+        assert_eq!(word >> 48, 0, "unqualified");
+
+        // Pinned rule: eth1 (index 1) encodes as qualifier value 2.
+        let pinned = NetworkFirewallRule {
+            deny: false,
+            proto: NetworkFirewallProto::Udp,
+            direction: NetworkFirewallDirection::Outbound,
+            port: 0,
+            interface: Some(1),
+            enabled: false,
+        };
+        let word = pack_firewall_rule_word(&pinned);
+        assert_eq!(word & 0xff, 0, "allow");
+        assert_eq!(word >> 48, 2, "interface index 1 -> qualifier 2");
+        assert_eq!((word >> 24) & 1, 0, "disabled flag rides the rule word");
+    }
+
+    #[test]
+    fn firewall_replace_request_carries_qualified_rules() {
+        let rules = [
+            NetworkFirewallRule {
+                deny: true,
+                proto: NetworkFirewallProto::Udp,
+                direction: NetworkFirewallDirection::Outbound,
+                port: 53,
+                interface: Some(0),
+                enabled: true,
+            },
+            NetworkFirewallRule {
+                deny: false,
+                proto: NetworkFirewallProto::Any,
+                direction: NetworkFirewallDirection::Inbound,
+                port: 443,
+                interface: None,
+                enabled: true,
+            },
+        ];
+        let request = firewall_replace_request(&rules).expect("request builds");
+        assert_eq!(request.tag, NetworkTag::FirewallRulesSetRequest as u32);
+        assert_eq!(request.word_count, 6);
+        assert_eq!(request.words[0], 0, "op 0 = replace whole table");
+        assert_eq!(request.words[1], 2);
+        assert_eq!(request.words[2] >> 48, 1, "qualified to index 0");
+        assert_eq!(request.words[3], 1, "enable flag");
+        assert_eq!(request.words[4] >> 48, 0, "unqualified rule word");
+        assert_eq!(request.words[5], 1);
+
+        // Over-budget table rejected before any words are written.
+        let too_many = [rules[0]]; // reuse one rule shape for the cap check
+        let mut oversized = [too_many[0]; 8];
+        oversized[7].interface = None;
+        assert!(firewall_replace_request(&oversized).is_err());
+    }
+
+    #[test]
+    fn firewall_summary_parse_reply_ignores_trailing_rule_words() {
+        // A reply carrying a qualified table still parses into the global
+        // summary; old readers only touch words 0..3.
+        let mut reply = RawMessage::empty(NetworkTag::FirewallRulesReply as u32);
+        reply.word_count = 8;
+        reply.words[0] = NetworkStatus::Ok as u32 as u64;
+        reply.words[1] = 2;
+        reply.words[2] = 0;
+        reply.words[3] = (3 << 32) | 1;
+        reply.words[4] = 1 | (2 << 8) | (1 << 16) | (1 << 24) | (53 << 32) | (1 << 48);
+        reply.words[5] = 7;
+        reply.words[6] = 0;
+        reply.words[7] = 4;
+        let summary = network_firewall_summary_parse_reply(&reply).expect("parses");
+        assert_eq!(summary.rule_count, 2);
+        assert!(!summary.default_inbound_allow);
+        assert_eq!(summary.inbound_denied_total, 3);
+        assert_eq!(summary.outbound_denied_total, 1);
     }
 }

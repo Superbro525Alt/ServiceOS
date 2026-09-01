@@ -79,11 +79,23 @@ pub enum NetworkTag {
     /// Ordered first-match firewall table. One SET op per message via
     /// words[0]: 0 = replace all rules (words[1] count, words[2..] records),
     /// 1 = set default inbound policy (words[1] != 0 allows), 2 = clear
-    /// rules. Replies carry the table + hit/deny counters.
+    /// rules. Replies carry the table + hit/deny counters. Each rule record
+    /// is two words: words[i*2] packs action (0 allow / 1 deny) at [0..8),
+    /// protocol (0 any / 1 tcp / 2 udp / 3 icmp) at [8..16), direction
+    /// (0 inbound / 1 outbound) at [16..24), enabled at bit 24, port at
+    /// [32..48), and an interface qualifier at [48..64) — 0 = any interface
+    /// (legacy behavior), else `interface_index + 1` for a rule pinned to
+    /// the interface reported by InterfaceStatusRequest at that 0-based
+    /// index (the boot interface is index 0, eth0); words[i*2+1] is the
+    /// enable flag. Rule records are byte-compatible with the
+    /// pre-qualifier layout (old words leave [48..64) zero). The summary
+    /// deny counters remain global: at IPC_MAX_WORDS a full table leaves no
+    /// trailing budget for per-interface counters.
     FirewallRulesSetRequest = 0x80e,
     FirewallRulesReply = 0x80f,
     /// Query the full firewall table + counters. Replies
-    /// FirewallRulesReply.
+    /// FirewallRulesReply; rule words carry the interface qualifier as
+    /// described under FirewallRulesSetRequest.
     FirewallRulesGetRequest = 0x810,
     /// Extended resolver query: words carry a DNS rdata type (A/AAAA/TXT)
     /// plus name; reply appends a typed detail code to the standard

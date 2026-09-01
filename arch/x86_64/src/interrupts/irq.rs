@@ -104,6 +104,16 @@ pub(super) extern "x86-interrupt" fn msi_vector_handler_1(_frame: InterruptStack
     super::dispatch_msi_vector(1);
 }
 
+/// IDT gate for MSI vector slot 2 (third message-signaled device class).
+pub(super) extern "x86-interrupt" fn msi_vector_handler_2(_frame: InterruptStackFrame) {
+    super::dispatch_msi_vector(2);
+}
+
+/// IDT gate for MSI vector slot 3 (fourth message-signaled device class).
+pub(super) extern "x86-interrupt" fn msi_vector_handler_3(_frame: InterruptStackFrame) {
+    super::dispatch_msi_vector(3);
+}
+
 pub(super) fn register_external_irq_handler(irq_line: u8, handler: fn(u8)) -> bool {
     if irq_line as usize >= EXTERNAL_IRQ_LINES || irq_line == 0 {
         return false;

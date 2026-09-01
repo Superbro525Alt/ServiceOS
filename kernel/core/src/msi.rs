@@ -204,6 +204,39 @@ impl MsixTableEntry {
     }
 }
 
+/// One role in a per-device MSI-X steering plan: which MSI-X table entry
+/// delivers which arch vector.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MsixSteeringSlot {
+    /// MSI-X table entry index programmed with this role's message.
+    pub table_index: u16,
+    /// Arch vector (e.g. `MSI_VECTOR_BASE + slot`) the entry delivers.
+    pub vector: u8,
+}
+
+/// Validate a per-device steering plan against the device's MSI-X table
+/// size before anything is programmed: every role's table entry must fit
+/// the table and two roles must never share an entry. `Ok(())` means the
+/// caller may encode and program each entry independently.
+pub fn validate_steering_plan(
+    table_size: u16,
+    plan: &[MsixSteeringSlot],
+) -> Result<(), &'static str> {
+    for slot in plan {
+        if slot.table_index >= table_size {
+            return Err("table-size-exceeded");
+        }
+    }
+    for (i, slot) in plan.iter().enumerate() {
+        for other in &plan[i + 1..] {
+            if slot.table_index == other.table_index {
+                return Err("entry-shared");
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -346,5 +379,77 @@ mod tests {
             MSIX_ENTRY_VECTOR_CONTROL_OFFSET,
             3 * core::mem::size_of::<u32>() as u32
         );
+    }
+
+    #[test]
+    fn validate_steering_plan_accepts_distinct_indices_within_table() {
+        // The qemu-virtio shape: 4-vector table, queues on entry 0, config
+        // change on entry 1.
+        let plan = [
+            MsixSteeringSlot {
+                table_index: 0,
+                vector: 0x50,
+            },
+            MsixSteeringSlot {
+                table_index: 1,
+                vector: 0x52,
+            },
+        ];
+        assert_eq!(validate_steering_plan(4, &plan), Ok(()));
+    }
+
+    #[test]
+    fn validate_steering_plan_rejects_index_beyond_table_size() {
+        let plan = [
+            MsixSteeringSlot {
+                table_index: 0,
+                vector: 0x50,
+            },
+            MsixSteeringSlot {
+                table_index: 1,
+                vector: 0x52,
+            },
+        ];
+        assert_eq!(validate_steering_plan(1, &plan), Err("table-size-exceeded"));
+        assert_eq!(validate_steering_plan(0, &plan), Err("table-size-exceeded"));
+    }
+
+    #[test]
+    fn validate_steering_plan_rejects_shared_table_index() {
+        let plan = [
+            MsixSteeringSlot {
+                table_index: 0,
+                vector: 0x50,
+            },
+            MsixSteeringSlot {
+                table_index: 0,
+                vector: 0x52,
+            },
+        ];
+        assert_eq!(validate_steering_plan(4, &plan), Err("entry-shared"));
+    }
+
+    #[test]
+    fn msix_steering_golden_two_entry_queue_config_table() {
+        // Multi-vector steering: entry 0 delivers arch vector 0x50 (virtio
+        // queues), entry 1 delivers 0x52 (config change), both masked
+        // pre-enable. Offsets are entry-index * 16.
+        let queue_entry = MsixTableEntry::new_edge_fixed(0, 0x50, true);
+        let config_entry = MsixTableEntry::new_edge_fixed(0, 0x52, true);
+        assert_eq!(queue_entry.to_words(), [0xfee0_0000, 0, 0x50, 1]);
+        assert_eq!(config_entry.to_words(), [0xfee0_0000, 0, 0x52, 1]);
+        assert_eq!(msix_table_entry_offset(0), 0);
+        assert_eq!(msix_table_entry_offset(1), 16);
+        let plan = [
+            MsixSteeringSlot {
+                table_index: 0,
+                vector: queue_entry.data as u8,
+            },
+            MsixSteeringSlot {
+                table_index: 1,
+                vector: config_entry.data as u8,
+            },
+        ];
+        assert_eq!(validate_steering_plan(4, &plan), Ok(()));
     }
 }

@@ -18,7 +18,7 @@ use virtio_drivers::{
     },
 };
 
-use crate::msix::{IoPortPciConfigAccess, MsixOutcome, try_setup_msix};
+use crate::msix::{IoPortPciConfigAccess, MsixOutcome, MsixSteeringPlan, try_setup_msix};
 
 /// Arch MSI vector slot the virtio block device owns (slot 0 is the NIC's).
 const MSI_VECTOR_SLOT: u8 = 1;
@@ -73,13 +73,19 @@ pub fn initialize() -> Option<Arc<dyn BlockBackend>> {
             let interrupt = match try_setup_msix(
                 &mut root,
                 device_function,
-                interrupts::MSI_VECTOR_BASE + MSI_VECTOR_SLOT,
+                // Block has a single queue and no post-init config reads the
+                // driver cares about, so it stays one vector, config change
+                // off (NO_VECTOR) — same as v0.
+                MsixSteeringPlan {
+                    queue_vector: interrupts::MSI_VECTOR_BASE + MSI_VECTOR_SLOT,
+                    config_vector: None,
+                },
             ) {
-                MsixOutcome::Ready(vector) => {
+                MsixOutcome::Ready(steering) => {
                     if !interrupts::register_msi_vector_handler(MSI_VECTOR_SLOT, handle_block_irq) {
                         return None;
                     }
-                    BlockInterruptModel::Msix(vector)
+                    BlockInterruptModel::Msix(steering.queue_vector)
                 }
                 MsixOutcome::Disabled => BlockInterruptModel::Legacy,
                 MsixOutcome::Failed(reason) => {

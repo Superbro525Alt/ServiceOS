@@ -1,5 +1,6 @@
 use alloc::sync::Arc;
 use core::ptr::NonNull;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use serviceos_abi::{PacketInterfaceBackend, PacketInterfaceInfo, PacketInterfaceLinkState};
 use serviceos_kernel_arch_x86_64::{interrupts, paging::ActivePageTable};
@@ -20,20 +21,34 @@ use virtio_drivers::{
     },
 };
 
-use crate::msix::{IoPortPciConfigAccess, MsixOutcome, try_setup_msix};
+use crate::msix::{IoPortPciConfigAccess, MsixOutcome, MsixSteeringPlan, try_setup_msix};
 
 const NETWORK_QUEUE_SIZE: usize = 8;
 const NETWORK_BUFFER_BYTES: usize = 1536;
 const MAX_RECEIVE_QUEUE: usize = 32;
+
+/// Arch MSI vector slot the NIC's virtio queues own (rx + tx; the vendored
+/// virtio-drivers 0.13 driver aggregates both through one device-wide
+/// `ack_interrupt`, so per-rx/tx vectors would steer two names at one
+/// aggregated handler).
+const MSI_QUEUE_VECTOR_SLOT: u8 = 0;
+/// Arch MSI vector slot the NIC's config-change events own (slot 2): the
+/// v0 shared-vector setup left config change on NO_VECTOR, so link/MAC
+/// events were never delivered. Slot 1 is the block device's.
+const MSI_CONFIG_VECTOR_SLOT: u8 = 2;
 
 /// How the NIC's interrupts reach the kernel.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NetworkInterruptModel {
     /// Legacy INT#x pin emulation through the external (PIC) line.
     Legacy(u8),
-    /// MSI-X: message-signaled interrupt on an arch MSI vector, delivered
-    /// through the LAPIC (no external controller involvement).
-    Msix(u8),
+    /// MSI-X: message-signaled interrupts delivered through the LAPIC (no
+    /// external controller involvement) — queues on one arch vector,
+    /// config-change on its own when the device table could hold it.
+    Msix {
+        queue_vector: u8,
+        config_vector: Option<u8>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -67,37 +82,53 @@ pub fn initialize() -> Option<Arc<dyn PacketBackend>> {
             // config doesn't provide it. Every fallible MSI-X step happens
             // before the device is enabled, so a failure leaves the device
             // untouched and the legacy path clean. The shared bring-up lives
-            // in `crate::msix`; the NIC owns arch MSI vector slot 0.
-            let interrupt =
-                match try_setup_msix(&mut root, device_function, interrupts::MSI_VECTOR_BASE) {
-                    MsixOutcome::Ready(vector) => {
-                        if !interrupts::register_msi_vector_handler(0, handle_network_irq) {
-                            return None;
-                        }
-                        NetworkInterruptModel::Msix(vector)
+            // in `crate::msix`; the NIC owns arch MSI vector slots 0 (queues)
+            // and 2 (config change).
+            let interrupt = match try_setup_msix(
+                &mut root,
+                device_function,
+                MsixSteeringPlan {
+                    queue_vector: interrupts::MSI_VECTOR_BASE + MSI_QUEUE_VECTOR_SLOT,
+                    config_vector: Some(interrupts::MSI_VECTOR_BASE + MSI_CONFIG_VECTOR_SLOT),
+                },
+            ) {
+                MsixOutcome::Ready(steering) => {
+                    if !interrupts::register_msi_vector_handler(
+                        MSI_QUEUE_VECTOR_SLOT,
+                        handle_network_irq,
+                    ) || !interrupts::register_msi_vector_handler(
+                        MSI_CONFIG_VECTOR_SLOT,
+                        handle_network_config_irq,
+                    ) {
+                        return None;
                     }
-                    MsixOutcome::Disabled => {
-                        let interrupt_line = read_interrupt_line(device_function)?;
-                        if !interrupts::register_external_irq_handler(
-                            interrupt_line,
-                            handle_network_irq,
-                        ) {
-                            return None;
-                        }
-                        NetworkInterruptModel::Legacy(interrupt_line)
+                    NetworkInterruptModel::Msix {
+                        queue_vector: steering.queue_vector,
+                        config_vector: steering.config_vector,
                     }
-                    MsixOutcome::Failed(reason) => {
-                        let interrupt_line = read_interrupt_line(device_function)?;
-                        let _ = MSIX_SETUP_DIAG.call_once(|| reason);
-                        if !interrupts::register_external_irq_handler(
-                            interrupt_line,
-                            handle_network_irq,
-                        ) {
-                            return None;
-                        }
-                        NetworkInterruptModel::Legacy(interrupt_line)
+                }
+                MsixOutcome::Disabled => {
+                    let interrupt_line = read_interrupt_line(device_function)?;
+                    if !interrupts::register_external_irq_handler(
+                        interrupt_line,
+                        handle_network_irq,
+                    ) {
+                        return None;
                     }
-                };
+                    NetworkInterruptModel::Legacy(interrupt_line)
+                }
+                MsixOutcome::Failed(reason) => {
+                    let interrupt_line = read_interrupt_line(device_function)?;
+                    let _ = MSIX_SETUP_DIAG.call_once(|| reason);
+                    if !interrupts::register_external_irq_handler(
+                        interrupt_line,
+                        handle_network_irq,
+                    ) {
+                        return None;
+                    }
+                    NetworkInterruptModel::Legacy(interrupt_line)
+                }
+            };
 
             let transport = PciTransport::new::<KernelHal, _>(&mut root, device_function).ok()?;
             let device =
@@ -131,6 +162,20 @@ fn handle_network_irq(_irq_line: u8) {
             let _ = task::notify_packet_ready(ObjectId(object_id));
         });
     }
+}
+
+/// Config-change deliveries (link status / MAC edits) now land here on the
+/// NIC's own arch MSI vector — the v0 shared-vector setup left the virtio
+/// config-change vector at NO_VECTOR so these events were never delivered.
+/// The vendored virtio-drivers 0.13 net driver exposes no config-change
+/// callback (it reads config only during negotiation), so v1 records the
+/// delivery; a future driver-side callback would hang link-state handling
+/// off this handler. Device-side: with MSI-X enabled the ISR register is not
+/// used (virtio 1.0 4.1.5) and the arch dispatch LAPIC-EOIs the vector.
+pub static CONFIG_CHANGE_EVENTS: AtomicUsize = AtomicUsize::new(0);
+
+fn handle_network_config_irq(_irq_line: u8) {
+    CONFIG_CHANGE_EVENTS.fetch_add(1, Ordering::Relaxed);
 }
 
 static BRINGUP_SUMMARY: Once<NetworkBringupSummary> = Once::new();

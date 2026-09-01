@@ -73,7 +73,7 @@ fn main() -> u64 {
             Ok(flow_changed) => changed |= flow_changed,
             Err(_) => return 0xf206,
         }
-        changed |= pump_playback(&mut state);
+        changed |= pump_playback(&mut state, storage_handle, audio_handle);
 
         match deferred.run(|| {
             if !state.scan_done {

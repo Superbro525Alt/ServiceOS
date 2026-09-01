@@ -106,12 +106,31 @@ pub type Result<T> = core::result::Result<T, Error>;
 #[macro_export]
 macro_rules! entry {
     ($path:path) => {
-        #[cfg(not(test))]
-        #[panic_handler]
-        fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
-            let _ = $crate::write_log("panic", "userspace panic");
-            $crate::thread_exit(0xffff_ffff_ffff_ff00)
+    #[cfg(not(test))]
+    #[panic_handler]
+    fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
+        // One-line diagnostic before the fail-fast exit: the payload (when it
+        // is a plain &str) plus the source location. No alloc, no formatting
+        // churn beyond this single record.
+        let mut buffer = $crate::FixedLogBuffer::<256>::new();
+        let _ = core::fmt::Write::write_str(&mut buffer, "userspace panic: ");
+        match info.payload().downcast_ref::<&str>() {
+            Some(message) => {
+                let _ = core::fmt::Write::write_str(&mut buffer, message);
+            }
+            None => {
+                let _ = core::fmt::Write::write_str(&mut buffer, "<non-str payload>");
+            }
         }
+        if let Some(location) = info.location() {
+            let _ = core::fmt::Write::write_fmt(
+                &mut buffer,
+                format_args!(" at {}:{}:{}", location.file(), location.line(), location.column()),
+            );
+        }
+        let _ = $crate::debug_log(buffer.as_bytes());
+        $crate::thread_exit(0xffff_ffff_ffff_ff00)
+    }
 
         #[cfg(not(test))]
         #[unsafe(no_mangle)]

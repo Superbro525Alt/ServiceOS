@@ -20,8 +20,13 @@ pub fn yield_current() -> Result<()> {
 
 pub fn thread_exit(code: u64) -> ! {
     let _ = syscall1(SyscallNumber::ThreadExit, code);
+    // The exit syscall only fails before the thread was reaped (kernel not
+    // initialized, transient error). Spin-looping here would monopolize the
+    // hart on aarch64 — the kernel only preempts on tick boundaries from IRQ
+    // return, so a spinning non-trapping thread starves every peer. Yield
+    // instead so the scheduler keeps making progress.
     loop {
-        core::hint::spin_loop();
+        let _ = yield_current();
     }
 }
 

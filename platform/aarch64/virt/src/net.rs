@@ -1,9 +1,10 @@
+use alloc::boxed::Box;
 use alloc::sync::Arc;
 use spin::{Mutex, Once};
 
 use serviceos_abi::{PacketInterfaceBackend, PacketInterfaceInfo, PacketInterfaceLinkState};
 use serviceos_kernel_core::network::{PacketBackend, PacketInterfaceError};
-use virtio_drivers::{device::net::VirtIONet, transport::DeviceType};
+use virtio_drivers::{device::net::VirtIONetRaw, transport::DeviceType};
 
 use crate::dtb::VirtioMmioDevice;
 use crate::virtio::{KernelHal, VirtioTransport, discover};
@@ -11,6 +12,13 @@ use crate::virtio::{KernelHal, VirtioTransport, discover};
 const NETWORK_QUEUE_SIZE: usize = 8;
 const NETWORK_BUFFER_BYTES: usize = 1536;
 const MAX_RECEIVE_QUEUE: usize = 32;
+// Header (10-byte legacy or 12-byte modern virtio-net header) + payload.
+const TX_BUFFER_BYTES: usize = NETWORK_BUFFER_BYTES + 32;
+// One pending slot per possible in-flight TX chain (the queue has 8
+// descriptors and can_send gates at 2 free, so at most 7 chains can ever be
+// outstanding); the raw driver gives us back the token when the device
+// completes, and we retire the slot in poll().
+const TX_PENDING_SLOTS: usize = NETWORK_QUEUE_SIZE;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NetworkBringupSummary {
@@ -23,13 +31,27 @@ pub struct NetworkBringupSummary {
 
 pub fn initialize(devices: &[VirtioMmioDevice]) -> Option<Arc<dyn PacketBackend>> {
     let (discovered, transport) = discover(devices, DeviceType::Network).into_iter().next()?;
-    let device = VirtIONet::<KernelHal, VirtioTransport, NETWORK_QUEUE_SIZE>::new(
-        transport,
-        NETWORK_BUFFER_BYTES,
-    )
-    .ok()?;
+    let mut device = VirtIONetRaw::<KernelHal, VirtioTransport, NETWORK_QUEUE_SIZE>::new(transport)
+        .ok()?;
     let mac = device.mac_address();
-    let backend = Arc::new(VirtioPacketBackend::new(device, mac));
+
+    // Pre-post the receive ring with our own heap buffers (the raw driver has
+    // no internal buffer management; tokens are handed out in submission
+    // order, exactly like the upstream VirtIONet wrapper asserts).
+    const NONE_RX: Option<Box<[u8; NETWORK_BUFFER_BYTES]>> = None;
+    let mut rx_buffers = [NONE_RX; NETWORK_QUEUE_SIZE];
+    for (index, slot) in rx_buffers.iter_mut().enumerate() {
+        let mut buffer = Box::new([0u8; NETWORK_BUFFER_BYTES]);
+        // SAFETY: the heap buffer stays owned by rx_buffers and is not moved
+        // or read until receive_complete retires its token.
+        let token = unsafe { device.receive_begin(&mut buffer[..]) }.ok()?;
+        if token != index as u16 {
+            return None;
+        }
+        *slot = Some(buffer);
+    }
+
+    let backend = Arc::new(VirtioPacketBackend::new(device, rx_buffers, mac));
     let _ = BRINGUP_SUMMARY.call_once(|| NetworkBringupSummary {
         backend: PacketInterfaceBackend::VirtioPci,
         mmio_base: discovered.mmio_base,
@@ -51,13 +73,24 @@ struct VirtioPacketBackend {
 }
 
 struct VirtioPacketState {
-    device: VirtIONet<KernelHal, VirtioTransport, NETWORK_QUEUE_SIZE>,
+    device: VirtIONetRaw<KernelHal, VirtioTransport, NETWORK_QUEUE_SIZE>,
+    rx_buffers: [Option<Box<[u8; NETWORK_BUFFER_BYTES]>>; NETWORK_QUEUE_SIZE],
+    tx_pending: [Option<TxPending>; TX_PENDING_SLOTS],
     mac: [u8; 6],
     mtu: u32,
     receive_queue: ReceiveQueue,
     rx_packets: u64,
     tx_packets: u64,
     dropped_packets: u64,
+}
+
+/// A transmit handed to the device whose completion has not been reaped yet.
+/// The heap buffer keeps the descriptor-alias memory alive and unmodified
+/// until `transmit_complete` retires the token.
+struct TxPending {
+    buffer: Box<[u8; TX_BUFFER_BYTES]>,
+    token: u16,
+    total_len: usize,
 }
 
 struct ReceiveQueue {
@@ -124,12 +157,15 @@ impl ReceiveQueue {
 
 impl VirtioPacketBackend {
     fn new(
-        device: VirtIONet<KernelHal, VirtioTransport, NETWORK_QUEUE_SIZE>,
+        device: VirtIONetRaw<KernelHal, VirtioTransport, NETWORK_QUEUE_SIZE>,
+        rx_buffers: [Option<Box<[u8; NETWORK_BUFFER_BYTES]>>; NETWORK_QUEUE_SIZE],
         mac: [u8; 6],
     ) -> Self {
         Self {
             state: Mutex::new(VirtioPacketState {
                 device,
+                rx_buffers,
+                tx_pending: [const { None }; TX_PENDING_SLOTS],
                 mac,
                 mtu: 1500,
                 receive_queue: ReceiveQueue::new(),
@@ -137,6 +173,39 @@ impl VirtioPacketBackend {
                 tx_packets: 0,
                 dropped_packets: 0,
             }),
+        }
+    }
+}
+
+impl VirtioPacketState {
+    /// Retire every TX chain the device has completed. Called from poll()
+    /// (executor loop) and before each submit so descriptors free promptly.
+    fn reap_transmits(&mut self) {
+        while let Some(token) = self.device.poll_transmit() {
+            let Some(slot) = self
+                .tx_pending
+                .iter()
+                .position(|pending| matches!(pending, Some(p) if p.token == token))
+            else {
+                // Front used element matches no outstanding token: stop rather
+                // than spin on a queue the device desynchronized.
+                return;
+            };
+            let Some(pending) = self.tx_pending[slot].take() else {
+                return;
+            };
+            let buffer = pending.buffer;
+            // SAFETY: the same heap slice (full extent) that transmit_begin
+            // shared with the device; the device finished with it by the time
+            // its token reached the used ring front.
+            if unsafe { self.device.transmit_complete(token, &buffer[..pending.total_len]) }
+                .is_err()
+            {
+                self.dropped_packets = self.dropped_packets.saturating_add(1);
+                // The token was not consumed by the device ring; leave the
+                // used element in place and stop this reap pass.
+                return;
+            }
         }
     }
 }
@@ -163,16 +232,38 @@ impl PacketBackend for VirtioPacketBackend {
         }
 
         let mut state = self.state.lock();
+        state.reap_transmits();
+
+        // Non-blocking submit: the blocking VirtIONet::send path spins at EL1
+        // inside the syscall (virtio-drivers add_notify_wait_pop) until the
+        // DEVICE writes the used ring — a device-side TX stall froze the whole
+        // guest permanently. Here a stall simply leaves descriptors in flight
+        // and returns Busy; the ring doorbell retries later and completions
+        // are reaped in poll().
         if !state.device.can_send() {
             return Err(PacketInterfaceError::Busy);
         }
+        let Some(slot) = state.tx_pending.iter().position(Option::is_none) else {
+            return Err(PacketInterfaceError::Busy);
+        };
 
-        let mut tx = state.device.new_tx_buffer(frame.len());
-        tx.packet_mut().copy_from_slice(frame);
-        state
+        let mut buffer = Box::new([0u8; TX_BUFFER_BYTES]);
+        let header_len = state
             .device
-            .send(tx)
+            .fill_buffer_header(&mut buffer[..])
             .map_err(|_| PacketInterfaceError::Busy)?;
+        buffer[header_len..header_len + frame.len()].copy_from_slice(frame);
+        let total_len = header_len + frame.len();
+        // SAFETY: the buffer is owned by the pending slot from here on and is
+        // neither read nor modified until transmit_complete retires the token.
+        let token = unsafe { state.device.transmit_begin(&buffer[..total_len]) }
+            .map_err(|_| PacketInterfaceError::Busy)?;
+
+        state.tx_pending[slot] = Some(TxPending {
+            buffer,
+            token,
+            total_len,
+        });
         state.tx_packets = state.tx_packets.saturating_add(1);
         Ok(())
     }
@@ -186,24 +277,51 @@ impl PacketBackend for VirtioPacketBackend {
         let mut state = self.state.lock();
         let mut became_ready = false;
 
-        while state.device.can_recv() {
-            match state.device.receive() {
-                Ok(rx) => {
+        // RX drain (poll-based, no IRQ dependency): hand each completed
+        // buffer to the receive queue, then re-post it to the device.
+        while let Some(token) = state.device.poll_receive() {
+            if token as usize >= NETWORK_QUEUE_SIZE {
+                break;
+            }
+            let Some(mut buffer) = state.rx_buffers[token as usize].take() else {
+                break;
+            };
+            // SAFETY: the same full slice receive_begin shared with the
+            // device; the token is at the used-ring front, so the device is
+            // done writing it.
+            let completed =
+                unsafe { state.device.receive_complete(token, &mut buffer[..]) };
+            match completed {
+                Ok((header_len, packet_len)) => {
                     if state.receive_queue.is_empty() {
                         became_ready = true;
                     }
-                    let queue_result = state.receive_queue.push_copy(rx.packet());
-                    let _ = state.device.recycle_rx_buffer(rx);
-                    if queue_result.is_err() {
+                    let end = (header_len + packet_len).min(NETWORK_BUFFER_BYTES);
+                    if state.receive_queue.push_copy(&buffer[header_len..end]).is_ok() {
+                        state.rx_packets = state.rx_packets.saturating_add(1);
+                    } else {
                         state.dropped_packets = state.dropped_packets.saturating_add(1);
-                        continue;
                     }
-                    state.rx_packets = state.rx_packets.saturating_add(1);
                 }
-                Err(_) => break,
+                Err(_) => {
+                    state.dropped_packets = state.dropped_packets.saturating_add(1);
+                    // Buffer lost with its descriptor; stop this drain pass.
+                    break;
+                }
+            }
+            // SAFETY: the heap buffer stays owned by rx_buffers until its new
+            // token completes.
+            match unsafe { state.device.receive_begin(&mut buffer[..]) } {
+                Ok(new_token) if (new_token as usize) < NETWORK_QUEUE_SIZE => {
+                    state.rx_buffers[new_token as usize] = Some(buffer);
+                }
+                _ => {
+                    state.dropped_packets = state.dropped_packets.saturating_add(1);
+                }
             }
         }
 
+        state.reap_transmits();
         became_ready
     }
 }

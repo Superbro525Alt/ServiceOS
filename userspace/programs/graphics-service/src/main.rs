@@ -45,7 +45,7 @@ fn main() -> u64 {
     let output_handle = startup.handles[0];
     let log_handle = startup.handles[1];
     let output = match rt::display_output_info(output_handle) {
-        Ok(info) => info,
+        Ok(info) => outputs::reconcile_output_stride(info),
         Err(_) => return 0xfc03,
     };
     if output.bytes_per_pixel != 4 || output.byte_len as usize > MAX_FRAMEBUFFER_BYTES {

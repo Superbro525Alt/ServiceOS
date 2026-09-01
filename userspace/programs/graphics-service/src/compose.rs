@@ -602,6 +602,11 @@ fn restore_damage_from_base(
     for py in start_y..end_y {
         let row_start = (py * output.stride as usize + start_x) * bytes_per_pixel;
         let row_end = (py * output.stride as usize + end_x) * bytes_per_pixel;
+        // Rows ascend, so the first out-of-range row ends the damage: clip
+        // exactly like `write_pixel` instead of panicking on the slice.
+        if row_start >= frame.len() || row_end > frame.len() {
+            break;
+        }
         frame[row_start..row_end].copy_from_slice(&base[row_start..row_end]);
     }
 }
@@ -1100,5 +1105,49 @@ mod tests {
         assert_eq!(stats.noop_saved_bytes, 64);
         assert_eq!(stats.band_presents, 2);
         assert_eq!(stats.band_saved_bytes, 128);
+    }
+
+    /// Boot backends that report the stride in bytes instead of pixels (ABI
+    /// violation) push row offsets past `byte_len`. The restore path must
+    /// clip out-of-range rows exactly like `write_pixel` instead of
+    /// panicking with an out-of-bounds slice index.
+    #[test]
+    fn restore_damage_skips_rows_beyond_frame_len() {
+        // stride in bytes (12) with an honest pixel-stride byte_len (256):
+        // rows 4..=6 of the damage still index in range, row 6 overflows.
+        let out = rt::DisplayOutputInfo {
+            backend: 1,
+            state: 1,
+            pixel_format: 1,
+            reserved: 0,
+            width: 8,
+            height: 8,
+            stride: 11,
+            bytes_per_pixel: 4,
+            byte_len: 8 * 8 * 4,
+            present_count: 0,
+        };
+        let mut frame = vec![0u8; out.byte_len as usize];
+        let base = vec![0xAAu8; out.byte_len as usize];
+        restore_damage_from_base(&mut frame, &base, out, rect(0, 4, 8, 4));
+        assert_eq!(&frame[176..208], &base[176..208]);
+        assert_eq!(&frame[220..252], &base[220..252]);
+        // Stride tail columns are never part of the damage copy.
+        assert!(frame[208..220].iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn restore_damage_copies_full_damage_rows_when_stride_is_pixels() {
+        let out = output(8, 8, 8, 4);
+        let mut frame = vec![0u8; out.byte_len as usize];
+        let base = vec![0xAAu8; out.byte_len as usize];
+        restore_damage_from_base(&mut frame, &base, out, rect(2, 2, 4, 4));
+        for py in 2..6usize {
+            let start = py * 8 * 4 + 2 * 4;
+            let end = py * 8 * 4 + 6 * 4;
+            assert_eq!(&frame[start..end], &base[start..end]);
+        }
+        assert!(frame[..2 * 8 * 4].iter().all(|byte| *byte == 0));
+        assert!(frame[6 * 8 * 4..].iter().all(|byte| *byte == 0));
     }
 }

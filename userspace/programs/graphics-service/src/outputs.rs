@@ -121,6 +121,26 @@ pub(crate) struct OutputSlot {
     pub(crate) band_saved_bytes: u64,
 }
 
+/// The display ABI defines `stride` as the row stride in pixels with
+/// `byte_len == stride * height * bytes_per_pixel` (kernel display/mode.rs).
+/// Boot-framebuffer backends on some platforms report the stride in bytes
+/// instead; `byte_len` stays authoritative because the kernel present path
+/// validates frames against it. Re-derive the pixel stride from `byte_len`
+/// whenever the reported triple would index past the real buffer, keeping
+/// every compose/present row calculation inside the framebuffer.
+pub(crate) fn reconcile_output_stride(mut info: rt::DisplayOutputInfo) -> rt::DisplayOutputInfo {
+    let height = info.height as u64;
+    let bytes_per_pixel = info.bytes_per_pixel as u64;
+    if info.width == 0 || height == 0 || bytes_per_pixel == 0 {
+        return info;
+    }
+    if info.stride as u64 * height * bytes_per_pixel <= info.byte_len {
+        return info;
+    }
+    info.stride = (info.byte_len / (height * bytes_per_pixel)) as u32;
+    info
+}
+
 impl OutputSlot {
     pub(crate) const fn empty() -> Self {
         Self {
@@ -1081,5 +1101,33 @@ mod tests {
         // Top row refreshed, bottom row still holds the previous frame.
         assert_eq!(&shadow[..16], &[0xEE; 16]);
         assert_eq!(&shadow[16..], &[0x55; 16]);
+    }
+
+    #[test]
+    fn reconcile_output_stride_rederives_pixel_stride_from_byte_len() {
+        // aarch64 virt boot-framebuffer shape: the backend reports the row
+        // stride in bytes while byte_len stays the real buffer size.
+        let mut boot = info(1024, 768, 4096, 4, OUTPUT_BACKEND_BOOT_FB);
+        boot.byte_len = 1024 * 768 * 4;
+        let fixed = reconcile_output_stride(boot);
+        assert_eq!(fixed.stride, 1024);
+        assert_eq!(fixed.byte_len, 1024 * 768 * 4);
+        assert_eq!(fixed.width, 1024);
+        assert_eq!(fixed.height, 768);
+        assert_eq!(fixed.bytes_per_pixel, 4);
+    }
+
+    #[test]
+    fn reconcile_output_stride_keeps_abi_conformant_info() {
+        let conformant = info(1024, 768, 1024, 4, OUTPUT_BACKEND_BOOT_FB);
+        assert_eq!(reconcile_output_stride(conformant), conformant);
+        let padded = info(1000, 600, 1024, 4, OUTPUT_BACKEND_BOOT_FB);
+        assert_eq!(reconcile_output_stride(padded), padded);
+    }
+
+    #[test]
+    fn reconcile_output_stride_leaves_zeroed_info_untouched() {
+        let empty = OutputSlot::empty().info;
+        assert_eq!(reconcile_output_stride(empty), empty);
     }
 }

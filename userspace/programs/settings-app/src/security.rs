@@ -152,3 +152,95 @@ impl core::fmt::Display for RuntimeCapSummary {
         Ok(())
     }
 }
+
+/// Sensitive capability classes the runtime approval flow gates on — the same
+/// set runtime-service's sensitive_capabilities() intersects decisions with.
+pub(crate) fn sensitive_runtime_caps(capabilities: u32) -> u32 {
+    capabilities
+        & (rt::runtime_capability::NETWORK
+            | rt::runtime_capability::GRAPHICS
+            | rt::runtime_capability::AUDIO)
+}
+
+/// Decoded granted-mask marker for a runtime approval audit record:
+/// runtime-service packs the granted capability mask into the audit detail
+/// word for every RuntimeApprovalChanged record. A partial grant (subset of
+/// the sensitive classes) is flagged so history shows granted=subset.
+pub(crate) struct RuntimeGrantSummary {
+    pub(crate) granted: u32,
+    pub(crate) partial: bool,
+}
+
+pub(crate) fn runtime_grant_summary(audit: &rt::RuntimeAuditInfo) -> Option<RuntimeGrantSummary> {
+    if audit.kind != rt::SecurityAuditKind::RuntimeApprovalChanged {
+        return None;
+    }
+    let granted = audit.detail as u32;
+    if granted == 0 {
+        return None;
+    }
+    Some(RuntimeGrantSummary {
+        granted,
+        partial: granted != sensitive_runtime_caps(audit.capabilities),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn approval_audit(capabilities: u32, granted: u32) -> rt::RuntimeAuditInfo {
+        rt::RuntimeAuditInfo {
+            sequence: 7,
+            kind: rt::SecurityAuditKind::RuntimeApprovalChanged,
+            env_id: 3,
+            capabilities,
+            detail: granted as u64,
+        }
+    }
+
+    #[test]
+    fn sensitive_caps_cover_only_gated_classes() {
+        let caps = rt::runtime_capability::FILE_READ
+            | rt::runtime_capability::TERMINAL_IO
+            | rt::runtime_capability::NETWORK
+            | rt::runtime_capability::GRAPHICS
+            | rt::runtime_capability::AUDIO;
+        assert_eq!(
+            sensitive_runtime_caps(caps),
+            rt::runtime_capability::NETWORK
+                | rt::runtime_capability::GRAPHICS
+                | rt::runtime_capability::AUDIO
+        );
+        assert_eq!(sensitive_runtime_caps(rt::runtime_capability::FILE_READ), 0);
+    }
+
+    #[test]
+    fn grant_summary_flags_subset_as_partial() {
+        let caps = rt::runtime_capability::FILE_READ
+            | rt::runtime_capability::NETWORK
+            | rt::runtime_capability::GRAPHICS
+            | rt::runtime_capability::AUDIO;
+        let partial = runtime_grant_summary(&approval_audit(caps, rt::runtime_capability::NETWORK))
+            .expect("granted record decodes");
+        assert_eq!(partial.granted, rt::runtime_capability::NETWORK);
+        assert!(partial.partial);
+
+        let full = runtime_grant_summary(&approval_audit(
+            caps,
+            rt::runtime_capability::NETWORK
+                | rt::runtime_capability::GRAPHICS
+                | rt::runtime_capability::AUDIO,
+        ))
+        .expect("full grant decodes");
+        assert!(!full.partial);
+    }
+
+    #[test]
+    fn grant_summary_ignores_non_approval_and_empty_grants() {
+        let mut audit = approval_audit(0, 0);
+        audit.kind = rt::SecurityAuditKind::LaunchDenied;
+        assert!(runtime_grant_summary(&audit).is_none());
+        assert!(runtime_grant_summary(&approval_audit(0, 0)).is_none());
+    }
+}

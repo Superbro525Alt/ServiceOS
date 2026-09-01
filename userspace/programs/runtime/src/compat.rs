@@ -237,6 +237,44 @@ pub fn runtime_env_var(
     }
 }
 
+/// Sandbox-manifest launch-envelope constants. Must mirror the receiving
+/// side in `runtime-service/src/sandbox.rs` (`SANDBOX_MANIFEST_VERSION`,
+/// `SANDBOX_MANIFEST_BLOB_LEN`, and the header word layout
+/// `blob_len | version << 56`).
+const SANDBOX_MANIFEST_VERSION: u64 = 1;
+const SANDBOX_MANIFEST_BLOB_LEN: usize = 8;
+
+/// Pure packing core of the launch envelope, shared by the manifest-less
+/// and manifest-carrying senders. Layout: words[0..3] header, packed
+/// argument words, then optionally one manifest header word plus one packed
+/// 8-byte manifest blob word. The argument budget shrinks by two words when
+/// a manifest rides along (16-word IPC envelope).
+fn pack_launch_words(
+    request: &mut RawMessage,
+    env_id: u32,
+    workload: RuntimeWorkloadKind,
+    arg_bytes: &[u8],
+    manifest: Option<&[u8; SANDBOX_MANIFEST_BLOB_LEN]>,
+) -> Result<()> {
+    let manifest_words = usize::from(manifest.is_some()) * 2;
+    let max_inline_bytes = IPC_MAX_WORDS.saturating_sub(3 + manifest_words) * 8;
+    if arg_bytes.len() > max_inline_bytes {
+        return Err(Error::BufferTooSmall);
+    }
+    let packed = pack_bytes(arg_bytes, &mut request.words[3..])?;
+    request.word_count = (3 + packed as usize + manifest_words) as u32;
+    if let Some(blob) = manifest {
+        let header_index = 3 + packed as usize;
+        request.words[header_index] =
+            (SANDBOX_MANIFEST_VERSION << 56) | SANDBOX_MANIFEST_BLOB_LEN as u64;
+        request.words[header_index + 1] = u64::from_le_bytes(*blob);
+    }
+    request.words[0] = env_id as u64;
+    request.words[1] = workload as u32 as u64;
+    request.words[2] = arg_bytes.len() as u64;
+    Ok(())
+}
+
 pub fn runtime_run_launch(
     runtime_handle: Handle,
     env_id: u32,
@@ -244,8 +282,30 @@ pub fn runtime_run_launch(
     argument: &str,
     output_handle: Handle,
 ) -> Result<u32> {
+    runtime_run_launch_with_manifest(
+        runtime_handle,
+        env_id,
+        workload,
+        argument,
+        output_handle,
+        None,
+    )
+}
+
+/// Launch a workload, optionally carrying its per-workload sandbox manifest
+/// as additive trailing envelope words. Workloads launched without a
+/// manifest produce byte-identical messages to `runtime_run_launch`.
+pub fn runtime_run_launch_with_manifest(
+    runtime_handle: Handle,
+    env_id: u32,
+    workload: RuntimeWorkloadKind,
+    argument: &str,
+    output_handle: Handle,
+    manifest: Option<&[u8; SANDBOX_MANIFEST_BLOB_LEN]>,
+) -> Result<u32> {
     let arg_bytes = argument.as_bytes();
-    let max_inline_bytes = (IPC_MAX_WORDS.saturating_sub(3)) * 8;
+    let manifest_words = usize::from(manifest.is_some()) * 2;
+    let max_inline_bytes = IPC_MAX_WORDS.saturating_sub(3 + manifest_words) * 8;
     if arg_bytes.len() > max_inline_bytes {
         return Err(Error::BufferTooSmall);
     }
@@ -256,10 +316,7 @@ pub fn runtime_run_launch(
         rights::SEND | rights::DUPLICATE | rights::TRANSFER,
     )?;
     let mut request = RawMessage::empty(RuntimeTag::RunLaunchRequest as u32);
-    request.word_count = 3 + pack_bytes(arg_bytes, &mut request.words[3..])?;
-    request.words[0] = env_id as u64;
-    request.words[1] = workload as u32 as u64;
-    request.words[2] = arg_bytes.len() as u64;
+    pack_launch_words(&mut request, env_id, workload, arg_bytes, manifest)?;
     request.handle_count = 2;
     request.handles[0] = reply.second;
     request.handle_rights[0] = rights::SEND;
@@ -534,16 +591,48 @@ pub fn runtime_session_read_file(
     }
 }
 
+/// Packs the EnvDecisionRequest additively: words 0..2 are the legacy shape
+/// (env id, policy word) that every existing caller sends; a mask request
+/// appends word 2 = allowed capability mask, which runtime-service applies as
+/// granted = requested ∩ sensitive.
+pub(crate) fn runtime_env_decide_request(
+    env_id: u32,
+    policy: PermissionPolicyState,
+    mask: Option<u32>,
+) -> RawMessage {
+    let mut request = RawMessage::empty(RuntimeTag::EnvDecisionRequest as u32);
+    request.word_count = match mask {
+        Some(_) => 3,
+        None => 2,
+    };
+    request.words[0] = env_id as u64;
+    request.words[1] = policy as u32 as u64;
+    if let Some(allowed) = mask {
+        request.words[2] = allowed as u64;
+    }
+    request
+}
+
 pub fn runtime_env_decide(
     runtime_handle: Handle,
     env_id: u32,
     policy: PermissionPolicyState,
 ) -> Result<()> {
+    runtime_env_decide_with_mask(runtime_handle, env_id, policy, None)
+}
+
+/// Decision variant with a per-capability allow-mask: `Some(mask)` narrows the
+/// grant to the requested subset (runtime-service keeps the env
+/// PendingApproval until every sensitive bit is granted); `None` keeps the
+/// legacy approve-all shape.
+pub fn runtime_env_decide_with_mask(
+    runtime_handle: Handle,
+    env_id: u32,
+    policy: PermissionPolicyState,
+    allowed_mask: Option<u32>,
+) -> Result<()> {
     let reply = channel_create()?;
-    let mut request = RawMessage::empty(RuntimeTag::EnvDecisionRequest as u32);
-    request.word_count = 2;
-    request.words[0] = env_id as u64;
-    request.words[1] = policy as u32 as u64;
+    let mut request = runtime_env_decide_request(env_id, policy, allowed_mask);
     request.handle_count = 1;
     request.handles[0] = reply.second;
     request.handle_rights[0] = rights::SEND;
@@ -592,5 +681,121 @@ pub fn runtime_audit_list(
         })),
         RuntimeStatus::NotFound => Ok(None),
         status => Err(runtime_status_error(status)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime_capability;
+
+    #[test]
+    fn decide_request_legacy_shape_stays_two_words() {
+        let request = runtime_env_decide_request(7, PermissionPolicyState::Allowed, None);
+        assert_eq!(request.tag, RuntimeTag::EnvDecisionRequest as u32);
+        assert_eq!(request.word_count, 2);
+        assert_eq!(request.words[0], 7);
+        assert_eq!(
+            request.words[1],
+            PermissionPolicyState::Allowed as u32 as u64
+        );
+    }
+
+    #[test]
+    fn decide_request_mask_shape_appends_allowed_mask_word() {
+        let mask = runtime_capability::NETWORK | runtime_capability::AUDIO;
+        let request = runtime_env_decide_request(3, PermissionPolicyState::Allowed, Some(mask));
+        assert_eq!(request.tag, RuntimeTag::EnvDecisionRequest as u32);
+        assert_eq!(request.word_count, 3);
+        assert_eq!(request.words[0], 3);
+        assert_eq!(
+            request.words[1],
+            PermissionPolicyState::Allowed as u32 as u64
+        );
+        assert_eq!(request.words[2], mask as u64);
+
+        // Legacy prefix words are byte-identical in both shapes.
+        let legacy = runtime_env_decide_request(3, PermissionPolicyState::Allowed, None);
+        assert_eq!(request.words[0..2], legacy.words[0..2]);
+    }
+
+    #[test]
+    fn launch_packing_without_manifest_matches_legacy_layout() {
+        let mut request = RawMessage::empty(RuntimeTag::RunLaunchRequest as u32);
+        pack_launch_words(&mut request, 2, RuntimeWorkloadKind::Cat, b"/data/a", None)
+            .expect("pack");
+        assert_eq!(request.word_count, 3 + 1);
+        assert_eq!(request.words[0], 2);
+        assert_eq!(request.words[1], RuntimeWorkloadKind::Cat as u32 as u64);
+        assert_eq!(request.words[2], 7);
+        // Legacy envelopes never carry manifest words.
+        assert_eq!(request.words[4], 0);
+    }
+
+    #[test]
+    fn launch_packing_appends_manifest_trailing_words() {
+        let blob: [u8; SANDBOX_MANIFEST_BLOB_LEN] = [1, 0, 0b0001, 0, 0, 0, 0, 0];
+        let mut request = RawMessage::empty(RuntimeTag::RunLaunchRequest as u32);
+        pack_launch_words(
+            &mut request,
+            0,
+            RuntimeWorkloadKind::Inspect,
+            b"/bin/demo",
+            Some(&blob),
+        )
+        .expect("pack");
+        // 3 header words + ceil(9/8)=2 arg words + 2 manifest words.
+        assert_eq!(request.word_count, 3 + 2 + 2);
+        let header_index = 3 + 2;
+        assert_eq!(
+            request.words[header_index],
+            (SANDBOX_MANIFEST_VERSION << 56) | SANDBOX_MANIFEST_BLOB_LEN as u64
+        );
+        assert_eq!(request.words[header_index + 1], u64::from_le_bytes(blob));
+        // Header + arg prefix are byte-identical to the manifest-less shape.
+        let mut legacy = RawMessage::empty(RuntimeTag::RunLaunchRequest as u32);
+        pack_launch_words(
+            &mut legacy,
+            0,
+            RuntimeWorkloadKind::Inspect,
+            b"/bin/demo",
+            None,
+        )
+        .expect("legacy pack");
+        assert_eq!(request.words[0..3 + 2], legacy.words[0..3 + 2]);
+    }
+
+    #[test]
+    fn launch_packing_bounds_argument_by_manifest_budget() {
+        let blob: [u8; SANDBOX_MANIFEST_BLOB_LEN] = [0; SANDBOX_MANIFEST_BLOB_LEN];
+        let long = [b'a'; (IPC_MAX_WORDS - 3) * 8];
+        let mut request = RawMessage::empty(0);
+        // Full-legacy-budget argument fits without a manifest…
+        assert!(
+            pack_launch_words(&mut request, 0, RuntimeWorkloadKind::Inspect, &long, None).is_ok()
+        );
+        // …but cannot carry one: two trailing words would overflow the
+        // 16-word envelope, and truncating silently is not an option.
+        assert!(
+            pack_launch_words(
+                &mut request,
+                0,
+                RuntimeWorkloadKind::Inspect,
+                &long,
+                Some(&blob)
+            )
+            .is_err()
+        );
+        let max_manifest_arg = [b'a'; (IPC_MAX_WORDS - 3 - 2) * 8];
+        assert!(
+            pack_launch_words(
+                &mut request,
+                0,
+                RuntimeWorkloadKind::Inspect,
+                &max_manifest_arg,
+                Some(&blob)
+            )
+            .is_ok()
+        );
     }
 }

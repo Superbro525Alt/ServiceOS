@@ -899,10 +899,44 @@ fn render_notification_overlay(state: &DesktopState) -> rt::Result<()> {
 
 /// Runtime-approval prompt card: pending env id, decoded capability names,
 /// and the A/D decision contract shared with the settings security page.
+/// P flips the first card into a per-capability checklist; Enter submits the
+/// selected subset through the masked decision contract.
 fn render_approval_overlay(state: &DesktopState) -> rt::Result<()> {
-    let mut lines: [FixedLogBuffer<80>; 6] = array::from_fn(|_| FixedLogBuffer::new());
+    let mut lines: [FixedLogBuffer<80>; 8] = array::from_fn(|_| FixedLogBuffer::new());
     let mut count = 0usize;
     if let Some(card) = state.approvals.first_card() {
+        if card.partial_edit {
+            let _ = write!(
+                &mut lines[count],
+                "ENV {} ({}) PARTIAL APPROVAL",
+                card.env_id,
+                crate::approvals::runtime_kind_name(card.kind)
+            );
+            count += 1;
+            let caps = crate::approvals::capability_names(card.capabilities);
+            let _ = write!(&mut lines[count], "CAPS: {}", caps.as_str());
+            count += 1;
+            let rows = crate::approvals::partial_class_count(card.capabilities);
+            for row in 0..rows {
+                if let Some(text) = crate::approvals::partial_row_text(card, row) {
+                    let _ = write!(&mut lines[count], "{}", text.as_str());
+                    count += 1;
+                }
+            }
+            let _ = write!(
+                &mut lines[count],
+                "[A] ALL [SPC] TOGGLE [1-5] ROW [ENT] GRANT [D] DENY [ESC] LATER"
+            );
+            count += 1;
+            return render_overlay_panel(
+                state,
+                state.chrome.approvals_handle,
+                crate::APPROVAL_WIDTH,
+                crate::APPROVAL_HEIGHT,
+                "RUNTIME APPROVAL",
+                &lines[..count],
+            );
+        }
         let _ = write!(
             &mut lines[count],
             "ENV {} ({}) NEEDS APPROVAL",
@@ -922,7 +956,10 @@ fn render_approval_overlay(state: &DesktopState) -> rt::Result<()> {
         let _ = write!(&mut lines[0], "NO PENDING APPROVALS");
         count = 1;
     }
-    let _ = write!(&mut lines[count], "[A] APPROVE   [D] DENY   [ESC] LATER");
+    let _ = write!(
+        &mut lines[count],
+        "[A] APPROVE  [D] DENY  [P] PARTIAL  [ESC] LATER"
+    );
     render_overlay_panel(
         state,
         state.chrome.approvals_handle,

@@ -198,6 +198,37 @@ pub(super) fn handle_approval_overlay_key(
     state: &mut DesktopState,
     key_code: u32,
 ) -> rt::Result<u32> {
+    if crate::approvals::partial_editing(&state.approvals) {
+        match crate::approvals::partial_key_action(key_code) {
+            Some(crate::approvals::PartialKeyAction::ToggleAll) => {
+                crate::approvals::partial_toggle_all(&mut state.approvals);
+            }
+            Some(crate::approvals::PartialKeyAction::MoveCursor(delta)) => {
+                crate::approvals::partial_move_cursor(&mut state.approvals, delta);
+            }
+            Some(crate::approvals::PartialKeyAction::ToggleCursor) => {
+                crate::approvals::partial_toggle_cursor(&mut state.approvals);
+            }
+            Some(crate::approvals::PartialKeyAction::ToggleIndex(index)) => {
+                crate::approvals::partial_toggle_at(&mut state.approvals, index);
+            }
+            Some(crate::approvals::PartialKeyAction::Submit) => {
+                let (_, mask) = crate::approvals::partial_selection(&state.approvals);
+                if mask != 0 {
+                    crate::approvals::decide_first_card_masked(state, mask)?;
+                }
+            }
+            Some(crate::approvals::PartialKeyAction::Deny) => {
+                crate::approvals::decide_first_card(state, rt::PermissionPolicyState::Blocked)?;
+            }
+            None => {}
+        }
+        return Ok(focused_surface_id(state));
+    }
+    if key_code == crate::state::KEY_P {
+        crate::approvals::begin_partial_edit(&mut state.approvals);
+        return Ok(focused_surface_id(state));
+    }
     if let Some(policy) = crate::approvals::decision_policy(key_code) {
         crate::approvals::decide_first_card(state, policy)?;
     }

@@ -69,6 +69,7 @@ pub(crate) const KEY_A: u32 = 30;
 pub(crate) const KEY_F: u32 = 33;
 pub(crate) const KEY_R: u32 = 19;
 pub(crate) const KEY_D: u32 = 32;
+pub(crate) const KEY_P: u32 = 25;
 pub(crate) const KEY_N: u32 = 49;
 pub(crate) const KEY_M: u32 = 50;
 pub(crate) const KEY_UP: u32 = 103;

@@ -8,7 +8,7 @@ use crate::backup::{self, BACKUP_LIST_ROWS, BackupPrompt, BackupUnavailable};
 use crate::netdiag;
 use crate::security::{
     PermissionSummary, RuntimeCapSummary, audit_kind_name, first_actionable_runtime, image_name,
-    policy_name, runtime_env_state_name, security_policy_count,
+    policy_name, runtime_env_state_name, runtime_grant_summary, security_policy_count,
 };
 use crate::state::*;
 use crate::wifi;
@@ -295,6 +295,17 @@ fn draw_security_page(
             audit_kind_name(audit.kind),
             audit.env_id,
         );
+        // Additive grant-history detail: approval-changed records carry the
+        // granted capability mask; a subset of the sensitive classes is
+        // flagged PARTIAL so history discloses what actually activates.
+        if let Some(grant) = runtime_grant_summary(&audit) {
+            let _ = write!(
+                &mut line5,
+                " granted={}{}",
+                RuntimeCapSummary(grant.granted),
+                if grant.partial { " PARTIAL" } else { "" },
+            );
+        }
     } else if let Some(audit) = latest_native_audit {
         let _ = write!(
             &mut line5,

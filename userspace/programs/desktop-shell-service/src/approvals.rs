@@ -23,6 +23,11 @@ pub(crate) struct ApprovalCard {
     pub(crate) capabilities: u32,
     pub(crate) first_seen: u64,
     pub(crate) surfaced: bool,
+    /// Partial-grant checklist state (additive): when active the card renders
+    /// a per-capability selection instead of the A/D strip.
+    pub(crate) partial_edit: bool,
+    pub(crate) partial_mask: u32,
+    pub(crate) partial_cursor: usize,
 }
 
 impl ApprovalCard {
@@ -34,6 +39,9 @@ impl ApprovalCard {
             capabilities: 0,
             first_seen: 0,
             surfaced: false,
+            partial_edit: false,
+            partial_mask: 0,
+            partial_cursor: 0,
         }
     }
 }
@@ -75,18 +83,22 @@ pub(crate) fn runtime_kind_name(kind: rt::RuntimeKind) -> &'static str {
     }
 }
 
+/// The decodable capability classes, in the stable order the shell and
+/// settings surfaces render them (shell-service CapabilitySummary list).
+pub(crate) const CAPABILITY_CLASSES: [(&str, u32); 5] = [
+    ("file-read", rt::runtime_capability::FILE_READ),
+    ("terminal-io", rt::runtime_capability::TERMINAL_IO),
+    ("network", rt::runtime_capability::NETWORK),
+    ("graphics", rt::runtime_capability::GRAPHICS),
+    ("audio", rt::runtime_capability::AUDIO),
+];
+
 /// Capability mask decoded with the same class names the shell and settings
 /// surfaces use (shell-service commands/runtime.rs CapabilitySummary list).
 pub(crate) fn capability_names(capabilities: u32) -> FixedLogBuffer<APPROVAL_CAPS_TEXT_MAX> {
     let mut text = FixedLogBuffer::<APPROVAL_CAPS_TEXT_MAX>::new();
     let mut wrote = false;
-    for (name, mask) in [
-        ("file-read", rt::runtime_capability::FILE_READ),
-        ("terminal-io", rt::runtime_capability::TERMINAL_IO),
-        ("network", rt::runtime_capability::NETWORK),
-        ("graphics", rt::runtime_capability::GRAPHICS),
-        ("audio", rt::runtime_capability::AUDIO),
-    ] {
+    for (name, mask) in CAPABILITY_CLASSES {
         if capabilities & mask == 0 {
             continue;
         }
@@ -129,6 +141,9 @@ pub(crate) fn sync_pending_cards(
             capabilities: env.capabilities,
             first_seen: now,
             surfaced: true,
+            partial_edit: false,
+            partial_mask: 0,
+            partial_cursor: 0,
         };
         set.len += 1;
         inserted = true;
@@ -196,6 +211,180 @@ pub(crate) fn decision_policy(key_code: u32) -> Option<rt::PermissionPolicyState
     }
 }
 
+/// Capability class at `index` of the requested-capability checklist
+/// (mask 0 when the index is beyond the decodable set).
+pub(crate) fn partial_class_at(capabilities: u32, index: usize) -> Option<(&'static str, u32)> {
+    CAPABILITY_CLASSES
+        .iter()
+        .filter(|(_, mask)| capabilities & mask != 0)
+        .nth(index)
+        .copied()
+}
+
+pub(crate) fn partial_class_count(capabilities: u32) -> usize {
+    CAPABILITY_CLASSES
+        .iter()
+        .filter(|(_, mask)| capabilities & mask != 0)
+        .count()
+}
+
+/// Enters the partial-grant checklist on the first card with every requested
+/// capability preselected (an inverse of deny: deselect what must not run).
+pub(crate) fn begin_partial_edit(set: &mut ApprovalState) -> bool {
+    let Some(card) = set.cards.first_mut() else {
+        return false;
+    };
+    if !card.occupied || card.partial_edit {
+        return false;
+    }
+    card.partial_edit = true;
+    card.partial_mask = card.capabilities;
+    card.partial_cursor = 0;
+    true
+}
+
+pub(crate) fn partial_editing(set: &ApprovalState) -> bool {
+    set.cards
+        .first()
+        .is_some_and(|card| card.occupied && card.partial_edit)
+}
+
+/// Leaves the checklist without deciding (overlay close / re-sync).
+pub(crate) fn cancel_partial_edit(set: &mut ApprovalState) {
+    if let Some(card) = set.cards.first_mut() {
+        card.partial_edit = false;
+        card.partial_mask = 0;
+        card.partial_cursor = 0;
+    }
+}
+
+pub(crate) fn partial_toggle_all(set: &mut ApprovalState) {
+    let Some(card) = set.cards.first_mut() else {
+        return;
+    };
+    if !card.occupied {
+        return;
+    }
+    if card.partial_mask == card.capabilities {
+        card.partial_mask = 0;
+    } else {
+        card.partial_mask = card.capabilities;
+    }
+}
+
+pub(crate) fn partial_move_cursor(set: &mut ApprovalState, delta: i32) {
+    let Some(card) = set.cards.first_mut() else {
+        return;
+    };
+    if !card.occupied {
+        return;
+    }
+    let count = partial_class_count(card.capabilities);
+    if count == 0 {
+        return;
+    }
+    let next = card.partial_cursor as i32 + delta;
+    card.partial_cursor = next.clamp(0, count as i32 - 1) as usize;
+}
+
+pub(crate) fn partial_toggle_at(set: &mut ApprovalState, index: usize) {
+    let Some(card) = set.cards.first_mut() else {
+        return;
+    };
+    if !card.occupied {
+        return;
+    }
+    let Some((_, mask)) = partial_class_at(card.capabilities, index) else {
+        return;
+    };
+    card.partial_mask ^= mask;
+}
+
+pub(crate) fn partial_toggle_cursor(set: &mut ApprovalState) {
+    let cursor = set
+        .cards
+        .first()
+        .filter(|card| card.occupied)
+        .map(|card| card.partial_cursor)
+        .unwrap_or(0);
+    partial_toggle_at(set, cursor);
+}
+
+pub(crate) fn partial_selection(set: &ApprovalState) -> (u32, u32) {
+    match set.cards.first() {
+        Some(card) if card.occupied => (card.env_id, card.partial_mask & card.capabilities),
+        _ => (0, 0),
+    }
+}
+
+/// Checklist row for the renderer: `[x] name` with the cursor bracket.
+pub(crate) fn partial_row_text(
+    card: &ApprovalCard,
+    index: usize,
+) -> Option<FixedLogBuffer<APPROVAL_CAPS_TEXT_MAX>> {
+    let (name, mask) = partial_class_at(card.capabilities, index)?;
+    let mut text = FixedLogBuffer::<APPROVAL_CAPS_TEXT_MAX>::new();
+    let marker = if card.partial_mask & mask != 0 {
+        'x'
+    } else {
+        ' '
+    };
+    let cursor = if card.partial_cursor == index {
+        '>'
+    } else {
+        ' '
+    };
+    let _ = write!(text, "{cursor}[{marker}] {name}");
+    Some(text)
+}
+
+pub(crate) fn partial_notice_text(
+    env_id: u32,
+    granted: u32,
+    outcome: rt::Result<()>,
+) -> FixedLogBuffer<APPROVAL_NOTICE_TEXT_MAX> {
+    let mut text = FixedLogBuffer::<APPROVAL_NOTICE_TEXT_MAX>::new();
+    match outcome {
+        Ok(()) => {
+            let names = capability_names(granted);
+            let _ = write!(text, "env {env_id} partial grant: {}", names.as_str());
+        }
+        Err(_) => {
+            let _ = write!(text, "runtime decision failed (env {env_id})");
+        }
+    }
+    text
+}
+
+/// Pure key vocabulary for the checklist so host tests cover routing without
+/// handles: A toggles all, digits/up-down+space toggle rows, Enter submits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PartialKeyAction {
+    ToggleAll,
+    MoveCursor(i32),
+    ToggleCursor,
+    ToggleIndex(usize),
+    Submit,
+    Deny,
+}
+
+pub(crate) fn partial_key_action(key_code: u32) -> Option<PartialKeyAction> {
+    match key_code {
+        KEY_A => Some(PartialKeyAction::ToggleAll),
+        crate::state::KEY_UP => Some(PartialKeyAction::MoveCursor(-1)),
+        crate::state::KEY_DOWN => Some(PartialKeyAction::MoveCursor(1)),
+        crate::state::KEY_SPACE => Some(PartialKeyAction::ToggleCursor),
+        crate::state::KEY_1 => Some(PartialKeyAction::ToggleIndex(0)),
+        crate::state::KEY_2 => Some(PartialKeyAction::ToggleIndex(1)),
+        crate::state::KEY_3 => Some(PartialKeyAction::ToggleIndex(2)),
+        crate::state::KEY_4 => Some(PartialKeyAction::ToggleIndex(3)),
+        crate::state::KEY_5 => Some(PartialKeyAction::ToggleIndex(4)),
+        crate::state::KEY_ENTER => Some(PartialKeyAction::Submit),
+        KEY_D => Some(PartialKeyAction::Deny),
+        _ => None,
+    }
+}
+
 pub(crate) fn decision_notice_text(
     env_id: u32,
     policy: rt::PermissionPolicyState,
@@ -226,10 +415,14 @@ pub(crate) fn expiry_notice_text(env_id: u32) -> FixedLogBuffer<APPROVAL_NOTICE_
 }
 
 /// Marks the visible card "later": no re-nag until a new env id appears.
+/// Also leaves any partial-grant checklist so a reopened card starts clean.
 pub(crate) fn note_overlay_closed(set: &mut ApprovalState) {
     for index in 0..set.len {
         if set.cards[index].occupied && set.cards[index].surfaced {
             set.cards[index].surfaced = false;
+            set.cards[index].partial_edit = false;
+            set.cards[index].partial_mask = 0;
+            set.cards[index].partial_cursor = 0;
             return;
         }
     }
@@ -305,6 +498,49 @@ pub(crate) fn decide_first_card(
         }
     }
     let text = decision_notice_text(card.env_id, policy, outcome);
+    let _ = crate::windows::post_notification(state, None, false, false, text.as_str().as_bytes());
+    Ok(())
+}
+
+/// Submits the checklist mask through the masked variant of the decision
+/// contract (EnvDecisionRequest word 2 = allowed mask). runtime-service
+/// grants requested ∩ sensitive; a proper subset keeps the env — and this
+/// card — pending, so the card leaves edit mode but stays visible for a
+/// follow-up approve-all/deny. A mask covering every requested capability is
+/// the full-approve shape and closes the card like A does.
+pub(crate) fn decide_first_card_masked(
+    state: &mut DesktopState,
+    allowed_mask: u32,
+) -> rt::Result<()> {
+    let Some(card) = state.approvals.first_card().copied() else {
+        return Ok(());
+    };
+    let mask = allowed_mask & card.capabilities;
+    let outcome = if state.runtime_handle == rt::INVALID_HANDLE {
+        Err(rt::Error::PermissionDenied)
+    } else {
+        rt::runtime_env_decide_with_mask(
+            state.runtime_handle,
+            card.env_id,
+            rt::PermissionPolicyState::Allowed,
+            Some(mask),
+        )
+    };
+    if outcome.is_ok() {
+        if mask == card.capabilities {
+            remove_card(&mut state.approvals, card.env_id);
+            if state.approvals.len == 0 && state.overlay_mode == OverlayMode::Approval {
+                state.overlay_mode = OverlayMode::None;
+            }
+        } else {
+            cancel_partial_edit(&mut state.approvals);
+        }
+    }
+    let text = if mask == card.capabilities {
+        decision_notice_text(card.env_id, rt::PermissionPolicyState::Allowed, outcome)
+    } else {
+        partial_notice_text(card.env_id, mask, outcome)
+    };
     let _ = crate::windows::post_notification(state, None, false, false, text.as_str().as_bytes());
     Ok(())
 }
@@ -455,5 +691,152 @@ mod tests {
     fn kind_names_stay_lower_case() {
         assert_eq!(runtime_kind_name(rt::RuntimeKind::Posix), "posix");
         assert_eq!(runtime_kind_name(rt::RuntimeKind::Windows), "windows");
+    }
+
+    #[test]
+    fn partial_edit_starts_all_selected_and_clamps_to_requested() {
+        let mut set = ApprovalState::new();
+        let envs = [pending_env(
+            5,
+            rt::runtime_capability::NETWORK | rt::runtime_capability::GRAPHICS,
+        )];
+        let _ = sync_pending_cards(&mut set, &envs, 1, 0);
+        assert!(begin_partial_edit(&mut set));
+        let (env_id, mask) = partial_selection(&set);
+        assert_eq!(env_id, 5);
+        assert_eq!(
+            mask,
+            rt::runtime_capability::NETWORK | rt::runtime_capability::GRAPHICS
+        );
+        assert!(partial_editing(&set));
+        // No card: begin/editing are inert.
+        let mut empty = ApprovalState::new();
+        assert!(!begin_partial_edit(&mut empty));
+        assert!(!partial_editing(&empty));
+        assert_eq!(partial_selection(&empty), (0, 0));
+    }
+
+    #[test]
+    fn partial_toggles_and_cursor_move_stay_in_bounds() {
+        let caps = rt::runtime_capability::FILE_READ
+            | rt::runtime_capability::TERMINAL_IO
+            | rt::runtime_capability::NETWORK;
+        let mut set = ApprovalState::new();
+        let envs = [pending_env(2, caps)];
+        let _ = sync_pending_cards(&mut set, &envs, 1, 0);
+        begin_partial_edit(&mut set);
+
+        partial_move_cursor(&mut set, -1);
+        assert_eq!(set.cards[0].partial_cursor, 0);
+        partial_move_cursor(&mut set, 1);
+        assert_eq!(set.cards[0].partial_cursor, 1);
+        partial_toggle_cursor(&mut set);
+        assert_eq!(
+            set.cards[0].partial_mask & rt::runtime_capability::TERMINAL_IO,
+            0
+        );
+        // Digits toggle rows directly; unknown digits are inert.
+        partial_toggle_at(&mut set, 0);
+        partial_toggle_at(&mut set, 9);
+        assert_eq!(set.cards[0].partial_mask, rt::runtime_capability::NETWORK);
+        // A is a toggle-all: not-all -> all, all -> none.
+        partial_toggle_all(&mut set);
+        assert_eq!(set.cards[0].partial_mask, caps);
+        partial_toggle_all(&mut set);
+        assert_eq!(set.cards[0].partial_mask, 0);
+        partial_move_cursor(&mut set, 5);
+        assert_eq!(set.cards[0].partial_cursor, 2);
+    }
+
+    #[test]
+    fn partial_key_actions_cover_the_checklist_vocabulary() {
+        use crate::state::{KEY_1, KEY_5, KEY_DOWN, KEY_ENTER, KEY_SPACE, KEY_UP};
+        assert!(matches!(
+            partial_key_action(KEY_A),
+            Some(PartialKeyAction::ToggleAll)
+        ));
+        assert!(matches!(
+            partial_key_action(KEY_D),
+            Some(PartialKeyAction::Deny)
+        ));
+        assert!(matches!(
+            partial_key_action(KEY_UP),
+            Some(PartialKeyAction::MoveCursor(-1))
+        ));
+        assert!(matches!(
+            partial_key_action(KEY_DOWN),
+            Some(PartialKeyAction::MoveCursor(1))
+        ));
+        assert!(matches!(
+            partial_key_action(KEY_SPACE),
+            Some(PartialKeyAction::ToggleCursor)
+        ));
+        assert!(matches!(
+            partial_key_action(KEY_1),
+            Some(PartialKeyAction::ToggleIndex(0))
+        ));
+        assert!(matches!(
+            partial_key_action(KEY_5),
+            Some(PartialKeyAction::ToggleIndex(4))
+        ));
+        assert!(matches!(
+            partial_key_action(KEY_ENTER),
+            Some(PartialKeyAction::Submit)
+        ));
+        assert_eq!(partial_key_action(crate::state::KEY_ESC), None);
+        assert_eq!(partial_key_action(crate::state::KEY_P), None);
+    }
+
+    #[test]
+    fn partial_rows_render_marker_and_cursor() {
+        let caps = rt::runtime_capability::NETWORK | rt::runtime_capability::GRAPHICS;
+        let mut set = ApprovalState::new();
+        let envs = [pending_env(1, caps)];
+        let _ = sync_pending_cards(&mut set, &envs, 1, 0);
+        begin_partial_edit(&mut set);
+        let card = set.cards[0];
+        let first = partial_row_text(&card, 0).expect("row 0");
+        assert_eq!(first.as_str(), ">[x] network");
+        let second = partial_row_text(&card, 1).expect("row 1");
+        assert_eq!(second.as_str(), " [x] graphics");
+        assert!(partial_row_text(&card, 2).is_none());
+        partial_toggle_at(&mut set, 1);
+        partial_move_cursor(&mut set, 1);
+        let card = set.cards[0];
+        let second = partial_row_text(&card, 1).expect("row 1");
+        assert_eq!(second.as_str(), ">[ ] graphics");
+    }
+
+    #[test]
+    fn partial_notice_decodes_granted_subset_or_failure() {
+        let granted = rt::runtime_capability::NETWORK;
+        let ok = partial_notice_text(4, granted, Ok(()));
+        assert_eq!(ok.as_str(), "env 4 partial grant: network");
+        let failed = partial_notice_text(4, granted, Err(rt::Error::Busy));
+        assert_eq!(failed.as_str(), "runtime decision failed (env 4)");
+    }
+
+    #[test]
+    fn closing_the_overlay_also_cancels_the_partial_checklist() {
+        let mut set = ApprovalState::new();
+        let envs = [pending_env(2, 0x1)];
+        let _ = sync_pending_cards(&mut set, &envs, 1, 0);
+        begin_partial_edit(&mut set);
+        note_overlay_closed(&mut set);
+        assert_eq!(set.len, 1);
+        assert!(!set.cards[0].surfaced);
+        assert!(!set.cards[0].partial_edit);
+        assert_eq!(set.cards[0].partial_mask, 0);
+    }
+
+    #[test]
+    fn partial_class_list_matches_capability_names_order() {
+        assert_eq!(partial_class_count(u32::MAX), CAPABILITY_CLASSES.len());
+        assert_eq!(partial_class_count(0), 0);
+        let (name, mask) =
+            partial_class_at(rt::runtime_capability::AUDIO, 0).expect("audio is row 0");
+        assert_eq!(name, "audio");
+        assert_eq!(mask, rt::runtime_capability::AUDIO);
+        assert!(partial_class_at(rt::runtime_capability::AUDIO, 1).is_none());
     }
 }

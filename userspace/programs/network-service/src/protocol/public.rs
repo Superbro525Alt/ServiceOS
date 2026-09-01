@@ -18,16 +18,17 @@ use crate::{
         DISCOVERY_REGISTER_REPLY, DISCOVERY_REGISTER_REQUEST, FIREWALL_RULES_GET_REQUEST,
         FIREWALL_RULES_REPLY, FIREWALL_RULES_SET_REQUEST, HOSTNAME_GET_REPLY, HOSTNAME_GET_REQUEST,
         HOSTNAME_SET_REPLY, HOSTNAME_SET_REQUEST, LISTEN_PORTS_REPLY, LISTEN_PORTS_REQUEST,
-        MAX_DIAG_PINGS, MAX_HOSTNAME_BYTES, MAX_NEIGHBOR_ENTRIES, MAX_TCP_SOCKETS, MDNS_UDP_PORT,
-        NEIGHBOR_DUMP_REPLY, NEIGHBOR_DUMP_REQUEST, RESOLVE_EX_REQUEST, RESOLVE_EX_TYPE_A,
-        RESOLVE_EX_TYPE_AAAA, RESOLVE_EX_TYPE_TXT, ZERO_COPY_STATS_REPLY, ZERO_COPY_STATS_REQUEST,
+        MAX_DIAG_PINGS, MAX_FIREWALL_ADDR_SET_ENTRIES, MAX_FIREWALL_ADDR_SETS, MAX_HOSTNAME_BYTES,
+        MAX_NEIGHBOR_ENTRIES, MAX_TCP_SOCKETS, MDNS_UDP_PORT, NEIGHBOR_DUMP_REPLY,
+        NEIGHBOR_DUMP_REQUEST, RESOLVE_EX_REQUEST, RESOLVE_EX_TYPE_A, RESOLVE_EX_TYPE_AAAA,
+        RESOLVE_EX_TYPE_TXT, ZERO_COPY_STATS_REPLY, ZERO_COPY_STATS_REQUEST,
     },
     device::{self, KernelPacketDevice},
     diag::{RttSamples, loss_permil},
     discover::{PeerTable, Registry},
     dnsmsg::QueryType,
     dnsresolv::{self, ChaseDetail},
-    firewall::{Direction, FirewallState, Proto},
+    firewall::{Cidr, Direction, FirewallState, Proto, RemoteAddress},
     types::{
         HostEntry, HostIdentity, InterfaceRuntimeState, NetworkConfig, TcpListenerSlot,
         TcpTransportSlot, UdpDatagramSlot,
@@ -340,6 +341,63 @@ pub(crate) fn handle_public_request(
             let _ = rt::channel_send(reply_handle, &reply);
             let _ = rt::handle_close(reply_handle);
         }
+        x if x == NetworkTag::FirewallAddrSetDefineRequest as u32 => {
+            if request.handle_count < 1 {
+                return Ok(());
+            }
+            let reply_handle = request.handles[0];
+            let mut reply = RawMessage::empty(NetworkTag::FirewallAddrSetReply as u32);
+            reply.word_count = 1;
+            let set_id = request.words.first().copied().unwrap_or(u64::MAX);
+            let count = request.words.get(1).copied().unwrap_or(0) as usize;
+            let payload = request.words.get(2..).unwrap_or(&[]);
+            // words[0] = set id (0 = clear all), words[1] = entry count,
+            // then 3 words per CIDR entry. Malformed wire data or a
+            // clear-all refused because rules still reference sets answer
+            // InvalidTarget and change nothing.
+            let applied = if set_id == 0 {
+                count == 0 && firewall.clear_addr_sets()
+            } else {
+                let mut cidrs = [Cidr::EMPTY_SLOT; MAX_FIREWALL_ADDR_SET_ENTRIES];
+                let mut parsed = 0usize;
+                let mut well_formed = set_id as usize <= MAX_FIREWALL_ADDR_SETS
+                    && count <= MAX_FIREWALL_ADDR_SET_ENTRIES
+                    && count * 3 <= payload.len();
+                for index in 0..count {
+                    let base = index * 3;
+                    if base + 3 > payload.len() {
+                        well_formed = false;
+                        break;
+                    }
+                    match Cidr::from_words([payload[base], payload[base + 1], payload[base + 2]]) {
+                        Some(cidr) => {
+                            cidrs[parsed] = cidr;
+                            parsed += 1;
+                        }
+                        None => {
+                            well_formed = false;
+                            break;
+                        }
+                    }
+                }
+                well_formed && firewall.define_addr_set(set_id as u8, &cidrs[..parsed])
+            };
+            if applied {
+                reply.words[0] = NetworkStatus::Ok as u32 as u64;
+                if set_id == 0 {
+                    let _ = rt::write_logf("network", format_args!("firewall addr-sets cleared"));
+                } else {
+                    let _ = rt::write_logf(
+                        "network",
+                        format_args!("firewall addr-set {} defined entries={}", set_id, count),
+                    );
+                }
+            } else {
+                reply.words[0] = NetworkStatus::InvalidTarget as u32 as u64;
+            }
+            let _ = rt::channel_send(reply_handle, &reply);
+            let _ = rt::handle_close(reply_handle);
+        }
         x if x == NetworkTag::PingRequest as u32 => {
             if request.word_count < 1 || request.handle_count < 1 {
                 return Ok(());
@@ -373,7 +431,14 @@ pub(crate) fn handle_public_request(
                 )? {
                     outcome if outcome.detail.is_success() => {
                         let address = ipv4_from_word(outcome.address.unwrap_or(0));
-                        if !firewall.decide(Direction::Outbound, Proto::Icmp, 0, 0, iface_index) {
+                        if !firewall.decide(
+                            Direction::Outbound,
+                            Proto::Icmp,
+                            0,
+                            0,
+                            iface_index,
+                            RemoteAddress::V4(address.octets()),
+                        ) {
                             let _ = rt::write_logf(
                                 "network",
                                 format_args!(
@@ -454,7 +519,14 @@ pub(crate) fn handle_public_request(
                     let words = rt::ipv6_addr_words(target_addr.octets());
                     reply.words[1] = words[0];
                     reply.words[2] = words[1];
-                    if !firewall.decide(Direction::Outbound, Proto::Icmp, 0, 0, iface_index) {
+                    if !firewall.decide(
+                        Direction::Outbound,
+                        Proto::Icmp,
+                        0,
+                        0,
+                        iface_index,
+                        RemoteAddress::V6(target_addr.octets()),
+                    ) {
                         let _ = rt::write_logf(
                             "network",
                             format_args!(
@@ -686,7 +758,14 @@ pub(crate) fn handle_public_request(
                 )? {
                     outcome if outcome.detail.is_success() => {
                         let address = ipv4_from_word(outcome.address.unwrap_or(0));
-                        if !firewall.decide(Direction::Outbound, Proto::Icmp, 0, 0, iface_index) {
+                        if !firewall.decide(
+                            Direction::Outbound,
+                            Proto::Icmp,
+                            0,
+                            0,
+                            iface_index,
+                            RemoteAddress::V4(address.octets()),
+                        ) {
                             reply.words[0] = NetworkStatus::Denied as u32 as u64;
                             reply.words[1] = ipv4_to_u32(address) as u64;
                         } else {
@@ -1013,7 +1092,14 @@ fn handle_socket_open_request(
         )? {
             outcome if outcome.detail.is_success() => {
                 let remote_address = ipv4_from_word(outcome.address.unwrap_or(0));
-                if !firewall.decide(Direction::Outbound, Proto::Tcp, 0, remote_port, iface_index) {
+                if !firewall.decide(
+                    Direction::Outbound,
+                    Proto::Tcp,
+                    0,
+                    remote_port,
+                    iface_index,
+                    RemoteAddress::V4(remote_address.octets()),
+                ) {
                     let _ = rt::write_logf(
                         "network",
                         format_args!(

@@ -12,7 +12,7 @@ use serviceos_userspace_runtime as rt;
 
 use crate::{
     consts::{EPHEMERAL_PORT_BASE, MAX_SOCKET_INLINE_BYTES, MAX_UDP_SOCKETS},
-    firewall::{Direction, FirewallState, Proto},
+    firewall::{Direction, FirewallState, Proto, RemoteAddress},
     types::UdpDatagramSlot,
     util::{decode_inline_bytes, emit_log, ipv4_to_u32, pack_inline_bytes},
 };
@@ -253,6 +253,7 @@ fn send_datagram(
         slot.local_port,
         port,
         iface_index,
+        RemoteAddress::V4(address_be.to_be_bytes()),
     ) {
         let _ = rt::write_logf(
             "network",
@@ -329,6 +330,7 @@ fn receive_datagram(
                 slot.local_port,
                 metadata.endpoint.port,
                 iface_index,
+                RemoteAddress::V4(source_be.to_be_bytes()),
             ) {
                 // Consume-and-drop: the datagram is counted as filtered.
                 let _ = rt::write_logf(
@@ -430,6 +432,7 @@ fn send_datagram_v6(
         slot.local_port,
         port,
         iface_index,
+        RemoteAddress::V6(destination.octets()),
     ) {
         let _ = rt::write_logf(
             "network",
@@ -513,6 +516,7 @@ fn receive_datagram_v6(
                 slot.local_port,
                 source_port,
                 iface_index,
+                RemoteAddress::V6(source_octets),
             ) {
                 let _ = rt::write_logf(
                     "network",

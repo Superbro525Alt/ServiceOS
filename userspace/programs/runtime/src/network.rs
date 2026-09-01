@@ -640,9 +640,13 @@ pub fn network_firewall_summary_parse_reply(
 /// [`NetworkTag::FirewallRulesSetRequest`]. `interface: None` leaves the rule
 /// matching every interface (legacy behavior); `Some(index)` pins it to the
 /// interface reported by [`NetworkTag::InterfaceStatusRequest`] at that
-/// 0-based index (the boot interface is index 0, eth0). The wire encoding
-/// rides the existing rule word: bits [48..64) hold `0` for any interface or
-/// `index + 1` for a pinned one.
+/// 0-based index (the boot interface is index 0, eth0). `addr_set: Some(id)`
+/// additionally restricts the rule to connections whose remote address is a
+/// member of the address set previously defined via
+/// [`network_firewall_addr_set_define`] (1-based; the service rejects rules
+/// referencing undefined sets). The wire encoding rides the existing rule
+/// word: bits [48..64) hold `0` for no qualifier, `index + 1` for a pinned
+/// interface, or `0x0100 | set_id` for an address-set qualifier.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NetworkFirewallRule {
     /// `false` = allow, `true` = deny.
@@ -653,6 +657,7 @@ pub struct NetworkFirewallRule {
     /// remote port).
     pub port: u16,
     pub interface: Option<u16>,
+    pub addr_set: Option<u8>,
     pub enabled: bool,
 }
 
@@ -674,14 +679,19 @@ pub enum NetworkFirewallDirection {
 
 /// Pack a rule into the FirewallRulesSetRequest record word. Mirrors the
 /// service-side decode bit-for-bit (action/proto/direction/enabled/port and
-/// the trailing interface qualifier).
+/// the trailing qualifier: interface pin or 0x0100|set-id).
 pub(crate) fn pack_firewall_rule_word(rule: &NetworkFirewallRule) -> u64 {
+    let qualifier = if let Some(set_id) = rule.addr_set {
+        0x0100 | set_id as u64
+    } else {
+        rule.interface.map_or(0, |index| index as u64 + 1)
+    };
     (rule.deny as u64)
         | ((rule.proto as u64) << 8)
         | ((rule.direction as u64) << 16)
         | ((rule.enabled as u64) << 24)
         | ((rule.port as u64) << 32)
-        | (rule.interface.map_or(0, |index| index as u64 + 1) << 48)
+        | (qualifier << 48)
 }
 
 /// Build the replace-all request body (FirewallRulesSetRequest op 0). At
@@ -713,6 +723,93 @@ pub fn network_firewall_rules_replace(
     let mut request = firewall_replace_request(rules)?;
     let response = channel_call(network_handle, &mut request)?;
     network_firewall_summary_parse_reply(&response)
+}
+
+/// Distinct firewall address sets the service accepts (ids 1..=MAX; id 0 in
+/// a define request means clear-all). Mirrors the service-side cap.
+pub const MAX_NETWORK_FIREWALL_ADDR_SETS: usize = 8;
+/// CIDR entries per address set: 2 header words + 3 words per entry must
+/// fit IPC_MAX_WORDS=16, so at most 4 entries ride one define request.
+pub const MAX_NETWORK_FIREWALL_ADDR_SET_ENTRIES: usize = 4;
+
+/// One CIDR entry of a firewall address set. A v4 entry only matches IPv4
+/// remote addresses, a v6 entry only IPv6 (family-strict matching);
+/// prefix 0 matches every address of the family.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NetworkFirewallAddrSetEntry {
+    pub address: NetworkFirewallAddr,
+    pub prefix: u8,
+}
+
+/// Family-tagged address for [`NetworkFirewallAddrSetEntry`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NetworkFirewallAddr {
+    V4([u8; 4]),
+    V6([u8; 16]),
+}
+
+/// Build the FirewallAddrSetDefineRequest body: words[0] = set id (0 =
+/// clear-all), words[1] = entry count, then 3 words per entry
+/// ([family | prefix<<8], address word A, address word B — v4 packs a
+/// big-endian u32 into the low 32 bits of word A, v6 uses ipv6_addr_words
+/// order).
+pub(crate) fn firewall_addr_set_define_request(
+    set_id: u8,
+    entries: &[NetworkFirewallAddrSetEntry],
+) -> Result<RawMessage> {
+    if set_id as usize > MAX_NETWORK_FIREWALL_ADDR_SETS
+        || entries.len() > MAX_NETWORK_FIREWALL_ADDR_SET_ENTRIES
+        || 2 + entries.len() * 3 > IPC_MAX_WORDS
+    {
+        return Err(Error::BufferTooSmall);
+    }
+    let mut request = RawMessage::empty(NetworkTag::FirewallAddrSetDefineRequest as u32);
+    request.word_count = (2 + entries.len() * 3) as u32;
+    request.words[0] = set_id as u64;
+    request.words[1] = entries.len() as u64;
+    for (index, entry) in entries.iter().enumerate() {
+        let (family, prefix_max) = match entry.address {
+            NetworkFirewallAddr::V4(_) => (0u64, 32u64),
+            NetworkFirewallAddr::V6(_) => (1u64, 128u64),
+        };
+        if entry.prefix as u64 > prefix_max {
+            return Err(Error::InvalidArgument);
+        }
+        let (word_a, word_b) = match entry.address {
+            NetworkFirewallAddr::V4(octets) => (u32::from_be_bytes(octets) as u64, 0),
+            NetworkFirewallAddr::V6(octets) => {
+                let value = u128::from_be_bytes(octets);
+                ((value >> 64) as u64, value as u64)
+            }
+        };
+        let base = 2 + index * 3;
+        request.words[base] = family | ((entry.prefix as u64) << 8);
+        request.words[base + 1] = word_a;
+        request.words[base + 2] = word_b;
+    }
+    Ok(request)
+}
+
+/// Define/replace one firewall address set (`set_id` 1..=[`MAX_NETWORK_FIREWALL_ADDR_SETS`])
+/// or clear every set (`set_id` 0 with an empty entry list). The service
+/// refuses the clear while any rule still references a set and answers
+/// [`Error::InvalidArgument`]. Define sets before installing rules that
+/// reference them.
+pub fn network_firewall_addr_set_define(
+    network_handle: Handle,
+    set_id: u8,
+    entries: &[NetworkFirewallAddrSetEntry],
+) -> Result<()> {
+    let mut request = firewall_addr_set_define_request(set_id, entries)?;
+    let response = channel_call(network_handle, &mut request)?;
+    if response.tag != NetworkTag::FirewallAddrSetReply as u32 || response.word_count < 1 {
+        return Err(Error::InvalidArgument);
+    }
+    let status = network_status_from_word(response.words[0]);
+    if status != NetworkStatus::Ok {
+        return Err(network_status_error(status));
+    }
+    Ok(())
 }
 
 pub fn network_resolve(network_handle: Handle, name: &str, addresses: &mut [u32]) -> Result<usize> {
@@ -1317,6 +1414,7 @@ mod tests {
             direction: NetworkFirewallDirection::Inbound,
             port: 80,
             interface: None,
+            addr_set: None,
             enabled: true,
         };
         let word = pack_firewall_rule_word(&legacy);
@@ -1337,6 +1435,7 @@ mod tests {
             direction: NetworkFirewallDirection::Outbound,
             port: 0,
             interface: Some(1),
+            addr_set: None,
             enabled: false,
         };
         let word = pack_firewall_rule_word(&pinned);
@@ -1354,6 +1453,7 @@ mod tests {
                 direction: NetworkFirewallDirection::Outbound,
                 port: 53,
                 interface: Some(0),
+                addr_set: None,
                 enabled: true,
             },
             NetworkFirewallRule {
@@ -1362,6 +1462,7 @@ mod tests {
                 direction: NetworkFirewallDirection::Inbound,
                 port: 443,
                 interface: None,
+                addr_set: None,
                 enabled: true,
             },
         ];
@@ -1380,6 +1481,77 @@ mod tests {
         let mut oversized = [too_many[0]; 8];
         oversized[7].interface = None;
         assert!(firewall_replace_request(&oversized).is_err());
+    }
+
+    #[test]
+    fn firewall_rule_word_packs_addr_set_qualifier() {
+        // Address-set-qualified rule: qualifier namespace 0x01 in the high
+        // byte of bits [48..64), set id in the low byte.
+        let qualified = NetworkFirewallRule {
+            deny: true,
+            proto: NetworkFirewallProto::Tcp,
+            direction: NetworkFirewallDirection::Outbound,
+            port: 80,
+            interface: None,
+            addr_set: Some(2),
+            enabled: true,
+        };
+        let word = pack_firewall_rule_word(&qualified);
+        assert_eq!(word >> 48, 0x0100 | 2, "set id 2 -> qualifier 0x0102");
+
+        // Interface pin still encodes in the legacy namespace.
+        let pinned = NetworkFirewallRule {
+            addr_set: None,
+            interface: Some(0),
+            ..qualified
+        };
+        assert_eq!(pack_firewall_rule_word(&pinned) >> 48, 1);
+    }
+
+    #[test]
+    fn firewall_addr_set_define_request_layout() {
+        let mut v6 = [0u8; 16];
+        v6[0] = 0xfd;
+        v6[15] = 9;
+        let entries = [
+            NetworkFirewallAddrSetEntry {
+                address: NetworkFirewallAddr::V4([10, 1, 2, 3]),
+                prefix: 24,
+            },
+            NetworkFirewallAddrSetEntry {
+                address: NetworkFirewallAddr::V6(v6),
+                prefix: 64,
+            },
+        ];
+        let request = firewall_addr_set_define_request(2, &entries).expect("request builds");
+        assert_eq!(request.tag, NetworkTag::FirewallAddrSetDefineRequest as u32);
+        assert_eq!(request.word_count, 2 + 2 * 3);
+        assert_eq!(request.words[0], 2, "set id");
+        assert_eq!(request.words[1], 2, "entry count");
+        // v4 entry: family 0, prefix 24, address as big-endian u32 in the
+        // low 32 bits of word A, word B zero.
+        assert_eq!(request.words[2], 24 << 8);
+        assert_eq!(request.words[3], 0x0a01_0203);
+        assert_eq!(request.words[4], 0);
+        // v6 entry: family 1, prefix 64, address bytes in ipv6_addr_words
+        // order.
+        assert_eq!(request.words[5], 1 | (64 << 8));
+        assert_eq!(request.words[6], 0xfd00_0000_0000_0000);
+        assert_eq!(request.words[7], 9);
+
+        // Clear-all request: id 0, no entries.
+        let clear = firewall_addr_set_define_request(0, &[]).expect("clear builds");
+        assert_eq!(clear.word_count, 2);
+        assert_eq!(clear.words[0], 0);
+
+        // Overflowing entry count and ids beyond the cap are rejected
+        // before any words are written.
+        let overflow = [entries[0]; MAX_NETWORK_FIREWALL_ADDR_SET_ENTRIES + 1];
+        assert!(firewall_addr_set_define_request(1, &overflow).is_err());
+        assert!(
+            firewall_addr_set_define_request(MAX_NETWORK_FIREWALL_ADDR_SETS as u8 + 1, &[],)
+                .is_err()
+        );
     }
 
     #[test]

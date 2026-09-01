@@ -61,6 +61,12 @@ pub(crate) const MAX_TXT_BYTES: usize = 64;
 // Table size is bounded so a full rules+counters dump fits one IPC message
 // (4 summary words + 2 words per rule <= IPC_MAX_WORDS = 16).
 pub(crate) const MAX_FIREWALL_RULES: usize = 6;
+/// Distinct address sets rules can reference by id (ids are 1-based,
+/// 1..=MAX_FIREWALL_ADDR_SETS; id 0 in a SetDefine means clear-all).
+pub(crate) const MAX_FIREWALL_ADDR_SETS: usize = 8;
+/// CIDR entries per address set. A SetDefine carries a 2-word header plus
+/// 3 words per entry, so 4 entries fit one IPC_MAX_WORDS=16 message.
+pub(crate) const MAX_FIREWALL_ADDR_SET_ENTRIES: usize = 4;
 /// 0-based index of the one interface this service instance manages
 /// (InterfaceStatusRequest reports it as index 0; eth0). Firewall rules
 /// qualify on this identity.

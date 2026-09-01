@@ -177,6 +177,18 @@ pub enum NetworkTag {
     /// (0 when not Ok).
     Ping6Request = 0x832,
     Ping6Reply = 0x833,
+    /// Define/replace one firewall address set (or clear all sets with
+    /// id 0). words[0] = set id (0 = clear all; 1..=service max defines/
+    /// replaces that set), words[1] = entry count, then 3 words per CIDR
+    /// entry: word 0 = family (0 = IPv4, 1 = IPv6) | prefix-len << 8,
+    /// word 1 = address word A (v4: big-endian u32 in the low 32 bits;
+    /// v6: address bytes 0..8), word 2 = address word B (v4: 0; v6:
+    /// address bytes 8..16). Reply FirewallAddrSetReply: words[0] =
+    /// status (Ok / InvalidTarget). The service rejects a clear-all while
+    /// any rule still references a set, and rejects rules referencing
+    /// undefined set ids.
+    FirewallAddrSetDefineRequest = 0x834,
+    FirewallAddrSetReply = 0x835,
 }
 
 /// Service-layer security classification for a wireless network. Values
@@ -767,6 +779,15 @@ mod tests {
             NetworkTag::Ping6Request as u32,
             NetworkSocketTag::ReceiveFromV6Request as u32
         );
+    }
+
+    #[test]
+    fn firewall_addr_set_additive_wire_values() {
+        // Address-set qualifier pair appends at the very END of the
+        // NetworkTag namespace (after the v6 block 0x830..=0x833); existing
+        // values are frozen by the tests above and must never move.
+        assert_eq!(NetworkTag::FirewallAddrSetDefineRequest as u32, 0x834);
+        assert_eq!(NetworkTag::FirewallAddrSetReply as u32, 0x835);
     }
 
     #[test]

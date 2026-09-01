@@ -11,7 +11,7 @@ use serviceos_userspace_runtime as rt;
 
 use crate::{
     consts::MAX_TCP_LISTENERS,
-    firewall::{Direction, FirewallState, Proto},
+    firewall::{Direction, FirewallState, Proto, RemoteAddress},
     types::{TcpListenerSlot, TcpTransportSlot},
     util::{emit_log, ipv4_to_u32},
 };
@@ -249,6 +249,7 @@ pub(crate) fn pump_listeners(
             local_port,
             remote_port,
             iface_index,
+            RemoteAddress::V4(remote_address.octets()),
         ) {
             sockets.get_mut::<tcp::Socket>(socket_handle).abort();
             listeners[listener_index].socket_handle = None;

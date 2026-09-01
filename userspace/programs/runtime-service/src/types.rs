@@ -137,6 +137,11 @@ pub(crate) struct EnvSlot {
     pub(crate) libs: [LibSlot; MAX_LIBS],
     pub(crate) lib_count: usize,
     pub(crate) active_runs: u32,
+    /// Additive S11 trailing field: the workload sandbox manifest associated
+    /// with this environment (latched on the first manifest-carrying launch,
+    /// matched exactly afterwards). Absent means the launch gate behaves
+    /// exactly as before the manifest existed.
+    pub(crate) manifest: Option<crate::sandbox::SandboxManifest>,
 }
 
 impl EnvSlot {
@@ -156,6 +161,7 @@ impl EnvSlot {
             libs: [LibSlot::empty(); MAX_LIBS],
             lib_count: 0,
             active_runs: 0,
+            manifest: None,
         }
     }
 }

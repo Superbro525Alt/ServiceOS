@@ -101,6 +101,16 @@ pub(crate) fn handle_run_launch_request(
         &mut arg_bytes,
     );
 
+    // Optional per-workload sandbox manifest riding the launch envelope as
+    // additive trailing words. Decoded once here; each launch path validates
+    // and gates on it after the environment lookup (malformed or widening
+    // manifests refuse with `Unsupported` — never a silent fallback).
+    let manifest = crate::sandbox::SandboxManifest::from_launch_words(
+        &message.words,
+        arg_len,
+        message.word_count as usize,
+    );
+
     // Guest-image execution: the runtime-service-local exec marker routes
     // the launch through the raw-image spawn path (flat v2 / flat v1 /
     // static ELF64) instead of the hosted posix tool image.
@@ -115,6 +125,7 @@ pub(crate) fn handle_run_launch_request(
             output_handle,
             env_id,
             &arg_bytes[..arg_len.min(arg_bytes.len())],
+            manifest,
         );
     }
 
@@ -131,23 +142,42 @@ pub(crate) fn handle_run_launch_request(
     // S11 enforcement point: the sandbox capability matrix decides whether
     // this environment may host a workload right now. Pending requested-but-
     // ungranted device classes (network/graphics/input/audio) and explicit
-    // denials both refuse launch through the existing status contract.
-    match crate::sandbox::launch_decision(env) {
-        crate::sandbox::LaunchDecision::PendingApproval => {
+    // denials both refuse launch through the existing status contract. A
+    // per-workload manifest narrows the effective profile for this launch
+    // (narrow-only, validated); manifest refusals use `Unsupported`.
+    let manifest = match manifest {
+        Ok(manifest) => manifest,
+        Err(_) => {
+            reply.words[0] = RuntimeStatus::Unsupported as u32 as u64;
+            let _ = rt::channel_send(reply_handle, &reply);
+            let _ = rt::handle_close(reply_handle);
+            let _ = rt::handle_close(output_handle);
+            return Ok(());
+        }
+    };
+    match crate::sandbox::gate_launch(env, manifest, false) {
+        crate::sandbox::GateOutcome::Refuse(status) => {
+            reply.words[0] = status as u32 as u64;
+            let _ = rt::channel_send(reply_handle, &reply);
+            let _ = rt::handle_close(reply_handle);
+            let _ = rt::handle_close(output_handle);
+            return Ok(());
+        }
+        crate::sandbox::GateOutcome::Proceed(crate::sandbox::LaunchDecision::PendingApproval) => {
             reply.words[0] = RuntimeStatus::PendingApproval as u32 as u64;
             let _ = rt::channel_send(reply_handle, &reply);
             let _ = rt::handle_close(reply_handle);
             let _ = rt::handle_close(output_handle);
             return Ok(());
         }
-        crate::sandbox::LaunchDecision::Denied => {
+        crate::sandbox::GateOutcome::Proceed(crate::sandbox::LaunchDecision::Denied) => {
             reply.words[0] = RuntimeStatus::Denied as u32 as u64;
             let _ = rt::channel_send(reply_handle, &reply);
             let _ = rt::handle_close(reply_handle);
             let _ = rt::handle_close(output_handle);
             return Ok(());
         }
-        crate::sandbox::LaunchDecision::Allowed => {}
+        crate::sandbox::GateOutcome::Proceed(crate::sandbox::LaunchDecision::Allowed) => {}
     }
 
     let slot_index = match allocate_run_slot(runs) {
@@ -257,22 +287,35 @@ fn handle_guest_exec_launch(
     output_handle: rt::Handle,
     env_id: usize,
     guest_path: &[u8],
+    manifest: Result<Option<crate::sandbox::SandboxManifest>, crate::sandbox::ManifestError>,
 ) -> rt::Result<()> {
     let Some(env) = envs.get_mut(env_id).filter(|env| env.occupied) else {
         exec_reply_status(reply_handle, output_handle, RuntimeStatus::NotFound);
         return Ok(());
     };
     // Same sandbox gate as hosted workloads — guest images get no bypass.
-    match crate::sandbox::launch_decision(env) {
-        crate::sandbox::LaunchDecision::PendingApproval => {
+    // A latched manifest must accompany guest-image launches here.
+    let manifest = match manifest {
+        Ok(manifest) => manifest,
+        Err(_) => {
+            exec_reply_status(reply_handle, output_handle, RuntimeStatus::Unsupported);
+            return Ok(());
+        }
+    };
+    match crate::sandbox::gate_launch(env, manifest, true) {
+        crate::sandbox::GateOutcome::Refuse(status) => {
+            exec_reply_status(reply_handle, output_handle, status);
+            return Ok(());
+        }
+        crate::sandbox::GateOutcome::Proceed(crate::sandbox::LaunchDecision::PendingApproval) => {
             exec_reply_status(reply_handle, output_handle, RuntimeStatus::PendingApproval);
             return Ok(());
         }
-        crate::sandbox::LaunchDecision::Denied => {
+        crate::sandbox::GateOutcome::Proceed(crate::sandbox::LaunchDecision::Denied) => {
             exec_reply_status(reply_handle, output_handle, RuntimeStatus::Denied);
             return Ok(());
         }
-        crate::sandbox::LaunchDecision::Allowed => {}
+        crate::sandbox::GateOutcome::Proceed(crate::sandbox::LaunchDecision::Allowed) => {}
     }
 
     // Validate every declared bundled library up front: it must resolve

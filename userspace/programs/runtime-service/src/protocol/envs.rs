@@ -54,7 +54,20 @@ pub(crate) fn encode_env_status(reply: &mut RawMessage, env_id: u32, env: EnvSlo
     // carries for this build's architecture (13 on x86_64, 12 on aarch64,
     // 0 = no guest table); mode-independent availability signal.
     reply.words[13] = crate::linux_abi::guest_table_rows_for_build();
-    reply.word_count = 14;
+    // Additive words 14/15: the per-workload sandbox manifest associated
+    // with this environment (S11 manifests). Word 14 doubles as the
+    // presence + version marker: 0 = no manifest associated, else
+    // `version | manifest_grant_mask << 8`. Word 15 carries the effective
+    // profile for this workload — certified class mask in the low byte,
+    // effective capabilities (environment capabilities intersected with the
+    // manifest's allow-mask, narrow-only) in bits 8..40.
+    let effective = crate::sandbox::effective_profile(&env, env.manifest.as_ref());
+    reply.words[14] = env.manifest.as_ref().map_or(0, |declared| {
+        u64::from(declared.version) | (u64::from(declared.grants_mask()) << 8)
+    });
+    reply.words[15] =
+        u64::from(effective.certified_mask()) | ((effective.capabilities as u64) << 8);
+    reply.word_count = 16;
 }
 
 pub(crate) fn decision_policy(decision: u64) -> PermissionPolicyState {
@@ -417,13 +430,13 @@ mod tests {
 
     #[test]
     fn env_status_surfaces_linux_syscall_mode_in_additive_word() {
-        // Native env: word 12 = 0, word count 14 (was 13 before the table
-        // availability word).
+        // Native env: word 12 = 0, word count 16 (14 before the S11
+        // manifest words; the trailing words are additive-only).
         let mut native = EnvSlot::empty();
         native.occupied = true;
         let mut reply = RawMessage::empty(0);
         encode_env_status(&mut reply, 3, native);
-        assert_eq!(reply.word_count, 14);
+        assert_eq!(reply.word_count, 16);
         assert_eq!(reply.words[12], 0);
 
         // linux-syscall env: word 12 = 1; word 13 is the same
@@ -431,7 +444,7 @@ mod tests {
         native.linux_syscall = true;
         let mut flagged = RawMessage::empty(0);
         encode_env_status(&mut flagged, 3, native);
-        assert_eq!(flagged.word_count, 14);
+        assert_eq!(flagged.word_count, 16);
         assert_eq!(flagged.words[12], 1);
         assert_eq!(flagged.words[13], reply.words[13]);
 
@@ -449,6 +462,44 @@ mod tests {
         let mut untouched = RawMessage::empty(0);
         encode_env_status(&mut untouched, 3, legacy);
         assert_eq!(untouched.words[0..13], reply.words[0..13]);
+    }
+
+    #[test]
+    fn env_status_surfaces_manifest_words_additively() {
+        use crate::sandbox::{DeviceClass, SANDBOX_MANIFEST_VERSION, SandboxManifest};
+
+        // No manifest: presence word 0; effective word carries the plain
+        // environment profile (certified mask low byte, caps above).
+        let mut plain = EnvSlot::empty();
+        plain.occupied = true;
+        plain.capabilities = rt::runtime_capability::FILE_READ | rt::runtime_capability::NETWORK;
+        plain.sandbox = crate::sandbox::SandboxProfile::from_masks(plain.capabilities, 0);
+        let mut reply = RawMessage::empty(0);
+        encode_env_status(&mut reply, 0, plain);
+        assert_eq!(reply.words[14], 0);
+        assert_eq!(reply.words[15], (plain.capabilities as u64) << 8);
+
+        // Manifest associated: version marker + manifest grant mask, and
+        // the effective word is the narrow-only intersection.
+        plain.state = rt::RuntimeEnvState::Ready;
+        plain.sandbox.grant(DeviceClass::Network);
+        let manifest = SandboxManifest {
+            version: SANDBOX_MANIFEST_VERSION,
+            grants: [true, false, false, false],
+            caps_allow: Some(rt::runtime_capability::FILE_READ),
+        };
+        plain.manifest = Some(manifest);
+        let mut flagged = RawMessage::empty(0);
+        encode_env_status(&mut flagged, 0, plain);
+        assert_eq!(
+            flagged.words[14],
+            u64::from(SANDBOX_MANIFEST_VERSION) | (u64::from(manifest.grants_mask()) << 8)
+        );
+        assert_eq!(
+            flagged.words[15],
+            (1u32 << DeviceClass::Network.index()) as u64
+                | ((rt::runtime_capability::FILE_READ as u64) << 8)
+        );
     }
 
     #[test]

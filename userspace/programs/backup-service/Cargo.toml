@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 serviceos-userspace-runtime = { path = "../runtime" }
+serviceos-crypto = { path = "../../../shared/crypto" }
 
 [lib]
 name = "serviceos_backup_service"

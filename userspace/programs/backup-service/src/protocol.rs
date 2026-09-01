@@ -37,13 +37,17 @@ pub fn decode_export_request(request: &RawMessage) -> Result<u32, BackupError> {
     Ok(mask)
 }
 
-/// Reply: [status, name_len, record_count, blob_size, packed name...].
+/// Reply: [status, name_len, record_count, blob_size, packed name...,
+/// signed, key_id]. The signed/key-id tail is additive: legacy decoders read
+/// only the packed name and ignore the trailing words.
 pub fn encode_export_reply(
     response: &mut RawMessage,
     error: Option<BackupError>,
     name: &[u8],
     record_count: u32,
     blob_size: usize,
+    signed: bool,
+    key_id: u64,
 ) {
     response.tag = backup_tag::EXPORT_REPLY;
     response.word_count = 4;
@@ -57,6 +61,10 @@ pub fn encode_export_reply(
     if let Ok(packed) = serviceos_userspace_runtime::pack_bytes(name, &mut response.words[4..]) {
         response.word_count += packed;
     }
+    let tail = response.word_count as usize;
+    response.words[tail] = u64::from(signed);
+    response.words[tail + 1] = key_id;
+    response.word_count += 2;
 }
 
 pub fn decode_restore_request(
@@ -83,12 +91,16 @@ pub fn decode_restore_request(
     Ok((filter, dry_run, len))
 }
 
-/// Reply: [status, dry_run, selected_scope_mask, selected_records, total_bytes].
+/// Reply: [status, dry_run, selected_scope_mask, selected_records,
+/// total_bytes, verified, key_id]. The verified/key-id tail is additive;
+/// verification happens in the service gate before any planning or writing.
 pub fn encode_restore_reply(
     response: &mut RawMessage,
     error: Option<BackupError>,
     dry_run: bool,
     report: RestoreReport,
+    verified: bool,
+    key_id: u64,
 ) {
     response.tag = backup_tag::RESTORE_REPLY;
     response.word_count = 5;
@@ -100,6 +112,9 @@ pub fn encode_restore_reply(
     response.words[2] = report.selected_scope_mask as u64;
     response.words[3] = report.selected_records as u64;
     response.words[4] = report.total_bytes;
+    response.words[5] = u64::from(verified);
+    response.words[6] = key_id;
+    response.word_count = 7;
 }
 
 pub fn decode_list_request(request: &RawMessage) -> Result<usize, BackupError> {
@@ -111,9 +126,17 @@ pub fn decode_list_request(request: &RawMessage) -> Result<usize, BackupError> {
         .ok_or(BackupError::InvalidArgument)
 }
 
-/// Reply mirrors the storage list shape: [status, index_echo, kind, name_len,
-/// packed path]; status End carries no name.
-pub fn encode_list_reply(response: &mut RawMessage, end: bool, index: usize, path: &[u8]) {
+/// Reply mirrors the storage list shape with an additive signing tail:
+/// [status, index_echo, kind, name_len, packed path, signed, key_id];
+/// status End carries no name and no tail.
+pub fn encode_list_reply(
+    response: &mut RawMessage,
+    end: bool,
+    index: usize,
+    path: &[u8],
+    signed: bool,
+    key_id: u64,
+) {
     response.tag = backup_tag::LIST_REPLY;
     response.word_count = 4;
     response.words[0] = if end { 2 } else { 0 };
@@ -125,6 +148,10 @@ pub fn encode_list_reply(response: &mut RawMessage, end: bool, index: usize, pat
         {
             response.word_count += packed;
         }
+        let tail = response.word_count as usize;
+        response.words[tail] = u64::from(signed);
+        response.words[tail + 1] = key_id;
+        response.word_count += 2;
     } else {
         response.word_count = 3;
     }
@@ -154,4 +181,29 @@ pub fn encode_status_reply(response: &mut RawMessage, tag: u32, error: Option<Ba
         Some(error) => error.to_code() as u64,
         None => 0,
     };
+}
+
+/// INFO reply: [status, key_id, packed public (32 bytes = 4 words)]; errors
+/// are status-only. Additive introspection tail of the contract (0x239); the
+/// request itself is valid by its tag alone (no words to decode).
+pub fn encode_info_reply(
+    response: &mut RawMessage,
+    error: Option<BackupError>,
+    key_id: u64,
+    public: &[u8; 32],
+) {
+    response.tag = backup_tag::INFO_REPLY;
+    let Some(error) = error else {
+        response.word_count = 2;
+        response.words[0] = 0;
+        response.words[1] = key_id;
+        if let Ok(packed) =
+            serviceos_userspace_runtime::pack_bytes(public, &mut response.words[2..])
+        {
+            response.word_count += packed;
+        }
+        return;
+    };
+    response.word_count = 1;
+    response.words[0] = error.to_code() as u64;
 }

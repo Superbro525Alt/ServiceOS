@@ -35,9 +35,12 @@ use core::str;
 
 use rt::{ControlTag, LifecycleEvent, RawMessage};
 use serviceos_backup_service::{
-    ACCOUNTS_PATH, BACKUPS_DIR, BackupError, BlobView, BlobWriter, CONFIG_DIR, MAX_BACKUP_NAME,
-    RestoreReport, backup_tag, format_backup_name, parse_backup_name, plan_restore,
-    record_storage_path, scope,
+    ACCOUNTS_PATH, BACKUPS_DIR, BackupError, BlobView, BlobWriter, CONFIG_DIR, LIST_SCAN_CAP,
+    MAX_BACKUP_NAME, MAX_SIGNING_TEXT_BYTES, RestoreReport, SIGNATURE_SUFFIX, SIGNING_CONFIG_PATH,
+    SigningIdentity, backup_tag, derive_signing_identity, format_backup_name,
+    format_signature_file, format_signing_config, is_signature_name, parse_backup_name,
+    parse_signature_file, parse_signing_config, plan_restore, record_storage_path, scope,
+    signature_path, verify_blob_signature,
 };
 
 use crate::protocol::RequestScratch;
@@ -63,6 +66,14 @@ fn main() -> u64 {
         return EXIT_STARTUP;
     }
     let storage_handle = startup.handles[0];
+
+    // Signing identity: load or create the service-local Ed25519 key. Kept
+    // in the service's own namespace so a restore can never rewrite the
+    // verifier's key; persistence failure degrades to a boot-local identity
+    // (exports then stop verifying across restarts — logged honestly).
+    let identity = load_or_create_identity(storage_handle);
+    let mut note = [0u8; 48];
+    let _ = rt::debug_log(identity_note(&identity, &mut note));
 
     // Public control channel; handed to clients by whoever spawns us. When
     // the launcher passed an announcer (handles[1], account-service's
@@ -92,7 +103,13 @@ fn main() -> u64 {
             Ok(()) => {
                 let mut response = RawMessage::empty(0);
                 let mut scratch = RequestScratch::new();
-                handle_request(storage_handle, &request, &mut response, &mut scratch);
+                handle_request(
+                    storage_handle,
+                    &identity,
+                    &request,
+                    &mut response,
+                    &mut scratch,
+                );
                 if response.tag != 0 {
                     let _ = rt::channel_send(request.handles[0], &response);
                     let _ = rt::handle_close(request.handles[0]);
@@ -146,37 +163,96 @@ fn lifecycle_stop_requested(bootstrap: rt::Handle) -> bool {
 
 fn handle_request(
     storage_handle: rt::Handle,
+    identity: &SigningIdentity,
     request: &RawMessage,
     response: &mut RawMessage,
     scratch: &mut RequestScratch,
 ) {
     match request.tag {
-        x if x == backup_tag::EXPORT_REQUEST => handle_export(storage_handle, request, response),
+        x if x == backup_tag::EXPORT_REQUEST => {
+            handle_export(storage_handle, identity, request, response)
+        }
         x if x == backup_tag::RESTORE_REQUEST => {
-            handle_restore(storage_handle, request, response, scratch)
+            handle_restore(storage_handle, identity, request, response, scratch)
         }
         x if x == backup_tag::LIST_REQUEST => handle_list(storage_handle, request, response),
         x if x == backup_tag::DELETE_REQUEST => {
             handle_delete(storage_handle, request, response, scratch)
         }
+        x if x == backup_tag::INFO_REQUEST => handle_info(identity, response),
         _ => {}
     }
 }
 
+/// Load the signing identity from `state/backup/signing.cfg`, or derive and
+/// persist a fresh one (package-service's guest entropy substitute: SHA-512
+/// over source, tick, counter, store fingerprint). A config that fails
+/// self-validation is treated as corrupt and regenerated; a config that
+/// cannot be persisted leaves a boot-local identity (logged at startup).
+fn load_or_create_identity(storage_handle: rt::Handle) -> SigningIdentity {
+    let mut buffer = [0u8; MAX_SIGNING_TEXT_BYTES];
+    if let Ok(loaded) = read_storage_file(storage_handle, SIGNING_CONFIG_PATH, &mut buffer) {
+        if let Some(identity) =
+            parse_signing_config(str::from_utf8(&buffer[..loaded]).unwrap_or(""))
+        {
+            return identity;
+        }
+        let _ = rt::debug_log(
+            b"backup-service: signing.cfg unreadable; regenerating identity (old signatures will not verify)",
+        );
+    }
+    let tick = rt::monotonic_now().unwrap_or(0);
+    let mut accounts = [0u8; 512];
+    let fingerprint = match read_storage_file(storage_handle, ACCOUNTS_PATH, &mut accounts) {
+        Ok(loaded) => serviceos_backup_service::fnv1a64(&accounts[..loaded]),
+        Err(_) => 0,
+    };
+    let identity = derive_signing_identity(b"backup-service-signing", tick, 0, fingerprint);
+    let mut config = [0u8; MAX_SIGNING_TEXT_BYTES];
+    match format_signing_config(&identity, &mut config)
+        .ok()
+        .and_then(|used| {
+            write_storage_file(storage_handle, SIGNING_CONFIG_PATH, &config[..used]).ok()
+        }) {
+        Some(()) => {}
+        None => {
+            let _ = rt::debug_log(
+                b"backup-service: signing.cfg persist failed; identity is boot-local only",
+            );
+        }
+    }
+    identity
+}
+
+/// Startup log line: `backup-service: signing key-id=<16 hex>`.
+fn identity_note<'a>(identity: &SigningIdentity, out: &'a mut [u8]) -> &'a [u8] {
+    let prefix = b"backup-service: signing key-id=";
+    out[..prefix.len()].copy_from_slice(prefix);
+    let mut id_hex = [0u8; 16];
+    let _ = serviceos_backup_service::emit_hex(&identity.key_id.to_be_bytes(), &mut id_hex);
+    out[prefix.len()..prefix.len() + 16].copy_from_slice(&id_hex);
+    &out[..prefix.len() + 16]
+}
+
 // ---------------------------------------------------------------- export
 
-fn handle_export(storage_handle: rt::Handle, request: &RawMessage, response: &mut RawMessage) {
+fn handle_export(
+    storage_handle: rt::Handle,
+    identity: &SigningIdentity,
+    request: &RawMessage,
+    response: &mut RawMessage,
+) {
     let mask = match protocol::decode_export_request(request) {
         Ok(mask) => mask,
         Err(error) => {
-            protocol::encode_export_reply(response, Some(error), b"", 0, 0);
+            protocol::encode_export_reply(response, Some(error), b"", 0, 0, false, 0);
             return;
         }
     };
 
     let mut writer = BlobWriter::new();
     if let Err(error) = gather_scopes(storage_handle, mask, &mut writer) {
-        protocol::encode_export_reply(response, Some(error), b"", 0, 0);
+        protocol::encode_export_reply(response, Some(error), b"", 0, 0, false, 0);
         return;
     }
 
@@ -199,16 +275,80 @@ fn handle_export(storage_handle: rt::Handle, request: &RawMessage, response: &mu
     let mut path = [0u8; MAX_PATH];
     let path_len = backup_path(name_bytes, &mut path);
     let path = str::from_utf8(&path[..path_len]).unwrap_or("");
-    match write_storage_file(storage_handle, path, writer.as_slice()) {
+    if write_storage_file(storage_handle, path, writer.as_slice()).is_err() {
+        protocol::encode_export_reply(
+            response,
+            Some(BackupError::StorageFailure),
+            b"",
+            0,
+            0,
+            false,
+            0,
+        );
+        return;
+    }
+
+    // Detached signature beside the blob, over the exact stored bytes. A
+    // failed sidecar write removes the blob again: an unsigned export would
+    // be unrestorable by policy, so it must not linger.
+    let signature = serviceos_crypto::ed25519::sign(&identity.seed, writer.as_slice());
+    let mut sig_file = [0u8; MAX_SIGNING_TEXT_BYTES];
+    let sig_len = match format_signature_file(identity.key_id, &signature, &mut sig_file) {
+        Ok(sig_len) => sig_len,
+        Err(_) => {
+            let _ = remove_backup_file(storage_handle, name_bytes);
+            protocol::encode_export_reply(
+                response,
+                Some(BackupError::StorageFailure),
+                b"",
+                0,
+                0,
+                false,
+                0,
+            );
+            return;
+        }
+    };
+    let mut sig_path = [0u8; MAX_PATH];
+    let sig_written = signature_path(str::from_utf8(name_bytes).unwrap_or(""), &mut sig_path);
+    let sig_written = match sig_written {
+        Ok(sig_written) => sig_written,
+        Err(_) => {
+            let _ = remove_backup_file(storage_handle, name_bytes);
+            protocol::encode_export_reply(
+                response,
+                Some(BackupError::StorageFailure),
+                b"",
+                0,
+                0,
+                false,
+                0,
+            );
+            return;
+        }
+    };
+    let sig_path = str::from_utf8(&sig_path[..sig_written]).unwrap_or("");
+    match write_storage_file(storage_handle, sig_path, &sig_file[..sig_len]) {
         Ok(()) => protocol::encode_export_reply(
             response,
             None,
             name_bytes,
             record_count,
             writer.as_slice().len(),
+            true,
+            identity.key_id,
         ),
         Err(_) => {
-            protocol::encode_export_reply(response, Some(BackupError::StorageFailure), b"", 0, 0)
+            let _ = remove_backup_file(storage_handle, name_bytes);
+            protocol::encode_export_reply(
+                response,
+                Some(BackupError::StorageFailure),
+                b"",
+                0,
+                0,
+                false,
+                0,
+            );
         }
     }
 }
@@ -317,6 +457,7 @@ fn capture_file(
 
 fn handle_restore(
     storage_handle: rt::Handle,
+    identity: &SigningIdentity,
     request: &RawMessage,
     response: &mut RawMessage,
     scratch: &mut RequestScratch,
@@ -324,7 +465,14 @@ fn handle_restore(
     let (filter, dry_run, name_len) = match protocol::decode_restore_request(request, scratch) {
         Ok(decoded) => decoded,
         Err(error) => {
-            protocol::encode_restore_reply(response, Some(error), false, RestoreReport::default());
+            protocol::encode_restore_reply(
+                response,
+                Some(error),
+                false,
+                RestoreReport::default(),
+                false,
+                0,
+            );
             return;
         }
     };
@@ -336,6 +484,8 @@ fn handle_restore(
                 Some(BackupError::InvalidArgument),
                 dry_run,
                 RestoreReport::default(),
+                false,
+                0,
             );
             return;
         }
@@ -356,6 +506,8 @@ fn handle_restore(
                 Some(error),
                 dry_run,
                 RestoreReport::default(),
+                false,
+                0,
             );
             return;
         }
@@ -365,6 +517,8 @@ fn handle_restore(
                 Some(BackupError::StorageFailure),
                 dry_run,
                 RestoreReport::default(),
+                false,
+                0,
             );
             return;
         }
@@ -377,10 +531,29 @@ fn handle_restore(
                 Some(error),
                 dry_run,
                 RestoreReport::default(),
+                false,
+                0,
             );
             return;
         }
     };
+
+    // Signature gate: before any planning or writing (dry-run included),
+    // verify the detached signature over the exact blob bytes. Missing
+    // sidecar = Unsigned (policy: unsigned snapshots refuse restore);
+    // anything unverifiable = BadSignature. Nothing is written on refusal.
+    if let Err(error) = verify_snapshot_signature(storage_handle, identity, name, &blob[..loaded]) {
+        protocol::encode_restore_reply(
+            response,
+            Some(error),
+            dry_run,
+            RestoreReport::default(),
+            false,
+            0,
+        );
+        return;
+    }
+
     let report = match plan_restore(&view, filter) {
         Ok(report) => report,
         Err(error) => {
@@ -389,22 +562,57 @@ fn handle_restore(
                 Some(error),
                 dry_run,
                 RestoreReport::default(),
+                false,
+                0,
             );
             return;
         }
     };
 
     if dry_run {
-        protocol::encode_restore_reply(response, None, true, report);
+        protocol::encode_restore_reply(response, None, true, report, true, identity.key_id);
         return;
     }
 
     match apply_restore(storage_handle, &view, filter) {
-        Ok(applied) => protocol::encode_restore_reply(response, None, false, applied),
-        Err(error) => {
-            protocol::encode_restore_reply(response, Some(error), dry_run, RestoreReport::default())
+        Ok(applied) => {
+            protocol::encode_restore_reply(response, None, false, applied, true, identity.key_id)
         }
+        Err(error) => protocol::encode_restore_reply(
+            response,
+            Some(error),
+            dry_run,
+            RestoreReport::default(),
+            false,
+            0,
+        ),
     }
+}
+
+/// Verify the detached signature sidecar for `name` against the service's
+/// identity. Missing sidecar maps to Unsigned; malformed or mismatched or
+/// failing signatures map to BadSignature.
+fn verify_snapshot_signature(
+    storage_handle: rt::Handle,
+    identity: &SigningIdentity,
+    name: &str,
+    blob: &[u8],
+) -> Result<(), BackupError> {
+    let mut sig_path = [0u8; MAX_PATH];
+    let sig_len = signature_path(name, &mut sig_path)?;
+    let mut buffer = [0u8; MAX_SIGNING_TEXT_BYTES];
+    let loaded = match read_storage_file(
+        storage_handle,
+        str::from_utf8(&sig_path[..sig_len]).unwrap_or(""),
+        &mut buffer,
+    ) {
+        Ok(loaded) => loaded,
+        Err(BackupError::NotFound) => return Err(BackupError::Unsigned),
+        Err(_) => return Err(BackupError::StorageFailure),
+    };
+    let text = str::from_utf8(&buffer[..loaded]).map_err(|_| BackupError::BadSignature)?;
+    let record = parse_signature_file(text).ok_or(BackupError::BadSignature)?;
+    verify_blob_signature(&identity.public, blob, &record, identity.key_id)
 }
 
 fn apply_restore(
@@ -444,17 +652,62 @@ fn handle_list(storage_handle: rt::Handle, request: &RawMessage, response: &mut 
             return;
         }
     };
+    // Enumerate backups/ skipping `<name>.sig` sidecars: the requested index
+    // counts real snapshots only. Sidecar presence + key id ride the
+    // additive reply tail.
+    let mut probe = 0usize;
+    let mut seen = 0usize;
     let mut path_buffer = [0u8; MAX_PATH];
-    match rt::storage_list(storage_handle, BACKUPS_DIR, index, &mut path_buffer) {
-        Ok(Some((_status, len))) => {
-            protocol::encode_list_reply(response, false, index, &path_buffer[..len]);
+    while probe < LIST_SCAN_CAP {
+        match rt::storage_list(storage_handle, BACKUPS_DIR, probe, &mut path_buffer) {
+            Ok(Some((_status, len))) => {
+                probe += 1;
+                let path = &path_buffer[..len];
+                if is_signature_name(str::from_utf8(path).unwrap_or("")) {
+                    continue;
+                }
+                if seen == index {
+                    let (signed, key_id) = probe_snapshot_signature(storage_handle, path);
+                    protocol::encode_list_reply(response, false, index, path, signed, key_id);
+                    return;
+                }
+                seen += 1;
+            }
+            Ok(None) => break,
+            Err(_) => {
+                protocol::encode_status_reply(
+                    response,
+                    backup_tag::LIST_REPLY,
+                    Some(BackupError::StorageFailure),
+                );
+                return;
+            }
         }
-        Ok(None) => protocol::encode_list_reply(response, true, index, &[]),
-        Err(_) => protocol::encode_status_reply(
-            response,
-            backup_tag::LIST_REPLY,
-            Some(BackupError::StorageFailure),
-        ),
+    }
+    protocol::encode_list_reply(response, true, index, &[], false, 0);
+}
+
+/// Sidecar probe for one listed snapshot: presence of `<path>.sig` sets the
+/// signed flag; a parseable key id rides along (0 when unreadable — restore
+/// still verifies cryptographically, so a bogus probe can never pass).
+fn probe_snapshot_signature(storage_handle: rt::Handle, path: &[u8]) -> (bool, u64) {
+    let mut sig_path = [0u8; MAX_PATH];
+    if path.len() + SIGNATURE_SUFFIX.len() > sig_path.len() {
+        return (false, 0);
+    }
+    sig_path[..path.len()].copy_from_slice(path);
+    sig_path[path.len()..path.len() + SIGNATURE_SUFFIX.len()]
+        .copy_from_slice(SIGNATURE_SUFFIX.as_bytes());
+    let sig_path = str::from_utf8(&sig_path[..path.len() + SIGNATURE_SUFFIX.len()]).unwrap_or("");
+    let mut buffer = [0u8; MAX_SIGNING_TEXT_BYTES];
+    let loaded = match read_storage_file(storage_handle, sig_path, &mut buffer) {
+        Ok(loaded) => loaded,
+        Err(_) => return (false, 0),
+    };
+    let text = str::from_utf8(&buffer[..loaded]).unwrap_or("");
+    match parse_signature_file(text) {
+        Some(record) => (true, record.key_id),
+        None => (true, 0),
     }
 }
 
@@ -486,33 +739,48 @@ fn handle_delete(
 }
 
 fn delete_backup(storage_handle: rt::Handle, response: &mut RawMessage, name: &str) {
+    match remove_backup_file(storage_handle, name.as_bytes()) {
+        Ok(()) => protocol::encode_status_reply(response, backup_tag::DELETE_REPLY, None),
+        Err(error) => {
+            protocol::encode_status_reply(response, backup_tag::DELETE_REPLY, Some(error))
+        }
+    }
+}
+
+/// Remove a snapshot blob plus its signature sidecar (best effort — a
+/// missing or unremovable sidecar must not fail a delete of the blob).
+/// Only ever called with names that passed `parse_backup_name`, so both
+/// paths stay name-confined under backups/.
+fn remove_backup_file(storage_handle: rt::Handle, name: &[u8]) -> Result<(), BackupError> {
     let directory = match rt::storage_open_directory(storage_handle, BACKUPS_DIR, true) {
         Ok(directory) => directory,
-        Err(rt::Error::NotFound) => {
-            protocol::encode_status_reply(
-                response,
-                backup_tag::DELETE_REPLY,
-                Some(BackupError::NotFound),
-            );
-            return;
-        }
-        Err(_) => {
-            protocol::encode_status_reply(
-                response,
-                backup_tag::DELETE_REPLY,
-                Some(BackupError::StorageFailure),
-            );
-            return;
-        }
+        Err(rt::Error::NotFound) => return Err(BackupError::NotFound),
+        Err(_) => return Err(BackupError::StorageFailure),
     };
-    let result = rt::storage_directory_remove(directory, name);
+    let name = str::from_utf8(name).unwrap_or("");
+    let blob_result = rt::storage_directory_remove(directory, name);
+    let mut sidecar = [0u8; 48];
+    if let Ok(sig_len) = signature_path(name, &mut sidecar) {
+        // signature_path yields "backups/<name>.sig"; the directory-relative
+        // remove takes the `<name>.sig` tail.
+        let _ = rt::storage_directory_remove(
+            directory,
+            str::from_utf8(&sidecar[BACKUPS_DIR.len()..sig_len]).unwrap_or(""),
+        );
+    }
     let _ = rt::handle_close(directory);
-    let error = match result {
-        Ok(()) => None,
-        Err(rt::Error::NotFound) => Some(BackupError::NotFound),
-        Err(_) => Some(BackupError::StorageFailure),
-    };
-    protocol::encode_status_reply(response, backup_tag::DELETE_REPLY, error);
+    match blob_result {
+        Ok(()) => Ok(()),
+        Err(rt::Error::NotFound) => Err(BackupError::NotFound),
+        Err(_) => Err(BackupError::StorageFailure),
+    }
+}
+
+/// INFO: expose the active signing identity (key id + packed public key).
+/// Introspection only — no client flow depends on it; wire tails carry the
+/// key id everywhere it matters.
+fn handle_info(identity: &SigningIdentity, response: &mut RawMessage) {
+    protocol::encode_info_reply(response, None, identity.key_id, &identity.public);
 }
 
 // ---------------------------------------------------------------- storage helpers

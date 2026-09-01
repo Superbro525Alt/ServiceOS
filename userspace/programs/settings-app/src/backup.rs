@@ -29,6 +29,8 @@ pub(crate) const BACKUP_ERROR_BAD_MAGIC: u64 = 5;
 pub(crate) const BACKUP_ERROR_BAD_VERSION: u64 = 6;
 pub(crate) const BACKUP_ERROR_CORRUPT: u64 = 7;
 pub(crate) const BACKUP_ERROR_STORAGE: u64 = 8;
+pub(crate) const BACKUP_ERROR_UNSIGNED: u64 = 9;
+pub(crate) const BACKUP_ERROR_BAD_SIG: u64 = 10;
 
 pub(crate) const BACKUP_SCOPE_CONFIG: u32 = 1 << 0;
 pub(crate) const BACKUP_SCOPE_ACCOUNTS: u32 = 1 << 1;
@@ -54,6 +56,10 @@ pub(crate) struct BackupSnapshotEntry {
     /// restore contracts take this form.
     pub(crate) name: [u8; BACKUP_NAME_MAX_BYTES],
     pub(crate) name_len: usize,
+    /// Additive list tail: a signature sidecar exists for this snapshot and
+    /// the key id it names (0 when the sidecar is unreadable).
+    pub(crate) signed: bool,
+    pub(crate) key_id: u64,
 }
 
 impl BackupSnapshotEntry {
@@ -68,6 +74,9 @@ pub(crate) struct BackupExportInfo {
     pub(crate) name_len: usize,
     pub(crate) record_count: u32,
     pub(crate) blob_size: usize,
+    /// Additive tail: the stored snapshot carries a detached signature.
+    pub(crate) signed: bool,
+    pub(crate) key_id: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,6 +85,9 @@ pub(crate) struct BackupRestoreReport {
     pub(crate) selected_scope_mask: u32,
     pub(crate) selected_records: u32,
     pub(crate) total_bytes: u64,
+    /// Additive tail: the signature gate passed for this snapshot.
+    pub(crate) verified: bool,
+    pub(crate) key_id: u64,
 }
 
 /// Honest classification of a failed backup operation: service error codes
@@ -90,6 +102,10 @@ pub(crate) enum BackupOpError {
     UnsupportedVersion,
     Corrupt,
     StorageFailure,
+    /// Snapshot has no signature sidecar; restore refuses by policy.
+    Unsigned,
+    /// Signature malformed, foreign, or failing over the blob bytes.
+    BadSignature,
     Transport,
     Malformed,
 }
@@ -104,6 +120,8 @@ pub(crate) fn backup_error_from_code(code: u64) -> Option<BackupOpError> {
         BACKUP_ERROR_BAD_VERSION => Some(BackupOpError::UnsupportedVersion),
         BACKUP_ERROR_CORRUPT => Some(BackupOpError::Corrupt),
         BACKUP_ERROR_STORAGE => Some(BackupOpError::StorageFailure),
+        BACKUP_ERROR_UNSIGNED => Some(BackupOpError::Unsigned),
+        BACKUP_ERROR_BAD_SIG => Some(BackupOpError::BadSignature),
         _ => None,
     }
 }
@@ -118,12 +136,26 @@ pub(crate) fn backup_error_name(error: BackupOpError) -> &'static str {
         BackupOpError::UnsupportedVersion => "VERSION",
         BackupOpError::Corrupt => "CORRUPT",
         BackupOpError::StorageFailure => "STORAGE",
+        BackupOpError::Unsigned => "UNSIGNED",
+        BackupOpError::BadSignature => "BAD-SIG",
         BackupOpError::Transport => "TRANSPORT",
         BackupOpError::Malformed => "MALFORMED",
     }
 }
 
 /// Why the page cannot reach the service. Rendered verbatim.
+/// Read the additive signing tail (signed, key_id) that follows the packed
+/// payload: `base` fixed words + ceil(payload_len/8) packed words + 2 tail
+/// words. Older services omit the tail; decode degrades to (false, 0).
+fn signing_tail(reply: &rt::RawMessage, base: usize, payload_len: usize) -> (bool, u64) {
+    let tail = base + payload_len.div_ceil(8);
+    if reply.word_count as usize >= tail + 2 {
+        (reply.words[tail] != 0, reply.words[tail + 1])
+    } else {
+        (false, 0)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum BackupUnavailable {
     /// Documented default: manual-activation service, no registered public
@@ -180,6 +212,8 @@ impl BackupUiState {
                 path_len: 0,
                 name: [0; BACKUP_NAME_MAX_BYTES],
                 name_len: 0,
+                signed: false,
+                key_id: 0,
             }; BACKUP_LIST_ROWS],
             entry_count: 0,
             entry_total: 0,
@@ -371,12 +405,15 @@ impl BackupUiState {
             return Err(BackupOpError::Malformed);
         }
         name[..name_bytes.len()].copy_from_slice(name_bytes);
+        let (signed, key_id) = signing_tail(reply, 4, path_len);
         let entry = BackupSnapshotEntry {
             index,
             path,
             path_len,
             name,
             name_len: name_bytes.len(),
+            signed,
+            key_id,
         };
         if self.entry_count < BACKUP_LIST_ROWS {
             self.entries[self.entry_count] = entry;
@@ -450,11 +487,14 @@ impl BackupUiState {
             self.restore_outcome = Some(Err(error));
             return Err(error);
         }
+        let (verified, key_id) = signing_tail(reply, 5, 0);
         let report = BackupRestoreReport {
             dry_run: reply.words[1] != 0,
             selected_scope_mask: reply.words[2] as u32,
             selected_records: reply.words[3] as u32,
             total_bytes: reply.words[4],
+            verified,
+            key_id,
         };
         if report.dry_run {
             self.prompt = Some(BackupPrompt::RestoreConfirm(report));
@@ -564,11 +604,14 @@ pub(crate) fn decode_export_reply(
     {
         return Err(BackupOpError::Malformed);
     }
+    let (signed, key_id) = signing_tail(reply, 4, name_len);
     Ok(BackupExportInfo {
         name,
         name_len,
         record_count: reply.words[2] as u32,
         blob_size: reply.words[3] as usize,
+        signed,
+        key_id,
     })
 }
 
@@ -1127,6 +1170,111 @@ mod tests {
     }
 
     #[test]
+    fn list_reply_signing_tail_is_additive() {
+        let mut state = BackupUiState::new();
+        state.begin_listing();
+        let path = b"backups/backup-77";
+        let mut words = vec![0u64, 0, 1, path.len() as u64];
+        words.extend_from_slice(&packed_name_suffix(path));
+        // Without the tail (old service): unsigned, key id 0.
+        let entry = state
+            .decode_list_reply(&reply(BACKUP_TAG_LIST_REPLY, &words.clone()))
+            .unwrap()
+            .unwrap();
+        assert!(!entry.signed);
+        assert_eq!(entry.key_id, 0);
+        // With the tail: signed + key id ride along.
+        words.push(1); // signed
+        words.push(0x0123_4567_89ab_cdef); // key id
+        let mut state = BackupUiState::new();
+        state.begin_listing();
+        let entry = state
+            .decode_list_reply(&reply(BACKUP_TAG_LIST_REPLY, &words))
+            .unwrap()
+            .unwrap();
+        assert!(entry.signed);
+        assert_eq!(entry.key_id, 0x0123_4567_89ab_cdef);
+        // End replies stay tail-free.
+        let mut state = BackupUiState::new();
+        state.begin_listing();
+        assert_eq!(
+            state.decode_list_reply(&reply(
+                BACKUP_TAG_LIST_REPLY,
+                &[BACKUP_LIST_END_STATUS, 0, 1]
+            )),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn export_reply_signing_tail_is_additive() {
+        let name = b"20260830T101500";
+        let mut words = vec![0u64, name.len() as u64, 3, 512];
+        words.extend_from_slice(&packed_name_suffix(name));
+        words.push(1);
+        words.push(0xffeeddccbbaa9988);
+        let info = decode_export_reply(&reply(BACKUP_TAG_EXPORT_REPLY, &words)).unwrap();
+        assert!(info.signed);
+        assert_eq!(info.key_id, 0xffeeddccbbaa9988);
+        // Old-service reply (no tail) still decodes unsigned.
+        let mut words = vec![0u64, name.len() as u64, 3, 512];
+        words.extend_from_slice(&packed_name_suffix(name));
+        let info = decode_export_reply(&reply(BACKUP_TAG_EXPORT_REPLY, &words)).unwrap();
+        assert!(!info.signed);
+        assert_eq!(info.key_id, 0);
+    }
+
+    #[test]
+    fn restore_reply_verified_tail_is_additive() {
+        let mut state = BackupUiState::new();
+        // Tail present: verified + key id.
+        let report = state
+            .on_restore_reply(&reply(
+                BACKUP_TAG_RESTORE_REPLY,
+                &[0, 1, 7, 12, 4096, 1, 0x1122_3344_5566_7788],
+            ))
+            .unwrap();
+        assert!(report.verified);
+        assert_eq!(report.key_id, 0x1122_3344_5566_7788);
+        // Old-service reply (5 words) degrades to unverified.
+        let mut state = BackupUiState::new();
+        let report = state
+            .on_restore_reply(&reply(BACKUP_TAG_RESTORE_REPLY, &[0, 1, 7, 12, 4096]))
+            .unwrap();
+        assert!(!report.verified);
+        assert_eq!(report.key_id, 0);
+    }
+
+    #[test]
+    fn signing_refusals_map_to_distinct_honest_names() {
+        let mut state = BackupUiState::new();
+        state.begin_listing();
+        let path = b"backups/backup-9";
+        let mut words = vec![0u64, 0, 1, path.len() as u64];
+        words.extend_from_slice(&packed_name_suffix(path));
+        state
+            .decode_list_reply(&reply(BACKUP_TAG_LIST_REPLY, &words))
+            .unwrap();
+        for (code, expected, name) in [
+            (BACKUP_ERROR_UNSIGNED, BackupOpError::Unsigned, "UNSIGNED"),
+            (BACKUP_ERROR_BAD_SIG, BackupOpError::BadSignature, "BAD-SIG"),
+        ] {
+            assert_eq!(backup_error_from_code(code), Some(expected));
+            assert_eq!(backup_error_name(expected), name);
+            state
+                .begin_restore_dry_run(BACKUP_SCOPE_KNOWN_MASK)
+                .unwrap();
+            assert_eq!(
+                state.on_restore_reply(&reply(BACKUP_TAG_RESTORE_REPLY, &[code, 0, 0, 0, 0, 0, 0])),
+                Err(expected)
+            );
+            assert_eq!(state.restore_outcome, Some(Err(expected)));
+            // The prompt never opens on a refused restore.
+            assert_eq!(state.prompt, None);
+        }
+    }
+
+    #[test]
     fn route_position_follows_the_startup_contract() {
         assert_eq!(backup_route_position(7), None);
         assert_eq!(backup_route_position(8), Some(7));
@@ -1161,6 +1309,8 @@ mod tests {
                 name
             },
             name_len: 8,
+            signed: false,
+            key_id: 0,
         };
         state.entry_count = 1;
         state.selected = 0;

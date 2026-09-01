@@ -1055,7 +1055,11 @@ fn draw_backup_page(bytes: &mut [u8], state: &AppState) {
         );
     } else {
         for (row, entry) in backup.entries[..backup.entry_count].iter().enumerate() {
-            let label = entry.path_str().unwrap_or("?");
+            let mut label_buf = FixedLogBuffer::<96>::new();
+            let _ = write!(&mut label_buf, "{}", entry.path_str().unwrap_or("?"));
+            if entry.signed {
+                let _ = write!(&mut label_buf, " [SIGNED {:016x}]", entry.key_id);
+            }
             rt::draw_text_rgba8888(
                 bytes,
                 PIXEL_STRIDE,
@@ -1066,7 +1070,7 @@ fn draw_backup_page(bytes: &mut [u8], state: &AppState) {
                 } else {
                     ui::TEXT_SECONDARY
                 },
-                label,
+                str::from_utf8(label_buf.as_bytes()).unwrap_or("?"),
             );
         }
     }
@@ -1118,6 +1122,9 @@ fn draw_backup_page(bytes: &mut [u8], state: &AppState) {
                 "DRY-RUN OK: {} RECS {} BYTES - CONFIRM TO APPLY",
                 report.selected_records, report.total_bytes
             );
+            if report.verified {
+                let _ = write!(&mut footer, " SIGNED");
+            }
         }
         Some(BackupPrompt::DeleteConfirm) => {
             let _ = write!(&mut footer, "CONFIRM DELETE");
@@ -1130,8 +1137,12 @@ fn draw_backup_page(bytes: &mut [u8], state: &AppState) {
             (Some(Err(error)), _, _) | (_, Some(Err(error)), _) | (_, _, Some(Err(error))) => {
                 let _ = write!(&mut footer, "FAILED: {}", backup::backup_error_name(error));
             }
-            (Some(Ok(_)), _, _) => {
-                let _ = write!(&mut footer, "EXPORT DONE");
+            (Some(Ok(info)), _, _) => {
+                if info.signed {
+                    let _ = write!(&mut footer, "EXPORT DONE SIGNED {:016x}", info.key_id);
+                } else {
+                    let _ = write!(&mut footer, "EXPORT DONE");
+                }
             }
             (_, Some(Ok(_)), _) => {
                 let _ = write!(&mut footer, "RESTORE DONE");

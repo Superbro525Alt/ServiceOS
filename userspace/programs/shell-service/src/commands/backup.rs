@@ -68,6 +68,10 @@ impl BackupFlow {
                 "backup-service rejected: snapshot failed checksum or format validation"
             }
             BackupFlow::Rejected(8) => "backup-service rejected: storage failure",
+            BackupFlow::Rejected(9) => {
+                "backup-service rejected: snapshot is unsigned (restore refused by policy)"
+            }
+            BackupFlow::Rejected(10) => "backup-service rejected: signature verification failed",
             BackupFlow::Rejected(_) => "backup-service rejected the request",
             BackupFlow::Transport => "backup-service transport failure",
         }
@@ -166,6 +170,18 @@ fn unpack_name<'a>(reply: &'a RawMessage, offset: usize, buffer: &'a mut [u8]) -
     core::str::from_utf8(&buffer[..len]).ok()
 }
 
+/// Read the additive signing tail (signed, key_id) that follows a reply's
+/// packed payload: `base` fixed words + ceil(payload_len/8) packed words +
+/// 2 tail words. Old services omit the tail; decode degrades to (false, 0).
+fn signing_tail(reply: &RawMessage, base: usize, payload_len: usize) -> Option<(bool, u64)> {
+    let tail = base + payload_len.div_ceil(8);
+    if (reply.word_count as usize) >= tail + 2 {
+        Some((reply.words[tail] != 0, reply.words[tail + 1]))
+    } else {
+        None
+    }
+}
+
 pub(crate) fn cmd_backup(
     bootstrap: rt::Handle,
     output: ShellOutput,
@@ -176,11 +192,12 @@ pub(crate) fn cmd_backup(
         None | Some("list") => cmd_list(bootstrap, output),
         Some("export") => cmd_export(bootstrap, output, parts.next()),
         Some("restore") => cmd_restore(bootstrap, output, parts),
+        Some("verify") => cmd_verify(bootstrap, output, parts),
         Some("delete") => cmd_delete(bootstrap, output, parts),
         Some(_) => write_output_linef(
             output,
             format_args!(
-                "usage: backup [list|export [scope]|restore <name> [--yes]|delete <name> [--yes]]"
+                "usage: backup [list|export [scope]|restore <name> [--yes]|verify <name>|delete <name> [--yes]]"
             ),
         ),
     }
@@ -199,8 +216,12 @@ fn cmd_list(bootstrap: rt::Handle, output: ShellOutput) -> rt::Result<()> {
                         format_args!("{}", BackupFlow::Transport.message()),
                     );
                 };
+                // The additive tail rides after the packed path; its absence
+                // (old service) degrades to an unsigned marker.
+                let path_len = *reply.words.get(3).unwrap_or(&0) as usize;
+                let (signed, key_id) = signing_tail(&reply, 4, path_len).unwrap_or((false, 0));
                 if count < rows.len() {
-                    rows[count].set(name);
+                    rows[count].set(name, signed, key_id);
                 }
                 count += 1;
             }
@@ -222,29 +243,41 @@ fn cmd_list(bootstrap: rt::Handle, output: ShellOutput) -> rt::Result<()> {
     let shown = count.min(rows.len());
     write_output_linef(output, format_args!("snapshots: {}", shown))?;
     for row in rows.iter().take(shown) {
-        write_output_linef(output, format_args!("{}", row.text().unwrap_or("?")))?;
+        match (row.text(), row.signed) {
+            (Some(name), true) => {
+                write_output_linef(output, format_args!("{} signed={:016x}", name, row.key_id))?
+            }
+            (Some(name), false) => write_output_linef(output, format_args!("{}", name))?,
+            (None, _) => write_output_linef(output, format_args!("?"))?,
+        }
     }
     Ok(())
 }
 
 /// Fixed-capacity snapshot row: bounded name bytes plus length, so the
-/// listing needs no heap (the shell runs no_std).
+/// listing needs no heap (the shell runs no_std), plus the signing tail.
 struct SnapshotRow {
     bytes: [u8; NAME_BUFFER],
     len: usize,
+    signed: bool,
+    key_id: u64,
 }
 
 impl SnapshotRow {
     const EMPTY: Self = Self {
         bytes: [0; NAME_BUFFER],
         len: 0,
+        signed: false,
+        key_id: 0,
     };
 
-    fn set(&mut self, name: &str) {
+    fn set(&mut self, name: &str, signed: bool, key_id: u64) {
         let bytes = name.as_bytes();
         let len = bytes.len().min(NAME_BUFFER);
         self.bytes[..len].copy_from_slice(&bytes[..len]);
         self.len = len;
+        self.signed = signed;
+        self.key_id = key_id;
     }
 
     fn text(&self) -> Option<&str> {
@@ -268,13 +301,23 @@ fn cmd_export(
         Ok(reply) if reply.word_count >= 4 && reply.words[0] == 0 => {
             let mut buffer = [0u8; NAME_BUFFER];
             let name = unpack_name(&reply, 1, &mut buffer).unwrap_or("?");
-            write_output_linef(
-                output,
-                format_args!(
-                    "exported {}: records={} bytes={}",
-                    name, reply.words[2], reply.words[3]
+            let name_len = *reply.words.get(1).unwrap_or(&0) as usize;
+            match signing_tail(&reply, 4, name_len) {
+                Some((true, key_id)) => write_output_linef(
+                    output,
+                    format_args!(
+                        "exported {}: records={} bytes={} signed={:016x}",
+                        name, reply.words[2], reply.words[3], key_id
+                    ),
                 ),
-            )
+                _ => write_output_linef(
+                    output,
+                    format_args!(
+                        "exported {}: records={} bytes={}",
+                        name, reply.words[2], reply.words[3]
+                    ),
+                ),
+            }
         }
         Ok(reply) => write_output_linef(
             output,
@@ -305,19 +348,15 @@ fn cmd_restore(
         );
     }
 
-    // Dry-run report first, always: the service validates the blob
-    // (magic/version/checksum) without writing anything.
-    let mut request_words = [0u64; 8];
-    request_words[0] = scope::KNOWN_MASK as u64;
-    request_words[1] = 1;
-    let packed = pack_name(name, &mut request_words[2..]);
-    let Some(packed) = packed else {
+    // Dry-run report first, always: the service verifies the signature and
+    // validates the blob (magic/version/checksum) without writing anything.
+    let Some((mut request_words, request_len)) = build_restore_request(name, true) else {
         return write_output_linef(output, format_args!("invalid snapshot name"));
     };
     let flow = call(
         bootstrap,
         backup_tag::RESTORE_REQUEST,
-        &request_words[..2 + packed],
+        &request_words[..request_len],
     );
     let reply = match flow {
         Ok(reply) if reply.word_count >= 5 && reply.words[0] == 0 => reply,
@@ -349,16 +388,27 @@ fn cmd_restore(
     let flow = call(
         bootstrap,
         backup_tag::RESTORE_REQUEST,
-        &request_words[..2 + packed],
+        &request_words[..request_len],
     );
     match flow {
-        Ok(reply) if reply.word_count >= 5 && reply.words[0] == 0 => write_output_linef(
-            output,
-            format_args!(
-                "restored records={} bytes={} scopes={:#x}",
-                reply.words[3], reply.words[4], reply.words[2]
-            ),
-        ),
+        Ok(reply) if reply.word_count >= 5 && reply.words[0] == 0 => {
+            match signing_tail(&reply, 5, 0) {
+                Some((true, key_id)) => write_output_linef(
+                    output,
+                    format_args!(
+                        "restored records={} bytes={} scopes={:#x} signed={:016x}",
+                        reply.words[3], reply.words[4], reply.words[2], key_id
+                    ),
+                ),
+                _ => write_output_linef(
+                    output,
+                    format_args!(
+                        "restored records={} bytes={} scopes={:#x}",
+                        reply.words[3], reply.words[4], reply.words[2]
+                    ),
+                ),
+            }
+        }
         Ok(reply) => write_output_linef(
             output,
             format_args!(
@@ -368,6 +418,61 @@ fn cmd_restore(
         ),
         Err(flow) => write_output_linef(output, format_args!("{}", flow.message())),
     }
+}
+
+/// `backup verify <name>`: dry-run restore (the service's signature gate
+/// runs before the report), reporting only. Never writes.
+fn cmd_verify(
+    bootstrap: rt::Handle,
+    output: ShellOutput,
+    mut args: core::str::SplitWhitespace<'_>,
+) -> rt::Result<()> {
+    let Some(name) = args.next() else {
+        return write_output_linef(output, format_args!("usage: backup verify <name>"));
+    };
+    if args.next().is_some() || !validate_snapshot_name(name) {
+        return write_output_linef(
+            output,
+            format_args!("invalid snapshot name (expected backup-<id>)"),
+        );
+    }
+    let Some((request_words, request_len)) = build_restore_request(name, true) else {
+        return write_output_linef(output, format_args!("invalid snapshot name"));
+    };
+    match call(
+        bootstrap,
+        backup_tag::RESTORE_REQUEST,
+        &request_words[..request_len],
+    ) {
+        Ok(reply) if reply.word_count >= 5 && reply.words[0] == 0 => {
+            let key_id = signing_tail(&reply, 5, 0)
+                .map(|(verified, key_id)| (verified, key_id))
+                .unwrap_or((false, 0))
+                .1;
+            write_output_linef(
+                output,
+                format_args!("verified {} signed={:016x}", name, key_id),
+            )
+        }
+        Ok(reply) => write_output_linef(
+            output,
+            format_args!(
+                "{}",
+                BackupFlow::Rejected(reply.words.first().copied().unwrap_or(0)).message()
+            ),
+        ),
+        Err(flow) => write_output_linef(output, format_args!("{}", flow.message())),
+    }
+}
+
+/// Build a RESTORE request over all scopes (dry_run selects report-only
+/// mode); returns (words, words used).
+fn build_restore_request(name: &str, dry_run: bool) -> Option<([u64; 8], usize)> {
+    let mut words = [0u64; 8];
+    words[0] = scope::KNOWN_MASK as u64;
+    words[1] = u64::from(dry_run);
+    let packed = pack_name(name, &mut words[2..])?;
+    Some((words, 2 + packed))
 }
 
 fn cmd_delete(
@@ -479,7 +584,57 @@ mod tests {
             BackupFlow::Rejected(7).message(),
             "backup-service rejected: snapshot failed checksum or format validation"
         );
+        assert_eq!(
+            BackupFlow::Rejected(9).message(),
+            "backup-service rejected: snapshot is unsigned (restore refused by policy)"
+        );
+        assert_eq!(
+            BackupFlow::Rejected(10).message(),
+            "backup-service rejected: signature verification failed"
+        );
         assert!(BackupFlow::Transport.message().starts_with("backup"));
+    }
+
+    #[test]
+    fn signing_tail_reads_additive_words_and_degrades() {
+        // LIST-shaped tail: base 4 + packed path + [signed, key id].
+        let mut reply = RawMessage::empty(backup_tag::LIST_REPLY);
+        reply.word_count = 4;
+        reply.words[3] = 17; // "backups/backup-77" = 17 bytes = 3 words packed
+        assert_eq!(signing_tail(&reply, 4, 17), None);
+        reply.word_count = 9;
+        reply.words[7] = 1;
+        reply.words[8] = 0x0123_4567_89ab_cdef;
+        assert_eq!(
+            signing_tail(&reply, 4, 17),
+            Some((true, 0x0123_4567_89ab_cdef))
+        );
+        // RESTORE-shaped tail: base 5 + zero payload + 2 words.
+        let mut reply = RawMessage::empty(backup_tag::RESTORE_REPLY);
+        reply.word_count = 5;
+        assert_eq!(signing_tail(&reply, 5, 0), None);
+        reply.word_count = 7;
+        reply.words[5] = 1;
+        reply.words[6] = 42;
+        assert_eq!(signing_tail(&reply, 5, 0), Some((true, 42)));
+    }
+
+    #[test]
+    fn restore_request_builder_carries_dry_run_flag() {
+        let (words, len) = build_restore_request("backup-9", true).unwrap();
+        assert_eq!(len, 4); // filter + dry_run + name_len + 1 packed word
+        assert_eq!(words[0], scope::KNOWN_MASK as u64);
+        assert_eq!(words[1], 1);
+        assert_eq!(words[2], 8);
+        let (words, _) = build_restore_request("backup-9", false).unwrap();
+        assert_eq!(words[1], 0);
+        // The builder only bounds length; name-shape validation is the
+        // caller's validate_snapshot_name gate.
+        assert!(build_restore_request("nope", true).is_some());
+        assert_eq!(
+            build_restore_request(&"x".repeat(MAX_BACKUP_NAME + 1), true),
+            None
+        );
     }
 
     #[test]

@@ -16,6 +16,25 @@
 //! FNV-1a is NOT a cryptographic hash; like account-service's KDF this is an
 //! honest placeholder integrity check for a pragmatic operator-level
 //! foundation until real digest/signing machinery lands.
+//!
+//! Snapshot signing (roadmap row "cryptographic signing of blobs"): every
+//! export is signed with the service's Ed25519 identity and the detached
+//! signature is stored beside the blob as `backups/<name>.sig`. Restore
+//! verifies the signature over the exact blob bytes (direct bytes, no hash
+//! indirection - blobs are capped at MAX_BLOB_BYTES so there is nothing to
+//! save) before planning or applying anything. Policy: unsigned or invalid
+//! signatures REFUSE restore (status 9 / 10); there is deliberately no
+//! allow-unsigned escape hatch - re-export to recover a trusted snapshot.
+//!
+//! Signing identity: loaded from / persisted to
+//! `state/backup/signing.cfg` in the service's own namespace (outside every
+//! backup scope, so a restore can never rewrite the verifier's key).
+//! First-boot generation mirrors package-service's guest entropy
+//! substitute and carries the same honest limits: the kernel exposes no
+//! hardware RNG and the tick may stand still, so the seed is UNIQUE-ISH,
+//! not cryptographically random. v0 keeps one fixed identity per store; key
+//! rotation is out of scope (regenerating the config invalidates every
+//! existing signature by design).
 
 #![cfg_attr(not(test), no_std)]
 
@@ -40,7 +59,9 @@ pub mod scope {
     pub const KNOWN_MASK: u32 = CONFIG | ACCOUNTS | PACKAGES;
 }
 
-/// Wire tag base chosen away from existing service ranges.
+/// Wire tag base chosen away from existing service ranges. INFO (0x238+) is
+/// the additive signing-introspection tail of the contract: [status, key id,
+/// packed public key].
 pub mod backup_tag {
     pub const EXPORT_REQUEST: u32 = 0x230;
     pub const EXPORT_REPLY: u32 = 0x231;
@@ -50,6 +71,8 @@ pub mod backup_tag {
     pub const LIST_REPLY: u32 = 0x235;
     pub const DELETE_REQUEST: u32 = 0x236;
     pub const DELETE_REPLY: u32 = 0x237;
+    pub const INFO_REQUEST: u32 = 0x238;
+    pub const INFO_REPLY: u32 = 0x239;
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -62,10 +85,16 @@ pub enum BackupError {
     UnsupportedVersion,
     Corrupt,
     StorageFailure,
+    /// Snapshot has no detached signature; restore refuses by policy.
+    Unsigned,
+    /// Detached signature is malformed, names another key, or fails
+    /// verification over the blob bytes.
+    BadSignature,
 }
 
 impl BackupError {
-    /// Wire status code: 0 = Ok, errors count up from 1.
+    /// Wire status code: 0 = Ok, errors count up from 1. New codes append
+    /// at the end (additive-by-default).
     pub fn to_code(self) -> u32 {
         match self {
             BackupError::InvalidArgument => 1,
@@ -76,6 +105,8 @@ impl BackupError {
             BackupError::UnsupportedVersion => 6,
             BackupError::Corrupt => 7,
             BackupError::StorageFailure => 8,
+            BackupError::Unsigned => 9,
+            BackupError::BadSignature => 10,
         }
     }
 }
@@ -371,11 +402,318 @@ pub fn parse_backup_name(name: &str) -> Option<u64> {
     index.parse::<u64>().ok()
 }
 
+// ---------------------------------------------------------------- signing
+
+/// Storage path of the service-local signing identity (service's own
+/// namespace; no backup scope ever covers it).
+pub const SIGNING_CONFIG_PATH: &str = "state/backup/signing.cfg";
+/// Detached signatures live beside the blob, name-confined under backups/.
+pub const SIGNATURE_SUFFIX: &str = ".sig";
+/// Upper bound for both signing.cfg and `<name>.sig` sidecar files.
+pub const MAX_SIGNING_TEXT_BYTES: usize = 256;
+/// List scan cap when skipping sidecar entries (callers page at most 16/32
+/// rows; 64 storage probes bound the walk either way).
+pub const LIST_SCAN_CAP: usize = 64;
+
+/// Is this a detached-signature sidecar name (`<snapshot>.sig`)? Such names
+/// never parse as snapshot names, but list enumeration must skip them.
+pub fn is_signature_name(name: &str) -> bool {
+    name.ends_with(SIGNATURE_SUFFIX)
+}
+
+/// Sidecar path for a snapshot name: `backups/<name>.sig`. Returns the
+/// length written into `out`.
+pub fn signature_path(name: &str, out: &mut [u8]) -> Result<usize, BackupError> {
+    if name.is_empty() || name.len() > MAX_BACKUP_NAME || parse_backup_name(name).is_none() {
+        return Err(BackupError::InvalidArgument);
+    }
+    let total = BACKUPS_DIR.len() + name.len() + SIGNATURE_SUFFIX.len();
+    if total > out.len() {
+        return Err(BackupError::CapacityExceeded);
+    }
+    out[..BACKUPS_DIR.len()].copy_from_slice(BACKUPS_DIR.as_bytes());
+    out[BACKUPS_DIR.len()..BACKUPS_DIR.len() + name.len()].copy_from_slice(name.as_bytes());
+    out[BACKUPS_DIR.len() + name.len()..total].copy_from_slice(SIGNATURE_SUFFIX.as_bytes());
+    Ok(total)
+}
+
+/// The signing identity: Ed25519 seed (secret), compressed public key, and
+/// the derived key id (FNV-1a64 over the public key - a stable handle for
+/// wire tails, not a security property).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SigningIdentity {
+    pub seed: [u8; 32],
+    pub public: [u8; 32],
+    pub key_id: u64,
+}
+
+pub fn key_id_for(public: &[u8; 32]) -> u64 {
+    fnv1a64(public)
+}
+
+/// Derive one Ed25519 identity from guest-local entropy substitutes: SHA-512
+/// over (source, monotonic tick, counter, store fingerprint). HONEST LIMITS
+/// mirror package-service's `derive_generated_identity`: no hardware RNG,
+/// tick may stand still - the seed is UNIQUE-ISH, not cryptographically
+/// random. Fine for a boot-local signing identity on a test OS; production
+/// keys would be enrolled from the host.
+pub fn derive_signing_identity(
+    source: &[u8],
+    tick: u64,
+    counter: u64,
+    store_fingerprint: u64,
+) -> SigningIdentity {
+    let mut block = [0u8; 64];
+    let source_len = source.len().min(24);
+    block[..source_len].copy_from_slice(&source[..source_len]);
+    block[24..32].copy_from_slice(&tick.to_le_bytes());
+    block[32..40].copy_from_slice(&counter.to_le_bytes());
+    block[40..48].copy_from_slice(&store_fingerprint.to_le_bytes());
+    let digest = serviceos_crypto::sha512::digest(&[&block]);
+    let mut seed = [0u8; 32];
+    seed.copy_from_slice(&digest[..32]);
+    identity_from_seed(seed)
+}
+
+pub fn identity_from_seed(seed: [u8; 32]) -> SigningIdentity {
+    let public = serviceos_crypto::ed25519::public_key(&seed);
+    SigningIdentity {
+        seed,
+        public,
+        key_id: key_id_for(&public),
+    }
+}
+
+// ---- hex helpers (fixed-capacity, lowercase) ----
+
+/// Emit lowercase hex pairs; returns bytes written.
+pub fn emit_hex(bytes: &[u8], out: &mut [u8]) -> usize {
+    let pairs = bytes.len().min(out.len() / 2);
+    for index in 0..pairs {
+        let byte = bytes[index];
+        out[index * 2] = hex_nibble(byte >> 4);
+        out[index * 2 + 1] = hex_nibble(byte & 0xf);
+    }
+    pairs * 2
+}
+
+fn hex_nibble(nibble: u8) -> u8 {
+    if nibble < 10 {
+        nibble + b'0'
+    } else {
+        nibble + b'a' - 10
+    }
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// Parse exactly `out.len()` hex digits into `out`.
+fn parse_hex_into(text: &[u8], out: &mut [u8]) -> Option<()> {
+    if text.len() != out.len() * 2 {
+        return None;
+    }
+    for index in 0..out.len() {
+        let high = hex_value(text[index * 2])?;
+        let low = hex_value(text[index * 2 + 1])?;
+        out[index] = (high << 4) | low;
+    }
+    Some(())
+}
+
+/// Parse 16 hex digits as one u64 (key ids).
+pub fn parse_hex_u64(text: &[u8]) -> Option<u64> {
+    if text.len() != 16 {
+        return None;
+    }
+    let mut word = 0u64;
+    for byte in text {
+        word = (word << 4) | u64::from(hex_value(*byte)?);
+    }
+    Some(word)
+}
+
+// ---- config / sidecar file formats (plain key=value lines) ----
+
+/// Serialize the identity as `state/backup/signing.cfg`. The seed is stored
+/// in the service's own namespace so exports keep signing across restarts;
+/// the file lives outside every backup scope, so restores cannot rewrite it.
+pub fn format_signing_config(
+    identity: &SigningIdentity,
+    out: &mut [u8],
+) -> Result<usize, BackupError> {
+    let mut hex = [0u8; 64];
+    let mut id_hex = [0u8; 16];
+    let _ = emit_hex(&identity.key_id.to_be_bytes(), &mut id_hex);
+    let mut cursor = 0usize;
+    let line = |text: &[u8], out: &mut [u8], cursor: &mut usize| -> Result<(), BackupError> {
+        if *cursor + text.len() > out.len() {
+            return Err(BackupError::CapacityExceeded);
+        }
+        out[*cursor..*cursor + text.len()].copy_from_slice(text);
+        *cursor += text.len();
+        Ok(())
+    };
+    line(b"alg=ed25519\n", out, &mut cursor)?;
+    line(b"key-id=", out, &mut cursor)?;
+    line(&id_hex, out, &mut cursor)?;
+    line(b"\npublic=", out, &mut cursor)?;
+    let public_len = emit_hex(&identity.public, &mut hex);
+    line(&hex[..public_len], out, &mut cursor)?;
+    line(b"\nseed=", out, &mut cursor)?;
+    let seed_len = emit_hex(&identity.seed, &mut hex);
+    line(&hex[..seed_len], out, &mut cursor)?;
+    line(b"\n", out, &mut cursor)?;
+    Ok(cursor)
+}
+
+/// One `key=value` line view within a text buffer.
+struct Line<'a> {
+    key: &'a [u8],
+    value: &'a [u8],
+}
+
+fn lines_of(text: &str) -> impl Iterator<Item = Line<'_>> {
+    text.lines().filter_map(|line| {
+        let split = line.find('=')?;
+        let bytes = line.as_bytes();
+        Some(Line {
+            key: &bytes[..split],
+            value: &bytes[split + 1..],
+        })
+    })
+}
+
+/// Parse `state/backup/signing.cfg` back into an identity. Self-validating:
+/// the stored public key must match the stored seed, and the key id must
+/// match the public key; anything else is treated as corruption (None), so
+/// the service regenerates rather than signs under a broken identity.
+pub fn parse_signing_config(text: &str) -> Option<SigningIdentity> {
+    let mut alg_ok = false;
+    let mut seed = [0u8; 32];
+    let mut seed_seen = false;
+    let mut public = [0u8; 32];
+    let mut public_seen = false;
+    let mut key_id = 0u64;
+    for line in lines_of(text) {
+        match line.key {
+            b"alg" => alg_ok = line.value == b"ed25519",
+            b"key-id" => key_id = parse_hex_u64(line.value)?,
+            b"public" => {
+                parse_hex_into(line.value, &mut public)?;
+                public_seen = true;
+            }
+            b"seed" => {
+                parse_hex_into(line.value, &mut seed)?;
+                seed_seen = true;
+            }
+            _ => {}
+        }
+    }
+    if !alg_ok || !seed_seen || !public_seen {
+        return None;
+    }
+    if serviceos_crypto::ed25519::public_key(&seed) != public || key_id != key_id_for(&public) {
+        return None;
+    }
+    Some(SigningIdentity {
+        seed,
+        public,
+        key_id,
+    })
+}
+
+/// Serialize a detached signature sidecar (`<name>.sig`).
+pub fn format_signature_file(
+    key_id: u64,
+    signature: &[u8; 64],
+    out: &mut [u8],
+) -> Result<usize, BackupError> {
+    let mut sig_hex = [0u8; 128];
+    let sig_len = emit_hex(signature, &mut sig_hex);
+    let mut id_hex = [0u8; 16];
+    let _ = emit_hex(&key_id.to_be_bytes(), &mut id_hex);
+    let mut cursor = 0usize;
+    let line = |text: &[u8], out: &mut [u8], cursor: &mut usize| -> Result<(), BackupError> {
+        if *cursor + text.len() > out.len() {
+            return Err(BackupError::CapacityExceeded);
+        }
+        out[*cursor..*cursor + text.len()].copy_from_slice(text);
+        *cursor += text.len();
+        Ok(())
+    };
+    line(b"alg=ed25519\n", out, &mut cursor)?;
+    line(b"key-id=", out, &mut cursor)?;
+    line(&id_hex, out, &mut cursor)?;
+    line(b"\nsig=", out, &mut cursor)?;
+    line(&sig_hex[..sig_len], out, &mut cursor)?;
+    line(b"\n", out, &mut cursor)?;
+    Ok(cursor)
+}
+
+/// A parsed signature sidecar.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SignatureRecord {
+    pub key_id: u64,
+    pub sig: [u8; 64],
+}
+
+/// Parse a `<name>.sig` sidecar. Anything malformed is None (caller maps
+/// that to BadSignature - an unreadable signature must not restore).
+pub fn parse_signature_file(text: &str) -> Option<SignatureRecord> {
+    let mut alg_ok = false;
+    let mut key_id = 0u64;
+    let mut key_id_seen = false;
+    let mut sig = [0u8; 64];
+    let mut sig_seen = false;
+    for line in lines_of(text) {
+        match line.key {
+            b"alg" => alg_ok = line.value == b"ed25519",
+            b"key-id" => {
+                key_id = parse_hex_u64(line.value)?;
+                key_id_seen = true;
+            }
+            b"sig" => {
+                parse_hex_into(line.value, &mut sig)?;
+                sig_seen = true;
+            }
+            _ => {}
+        }
+    }
+    if !alg_ok || !key_id_seen || !sig_seen {
+        return None;
+    }
+    Some(SignatureRecord { key_id, sig })
+}
+
+/// Verify a snapshot signature over the exact blob bytes against `public`.
+pub fn verify_blob_signature(
+    public: &[u8; 32],
+    blob: &[u8],
+    record: &SignatureRecord,
+    expected_key_id: u64,
+) -> Result<(), BackupError> {
+    if record.key_id != expected_key_id {
+        return Err(BackupError::BadSignature);
+    }
+    if !serviceos_crypto::ed25519::verify(public, blob, &record.sig) {
+        return Err(BackupError::BadSignature);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const SAMPLE_CONFIG: &[u8] = b"key=value\nother=1\n";
+
     const SAMPLE_ACCOUNTS: &[u8] = b"account=1,admin,Admin,0001,0002,0000_00ff\n";
     const SAMPLE_PACKAGES: &[u8] = b"pkg=demo,1.0\n";
 
@@ -568,6 +906,180 @@ mod tests {
             writer.push_record(scope::CONFIG, "extra", b"x"),
             Err(BackupError::CapacityExceeded)
         );
+    }
+    fn test_identity(byte: u8) -> SigningIdentity {
+        let mut seed = [0u8; 32];
+        seed[..8].copy_from_slice(&[byte; 8]);
+        identity_from_seed(seed)
+    }
+
+    #[test]
+    fn error_codes_append_additively() {
+        assert_eq!(BackupError::StorageFailure.to_code(), 8);
+        assert_eq!(BackupError::Unsigned.to_code(), 9);
+        assert_eq!(BackupError::BadSignature.to_code(), 10);
+    }
+
+    #[test]
+    fn signature_names_are_sidecars_never_snapshots() {
+        assert!(is_signature_name("backup-123.sig"));
+        assert!(!is_signature_name("backup-123"));
+        // Sidecars never parse as snapshot names: delete/restore stay
+        // name-confined to real snapshots.
+        assert_eq!(parse_backup_name("backup-123.sig"), None);
+        let mut path = [0u8; 64];
+        let used = signature_path("backup-42", &mut path).unwrap();
+        assert_eq!(&path[..used], b"backups/backup-42.sig");
+        assert_eq!(
+            signature_path("", &mut path),
+            Err(BackupError::InvalidArgument)
+        );
+        assert_eq!(
+            signature_path("backups/backup-1", &mut path),
+            Err(BackupError::InvalidArgument)
+        );
+    }
+
+    #[test]
+    fn signing_config_roundtrip_and_self_validation() {
+        let identity = test_identity(9);
+        let mut buffer = [0u8; MAX_SIGNING_TEXT_BYTES];
+        let used = format_signing_config(&identity, &mut buffer).unwrap();
+        let text = core::str::from_utf8(&buffer[..used]).unwrap();
+        assert_eq!(parse_signing_config(text), Some(identity));
+
+        // Corrupted public key must not parse (seed/public mismatch).
+        let mut damaged = text.to_string();
+        let position = damaged.find("public=").unwrap() + 7;
+        damaged.replace_range(position..position + 2, "ff");
+        assert_eq!(parse_signing_config(&damaged), None);
+
+        // Key id inconsistent with the public key must not parse either.
+        let mut swapped = text.to_string();
+        let position = swapped.find("key-id=").unwrap() + 7;
+        swapped.replace_range(position..position + 16, "0123456789abcdef");
+        assert_eq!(parse_signing_config(&swapped), None);
+
+        // Truncated buffer is a capacity error, not a panic.
+        let mut tiny = [0u8; 16];
+        assert_eq!(
+            format_signing_config(&identity, &mut tiny),
+            Err(BackupError::CapacityExceeded)
+        );
+    }
+
+    #[test]
+    fn derive_signing_identity_is_deterministic_per_input() {
+        let a = derive_signing_identity(b"backup-service-signing", 1234, 0, 77);
+        let b = derive_signing_identity(b"backup-service-signing", 1234, 0, 77);
+        assert_eq!(a, b);
+        let c = derive_signing_identity(b"backup-service-signing", 1235, 0, 77);
+        assert_ne!(a.seed, c.seed);
+        assert_ne!(a.public, c.public);
+        assert_ne!(a.key_id, c.key_id);
+        // Key id is the FNV-1a64 of the public key, stable across readers.
+        assert_eq!(a.key_id, key_id_for(&a.public));
+    }
+
+    #[test]
+    fn signature_file_roundtrip_and_verification() {
+        let identity = test_identity(3);
+        let mut writer = BlobWriter::new();
+        writer
+            .push_record(scope::CONFIG, "x/y.cfg", b"v=1")
+            .unwrap();
+        let blob_len = writer.finish();
+        let (blob, _) = writer.into_parts();
+
+        let signature = serviceos_crypto::ed25519::sign(&identity.seed, &blob[..blob_len]);
+        let mut buffer = [0u8; MAX_SIGNING_TEXT_BYTES];
+        let used = format_signature_file(identity.key_id, &signature, &mut buffer).unwrap();
+        let text = core::str::from_utf8(&buffer[..used]).unwrap();
+        let record = parse_signature_file(text).expect("sidecar parses");
+        assert_eq!(record.key_id, identity.key_id);
+        assert_eq!(
+            verify_blob_signature(
+                &identity.public,
+                &blob[..blob_len],
+                &record,
+                identity.key_id
+            ),
+            Ok(())
+        );
+
+        // Tampered blob byte fails verification over the exact bytes (the
+        // FNV checksum is the first gate; the signature is the second).
+        let mut tampered = blob;
+        tampered[HEADER_LEN] ^= 0x01;
+        assert_eq!(
+            verify_blob_signature(
+                &identity.public,
+                &tampered[..blob_len],
+                &record,
+                identity.key_id
+            ),
+            Err(BackupError::BadSignature)
+        );
+
+        // Tampered signature text fails.
+        let mut damaged_sig = text.to_string();
+        let position = damaged_sig.find("sig=").unwrap() + 4;
+        damaged_sig.replace_range(position..position + 2, "00");
+        let broken = parse_signature_file(&damaged_sig).unwrap();
+        assert_eq!(
+            verify_blob_signature(
+                &identity.public,
+                &blob[..blob_len],
+                &broken,
+                identity.key_id
+            ),
+            Err(BackupError::BadSignature)
+        );
+
+        // A different identity's key never verifies.
+        let other = test_identity(4);
+        assert_eq!(
+            verify_blob_signature(&other.public, &blob[..blob_len], &record, other.key_id),
+            Err(BackupError::BadSignature)
+        );
+
+        // Key-id mismatch inside the record is refused before crypto.
+        let mut renamed = record;
+        renamed.key_id = 0xdead_beef;
+        assert_eq!(
+            verify_blob_signature(
+                &identity.public,
+                &blob[..blob_len],
+                &renamed,
+                identity.key_id
+            ),
+            Err(BackupError::BadSignature)
+        );
+
+        // Malformed sidecar text is None.
+        assert_eq!(parse_signature_file("no equals sign\n"), None);
+        assert_eq!(parse_signature_file("alg=ed25519\n"), None);
+        assert_eq!(
+            parse_signature_file("alg=sha1\nkey-id=0000000000000000\nsig=00\n"),
+            None
+        );
+    }
+
+    #[test]
+    fn hex_helpers_roundtrip() {
+        let mut out = [0u8; 64];
+        let used = emit_hex(&[0xde, 0xad, 0xbe, 0xef], &mut out);
+        assert_eq!(&out[..used], b"deadbeef");
+        let mut bytes = [0u8; 4];
+        assert_eq!(parse_hex_into(b"deadbeef", &mut bytes), Some(()));
+        assert_eq!(bytes, [0xde, 0xad, 0xbe, 0xef]);
+        assert_eq!(parse_hex_into(b"deadbee", &mut bytes), None);
+        assert_eq!(parse_hex_into(b"deadbeeg", &mut bytes), None);
+        assert_eq!(
+            parse_hex_u64(b"0123456789abcdef"),
+            Some(0x0123_4567_89ab_cdef)
+        );
+        assert_eq!(parse_hex_u64(b"0123"), None);
     }
 }
 

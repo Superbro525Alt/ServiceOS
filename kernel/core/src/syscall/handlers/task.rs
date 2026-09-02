@@ -218,18 +218,31 @@ pub(crate) fn handle_task_spawn_image(context: &SyscallContext) -> SyscallReturn
     // Additive ABI-flag slot: 0 = native numbering (every legacy caller
     // zeroes this register through the runtime wrappers), the shared-ABI
     // `spawn_abi::LINUX_SYSCALL` word opts the task into Linux x86_64
-    // syscall translation. Unknown words are rejected loudly.
-    let syscall_abi = match crate::syscall::GuestSyscallAbi::from_spawn_flags(context.arguments[3])
-    {
-        Some(abi) => abi,
+    // syscall translation, and the extended-attributes form (bit 63 set)
+    // additionally carries the kernel-visible isolation class and
+    // owner-environment id. Unknown words are rejected loudly. The next
+    // argument slot is reserved and must stay zero.
+    let attributes = match crate::syscall::SpawnAttributes::from_flag_word(context.arguments[3]) {
+        Some(attributes) => attributes,
         None => return SyscallReturn::error(SyscallError::InvalidArgument),
     };
+    if context.arguments[4] != 0 {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    }
 
-    let spawned = match user::spawn_image_bytes_with_abi(
+    let spawned = match user::spawn_image_bytes_with_attributes(
         &image_bytes,
         TaskRole::UserService,
         bootstrap_transfer,
-        syscall_abi,
+        user::SpawnImageAttributes {
+            syscall_abi: attributes.abi,
+            isolation: if attributes.isolation_guest {
+                crate::task::TaskIsolationClass::Guest
+            } else {
+                crate::task::TaskIsolationClass::Unrestricted
+            },
+            owner_env: attributes.owner_env.map(u32::from),
+        },
     ) {
         Ok(spawned) => spawned,
         Err(error) => return SyscallReturn::error(map_spawn_error(error)),

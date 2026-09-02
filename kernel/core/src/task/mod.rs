@@ -16,9 +16,9 @@ pub use system::{
 };
 pub use types::{
     AddressSpaceId, ExecutionState, ProcessId, ScheduleDecision, ScheduleTrigger, SchedulerError,
-    SchedulerSnapshot, SchedulingContext, TaskCreationError, TaskDescriptor, TaskId, TaskManager,
-    TaskRole, TaskStateView, TaskSystemSnapshot, ThreadDescriptor, ThreadId, ThreadMode,
-    ThreadStateView, ThreadWakeReason, WaitTarget,
+    SchedulerSnapshot, SchedulingContext, TaskCreationError, TaskDescriptor, TaskId,
+    TaskIsolationClass, TaskManager, TaskRole, TaskStateView, TaskSystemSnapshot, ThreadDescriptor,
+    ThreadId, ThreadMode, ThreadStateView, ThreadWakeReason, WaitTarget,
 };
 
 #[cfg(test)]

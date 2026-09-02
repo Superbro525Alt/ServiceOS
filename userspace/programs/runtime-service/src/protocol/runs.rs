@@ -421,24 +421,17 @@ fn handle_guest_exec_launch(
                 | rt::rights::TRANSFER,
         },
     ];
-    let task_handle = match env.linux_syscall {
-        // The environment declared `linux-syscall = true`: the guest's
-        // syscalls enter the kernel gate through Linux x86_64 number
-        // translation. Native envs keep the byte-identical legacy message.
-        true => rt::manager_launch_image_with_payload_abi(
-            bootstrap,
-            image_handle,
-            &[EXEC_GUEST_WORKLOAD as u64, env_id as u64],
-            &startup_handles,
-            serviceos_userspace_runtime::linux_abi::spawn_abi::LINUX_SYSCALL,
-        ),
-        false => rt::manager_launch_image_with_payload(
-            bootstrap,
-            image_handle,
-            &[EXEC_GUEST_WORKLOAD as u64, env_id as u64],
-            &startup_handles,
-        ),
-    };
+    // Every guest-image launch carries the kernel-visible GUEST isolation
+    // class plus the owning environment id in the additive extended
+    // spawn-attributes word; the declared syscall-ABI bit rides alongside.
+    // Non-guest launch paths never emit this word and stay byte-identical.
+    let task_handle = rt::manager_launch_image_with_payload_abi(
+        bootstrap,
+        image_handle,
+        &[EXEC_GUEST_WORKLOAD as u64, env_id as u64],
+        &startup_handles,
+        guest_exec_spawn_attrs(env.linux_syscall, env_id),
+    );
     let _ = rt::handle_close(image_handle);
     let _ = rt::handle_close(pair.second);
 
@@ -535,4 +528,50 @@ fn stage_image_object(storage_handle: rt::Handle, path: &str) -> rt::Result<rt::
     }
     let _ = rt::storage_blob_close(blob_handle);
     Ok(staging)
+}
+
+/// The guest-exec launch isolation word: every guest-image launch carries
+/// the kernel-visible GUEST isolation class plus the owning environment id,
+/// with the declared syscall-ABI bit packed alongside. Unflagged non-guest
+/// launch paths never touch this encoding and stay byte-identical.
+pub(crate) fn guest_exec_spawn_attrs(linux_syscall: bool, env_id: usize) -> u64 {
+    rt::task_spawn_attrs::encode(rt::task_spawn_attrs::SpawnAttrs {
+        linux_abi: linux_syscall,
+        isolation_guest: true,
+        owner_env: Some(u16::try_from(env_id).unwrap_or(u16::MAX)),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::guest_exec_spawn_attrs;
+    use rt::task_spawn_attrs;
+    use serviceos_userspace_runtime as rt;
+
+    #[test]
+    fn guest_exec_attrs_always_carry_guest_class_and_env() {
+        let word = guest_exec_spawn_attrs(false, 2);
+        let attrs = task_spawn_attrs::decode_extended(word).expect("guest attrs word decodes");
+        assert!(attrs.isolation_guest);
+        assert_eq!(attrs.owner_env, Some(2));
+        assert!(!attrs.linux_abi);
+
+        let word = guest_exec_spawn_attrs(true, 5);
+        let attrs = task_spawn_attrs::decode_extended(word).expect("guest attrs word decodes");
+        assert!(attrs.isolation_guest);
+        assert_eq!(attrs.owner_env, Some(5));
+        assert!(attrs.linux_abi);
+    }
+
+    #[test]
+    fn guest_exec_attrs_are_never_the_legacy_words() {
+        // The combined word must never collide with the legacy ABI magic
+        // words: extended encoding sets bit 63, legacy magics do not.
+        assert!(task_spawn_attrs::is_legacy(
+            rt::linux_abi::spawn_abi::LINUX_SYSCALL
+        ));
+        assert!(!task_spawn_attrs::is_legacy(guest_exec_spawn_attrs(
+            false, 0
+        )));
+    }
 }

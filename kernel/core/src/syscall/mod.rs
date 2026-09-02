@@ -6,8 +6,8 @@ mod resolve;
 mod types;
 
 pub use access::{user_mut, user_ref, user_slice, user_slice_mut};
-pub use dispatch::{DispatchTable, dispatcher, initialize};
-pub use guest::{GuestSyscallAbi, dispatch_guest};
+pub use dispatch::{DispatchTable, dispatcher, guest_class_denies, initialize};
+pub use guest::{GuestSyscallAbi, SpawnAttributes, dispatch_guest};
 pub use types::{
     MAX_SYSCALL_SLOTS, SYSCALL_ABI_VERSION, SyscallAction, SyscallContext, SyscallDispatcher,
     SyscallError, SyscallKind, SyscallNumber, SyscallReturn, SyscallSnapshot,
@@ -90,5 +90,98 @@ mod tests {
             &empty_context(),
         );
         assert_eq!(result, SyscallReturn::success(SYSCALL_ABI_VERSION));
+    }
+
+    #[test]
+    fn guest_isolation_class_denies_exactly_the_dangerous_set() {
+        use crate::task::TaskIsolationClass;
+
+        let denied = [
+            SyscallKind::ServiceSpawn,
+            SyscallKind::TaskSpawnImage,
+            SyscallKind::BlockDeviceRead,
+            SyscallKind::BlockDeviceWrite,
+            SyscallKind::PacketInterfaceTransmit,
+            SyscallKind::PacketInterfaceRingSetup,
+            SyscallKind::PacketInterfaceTxRingSetup,
+            SyscallKind::PacketInterfaceTxRingFlush,
+        ];
+        for kind in denied {
+            let number = SyscallNumber(kind as u32);
+            assert!(
+                guest_class_denies(TaskIsolationClass::Guest, number),
+                "guest class must deny {kind:?}"
+            );
+            assert!(
+                !guest_class_denies(TaskIsolationClass::Unrestricted, number),
+                "unrestricted class must allow {kind:?}"
+            );
+        }
+
+        // Capability-mediated or side-effect-free surfaces stay reachable
+        // for guest tasks: the boundary there is the capability space.
+        let allowed = [
+            SyscallKind::AbiVersion,
+            SyscallKind::MonotonicNow,
+            SyscallKind::ThreadExit,
+            SyscallKind::YieldCurrent,
+            SyscallKind::DebugLogWrite,
+            SyscallKind::ChannelCreate,
+            SyscallKind::ChannelSend,
+            SyscallKind::ChannelReceive,
+            SyscallKind::HandleDuplicate,
+            SyscallKind::HandleClose,
+            SyscallKind::TaskStatus,
+            SyscallKind::MemoryRead,
+            SyscallKind::MemoryCreate,
+            SyscallKind::MemoryWrite,
+            SyscallKind::MemoryMap,
+            SyscallKind::MemoryMapRange,
+            SyscallKind::MemoryUnmap,
+            SyscallKind::MemoryProtect,
+            SyscallKind::MemoryInfo,
+            SyscallKind::MemoryQuery,
+            SyscallKind::EventCreate,
+            SyscallKind::EventSignal,
+            SyscallKind::EventReset,
+            SyscallKind::ObjectInfo,
+            SyscallKind::ObjectWait,
+            SyscallKind::PipeCreate,
+            SyscallKind::PipeRead,
+            SyscallKind::PipeWrite,
+            SyscallKind::FaultHandlerRegister,
+            SyscallKind::FaultHandlerUnregister,
+            SyscallKind::KernelEventQueryInfo,
+            SyscallKind::RngRequest,
+            SyscallKind::DebugConsoleRead,
+            SyscallKind::DebugConsoleWrite,
+        ];
+        for kind in allowed {
+            assert!(
+                !guest_class_denies(TaskIsolationClass::Guest, SyscallNumber(kind as u32)),
+                "guest class must allow {kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn guest_isolation_gate_keeps_block_and_packet_info_allowed() {
+        use crate::task::TaskIsolationClass;
+
+        // Read-only info/receive probes stay available: they carry no
+        // authority beyond what the capability space already gates.
+        for kind in [
+            SyscallKind::BlockDeviceInfo,
+            SyscallKind::PacketInterfaceInfo,
+            SyscallKind::PacketInterfaceReceive,
+            SyscallKind::AudioEndpointInfo,
+            SyscallKind::DisplayOutputInfo,
+            SyscallKind::InputSourceInfo,
+        ] {
+            assert!(!guest_class_denies(
+                TaskIsolationClass::Guest,
+                SyscallNumber(kind as u32)
+            ));
+        }
     }
 }

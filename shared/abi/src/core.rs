@@ -276,3 +276,156 @@ pub struct KernelEventRecord {
     pub detail3: u64,
     pub detail4: u64,
 }
+
+/// Additive `TaskSpawnImage` extended-attributes word: isolation class and
+/// owner-environment id packed into the additive flag slot that already
+/// carries the guest syscall-ABI magic. Legacy words (`spawn_abi::NATIVE`,
+/// `spawn_abi::LINUX_SYSCALL`) never set bit 63, so old senders and old
+/// kernels are unaffected; unknown/reserved bits are rejected loudly.
+pub mod task_spawn_attrs {
+    /// Bit marking a word as an extended spawn-attributes payload.
+    pub const EXTENDED_FLAG: u64 = 1 << 63;
+    /// Linux syscall-ABI bit inside an extended word (0 = native).
+    pub const LINUX_ABI_FLAG: u64 = 1 << 0;
+    /// Isolation class field: bits 8..16.
+    pub const CLASS_SHIFT: u32 = 8;
+    pub const CLASS_MASK: u64 = 0xff << CLASS_SHIFT;
+    /// Isolation classes. `NONE` keeps the pre-isolation behavior exactly.
+    pub const CLASS_NONE: u64 = 0;
+    /// Guest-workload class: the kernel denies a defined dangerous-syscall
+    /// set (spawn, raw block, raw NIC mutation) for tasks in this class.
+    pub const CLASS_GUEST: u64 = 1;
+    /// Owner-environment presence flag and id: bit 16, bits 24..40.
+    pub const OWNER_ENV_FLAG: u64 = 1 << 16;
+    pub const OWNER_ENV_SHIFT: u32 = 24;
+    pub const OWNER_ENV_MASK: u64 = 0xffff << OWNER_ENV_SHIFT;
+    /// Every bit the decoder knows about; anything else is rejected.
+    pub const VALID_MASK: u64 =
+        EXTENDED_FLAG | LINUX_ABI_FLAG | CLASS_MASK | OWNER_ENV_FLAG | OWNER_ENV_MASK;
+
+    /// A decoded extended spawn-attributes payload.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub struct SpawnAttrs {
+        pub linux_abi: bool,
+        pub isolation_guest: bool,
+        pub owner_env: Option<u16>,
+    }
+
+    /// Pack attributes into the additive flag word. Always sets the
+    /// extended marker; the zero-attribute encoding is the guest-exec
+    /// native default.
+    pub const fn encode(attrs: SpawnAttrs) -> u64 {
+        let mut word = EXTENDED_FLAG;
+        if attrs.linux_abi {
+            word |= LINUX_ABI_FLAG;
+        }
+        if attrs.isolation_guest {
+            word |= CLASS_GUEST << CLASS_SHIFT;
+        }
+        if let Some(env_id) = attrs.owner_env {
+            word |= OWNER_ENV_FLAG | ((env_id as u64) << OWNER_ENV_SHIFT);
+        }
+        word
+    }
+
+    /// Decode an additive flag word. `None` for legacy words (they must be
+    /// decoded through the ABI-magic path) and for any word carrying bits
+    /// outside `VALID_MASK`.
+    pub const fn decode_extended(word: u64) -> Option<SpawnAttrs> {
+        if word & EXTENDED_FLAG == 0 {
+            return None;
+        }
+        if word & !VALID_MASK != 0 {
+            return None;
+        }
+        let owner_env = if word & OWNER_ENV_FLAG != 0 {
+            Some(((word & OWNER_ENV_MASK) >> OWNER_ENV_SHIFT) as u16)
+        } else {
+            None
+        };
+        Some(SpawnAttrs {
+            linux_abi: word & LINUX_ABI_FLAG != 0,
+            isolation_guest: (word & CLASS_MASK) >> CLASS_SHIFT == CLASS_GUEST,
+            owner_env,
+        })
+    }
+
+    /// True when `word` is a legacy ABI-magic flag word (never extended).
+    pub const fn is_legacy(word: u64) -> bool {
+        word & EXTENDED_FLAG == 0
+    }
+}
+
+#[cfg(test)]
+mod task_spawn_attrs_tests {
+    use super::task_spawn_attrs::{self, CLASS_GUEST, EXTENDED_FLAG, OWNER_ENV_FLAG, SpawnAttrs};
+
+    const LEGACY_NATIVE: u64 = 0;
+    const LEGACY_LINUX: u64 = 0x534f_534c_494e_5558;
+
+    #[test]
+    fn legacy_words_are_never_extended() {
+        assert!(task_spawn_attrs::is_legacy(LEGACY_NATIVE));
+        assert!(task_spawn_attrs::is_legacy(LEGACY_LINUX));
+        assert_eq!(task_spawn_attrs::decode_extended(LEGACY_NATIVE), None);
+        assert_eq!(task_spawn_attrs::decode_extended(LEGACY_LINUX), None);
+    }
+
+    #[test]
+    fn extended_roundtrip_carries_class_and_owner_env() {
+        let attrs = SpawnAttrs {
+            linux_abi: true,
+            isolation_guest: true,
+            owner_env: Some(3),
+        };
+        let word = task_spawn_attrs::encode(attrs);
+        assert!(!task_spawn_attrs::is_legacy(word));
+        assert_eq!(task_spawn_attrs::decode_extended(word), Some(attrs));
+    }
+
+    #[test]
+    fn native_guest_without_owner_env_encodes_minimally() {
+        let attrs = SpawnAttrs {
+            linux_abi: false,
+            isolation_guest: true,
+            owner_env: None,
+        };
+        let word = task_spawn_attrs::encode(attrs);
+        assert_eq!(word & EXTENDED_FLAG, EXTENDED_FLAG);
+        assert_eq!(word & OWNER_ENV_FLAG, 0);
+        assert_eq!(task_spawn_attrs::decode_extended(word), Some(attrs));
+    }
+
+    #[test]
+    fn class_none_is_explicit_and_decodes() {
+        let attrs = SpawnAttrs {
+            linux_abi: false,
+            isolation_guest: false,
+            owner_env: Some(1),
+        };
+        let word = task_spawn_attrs::encode(attrs);
+        assert_eq!(word & (CLASS_GUEST << 8), 0);
+        assert_eq!(task_spawn_attrs::decode_extended(word), Some(attrs));
+    }
+
+    #[test]
+    fn unknown_bits_are_rejected_loudly() {
+        let poisoned = task_spawn_attrs::encode(SpawnAttrs {
+            linux_abi: false,
+            isolation_guest: true,
+            owner_env: None,
+        }) | (1 << 40);
+        assert_eq!(task_spawn_attrs::decode_extended(poisoned), None);
+    }
+
+    #[test]
+    fn owner_env_bounds_are_sixteen_bit() {
+        let attrs = SpawnAttrs {
+            linux_abi: false,
+            isolation_guest: true,
+            owner_env: Some(u16::MAX),
+        };
+        let word = task_spawn_attrs::encode(attrs);
+        assert_eq!(task_spawn_attrs::decode_extended(word), Some(attrs));
+    }
+}

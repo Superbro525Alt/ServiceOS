@@ -10,8 +10,8 @@ use crate::{
 
 use super::{
     AddressSpaceId, ExecutionState, KernelContext, SchedulingContext, TaskDescriptor, TaskId,
-    TaskRole, TaskStateView, ThreadDescriptor, ThreadId, ThreadMode, ThreadStateView,
-    ThreadWakeReason, WaitTarget,
+    TaskIsolationClass, TaskRole, TaskStateView, ThreadDescriptor, ThreadId, ThreadMode,
+    ThreadStateView, ThreadWakeReason, WaitTarget,
 };
 
 pub struct TaskObject {
@@ -23,6 +23,10 @@ pub struct TaskObject {
 struct TaskState {
     role: TaskRole,
     address_space: Option<AddressSpaceId>,
+    /// Kernel-enforced isolation class, fixed at spawn (read-only after).
+    isolation: TaskIsolationClass,
+    /// Launcher-declared owner environment (read-only after spawn).
+    owner_env: Option<u32>,
     threads: Vec<ObjectId>,
     exit_status: TaskExitStatus,
     /// Whether the OOM policy may select this task as a reclaim victim.
@@ -40,6 +44,8 @@ impl TaskObject {
             state: Mutex::new(TaskState {
                 role: descriptor.role,
                 address_space: descriptor.address_space,
+                isolation: descriptor.isolation,
+                owner_env: descriptor.owner_env,
                 threads: Vec::new(),
                 exit_status: TaskExitStatus::Running,
                 reclaimable: !matches!(descriptor.role, TaskRole::BootstrapRoot),
@@ -58,6 +64,14 @@ impl TaskObject {
 
     pub fn role(&self) -> TaskRole {
         self.state.lock().role
+    }
+
+    pub fn isolation(&self) -> TaskIsolationClass {
+        self.state.lock().isolation
+    }
+
+    pub fn owner_env(&self) -> Option<u32> {
+        self.state.lock().owner_env
     }
 
     pub fn address_space(&self) -> Option<AddressSpaceId> {

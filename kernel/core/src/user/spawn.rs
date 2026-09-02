@@ -13,6 +13,26 @@ use super::{
     runtime::{arch_hooks, image_resolver, initialize_runtime, runtime},
 };
 
+/// Spawn attributes for an image launch: syscall ABI plus the additive
+/// isolation class/owner-env record. The default is byte-identical to the
+/// legacy spawn path.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SpawnImageAttributes {
+    pub syscall_abi: GuestSyscallAbi,
+    pub isolation: task::TaskIsolationClass,
+    pub owner_env: Option<u32>,
+}
+
+impl Default for SpawnImageAttributes {
+    fn default() -> Self {
+        Self {
+            syscall_abi: GuestSyscallAbi::Native,
+            isolation: task::TaskIsolationClass::Unrestricted,
+            owner_env: None,
+        }
+    }
+}
+
 pub fn spawn_builtin_task(
     image_id: u32,
     role: TaskRole,
@@ -28,7 +48,12 @@ pub fn spawn_image_bytes(
     role: TaskRole,
     bootstrap_transfer: Option<crate::capability::PreparedTransfer>,
 ) -> Result<SpawnedUserTask, SpawnError> {
-    spawn_image_bytes_with_abi(image, role, bootstrap_transfer, GuestSyscallAbi::Native)
+    spawn_image_bytes_with_attributes(
+        image,
+        role,
+        bootstrap_transfer,
+        SpawnImageAttributes::default(),
+    )
 }
 
 /// Spawn a user image whose syscalls enter through `abi`. Native numbering
@@ -39,6 +64,26 @@ pub fn spawn_image_bytes_with_abi(
     bootstrap_transfer: Option<crate::capability::PreparedTransfer>,
     syscall_abi: GuestSyscallAbi,
 ) -> Result<SpawnedUserTask, SpawnError> {
+    spawn_image_bytes_with_attributes(
+        image,
+        role,
+        bootstrap_transfer,
+        SpawnImageAttributes {
+            syscall_abi,
+            ..SpawnImageAttributes::default()
+        },
+    )
+}
+
+/// Spawn with full additive attributes: the syscall ABI selects the number
+/// translation mode, the isolation class arms the kernel syscall gate, and
+/// the owner-env id is recorded read-only on the task.
+pub fn spawn_image_bytes_with_attributes(
+    image: &[u8],
+    role: TaskRole,
+    bootstrap_transfer: Option<crate::capability::PreparedTransfer>,
+    attributes: SpawnImageAttributes,
+) -> Result<SpawnedUserTask, SpawnError> {
     let objects = crate::object::model().ok_or(SpawnError::ObjectsUnavailable)?;
     let tasks = task::system().ok_or(SpawnError::TasksUnavailable)?;
     let _memory = memory::manager().ok_or(SpawnError::MemoryUnavailable)?;
@@ -47,13 +92,15 @@ pub fn spawn_image_bytes_with_abi(
     let address_space_id = runtime.allocate_address_space_id();
     let prepared = (hooks.prepare_address_space)(image)?;
     runtime.register_address_space(address_space_id, prepared.page_table_root);
-    runtime.set_syscall_abi(address_space_id, syscall_abi);
+    runtime.set_syscall_abi(address_space_id, attributes.syscall_abi);
     (hooks.register_address_space)(address_space_id, prepared.page_table_root);
     crate::user::record_loaded_image(address_space_id, prepared.image);
 
     let task = objects.registry().create_task(TaskDescriptor {
         address_space: Some(address_space_id),
         role,
+        isolation: attributes.isolation,
+        owner_env: attributes.owner_env,
     });
     if let Some(transfer) = bootstrap_transfer {
         let _ = task

@@ -12,7 +12,8 @@ use crate::{
     ipc::ChannelEndpointObject,
     network::{self, PacketBackend, PacketInterfaceObject},
     task::{
-        TaskDescriptor, TaskId, TaskObject, TaskRole, ThreadDescriptor, ThreadId, ThreadObject,
+        TaskDescriptor, TaskId, TaskIsolationClass, TaskObject, TaskRole, ThreadDescriptor,
+        ThreadId, ThreadObject,
     },
     time::MonotonicInstant,
 };
@@ -58,6 +59,8 @@ impl ObjectRegistry {
         self.create_task(TaskDescriptor {
             address_space: None,
             role: TaskRole::BootstrapRoot,
+            isolation: TaskIsolationClass::Unrestricted,
+            owner_env: None,
         })
     }
 

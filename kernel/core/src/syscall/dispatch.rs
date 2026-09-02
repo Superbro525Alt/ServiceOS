@@ -1,6 +1,9 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
+use serviceos_abi::SyscallNumber as AbiSyscallNumber;
 use spin::Once;
+
+use crate::task::TaskIsolationClass;
 
 use super::{
     MAX_SYSCALL_SLOTS, SyscallContext, SyscallDispatcher, SyscallError, SyscallNumber,
@@ -25,6 +28,47 @@ use super::{
 };
 
 type Handler = fn(&SyscallContext) -> SyscallReturn;
+
+/// The guest-dangerous syscall set: kernel calls that create new authority
+/// (task/system-service spawn) or drive raw device hardware (block storage,
+/// packet-interface transmit rings). Guest-class tasks are denied these at
+/// the dispatcher; everything else stays capability-mediated as before.
+const GUEST_DENIED_SYSCALLS: [u32; 8] = [
+    AbiSyscallNumber::ServiceSpawn as u32,
+    AbiSyscallNumber::TaskSpawnImage as u32,
+    AbiSyscallNumber::BlockDeviceRead as u32,
+    AbiSyscallNumber::BlockDeviceWrite as u32,
+    AbiSyscallNumber::PacketInterfaceTransmit as u32,
+    AbiSyscallNumber::PacketInterfaceRingSetup as u32,
+    AbiSyscallNumber::PacketInterfaceTxRingSetup as u32,
+    AbiSyscallNumber::PacketInterfaceTxRingFlush as u32,
+];
+
+pub const fn guest_class_denies(class: TaskIsolationClass, number: SyscallNumber) -> bool {
+    if !matches!(class, TaskIsolationClass::Guest) {
+        return false;
+    }
+    let mut index = 0;
+    while index < GUEST_DENIED_SYSCALLS.len() {
+        if GUEST_DENIED_SYSCALLS[index] == number.0 {
+            return true;
+        }
+        index += 1;
+    }
+    false
+}
+
+/// Isolation class of the currently running task, if any. Kernel-internal
+/// dispatch paths (no current user task) are always unrestricted.
+fn current_task_isolation_class() -> TaskIsolationClass {
+    let Some(object) = crate::user::current_task() else {
+        return TaskIsolationClass::Unrestricted;
+    };
+    let Some(task) = object.task() else {
+        return TaskIsolationClass::Unrestricted;
+    };
+    task.isolation()
+}
 
 pub struct DispatchTable {
     entries: [Option<Handler>; MAX_SYSCALL_SLOTS],
@@ -52,6 +96,11 @@ impl DispatchTable {
 impl SyscallDispatcher for DispatchTable {
     fn dispatch(&self, number: SyscallNumber, context: &SyscallContext) -> SyscallReturn {
         self.dispatched.fetch_add(1, Ordering::Relaxed);
+
+        if guest_class_denies(current_task_isolation_class(), number) {
+            self.rejected.fetch_add(1, Ordering::Relaxed);
+            return SyscallReturn::error(SyscallError::PermissionDenied);
+        }
 
         let handler = self
             .entries

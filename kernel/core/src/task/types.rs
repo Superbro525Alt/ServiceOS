@@ -23,6 +23,18 @@ pub enum TaskRole {
     UserService,
 }
 
+/// Kernel-visible task isolation class, fixed at spawn and read-only
+/// afterwards. `Unrestricted` is the pre-isolation behavior for every
+/// legacy spawn; `Guest` marks a guest workload and arms the syscall
+/// dispatcher's dangerous-call gate. Namespace-style boundary only: no
+/// address-space isolation, no CPU/memory accounting beyond OOM charging.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TaskIsolationClass {
+    #[default]
+    Unrestricted,
+    Guest,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ThreadMode {
     Kernel,
@@ -92,6 +104,11 @@ impl SchedulingContext {
 pub struct TaskDescriptor {
     pub address_space: Option<AddressSpaceId>,
     pub role: TaskRole,
+    /// Kernel-enforced isolation class (read-only after spawn).
+    pub isolation: TaskIsolationClass,
+    /// Owner-environment id handed over by the launcher (read-only after
+    /// spawn); `None` for every spawn that does not declare one.
+    pub owner_env: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

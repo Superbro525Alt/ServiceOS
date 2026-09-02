@@ -18,7 +18,7 @@ pub use types::{
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::task::{TaskDescriptor, TaskId, TaskObject, TaskRole};
+    use crate::task::{TaskDescriptor, TaskId, TaskIsolationClass, TaskObject, TaskRole};
 
     #[test]
     fn task_attach_thread_is_idempotent() {
@@ -27,6 +27,8 @@ mod tests {
             TaskDescriptor {
                 address_space: None,
                 role: TaskRole::BootstrapRoot,
+                isolation: TaskIsolationClass::Unrestricted,
+                owner_env: None,
             },
         );
 
@@ -34,6 +36,33 @@ mod tests {
         task.attach_thread(ObjectId(9));
 
         assert_eq!(task.snapshot().thread_count, 1);
+    }
+
+    #[test]
+    fn task_isolation_defaults_to_unrestricted_and_records_spawn_class() {
+        let legacy = TaskObject::new(
+            TaskId(1),
+            TaskDescriptor {
+                address_space: None,
+                role: TaskRole::SystemService,
+                isolation: TaskIsolationClass::Unrestricted,
+                owner_env: None,
+            },
+        );
+        assert_eq!(legacy.isolation(), TaskIsolationClass::Unrestricted);
+        assert_eq!(legacy.owner_env(), None);
+
+        let guest = TaskObject::new(
+            TaskId(2),
+            TaskDescriptor {
+                address_space: None,
+                role: TaskRole::UserService,
+                isolation: TaskIsolationClass::Guest,
+                owner_env: Some(3),
+            },
+        );
+        assert_eq!(guest.isolation(), TaskIsolationClass::Guest);
+        assert_eq!(guest.owner_env(), Some(3));
     }
 
     #[test]

@@ -64,6 +64,39 @@ impl GuestSyscallAbi {
     }
 }
 
+/// Full additive spawn-flag decode: legacy ABI-magic words keep their exact
+/// pre-isolation meaning; extended words (bit 63 set) additionally carry
+/// the isolation class and owner-environment id. Unknown/reserved bits are
+/// rejected loudly in both forms.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SpawnAttributes {
+    pub abi: GuestSyscallAbi,
+    pub isolation_guest: bool,
+    pub owner_env: Option<u16>,
+}
+
+impl SpawnAttributes {
+    pub fn from_flag_word(word: u64) -> Option<Self> {
+        if let Some(abi) = GuestSyscallAbi::from_spawn_flags(word) {
+            return Some(Self {
+                abi,
+                isolation_guest: false,
+                owner_env: None,
+            });
+        }
+        let attrs = serviceos_abi::task_spawn_attrs::decode_extended(word)?;
+        Some(Self {
+            abi: if attrs.linux_abi {
+                GuestSyscallAbi::Linux
+            } else {
+                GuestSyscallAbi::Native
+            },
+            isolation_guest: attrs.isolation_guest,
+            owner_env: attrs.owner_env,
+        })
+    }
+}
+
 /// Translate-and-execute entry. `None` = keep native dispatch (task is
 /// native, or no current task context exists).
 pub fn dispatch_guest(number: SyscallNumber, context: &SyscallContext) -> Option<SyscallReturn> {
@@ -271,6 +304,42 @@ mod tests {
         // The Linux mode stays one flag word for every guest architecture;
         // the table is chosen by the kernel's compile-time arch.
         assert_ne!(GuestSyscallAbi::Native, GuestSyscallAbi::Linux);
+    }
+
+    #[test]
+    fn spawn_attrs_decode_legacy_words_unchanged() {
+        let attrs = SpawnAttributes::from_flag_word(spawn_abi::NATIVE).expect("native decodes");
+        assert_eq!(attrs.abi, GuestSyscallAbi::Native);
+        assert!(!attrs.isolation_guest);
+        assert_eq!(attrs.owner_env, None);
+
+        let attrs =
+            SpawnAttributes::from_flag_word(spawn_abi::LINUX_SYSCALL).expect("linux decodes");
+        assert_eq!(attrs.abi, GuestSyscallAbi::Linux);
+        assert!(!attrs.isolation_guest);
+        assert_eq!(attrs.owner_env, None);
+    }
+
+    #[test]
+    fn spawn_attrs_decode_extended_words() {
+        use serviceos_abi::task_spawn_attrs;
+
+        let word = task_spawn_attrs::encode(task_spawn_attrs::SpawnAttrs {
+            linux_abi: true,
+            isolation_guest: true,
+            owner_env: Some(7),
+        });
+        let attrs = SpawnAttributes::from_flag_word(word).expect("extended word decodes");
+        assert_eq!(attrs.abi, GuestSyscallAbi::Linux);
+        assert!(attrs.isolation_guest);
+        assert_eq!(attrs.owner_env, Some(7));
+
+        // The legacy strict surface keeps rejecting extended words: only
+        // the combined decoder accepts them.
+        assert_eq!(GuestSyscallAbi::from_spawn_flags(word), None);
+
+        let poisoned = word | (1 << 40);
+        assert_eq!(SpawnAttributes::from_flag_word(poisoned), None);
     }
 
     #[test]

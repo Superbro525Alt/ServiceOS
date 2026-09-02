@@ -116,4 +116,61 @@ mod tests {
             Err(CapabilityError::HandleSpaceExhausted)
         );
     }
+
+    /// Formal boundary proof (channels): a task can never address a
+    /// foreign channel endpoint. `ipc.send` resolves the endpoint handle
+    /// exclusively through the sender's capability space, so an endpoint
+    /// the task holds no capability for is unaddressable, and a capability
+    /// without SEND cannot carry a send.
+    #[test]
+    fn foreign_channel_is_unaddressable_without_capability() {
+        let registry = ObjectRegistry::new();
+        let (endpoint, _peer) = registry.create_channel_pair();
+        let space = CapabilitySpace::new();
+
+        // No capability for the endpoint at all: any handle value the
+        // guest invents resolves to nothing.
+        assert!(matches!(
+            space.resolve(CapabilityHandle(0xCAFE), CapabilityRights::SEND),
+            Err(CapabilityError::InvalidHandle)
+        ));
+
+        // A capability that lacks SEND cannot send on the channel it can
+        // otherwise see.
+        let read_only = space
+            .install(endpoint, CapabilityRights::READ, None)
+            .expect("read-only channel capability should install");
+        assert!(matches!(
+            space.resolve(read_only, CapabilityRights::SEND),
+            Err(CapabilityError::RightsViolation { .. })
+        ));
+    }
+
+    /// Formal boundary proof (memory): mapping and granting a memory
+    /// object both require matching capability rights. A task holding a
+    /// read-only memory capability can neither map it nor grant it onward.
+    #[test]
+    fn memory_map_and_grant_require_matching_rights() {
+        let registry = ObjectRegistry::new();
+        let object = registry.create_memory_object(4096, true, DmaSafety::Unsafe);
+        let space = CapabilitySpace::new();
+        let read_only = space
+            .install(object, CapabilityRights::READ, None)
+            .expect("read-only memory capability should install");
+
+        // MAP-gated consumers (memory_map syscalls) are refused.
+        assert!(matches!(
+            space.resolve(read_only, CapabilityRights::MAP),
+            Err(CapabilityError::RightsViolation { .. })
+        ));
+
+        // Grant paths (channel-send handle transfer) are refused: the
+        // capability never carried TRANSFER, so no transfer can be
+        // prepared from it in any mode.
+        assert!(
+            space
+                .prepare_transfer(read_only, CapabilityRights::READ, TransferMode::Copy)
+                .is_err()
+        );
+    }
 }

@@ -103,6 +103,60 @@ fn send_reply(reply_handle: rt::Handle, reply: RawMessage) {
     let _ = rt::handle_close(reply_handle);
 }
 
+/// Same-service internal listener bind: the calling service lives inside this
+/// process, so no IPC reply is needed and the control channel half is
+/// retained internally (the client half is closed immediately). Keeps the
+/// pool/listener invariants identical to `open_listener` without any
+/// RawMessage traffic (and thus without the stack cost of IPC buffers).
+pub(crate) fn open_internal_listener(
+    log_handle: rt::Handle,
+    listeners: &mut [TcpListenerSlot; MAX_TCP_LISTENERS],
+    transports: &[TcpTransportSlot; crate::consts::MAX_TCP_SOCKETS],
+    tcp_handles: [SocketHandle; crate::consts::MAX_TCP_SOCKETS],
+    sockets: &mut SocketSet<'_>,
+    local_port: u16,
+    backlog: u32,
+) -> bool {
+    let Some(slot_index) = listeners.iter().position(|slot| !slot.active) else {
+        return false;
+    };
+    let Some(socket_handle) = free_pool_handle(listeners, transports, tcp_handles) else {
+        return false;
+    };
+    let listening = {
+        let socket = sockets.get_mut::<tcp::Socket>(socket_handle);
+        if socket.is_open() {
+            socket.abort();
+        }
+        socket.listen(local_port).is_ok()
+    };
+    if !listening {
+        return false;
+    }
+    let session = match rt::channel_create() {
+        Ok(pair) => pair,
+        Err(_) => return false,
+    };
+    listeners[slot_index] = TcpListenerSlot {
+        active: true,
+        control_handle: session.first,
+        socket_handle: Some(socket_handle),
+        local_port,
+        backlog: backlog.max(1),
+        ..TcpListenerSlot::empty()
+    };
+    // The external client half is meaningless on the internal path.
+    let _ = rt::handle_close(session.second);
+    let _ = emit_log(
+        log_handle,
+        LogSeverity::Info,
+        LogEvent::NetworkSocketOpened,
+        0,
+        local_port as u64,
+    );
+    true
+}
+
 fn free_pool_handle(
     listeners: &[TcpListenerSlot; MAX_TCP_LISTENERS],
     transports: &[TcpTransportSlot; crate::consts::MAX_TCP_SOCKETS],

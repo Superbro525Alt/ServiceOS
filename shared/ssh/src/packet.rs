@@ -4,22 +4,78 @@
 //!   padding`, zero padding bytes, block size 8, no MAC.
 //! * **AEAD** (`chacha20-poly1305@openssh.com`): the 4-byte packet_length is
 //!   encrypted with the direction's *header* ChaCha20 key (counter 0); the
-//!   payload+padding is encrypted and authenticated with the *main* key via
-//!   ChaCha20-Poly1305 with the **encrypted length bytes as AAD**; a 16-byte
-//!   tag follows; there is no separate MAC field. The AEAD nonce for both
-//!   ChaCha instances is `0x00000000 || u64be(sequence number)` — the nonce
-//!   is thus 12 bytes with the 8-byte big-endian sequence number zero-padded
-//!   on the left (OpenSSH PROTOCOL.chacha20poly1305).
+//!   payload+padding is encrypted and authenticated with the *main* key; a
+//!   16-byte tag follows; there is no separate MAC field. The AEAD nonce for
+//!   both ChaCha instances is `0x00000000 || u64be(sequence number)` — the
+//!   nonce is thus 12 bytes with the 8-byte big-endian sequence number
+//!   zero-padded on the left. AUTH CONSTRUCTION (OpenSSH cipher-chachapoly.c,
+//!   the de-facto wire format, NOT RFC 8439 §2.8): the Poly1305 one-time key
+//!   is ChaCha20 block 0 under the main key, the data is encrypted with
+//!   counter 1, and the tag authenticates the RAW
+//!   `encrypted_length || ciphertext` concatenation — no 16-byte segment
+//!   padding and no length trailer.
 //!
-//! Padding rule (both framings): `packet_length = 1 + payload + padding`,
-//! `(4 + packet_length) % block_size == 0`, `padding >= 4`. Deviation
-//! documented: padding is zero-filled because the library is pure (no RNG);
-//! padding entropy is a traffic-analysis nicety, not a correctness
-//! requirement. Callers may pre-fill randomness if they extend the API.
+//! Padding rule: plain packets align the 4-byte length prefix into the block
+//! (`(4 + packet_length) % block_size == 0`); AEAD packets align
+//! `packet_length` itself (`packet_length % block_size == 0`, OpenSSH's EtM
+//! framing); `padding >= 4` in both. Deviation documented: padding is
+//! zero-filled because the library is pure (no RNG); padding entropy is a
+//! traffic-analysis nicety, not a correctness requirement. Callers may
+//! pre-fill randomness if they extend the API.
 
 use crate::error::DisconnectReason;
 use crate::wire::WireErr;
 use serviceos_crypto::chacha20;
+use serviceos_crypto::poly1305::Poly1305;
+
+/// OpenSSH chachapoly tag: Poly1305 over the raw
+/// `encrypted_length || ciphertext` concatenation. NOT the RFC 8439 padded
+/// construction — see the module header.
+fn chachapoly_tag(
+    main_key: &[u8; 32],
+    nonce: &[u8; 12],
+    aad: &[u8],
+    ciphertext: &[u8],
+) -> [u8; 16] {
+    let block = chacha20::block(main_key, 0, nonce);
+    let mut pk = [0u8; 32];
+    pk.copy_from_slice(&block[..32]);
+    let mut mac = Poly1305::new(&pk);
+    mac.update(aad);
+    mac.update(ciphertext);
+    mac.finalize()
+}
+
+/// OpenSSH chachapoly AEAD: encrypt `plaintext` into `ciphertext` with the
+/// main key (counter 1) and return the tag over `aad || ciphertext`.
+fn chachapoly_encrypt(
+    main_key: &[u8; 32],
+    nonce: &[u8; 12],
+    aad: &[u8],
+    plaintext: &[u8],
+    ciphertext: &mut [u8],
+) -> [u8; 16] {
+    chacha20::xor(main_key, 1, nonce, plaintext, ciphertext);
+    chachapoly_tag(main_key, nonce, aad, ciphertext)
+}
+
+/// Verify the chachapoly tag over `aad || ciphertext`; on success decrypt
+/// `ciphertext` into `plaintext` (release only on verification success).
+fn chachapoly_decrypt(
+    main_key: &[u8; 32],
+    nonce: &[u8; 12],
+    aad: &[u8],
+    ciphertext: &[u8],
+    tag: &[u8; 16],
+    plaintext: &mut [u8],
+) -> bool {
+    let expect = chachapoly_tag(main_key, nonce, aad, ciphertext);
+    if !serviceos_crypto::pbkdf2::ct_eq(&expect, tag) {
+        return false;
+    }
+    chacha20::xor(main_key, 1, nonce, ciphertext, plaintext);
+    true
+}
 
 /// Block size for both framings (RFC 4253 §6 arbitrary-size min 8; the
 /// openssh AEAD cipher also specifies block size 8).
@@ -73,6 +129,20 @@ pub fn padding_len(payload_len: usize, block_size: usize) -> usize {
     }
 }
 
+/// AEAD (EtM) variant: the 4-byte length field is not part of the encrypted
+/// message, so OpenSSH computes the padding to align `packet_length` itself
+/// (`(1 + payload + pad) % B == 0`; the read side requires
+/// `packlen % block_size == 0`). Minimum padding is still 4 bytes.
+pub fn padding_len_aead(payload_len: usize, block_size: usize) -> usize {
+    let base = (1 + payload_len) % block_size;
+    let pad = block_size - base;
+    if pad < MIN_PADDING {
+        pad + block_size
+    } else {
+        pad
+    }
+}
+
 /// Encode a plain (pre-KEX) packet: `length | padlen | payload | padding`
 /// into `out`; returns the wire length. Padding is zero-filled (see module
 /// docs). `payload.len()` must be ≤ `MAX_PAYLOAD_LEN`.
@@ -115,13 +185,7 @@ pub fn encode_aead_msg(
     let len_be = (packet_length as u32).to_be_bytes();
     let (head, body) = out.split_at_mut(4);
     chacha20::xor(&keys.header, 0, &nonce, &len_be, head);
-    let tag = serviceos_crypto::chacha20poly1305::encrypt(
-        &keys.main,
-        &nonce,
-        head,
-        msg,
-        &mut body[..packet_length],
-    );
+    let tag = chachapoly_encrypt(&keys.main, &nonce, head, msg, &mut body[..packet_length]);
     body[packet_length..packet_length + 16].copy_from_slice(&tag);
     Ok(wire_len)
 }
@@ -140,7 +204,7 @@ pub fn encode_aead(
     if payload.len() > MAX_PAYLOAD_LEN {
         return Err(WireErr::Overflow);
     }
-    let pad = padding_len(payload.len(), BLOCK_SIZE);
+    let pad = padding_len_aead(payload.len(), BLOCK_SIZE);
     let msg_len = 1 + payload.len() + pad;
     if scratch.len() < msg_len {
         return Err(WireErr::Overflow);
@@ -162,7 +226,7 @@ pub fn encode_aead(
     let (head, body) = out.split_at_mut(4);
     chacha20::xor(&keys.header, 0, &nonce, &len_be, head);
     // Payload AEAD with the encrypted length as AAD.
-    let tag = serviceos_crypto::chacha20poly1305::encrypt(
+    let tag = chachapoly_encrypt(
         &keys.main,
         &nonce,
         head,
@@ -197,15 +261,24 @@ impl FrameInfo {
 }
 
 /// Validate the decrypted `padlen | payload | padding` message.
-/// Returns the payload range inside `staged`.
+/// Returns the payload range inside `staged`. `aead` selects the framing
+/// rule: plain packets align the 4-byte length prefix into the block
+/// (`(4 + packet_length) % B == 0`), AEAD messages align `packet_length`
+/// itself (`packet_length % B == 0`, OpenSSH EtM).
 fn validate_staged(
     staged: &[u8],
     packet_length: usize,
+    aead: bool,
 ) -> Result<(usize, usize), DisconnectReason> {
     if packet_length == 0 || staged.len() < packet_length {
         return Err(DisconnectReason::ProtocolError);
     }
-    if (4 + packet_length) % BLOCK_SIZE != 0 {
+    let aligned = if aead {
+        packet_length % BLOCK_SIZE
+    } else {
+        (4 + packet_length) % BLOCK_SIZE
+    };
+    if aligned != 0 {
         return Err(DisconnectReason::ProtocolError);
     }
     let pad = staged[0] as usize;
@@ -235,7 +308,7 @@ pub fn decode_plain(buf: &[u8], staging: &mut [u8]) -> Result<Option<FrameInfo>,
         return Ok(None);
     }
     staging[..packet_length].copy_from_slice(&buf[4..needed]);
-    let (start, payload_len) = validate_staged(&staging[..packet_length], packet_length)?;
+    let (start, payload_len) = validate_staged(&staging[..packet_length], packet_length, false)?;
     Ok(Some(FrameInfo {
         consumed: needed,
         staged: packet_length,
@@ -261,15 +334,16 @@ pub fn decode_aead(
     let nonce = nonce_for_seqno(seqno);
     chacha20::xor(&keys.header, 0, &nonce, &buf[0..4], len_scratch);
     let packet_length = u32::from_be_bytes(*len_scratch) as usize;
-    if packet_length == 0 || packet_length > MAX_PACKET_LEN || (4 + packet_length) % BLOCK_SIZE != 0
-    {
+    // AEAD framing (OpenSSH EtM): the length field is not part of the
+    // encrypted message, so `packet_length` itself is block-aligned.
+    if packet_length == 0 || packet_length > MAX_PACKET_LEN || packet_length % BLOCK_SIZE != 0 {
         return Err(DisconnectReason::ProtocolError);
     }
     let needed = 4 + packet_length + 16;
     if buf.len() < needed {
         return Ok(None);
     }
-    let ok = serviceos_crypto::chacha20poly1305::decrypt(
+    let ok = chachapoly_decrypt(
         &keys.main,
         &nonce,
         &buf[0..4],
@@ -280,7 +354,7 @@ pub fn decode_aead(
     if !ok {
         return Err(DisconnectReason::MacError);
     }
-    let (start, payload_len) = validate_staged(&staging[..packet_length], packet_length)?;
+    let (start, payload_len) = validate_staged(&staging[..packet_length], packet_length, true)?;
     Ok(Some(FrameInfo {
         consumed: needed,
         staged: packet_length,
@@ -329,6 +403,12 @@ mod tests {
             let pad = padding_len(len, BLOCK_SIZE);
             assert!(pad >= 4);
             assert_eq!((4 + 1 + len + pad) % BLOCK_SIZE, 0);
+        }
+        // AEAD variant: packet_length itself is block-aligned.
+        for len in [0usize, 1, 4, 7, 8, 9, 100, 1000] {
+            let pad = padding_len_aead(len, BLOCK_SIZE);
+            assert!(pad >= 4);
+            assert_eq!((1 + len + pad) % BLOCK_SIZE, 0);
         }
     }
 
@@ -406,7 +486,7 @@ mod tests {
     }
 
     fn out_len_bound(payload: &[u8]) -> usize {
-        4 + 1 + payload.len() + padding_len(payload.len(), BLOCK_SIZE) + 16
+        4 + 1 + payload.len() + padding_len_aead(payload.len(), BLOCK_SIZE) + 16
     }
 
     #[test]
@@ -517,16 +597,16 @@ mod tests {
         // Flip ONLY the encrypted length bytes: MAC must fail even if the
         // (decrypted) length stays in bounds by luck.
         let k = keys(31);
-        let mut scratch = [0u8; 128];
-        let mut out = [0u8; 128];
-        let n = encode_aead(b"z", &k, 1, &mut scratch, &mut out).unwrap();
-        let mut staging = [0u8; 128];
+        let mut scratch = [0u8; 256];
+        let mut out = [0u8; 256];
+        let n = encode_aead(&[b'z'; 100], &k, 1, &mut scratch, &mut out).unwrap();
+        let mut staging = [0u8; 256];
         let mut ls = [0u8; 4];
-        // Flip a length-ciphertext byte so the decrypted length stays in
-        // bounds (12 ^ 8 = 4): the AAD no longer matches the tag check ->
-        // MacError, proving the length field is authenticated.
+        // Flip a length-ciphertext byte so the decrypted length stays
+        // in bounds (112 ^ 0x40 = 48): the AAD no longer matches the tag
+        // check -> MacError, proving the length field is authenticated.
         let mut bad = out;
-        bad[3] ^= 0x08;
+        bad[3] ^= 0x40;
         assert_eq!(
             decode_aead(&bad[..n], &mut staging, &k, 1, &mut ls),
             Err(DisconnectReason::MacError)

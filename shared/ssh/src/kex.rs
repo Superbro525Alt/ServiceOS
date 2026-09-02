@@ -1,17 +1,20 @@
 //! `curve25519-sha256` key exchange (RFC 8731) over the RFC 4253 §7 KEX
 //! messages, plus the RFC 4253 §7.2 SSH key derivation.
 //!
-//! Wire mapping (RFC 8731 §3): the ephemeral public keys `e`/`f` are encoded
-//! as SSH `string`s of exactly 32 octets (the raw RFC 7748 point encoding);
-//! the shared secret K is the X25519 output — which RFC 7748 defines
-//! little-endian — **byte-reversed to big-endian** and then mpint-encoded
-//! (leading zeros stripped, one 0x00 prepended when the top bit of the first
-//! significant byte is set; an all-zero shared secret rejects the exchange).
+//! Wire mapping (RFC 8731 §3 + the established SSH interop convention): the
+//! ephemeral public keys `e`/`f` are encoded as SSH `string`s of exactly 32
+//! octets (the raw RFC 7748 point encoding); the shared secret K is the
+//! X25519 output used AS-IS as the mpint magnitude — OpenSSH feeds the raw
+//! `crypto_scalarmult` output to `sshbuf_put_bignum2_bytes` (big-endian
+//! magnitude reading, leading zeros stripped, one 0x00 prepended when the
+//! top bit of the first byte is set); no little-endian reversal. An all-zero
+//! shared secret rejects the exchange.
 //! The exchange hash is SHA-256 over
-//! `V_C || V_S || I_C || I_S || K_S || e || f || K`, with `e`/`f` in their
-//! full string encodings, `K_S` in its full wire string encoding (blob plus
-//! its own length prefix — matching OpenSSH's hash input), and K in its
-//! mpint encoding.
+//! `string V_C || string V_S || string I_C || string I_S || string K_S ||
+//! string e || string f || mpint K`: V_C/V_S/I_C/I_S are length-prefixed
+//! here (matching OpenSSH's hash input), `K_S` arrives from callers already
+//! length-prefixed, `e`/`f` get their full string encodings internally, and
+//! K is the finished mpint encoding.
 //!
 //! Key derivation (RFC 4253 §7.2, iterated-hash branch — NOT HKDF; SSH
 //! defines its own construction): `K1 = HASH(K || H || X || session_id)`,
@@ -150,19 +153,24 @@ pub fn shared_secret(our_seed: &[u8; 32], peer_public: &[u8; 32]) -> Result<[u8;
     Ok(secret)
 }
 
-/// Big-endian conversion of the little-endian X25519 output (RFC 7748 §5:
-/// the output is the little-endian encoding of the x-coordinate; SSH mpints
-/// are big-endian).
-pub fn shared_to_big_endian(shared_le: &[u8; 32]) -> [u8; 32] {
-    let mut be = [0u8; 32];
-    for i in 0..32 {
-        be[i] = shared_le[31 - i];
-    }
-    be
+/// SSH mpint magnitude for the X25519 shared secret. INTEROP CONVENTION
+/// (NOT the mathematical integer): every real SSH implementation feeds the
+/// RAW RFC 7748 output bytes straight into its bignum2 encoder, which reads
+/// them as a big-endian magnitude — OpenSSH does exactly this via
+/// `sshbuf_put_bignum2_bytes` on the undecoded `crypto_scalarmult` output.
+/// Reversing the little-endian wire bytes first would compute a different
+/// (mathematically correct) integer and break interop with every real peer.
+pub fn shared_mpint_magnitude(shared_le: &[u8; 32]) -> [u8; 32] {
+    *shared_le
 }
 
-/// Exchange hash H = SHA-256(V_C || V_S || I_C || I_S || K_S || e || f || K)
-/// with `e`/`f` in their full wire string encodings and `K` mpint-encoded.
+/// Exchange hash H = SHA-256 over the RFC 4253 §8 hash input:
+/// `string V_C || string V_S || string I_C || string I_S || string K_S ||
+/// string e || string f || mpint K`. `v_c`/`v_s`/`i_c`/`i_s` are passed as
+/// raw content and length-prefixed here (matching OpenSSH, which feeds
+/// length-prefixed strings into the hash); `k_s` must already carry its
+/// 4-byte length prefix; `e`/`f` are prefixed internally; `k_mpint` is the
+/// finished mpint encoding.
 pub fn exchange_hash(
     v_c: &[u8],
     v_s: &[u8],
@@ -179,11 +187,23 @@ pub fn exchange_hash(
     let mut f_wire = [0u8; 36];
     f_wire[0..4].copy_from_slice(&32u32.to_be_bytes());
     f_wire[4..].copy_from_slice(f);
-    sha256::digest(&[v_c, v_s, i_c, i_s, k_s, &e_wire, &f_wire, k_mpint])
+    let mut i_c_wire = [0u8; 4];
+    i_c_wire.copy_from_slice(&(i_c.len() as u32).to_be_bytes());
+    let mut i_s_wire = [0u8; 4];
+    i_s_wire.copy_from_slice(&(i_s.len() as u32).to_be_bytes());
+    let mut v_c_wire = [0u8; 4];
+    v_c_wire.copy_from_slice(&(v_c.len() as u32).to_be_bytes());
+    let mut v_s_wire = [0u8; 4];
+    v_s_wire.copy_from_slice(&(v_s.len() as u32).to_be_bytes());
+    sha256::digest(&[
+        &v_c_wire, v_c, &v_s_wire, v_s, &i_c_wire, i_c, &i_s_wire, i_s, k_s, &e_wire, &f_wire,
+        k_mpint,
+    ])
 }
 
 /// RFC 4253 §7.2 iterated key derivation for one direction over SHA-256.
-/// `x` is the direction letter ('A' client-to-server, 'B' server-to-client).
+/// `x` is the KDF letter (OpenSSH AEAD ciphers use 'C'/'D' for the cipher
+/// keys; 'A'/'B' are the unused IV letters).
 /// Returns 64 bytes: `HASH(K||H||X||sid) || HASH(K||H||K1)`.
 pub fn derive_direction_keys(
     k_mpint: &[u8],
@@ -199,11 +219,15 @@ pub fn derive_direction_keys(
     out
 }
 
-/// Both directions' cipher key material. `session_id == h` for the first
-/// (and this transport's only) key exchange.
+/// Both directions' cipher key material. For `chacha20-poly1305@openssh.com`
+/// the cipher is AEAD, so RFC 4253 §7.2's 'A'/'B' IV strings are unused;
+/// OpenSSH derives the per-direction cipher key (64 bytes: 32 main + 32
+/// header) from the 'C' (client-to-server) and 'D' (server-to-client)
+/// letters. `session_id == h` for the first (and this transport's only)
+/// key exchange.
 pub fn derive_session_keys(k_mpint: &[u8], h: &[u8; 32]) -> (CipherKeys, CipherKeys) {
-    let c2s = derive_direction_keys(k_mpint, h, h, b'A');
-    let s2c = derive_direction_keys(k_mpint, h, h, b'B');
+    let c2s = derive_direction_keys(k_mpint, h, h, b'C');
+    let s2c = derive_direction_keys(k_mpint, h, h, b'D');
     (
         CipherKeys::from_material(&c2s),
         CipherKeys::from_material(&s2c),
@@ -363,24 +387,17 @@ mod tests {
     }
 
     #[test]
-    fn big_endian_conversion() {
+    fn k_mpint_uses_raw_output_as_magnitude() {
+        // INTEROP CONVENTION: the raw X25519 output bytes are the mpint
+        // magnitude (OpenSSH sshbuf_put_bignum2_bytes semantics) — no
+        // little-endian reversal.
         let mut le = [0u8; 32];
-        le[0] = 0x01; // least significant byte first in little-endian
-        let be = shared_to_big_endian(&le);
-        assert_eq!(be[31], 0x01);
-        assert_eq!(be[0], 0x00);
-    }
-
-    #[test]
-    fn k_mpint_is_mpint_of_reversed_secret() {
-        let mut le = [0u8; 32];
-        le[0] = 0x02; // little-endian value 2
-        let be = shared_to_big_endian(&le);
+        le[31] = 0x02; // magnitude's least significant byte (BE view)
         let mut buf = [0u8; 64];
         let mut w = Writer::new(&mut buf);
-        w.mpint_be(&be).unwrap();
+        w.mpint_be(&shared_mpint_magnitude(&le)).unwrap();
         let n = w.into_written();
-        // Value 2 as mpint: length 1, byte 0x02.
+        // BE magnitude with a leading zero byte stripped: length 1, 0x02.
         assert_eq!(&buf[..n], &[0, 0, 0, 1, 0x02]);
     }
 
@@ -453,7 +470,9 @@ mod tests {
 
     #[test]
     fn exchange_hash_structure() {
-        // Manual recomputation of the documented construction.
+        // Manual recomputation of the documented construction (every
+        // pre-K field is an SSH string with its 4-byte length prefix,
+        // matching OpenSSH's hash input).
         let v_c = b"SSH-2.0-c".as_slice();
         let v_s = b"SSH-2.0-s".as_slice();
         let i_c = [1u8, 20, 2, 3];
@@ -469,7 +488,21 @@ mod tests {
         let mut f_wire = [0u8; 36];
         f_wire[0..4].copy_from_slice(&32u32.to_be_bytes());
         f_wire[4..].copy_from_slice(&f);
-        let manual = sha256::digest(&[v_c, v_s, &i_c, &i_s, &k_s, &e_wire, &f_wire, &k]);
+        let s4 = |b: &[u8]| -> Vec<u8> {
+            let mut out = (b.len() as u32).to_be_bytes().to_vec();
+            out.extend_from_slice(b);
+            out
+        };
+        let manual = sha256::digest(&[
+            &s4(v_c),
+            &s4(v_s),
+            &s4(&i_c),
+            &s4(&i_s),
+            &k_s,
+            &e_wire,
+            &f_wire,
+            &k,
+        ]);
         assert_eq!(h, manual);
         // Sensitivity: any input change moves the hash.
         let mut e2 = e;

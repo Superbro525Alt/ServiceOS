@@ -146,9 +146,29 @@ impl SshTransport {
         x25519_seed: [u8; 32],
         cookie: [u8; 16],
     ) -> SshTransport {
+        let mut t = SshTransport::placeholder();
+        t.setup(role, host_seed, x25519_seed, cookie);
+        t
+    }
+
+    /// In-place server construction for static in-guest allocation.
+    /// Equivalent to `server()` but initializes `self` instead of returning
+    /// a fresh value: the ~139 KiB of fixed buffers must never move through
+    /// a return slot, which would churn small userspace stacks (the
+    /// network-service run task overflowed exactly this way). Requires a
+    /// `placeholder()`-constructed or otherwise unused transport.
+    pub fn init_server(&mut self, host_seed: [u8; 32], x25519_seed: [u8; 32], cookie: [u8; 16]) {
+        self.setup(Role::Server, host_seed, x25519_seed, cookie);
+        let _ = self.emit_raw(version::SERVER_BANNER);
+    }
+
+    /// Const placeholder for static (`.bss`) allocation: buffers zeroed,
+    /// state `Closed`. Unusable until `init_server` resets it; any
+    /// `feed`/`send_payload` before that fails honestly.
+    pub const fn placeholder() -> SshTransport {
         SshTransport {
-            role,
-            state: State::VersionExchange,
+            role: Role::Client,
+            state: State::Closed,
             out: [0; OUT_CAP],
             out_len: 0,
             inbuf: [0; IN_CAP],
@@ -156,10 +176,10 @@ impl SshTransport {
             proc: [0; STAGE_CAP],
             len_scratch: [0; 4],
             msg_scratch: [0; MSG_SCRATCH_CAP],
-            host_seed,
-            host_pub: ed25519::public_key(&host_seed),
-            x25519_seed,
-            cookie,
+            host_seed: [0; 32],
+            host_pub: [0; 32],
+            x25519_seed: [0; 32],
+            cookie: [0; 16],
             peer_ident: [0; version::IDENT_MAX],
             peer_ident_len: 0,
             my_kexinit: [0; KEXINIT_CAP],
@@ -182,6 +202,36 @@ impl SshTransport {
             peer_desc_len: 0,
             peer_reason: None,
         }
+    }
+
+    /// Shared initializer for `new()`/`init_server()`: assigns every
+    /// protocol-state field (fixed storage is untouched; only lengths and
+    /// state reset). `role` decides server vs client framing.
+    fn setup(&mut self, role: Role, host_seed: [u8; 32], x25519_seed: [u8; 32], cookie: [u8; 16]) {
+        self.role = role;
+        self.state = State::VersionExchange;
+        self.out_len = 0;
+        self.in_len = 0;
+        self.host_seed = host_seed;
+        self.host_pub = ed25519::public_key(&host_seed);
+        self.x25519_seed = x25519_seed;
+        self.cookie = cookie;
+        self.peer_ident_len = 0;
+        self.my_kexinit_len = 0;
+        self.peer_kexinit_len = 0;
+        self.negotiated = None;
+        self.e_client = [0; 32];
+        self.f_server = [0; 32];
+        self.k_mpint_len = 0;
+        self.exchange_h = [0; 32];
+        self.session_id = None;
+        self.tx_keys = None;
+        self.rx_keys = None;
+        self.pending_rx = None;
+        self.rx_seq = 0;
+        self.tx_seq = 0;
+        self.peer_desc_len = 0;
+        self.peer_reason = None;
     }
 
     // ------------------------------------------------------------------
@@ -322,7 +372,11 @@ impl SshTransport {
     /// Encode + queue a packet under the current TX framing (plain
     /// pre-KEX, AEAD post-NEWKEYS) and advance the TX sequence number.
     fn emit_packet(&mut self, payload: &[u8]) -> Result<(), Fail> {
-        let pad = packet::padding_len(payload.len(), packet::BLOCK_SIZE);
+        let pad = if self.tx_keys.is_some() {
+            packet::padding_len_aead(payload.len(), packet::BLOCK_SIZE)
+        } else {
+            packet::padding_len(payload.len(), packet::BLOCK_SIZE)
+        };
         let wire_len = 4 + 1 + payload.len() + pad + if self.tx_keys.is_some() { 16 } else { 0 };
         if self.out_len + wire_len > OUT_CAP {
             return Err(Fail::OutOfCapacity);
@@ -636,10 +690,9 @@ impl SshTransport {
         };
         self.e_client = e;
         self.f_server = x25519::x25519_public(&self.x25519_seed);
-        let shared_be = kex::shared_to_big_endian(&shared_le);
         let k_len = {
             let mut w = crate::wire::Writer::new(&mut self.k_mpint);
-            if w.mpint_be(&shared_be).is_err() {
+            if w.mpint_be(&shared_le).is_err() {
                 return Err(Fail::NotReady);
             }
             w.into_written()
@@ -689,10 +742,12 @@ impl SshTransport {
         let (c2s, s2c) = kex::derive_session_keys(&self.k_mpint[..self.k_mpint_len], &h);
         // Client-to-server ('A') is our RX direction; server-to-client
         // ('B') is TX. TX switches right after NEWKEYS; RX switches when
-        // the peer's NEWKEYS arrives.
+        // the peer's NEWKEYS arrives. Sequence numbers CONTINUE across the
+        // cipher switch: we do not advertise kex-strict-s-v00@openssh.com,
+        // so the strict-KEX reset must not happen (OpenSSH keeps counting
+        // for non-strict peers).
         self.pending_rx = Some(c2s);
         self.tx_keys = Some(s2c);
-        self.tx_seq = 0;
         self.session_id = Some(h);
         self.state = State::NewKeys;
         Ok(Dispatch::Handled)
@@ -731,11 +786,10 @@ impl SshTransport {
                 ));
             }
         };
-        let shared_be = kex::shared_to_big_endian(&shared_le);
         let (k_buf, k_len) = {
             let mut k_buf = [0u8; 40];
             let mut w = crate::wire::Writer::new(&mut k_buf);
-            if w.mpint_be(&shared_be).is_err() {
+            if w.mpint_be(&shared_le).is_err() {
                 return Err(Fail::NotReady);
             }
             let n = w.into_written();
@@ -776,8 +830,8 @@ impl SshTransport {
 
         let (c2s, s2c) = kex::derive_session_keys(&k_buf[..k_len], &h);
         self.emit_packet(&[kex::SSH_MSG_NEWKEYS])?;
+        // Non-strict kex: TX sequence numbers continue across the switch.
         self.tx_keys = Some(c2s);
-        self.tx_seq = 0;
         self.pending_rx = Some(s2c);
         self.exchange_h = h;
         self.session_id = Some(h);
@@ -793,7 +847,7 @@ impl SshTransport {
             match self.pending_rx.take() {
                 Some(keys) => {
                     self.rx_keys = Some(keys);
-                    self.rx_seq = 0;
+                    // Non-strict kex: RX sequence numbers continue.
                     self.state = State::Established;
                     Ok(Dispatch::Handled)
                 }
@@ -1051,9 +1105,11 @@ mod tests {
         // Server RX keys (c2s) must equal client TX keys.
         assert_eq!(s.rx_keys.unwrap(), c.tx_keys.unwrap());
         assert_ne!(s.tx_keys.unwrap(), s.rx_keys.unwrap());
-        // Sequence counters reset to 0 on install.
-        assert_eq!(s.tx_seq, 0);
-        assert_eq!(s.rx_seq, 0);
+        // Non-strict kex: sequence numbers continue across the cipher
+        // switch (three TX packets sent: kexinit, reply, newkeys; three
+        // RX packets received: kexinit, init, newkeys).
+        assert_eq!(s.tx_seq, 3);
+        assert_eq!(s.rx_seq, 3);
     }
 
     // ------------------------------------------------------------------
@@ -1087,18 +1143,19 @@ mod tests {
             other => panic!("expected payload, got {:?}", other),
         }
         // The server answered SSH_MSG_UNIMPLEMENTED with the offender's
-        // sequence number (first post-NEWKEYS packet: seqno 0). The client
-        // treats inbound UNIMPLEMENTED as informational, so decrypt it
-        // directly from the wire bytes.
+        // sequence number (the client's first post-NEWKEYS packet is its
+        // fourth TX packet: seqno 3 — non-strict kex keeps counting). The
+        // client treats inbound UNIMPLEMENTED as informational, so decrypt
+        // it directly from the wire bytes.
         let reply = drain(&mut s);
         assert!(!reply.is_empty());
         let mut staging = [0u8; 64];
         let mut ls = [0u8; 4];
-        let f = packet::decode_aead(&reply, &mut staging, &c.rx_keys.unwrap(), 0, &mut ls)
+        let f = packet::decode_aead(&reply, &mut staging, &c.rx_keys.unwrap(), 3, &mut ls)
             .unwrap()
             .unwrap();
         assert_eq!(f.msg_type(&staging), 3);
-        assert_eq!(f.payload(&staging), &[3, 0, 0, 0, 0]);
+        assert_eq!(f.payload(&staging), &[3, 0, 0, 0, 3]);
         // And the client consumed it silently.
         match c.feed(&reply).unwrap() {
             Feed::Progress => {}
@@ -1392,7 +1449,10 @@ mod tests {
         let mut sent = 0;
         let mut hit_cap = false;
         for _ in 0..4000 {
-            match s.send_payload(&[94, 0]) {
+            // 4-byte payload: each request's wire footprint (36) exceeds the
+            // UNIMPLEMENTED reply's (32), so the client's queued replies can
+            // never outgrow the space the requests occupied.
+            match s.send_payload(&[94, 0, 0, 0]) {
                 Ok(()) => sent += 1,
                 Err(Fail::OutOfCapacity) => {
                     hit_cap = true;

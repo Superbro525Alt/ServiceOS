@@ -6,7 +6,8 @@ mod transport;
 mod udp;
 
 pub(crate) use listeners::{
-    close_listener as close_listener_slot, handle_listener_request, pump_listeners,
+    close_listener as close_listener_slot, handle_listener_request, open_internal_listener,
+    pump_listeners,
 };
 pub(crate) use public::handle_public_request;
 pub(crate) use selftest::run as run_network_selftest;

@@ -6,7 +6,7 @@ use std::{
 };
 
 use crate::{
-    build::{ensure_success, BuildArtifacts},
+    build::{BuildArtifacts, ensure_success},
     image::ensure_virt_kernel_image,
     platform::RunKind,
 };
@@ -366,7 +366,15 @@ pub fn qemu_virtio_command(
         }
         command.args(["-device", "virtio-sound-pci,audiodev=speaker"]);
     }
-    command.args(["-netdev", "user,id=net0"]);
+    // Expose the build-gated sshd listener (SERVICEOS_SSHD=1 at build AND
+    // run time). Gated here too: parallel e2e boots share this builder and
+    // multiple QEMUs binding tcp::2222 collide. Harmless when the built
+    // guest has no sshd (nothing listens on :22).
+    if env::var_os("SERVICEOS_SSHD").is_some() {
+        command.args(["-netdev", "user,id=net0,hostfwd=tcp::2222-:22"]);
+    } else {
+        command.args(["-netdev", "user,id=net0"]);
+    }
     command.args([
         "-device",
         "virtio-net-pci,netdev=net0,mac=52:54:00:12:34:56",

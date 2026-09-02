@@ -14,7 +14,9 @@ pub(crate) const MAX_SOCKET_INLINE_BYTES: usize =
 
 pub(crate) const MAX_UDP_SOCKETS: usize = 4;
 pub(crate) const UDP_DATAGRAM_BUFFER_BYTES: usize = 2048;
-pub(crate) const MAX_TCP_LISTENERS: usize = 2;
+/// Two slots stay reserved for external service listeners; the third exists
+/// so the build-gated sshd listener never eats external capacity.
+pub(crate) const MAX_TCP_LISTENERS: usize = 3;
 pub(crate) const TCP_ACCEPT_BACKLOG: usize = 2;
 
 pub(crate) const LOOPBACK_ADDRESS: smoltcp::wire::Ipv4Address =
@@ -40,6 +42,21 @@ pub(crate) fn ipv6_e2e_probe_enabled() -> bool {
 /// zero-padded into the high bytes, so it is always > 2^32 and can never be
 /// mistaken for an IPv4 address word by downstream log classifiers).
 pub(crate) const PING6_PROBE_ARG0_TAG: u64 = 0x5049_4E47_3600_0000;
+
+// --- SSH transport listener (build-gated v0 slice) ---
+//
+// Drives the shared/ssh SshTransport server state machine over an accepted
+// TCP:22 connection. Session/room bridging is a later wave: the library's
+// established-state policy answers honestly (disconnect on service request),
+// so an external client completes KEX and receives a clean protocol-level
+// close. Build-gated so default boots stay byte-identical.
+/// SSH well-known listener port.
+pub(crate) const SSHD_LISTEN_PORT: u16 = 22;
+/// Build-time gate: set SERVICEOS_SSHD=1 when building to expose the
+/// listener; unset keeps the boot log byte-identical.
+pub(crate) fn sshd_enabled() -> bool {
+    matches!(option_env!("SERVICEOS_SSHD"), Some("1"))
+}
 
 // --- Resolver cache / DNS client ---
 pub(crate) const MAX_RESOLVER_CACHE_ENTRIES: usize = 16;

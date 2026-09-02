@@ -188,6 +188,8 @@ dependencies = [
 name = "serviceos-network-service"
 version = "0.1.0"
 dependencies = [
+ "serviceos-crypto",
+ "serviceos-ssh",
  "serviceos-userspace-runtime",
  "serviceos-wireless",
  "smoltcp",
@@ -289,6 +291,13 @@ version = "0.1.0"
 dependencies = [
  "serviceos-desktop-ui",
  "serviceos-userspace-runtime",
+]
+
+[[package]]
+name = "serviceos-ssh"
+version = "0.1.0"
+dependencies = [
+ "serviceos-crypto",
 ]
 
 [[package]]

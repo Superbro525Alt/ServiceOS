@@ -22,6 +22,7 @@ mod dnsresolv;
 mod firewall;
 mod mdns;
 mod protocol;
+mod sshd;
 mod types;
 mod util;
 mod wifi;
@@ -42,6 +43,7 @@ use crate::{
         handle_listener_request, handle_public_request, handle_socket_request, pump_listeners,
         run_network_selftest, update_transport_states,
     },
+    sshd::{PumpNote, SshdSlot},
     types::{HostEntry, InterfaceRuntimeState, TcpListenerSlot, TcpTransportSlot, UdpDatagramSlot},
     util::{emit_log, now_instant, pack_mac, poll_lifecycle, ticks_to_millis},
 };
@@ -370,6 +372,18 @@ pub(crate) fn run() -> u64 {
         );
     }
 
+    // Build-gated SSH listener state (no-op unless SERVICEOS_SSHD=1 was set
+    // at build time). Host-key seeds come from guest-local entropy
+    // substitutes; see sshd.rs for the honest limits.
+    let sshd_seeds = sshd::derive_host_seeds(
+        b"network-service-sshd-hostkey",
+        &device.info.mac,
+        rt::monotonic_now().unwrap_or(0),
+    );
+    static SSHD_STATE: SshdSlot = SshdSlot::new();
+    // SAFETY: single-task ownership; see SshdSlot.
+    let mut sshd_state = SSHD_STATE.get();
+
     loop {
         loop_ticks += 1;
         match poll_lifecycle(bootstrap) {
@@ -440,6 +454,29 @@ pub(crate) fn run() -> u64 {
         .is_err()
         {
             return 0xfb0f;
+        }
+        match sshd::pump(
+            &mut sshd_state,
+            sshd_seeds,
+            log_handle,
+            &mut listeners,
+            &mut transports,
+            tcp_handles,
+            &mut sockets,
+        ) {
+            PumpNote::Quiet => {}
+            PumpNote::Listening(line) => {
+                let _ = rt::write_logf("network", format_args!("{}", line));
+            }
+            PumpNote::Established => {
+                let _ = rt::write_logf(
+                    "network",
+                    format_args!("sshd session established (kex+newkeys)"),
+                );
+            }
+            PumpNote::Ended(reason) => {
+                let _ = rt::write_logf("network", format_args!("{}", reason));
+            }
         }
 
         // NOTE: the userspace monotonic clock observable through

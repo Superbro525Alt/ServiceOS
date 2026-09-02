@@ -100,6 +100,18 @@ pub enum SyscallNumber {
     /// with NotInitialized when the kernel RNG subsystem has not been
     /// seeded (callers keep their documented entropy substitutes).
     RngRequest = 55,
+    /// Runtime-load an additional ELF64 `ET_DYN` shared object into the
+    /// calling task's address space: args are (memory-object handle holding
+    /// the library bytes, flags word, reserved, reserved). Returns a
+    /// library handle usable with [`SyscallNumber::TaskSymbolLookup`] and
+    /// reported by [`SyscallNumber::TaskLoadedLibraries`]; the mapping base
+    /// rides the library record. Unknown flag bits are rejected loudly.
+    TaskLoadLibrary = 56,
+    /// Resolve a symbol name against the calling task's load-scoped symbol
+    /// table: args are (library handle from TaskLoadLibrary, name pointer,
+    /// name byte length). Returns the resolved absolute address, or
+    /// NotFound when no definition exists for the name.
+    TaskSymbolLookup = 57,
 }
 
 #[repr(u32)]
@@ -195,16 +207,25 @@ pub struct TaskStatus {
     pub exit_code: u64,
 }
 
-/// One companion library image mapped into a task's address space by the
-/// loader (extended flat-image headers only). Returned by
+/// One library image mapped into a task's address space by the loader.
+/// Spawn-time companions carry their BootStore `image_id` and
+/// `library_handle = 0`; runtime-loaded libraries (extended flat-image
+/// headers or `TaskLoadLibrary`) carry `image_id = 0` and the handle
+/// returned by `TaskLoadLibrary`. Returned by
 /// [`SyscallNumber::TaskLoadedLibraries`].
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TaskLoadedLibrary {
     pub image_id: u32,
-    pub _pad: u32,
+    pub library_handle: u32,
     pub base: u64,
     pub mapped_bytes: u64,
+}
+
+/// `TaskLoadLibrary` flags word. v0 accepts only the zero word; any other
+/// bit is rejected so future policy cannot be silently ignored.
+pub mod task_load_library_flags {
+    pub const VALID_MASK: u64 = 0;
 }
 
 #[repr(C)]
@@ -427,5 +448,57 @@ mod task_spawn_attrs_tests {
         };
         let word = task_spawn_attrs::encode(attrs);
         assert_eq!(task_spawn_attrs::decode_extended(word), Some(attrs));
+    }
+}
+
+#[cfg(test)]
+mod task_load_library_tests {
+    use super::{SyscallNumber, TaskLoadedLibrary, task_load_library_flags};
+
+    #[test]
+    fn load_library_numbers_are_additive_appended() {
+        // Row-164 runtime loads: appended after the previous highest
+        // syscall number; older kernels see them as InvalidCall, older
+        // binaries never emit them.
+        assert_eq!(SyscallNumber::TaskLoadLibrary as u32, 56);
+        assert_eq!(SyscallNumber::TaskSymbolLookup as u32, 57);
+        assert!(SyscallNumber::TaskLoadLibrary as u32 > SyscallNumber::RngRequest as u32);
+    }
+
+    #[test]
+    fn load_library_flags_accept_only_the_zero_word() {
+        assert_eq!(task_load_library_flags::VALID_MASK, 0);
+        assert_eq!(0u64 & !task_load_library_flags::VALID_MASK, 0);
+        assert_ne!(1u64 & !task_load_library_flags::VALID_MASK, 0);
+        assert_ne!(u64::MAX & !task_load_library_flags::VALID_MASK, 0);
+    }
+
+    #[test]
+    fn loaded_library_record_roundtrips() {
+        // Spawn companions: boot-store image id, handle 0.
+        let companion = TaskLoadedLibrary {
+            image_id: 7,
+            library_handle: 0,
+            base: 0x4000_0000_0100_0000,
+            mapped_bytes: 0x3000,
+        };
+        let bytes: [u8; 24] = unsafe { core::mem::transmute(companion) };
+        let decoded: TaskLoadedLibrary = unsafe { core::mem::transmute(bytes) };
+        assert_eq!(decoded.image_id, 7);
+        assert_eq!(decoded.library_handle, 0);
+        assert_eq!(decoded.base, 0x4000_0000_0100_0000);
+        assert_eq!(decoded.mapped_bytes, 0x3000);
+
+        // Runtime loads: image id 0, TaskLoadLibrary handle.
+        let runtime = TaskLoadedLibrary {
+            image_id: 0,
+            library_handle: 3,
+            base: 0x6000_0000_0000,
+            mapped_bytes: 0x2000,
+        };
+        let bytes: [u8; 24] = unsafe { core::mem::transmute(runtime) };
+        let decoded: TaskLoadedLibrary = unsafe { core::mem::transmute(bytes) };
+        assert_eq!(decoded.image_id, 0);
+        assert_eq!(decoded.library_handle, 3);
     }
 }

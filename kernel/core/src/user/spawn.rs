@@ -96,6 +96,13 @@ pub fn spawn_image_bytes_with_attributes(
     (hooks.register_address_space)(address_space_id, prepared.page_table_root);
     crate::user::record_loaded_image(address_space_id, prepared.image);
 
+    // Task-scoped export seed for runtime loads: the main image's ELF
+    // exports plus every mapped companion's exports. Failure here aborts
+    // the spawn — the same bytes just passed load validation, so this only
+    // fires on a loader bug, never on image content.
+    let export_seed = crate::user::build_task_export_seed(image, &prepared.image)?;
+    crate::user::seed_library_state(address_space_id, export_seed);
+
     let task = objects.registry().create_task(TaskDescriptor {
         address_space: Some(address_space_id),
         role,

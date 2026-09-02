@@ -506,12 +506,12 @@ pub fn load_image(
 
 /// One parsed `PT_LOAD` program header.
 #[derive(Clone, Copy)]
-struct ElfLoadSegment {
-    flags: u32,
-    file_offset: usize,
-    virtual_address: u64,
-    file_size: usize,
-    memory_size: usize,
+pub(crate) struct ElfLoadSegment {
+    pub(crate) flags: u32,
+    pub(crate) file_offset: usize,
+    pub(crate) virtual_address: u64,
+    pub(crate) file_size: usize,
+    pub(crate) memory_size: usize,
 }
 
 /// One PT_LOAD already copied into freshly allocated frames, used to translate
@@ -664,10 +664,12 @@ fn parse_dynamic_info(dynamic: &[u8]) -> Result<ElfDynamicInfo, LoadError> {
     }
     let mut info = ElfDynamicInfo::default();
     let mut pltrelsz: Option<u64> = None;
+    let mut terminated = false;
     for entry_index in 0..dynamic.len() / DYNAMIC_ENTRY_LEN {
         let base = entry_index * DYNAMIC_ENTRY_LEN;
         let tag = read_u64_le(dynamic, base)?;
         if tag == DYNAMIC_TAG_NULL {
+            terminated = true;
             break;
         }
         let value = read_u64_le(dynamic, base + 8)?;
@@ -704,6 +706,13 @@ fn parse_dynamic_info(dynamic: &[u8]) -> Result<ElfDynamicInfo, LoadError> {
         if format != DT_PLTREL_RELA {
             return Err(LoadError::UnsupportedHeader);
         }
+    }
+    // A dynamic block that ends without DT_NULL is truncated mid-table:
+    // tables after the cut (relocations especially) would be silently
+    // ignored, so reject instead of loading a half-linked image. A truly
+    // empty block (zero entries) carries no information and stays legal.
+    if !terminated && !dynamic.is_empty() {
+        return Err(LoadError::UnsupportedHeader);
     }
     Ok(info)
 }
@@ -884,7 +893,8 @@ struct SymbolEntry {
     weak: bool,
 }
 
-struct SymbolNamespace {
+#[derive(Clone, Copy)]
+pub(crate) struct SymbolNamespace {
     entries: [SymbolEntry; SYMBOL_NAMESPACE_CAPACITY],
     count: usize,
 }
@@ -1048,19 +1058,26 @@ fn apply_dynamic_relocations(
 }
 
 /// One dependency image validated as an ELF64 shared object, ready to map.
-struct ElfDependencyPlan {
-    loads: [ElfLoadSegment; MAX_ELF_LOAD_SEGMENTS],
-    load_count: usize,
-    dynamic_range: Option<(usize, usize)>,
+pub struct ElfDependencyPlan {
+    pub(crate) loads: [ElfLoadSegment; MAX_ELF_LOAD_SEGMENTS],
+    pub(crate) load_count: usize,
+    pub(crate) dynamic_range: Option<(usize, usize)>,
     /// Footprint from the lowest segment start to the highest segment end;
     /// the deterministic companion base must contain it.
-    span: u64,
+    pub(crate) span: u64,
+}
+
+impl ElfDependencyPlan {
+    /// Page-rounded byte span a mapping of this plan occupies at its base.
+    pub fn mapping_span_bytes(&self) -> u64 {
+        align_up_u64(self.span, PAGE_SIZE_BYTES as u64)
+    }
 }
 
 /// Validate resolved dependency bytes as an `ET_DYN` ELF64 object for the
 /// target machine and collect its PT_LOAD/PT_DYNAMIC program headers. Any
 /// validation failure surfaces as [`LoadError::DependencyInvalid`].
-fn plan_elf_dependency(
+pub fn plan_elf_dependency(
     bytes: &[u8],
     expected_machine: ElfMachine,
 ) -> Result<ElfDependencyPlan, LoadError> {
@@ -1621,6 +1638,373 @@ fn locate_file_range<'a>(
         }
     }
     None
+}
+
+/// Longest export name the task symbol table can carry (`SymbolNamespace`
+/// bounds). Longer names can never resolve and are rejected by the lookup
+/// syscall rather than silently dropped.
+pub const MAX_EXPORT_NAME: usize = SYMBOL_NAME_MAX;
+
+/// True when `bytes` starts with the ELF64 magic. Runtime loads accept only
+/// ELF64 `ET_DYN` shared objects; flat images cannot express dynamic
+/// symbols and never qualify as runtime libraries.
+pub fn is_elf64_image(bytes: &[u8]) -> bool {
+    bytes.len() >= ELF_MAGIC.len() && bytes[..ELF_MAGIC.len()] == ELF_MAGIC
+}
+
+/// The machine this kernel build services. Spawn paths receive the expected
+/// machine from the arch hooks; the runtime-load path has no such context,
+/// so it uses the compile-time host arch.
+#[cfg(target_arch = "x86_64")]
+pub const HOST_ELF_MACHINE: ElfMachine = ElfMachine::X86_64;
+#[cfg(all(target_arch = "aarch64", not(target_arch = "x86_64")))]
+pub const HOST_ELF_MACHINE: ElfMachine = ElfMachine::Aarch64;
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+pub const HOST_ELF_MACHINE: ElfMachine = ElfMachine::X86_64;
+
+/// Task-scoped global symbol table: the exports of a task's main image,
+/// its spawn-time companions, and every runtime-loaded library. Override
+/// rules match the spawn-time load namespace: a later strong definition
+/// overrides an earlier weak one and later registrations win among equal
+/// strengths, so the most recently loaded definition shadows older ones.
+#[derive(Clone, Copy)]
+pub struct TaskSymbolTable {
+    namespace: SymbolNamespace,
+}
+
+impl TaskSymbolTable {
+    pub const EMPTY: Self = Self {
+        namespace: SymbolNamespace::EMPTY,
+    };
+
+    /// Longest symbol name the table carries; see [`MAX_EXPORT_NAME`].
+    pub const fn max_name() -> usize {
+        SYMBOL_NAME_MAX
+    }
+
+    pub fn export_count(&self) -> usize {
+        self.namespace.count
+    }
+
+    /// Register one export. Strong beats weak regardless of order; among
+    /// equal strengths the latest registration wins.
+    pub fn register_export(
+        &mut self,
+        name: &[u8],
+        weak: bool,
+        address: u64,
+    ) -> Result<(), LoadError> {
+        self.namespace.insert(name, weak, address)
+    }
+
+    pub fn lookup(&self, name: &[u8]) -> Option<u64> {
+        self.namespace.lookup(name)
+    }
+
+    pub(crate) fn as_namespace(&self) -> &SymbolNamespace {
+        &self.namespace
+    }
+}
+
+/// Collect one image's dynamic exports (biased by `load_base`) into
+/// `table`. Returns `false` when the bytes are not an ELF64 image or carry
+/// no dynamic section (flat images: nothing to export); malformed dynamic
+/// tables are errors.
+pub fn collect_elf_exports(
+    image: &[u8],
+    load_base: u64,
+    table: &mut TaskSymbolTable,
+) -> Result<bool, LoadError> {
+    if !is_elf64_image(image) {
+        return Ok(false);
+    }
+    if image[4] != ELF_CLASS_64 || image[5] != ELF_DATA_LSB || image[6] != ELF_VERSION_CURRENT {
+        return Err(LoadError::UnsupportedAbi);
+    }
+    let phoff = read_u64_le(image, 32)? as usize;
+    let phentsize = read_u16_le(image, 54)? as usize;
+    let phnum = read_u16_le(image, 56)? as usize;
+    if phentsize != ELF_PROGRAM_HEADER_LEN || phnum == 0 {
+        return Err(LoadError::UnsupportedHeader);
+    }
+    let mut loads = [ElfLoadSegment {
+        flags: 0,
+        file_offset: 0,
+        virtual_address: 0,
+        file_size: 0,
+        memory_size: 0,
+    }; MAX_ELF_LOAD_SEGMENTS];
+    let mut load_count = 0usize;
+    let mut dynamic_range: Option<(usize, usize)> = None;
+    for index in 0..phnum {
+        let header = phoff
+            .checked_add(index * phentsize)
+            .ok_or(LoadError::Truncated)?;
+        let program = image
+            .get(header..header + phentsize)
+            .ok_or(LoadError::Truncated)?;
+        match read_u32_le(program, 0)? {
+            ELF_SEGMENT_DYNAMIC => {
+                if dynamic_range.is_some() {
+                    return Err(LoadError::UnsupportedHeader);
+                }
+                let dyn_offset = read_u64_le(program, 8)? as usize;
+                let dyn_size = read_u64_le(program, 32)? as usize;
+                image
+                    .get(
+                        dyn_offset
+                            ..dyn_offset
+                                .checked_add(dyn_size)
+                                .ok_or(LoadError::Truncated)?,
+                    )
+                    .ok_or(LoadError::Truncated)?;
+                dynamic_range = Some((dyn_offset, dyn_size));
+            }
+            ELF_SEGMENT_LOAD => {
+                if load_count == MAX_ELF_LOAD_SEGMENTS {
+                    return Err(LoadError::UnsupportedHeader);
+                }
+                loads[load_count] = ElfLoadSegment {
+                    flags: read_u32_le(program, 4)?,
+                    file_offset: read_u64_le(program, 8)? as usize,
+                    virtual_address: read_u64_le(program, 16)?,
+                    file_size: read_u64_le(program, 32)? as usize,
+                    memory_size: read_u64_le(program, 40)? as usize,
+                };
+                load_count += 1;
+            }
+            _ => {}
+        }
+    }
+    let Some((dyn_offset, dyn_size)) = dynamic_range else {
+        return Ok(false);
+    };
+    let info = parse_dynamic_info(&image[dyn_offset..dyn_offset + dyn_size])?;
+    if let Some(tables) = resolve_symbol_tables(image, &loads[..load_count], &info)? {
+        register_module_exports(&tables, load_base, &mut table.namespace)?;
+    }
+    Ok(true)
+}
+
+/// Build the task-scoped export seed a task provides at spawn time: the
+/// main image's ELF exports (if any) plus every mapped ELF companion's
+/// exports. Runtime loads resolve their imports against this seed plus the
+/// exports of previously runtime-loaded libraries.
+pub fn build_task_export_seed(
+    image: &[u8],
+    loaded: &LoadedUserImage,
+) -> Result<TaskSymbolTable, LoadError> {
+    let mut table = TaskSymbolTable::EMPTY;
+    if is_elf64_image(image) {
+        // ET_DYN exports are load-base-relative; ET_EXEC exports carry
+        // absolute link-time addresses.
+        let elf_type = read_u16_le(image, 16)?;
+        let bias = if elf_type == ELF_TYPE_DYN {
+            loaded.image_base.as_u64()
+        } else {
+            0
+        };
+        collect_elf_exports(image, bias, &mut table)?;
+    }
+    if loaded.library_count > 0 {
+        let resolve = crate::user::image_resolver().ok_or(LoadError::DependencyUnavailable)?;
+        for record in &loaded.libraries[..loaded.library_count] {
+            let Some(bytes) = resolve(record.image_id) else {
+                continue;
+            };
+            if is_elf64_image(bytes) {
+                collect_elf_exports(bytes, record.base.as_u64(), &mut table)?;
+            }
+        }
+    }
+    Ok(table)
+}
+
+/// Frames allocated for one PT_LOAD of a runtime-staged library. The caller
+/// maps these pages through the arch hooks after the staged module's
+/// relocations have been applied; page `i` lands at
+/// `virtual_start + i * PAGE_SIZE`.
+pub struct RuntimeSegmentFrames {
+    pub virtual_start: u64,
+    pub executable: bool,
+    pub writable: bool,
+    pub pages: Vec<PhysicalAddress>,
+}
+
+/// A validated ELF64 `ET_DYN` library with its segments staged into fresh
+/// frames, awaiting relocation and mapping into a running task. Staging
+/// touches no task state: every failure path frees the frames and leaves
+/// the task's symbol table untouched.
+pub struct StagedRuntimeLibrary<'a> {
+    image: &'a [u8],
+    loads: [ElfLoadSegment; MAX_ELF_LOAD_SEGMENTS],
+    load_count: usize,
+    load_base: u64,
+    info: ElfDynamicInfo,
+    tables: Option<ElfSymbolTable<'a>>,
+    segments: Vec<RuntimeSegmentFrames>,
+}
+
+impl StagedRuntimeLibrary<'_> {
+    pub fn load_base(&self) -> u64 {
+        self.load_base
+    }
+
+    /// Page-rounded byte span the task mapping occupies from `load_base`.
+    pub fn mapping_bytes(&self) -> u64 {
+        self.segments
+            .iter()
+            .map(|segment| {
+                segment.virtual_start + (segment.pages.len() as u64) * PAGE_SIZE_BYTES as u64
+                    - self.load_base
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
+    pub fn segments(&self) -> &[RuntimeSegmentFrames] {
+        &self.segments
+    }
+
+    /// Register the staged module's exports into the task table. Call
+    /// before applying relocations so the module's own definitions are
+    /// resolvable for its GOT slots.
+    pub fn register_exports(&self, table: &mut TaskSymbolTable) -> Result<(), LoadError> {
+        if let Some(tables) = &self.tables {
+            register_module_exports(tables, self.load_base, &mut table.namespace)?;
+        }
+        Ok(())
+    }
+
+    /// Apply `.rela.dyn` / `.rela.plt` against the task table by writing
+    /// through the staged (not yet mapped) frames.
+    pub fn apply_relocations(&self, namespace: &TaskSymbolTable) -> Result<(), LoadError> {
+        for relocation_table in [self.info.rela, self.info.jmprel].into_iter().flatten() {
+            let (table_vaddr, table_size) = relocation_table;
+            let bytes = locate_file_range(
+                self.image,
+                &self.loads[..self.load_count],
+                table_vaddr,
+                table_size as usize,
+            )
+            .ok_or(LoadError::UnsupportedRelocation)?;
+            let mut plt_latch = Vec::new();
+            apply_dynamic_relocations(
+                bytes,
+                self.load_base,
+                self.tables.as_ref(),
+                namespace.as_namespace(),
+                &mut plt_latch,
+                |target, value| write_staged_word(self, target, value),
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Return every staged frame to the allocator (failure rollback).
+    pub fn release_frames(&self, frame_allocator: &mut EarlyFrameAllocator) {
+        for segment in &self.segments {
+            for frame in &segment.pages {
+                frame_allocator.free_4kib(*frame);
+            }
+        }
+    }
+}
+
+/// Bounds-checked relocation write into a staged module's frames: the
+/// target must fall fully inside one staged page. Page-granular frame
+/// lists make the write independent of physical frame contiguity.
+fn write_staged_word(
+    staged: &StagedRuntimeLibrary<'_>,
+    target: u64,
+    value: u64,
+) -> Result<(), LoadError> {
+    for segment in &staged.segments {
+        if let Some(offset) = target.checked_sub(segment.virtual_start) {
+            let page = (offset / PAGE_SIZE_BYTES as u64) as usize;
+            if page < segment.pages.len() {
+                let in_page = offset % PAGE_SIZE_BYTES as u64;
+                if in_page + 8 <= PAGE_SIZE_BYTES as u64 {
+                    unsafe {
+                        ((segment.pages[page].as_u64() + in_page) as *mut u64)
+                            .write_unaligned(value);
+                    }
+                    return Ok(());
+                }
+            }
+        }
+    }
+    Err(LoadError::UnsupportedRelocation)
+}
+
+/// Stage a runtime library at `base`: validate the bytes as an ELF64
+/// `ET_DYN` shared object for `machine`, allocate + fill frames for every
+/// PT_LOAD payload, and parse the dynamic tables. No mapping happens here
+/// and no task state is touched; on failure every allocated frame is
+/// released and the error propagates. Unlike the companion path, validation
+/// errors keep their granular shape (Truncated/UnsupportedAbi/...) so the
+/// caller can distinguish bad bytes from resource exhaustion.
+pub fn stage_runtime_library<'a>(
+    image: &'a [u8],
+    expected_machine: ElfMachine,
+    base: VirtualAddress,
+    frame_allocator: &mut EarlyFrameAllocator,
+) -> Result<StagedRuntimeLibrary<'a>, LoadError> {
+    if !is_elf64_image(image) {
+        return Err(LoadError::UnsupportedFormat);
+    }
+    let plan = plan_elf_dependency_inner(image, expected_machine)?;
+    let page_size = PAGE_SIZE_BYTES as usize;
+    let mut staged = StagedRuntimeLibrary {
+        image,
+        loads: plan.loads,
+        load_count: plan.load_count,
+        load_base: base.as_u64(),
+        info: ElfDynamicInfo::default(),
+        tables: None,
+        segments: Vec::new(),
+    };
+    if let Some((dyn_offset, dyn_size)) = plan.dynamic_range {
+        staged.info = parse_dynamic_info(&image[dyn_offset..dyn_offset + dyn_size])
+            .map_err(|_| LoadError::DependencyInvalid)?;
+        staged.tables = resolve_symbol_tables(image, &plan.loads[..plan.load_count], &staged.info)
+            .map_err(|_| LoadError::DependencyInvalid)?;
+    }
+    let stage_result = (|| -> Result<(), LoadError> {
+        for segment in &plan.loads[..plan.load_count] {
+            let virtual_start = base
+                .as_u64()
+                .checked_add(segment.virtual_address)
+                .ok_or(LoadError::UnsupportedHeader)?;
+            let payload = image
+                .get(segment.file_offset..segment.file_offset + segment.file_size)
+                .ok_or(LoadError::UnsupportedHeader)?;
+            let page_count = segment.memory_size.div_ceil(page_size);
+            let mut pages = Vec::new();
+            for page_index in 0..page_count {
+                let page_offset = page_index * page_size;
+                let page_end = page_offset.saturating_add(page_size);
+                let frame = allocate_zeroed_frame(frame_allocator)?;
+                if page_offset < payload.len() {
+                    let copy_end = page_end.min(payload.len());
+                    copy_into_frame(frame.base, &payload[page_offset..copy_end]);
+                }
+                pages.push(frame.base);
+            }
+            staged.segments.push(RuntimeSegmentFrames {
+                virtual_start,
+                executable: segment.flags & ELF_FLAG_EXECUTE != 0,
+                writable: segment.flags & ELF_FLAG_WRITE != 0,
+                pages,
+            });
+        }
+        Ok(())
+    })();
+    if let Err(error) = stage_result {
+        staged.release_frames(frame_allocator);
+        return Err(error);
+    }
+    Ok(staged)
 }
 
 fn allocate_zeroed_frame(frame_allocator: &mut EarlyFrameAllocator) -> Result<Frame, LoadError> {
@@ -2207,6 +2591,19 @@ mod pie_tests {
         push_u64(&mut dynamic, DYNAMIC_TAG_RELASZ);
         push_u64(&mut dynamic, 999);
         assert_eq!(parse_dynamic_info(&dynamic), Ok(ElfDynamicInfo::default()));
+
+        // A non-empty block that ends without DT_NULL is truncated
+        // mid-table: the entries after the cut would be silently ignored,
+        // so the whole block is rejected.
+        let mut dynamic = Vec::new();
+        push_u64(&mut dynamic, DYNAMIC_TAG_SYMTAB);
+        push_u64(&mut dynamic, 0x4200);
+        push_u64(&mut dynamic, DYNAMIC_TAG_STRTAB);
+        push_u64(&mut dynamic, 0x4100);
+        assert_eq!(
+            parse_dynamic_info(&dynamic),
+            Err(LoadError::UnsupportedHeader)
+        );
     }
 
     #[test]
@@ -2727,5 +3124,200 @@ mod pie_tests {
         assert_eq!(lazy_plt_got_slot_address(0x5000, 3), 0x5030);
         assert_eq!(lazy_plt_stub_offset(0), 0);
         assert_eq!(lazy_plt_stub_offset(5), 80);
+    }
+
+    // ---- runtime-load (TaskLoadLibrary) machinery --------------------
+
+    #[test]
+    fn task_symbol_table_follows_spawn_override_rules() {
+        let mut table = TaskSymbolTable::EMPTY;
+        assert_eq!(table.export_count(), 0);
+
+        table
+            .register_export(b"probe", true, 0x1000)
+            .expect("weak export registers");
+        assert_eq!(table.lookup(b"probe"), Some(0x1000));
+
+        // A later strong definition overrides the earlier weak one.
+        table
+            .register_export(b"probe", false, 0x2000)
+            .expect("strong export registers");
+        assert_eq!(table.lookup(b"probe"), Some(0x2000));
+
+        // Among equal strengths the latest registration wins.
+        table
+            .register_export(b"probe", false, 0x3000)
+            .expect("second strong export registers");
+        assert_eq!(table.lookup(b"probe"), Some(0x3000));
+
+        // A later weak definition never overrides a strong one.
+        table
+            .register_export(b"probe", true, 0x4000)
+            .expect("late weak export registers");
+        assert_eq!(table.lookup(b"probe"), Some(0x3000));
+
+        // Empty names and over-long names are silently skipped (they can
+        // never resolve through the table).
+        assert!(table.register_export(b"", false, 0x5000).is_ok());
+        let long_name = [b'a'; SYMBOL_NAME_MAX + 1];
+        assert!(table.register_export(&long_name, false, 0x6000).is_ok());
+        assert_eq!(table.lookup(b""), None);
+        assert_eq!(table.lookup(&long_name[..SYMBOL_NAME_MAX]), None);
+        assert_eq!(table.lookup(b"missing"), None);
+    }
+
+    #[test]
+    fn task_symbol_table_rejects_overflow() {
+        let mut table = TaskSymbolTable::EMPTY;
+        for index in 0..SYMBOL_NAMESPACE_CAPACITY {
+            // Unique 40-byte names: two varying bytes, zero-padded.
+            let mut name = [0u8; SYMBOL_NAME_MAX];
+            name[0] = b'a' + (index / 26) as u8;
+            name[1] = b'a' + (index % 26) as u8;
+            table
+                .register_export(&name, false, 0x1000 + index as u64)
+                .expect("table fills");
+        }
+        let mut name = [0u8; SYMBOL_NAME_MAX];
+        name[0] = b'z';
+        name[1] = b'z';
+        assert_eq!(
+            table.register_export(&name, false, 0x9999),
+            Err(LoadError::SymbolSpaceExhausted)
+        );
+    }
+
+    /// Runtime-load resolution, host-testable shape: register the
+    /// provider's exports into a TaskSymbolTable, then apply the consumer's
+    /// GLOB_DAT against that table — the exact function sequence
+    /// `stage_runtime_library` + `apply_relocations` drive at runtime.
+    #[test]
+    fn runtime_load_resolves_consumer_against_task_table() {
+        let provider_base = TEST_BASE + 0x0100_0000;
+        let consumer_base = TEST_BASE + 0x0200_0000;
+
+        let provider = build_shared_object(SharedSpec {
+            locals: &[],
+            exports: &[(b"probe_marker", false, 0x1234)],
+            imports: &[],
+            rela_dyn: &[],
+            rela_plt: &[],
+            hash_buckets: 1,
+        });
+        let mut task_table = TaskSymbolTable::EMPTY;
+        {
+            let (_, provider_tables) = fixture_tables(&provider);
+            register_module_exports(
+                provider_tables.as_ref().expect("provider exports"),
+                provider_base,
+                &mut task_table.namespace,
+            )
+            .expect("provider exports register");
+        }
+        assert_eq!(
+            task_table.lookup(b"probe_marker"),
+            Some(provider_base + 0x1234)
+        );
+
+        // Consumer: one GLOB_DAT slot importing probe_marker.
+        let consumer = build_shared_object(SharedSpec {
+            locals: &[],
+            exports: &[],
+            imports: &[(b"probe_marker", false)],
+            rela_dyn: &[(0x48, ELF_RELOC_GLOB_DAT, 1)],
+            rela_plt: &[],
+            hash_buckets: 1,
+        });
+        let (info, consumer_tables) = fixture_tables(&consumer);
+        let (rela_vaddr, rela_size) = info.rela.expect("rela present");
+        let leaked: &'static [u8] = Box::leak(consumer.image.clone().into_boxed_slice());
+        let table_bytes =
+            locate_file_range(leaked, &consumer.loads[..], rela_vaddr, rela_size as usize)
+                .expect("rela locates");
+
+        let mut memory = module_memory(PAGE_SIZE_BYTES as usize);
+        let mut plt_latch: Vec<PltLatchEntry> = Vec::new();
+        apply_dynamic_relocations(
+            table_bytes,
+            consumer_base,
+            consumer_tables.as_ref(),
+            task_table.as_namespace(),
+            &mut plt_latch,
+            |target, value| write_into(&mut memory, consumer_base, target, value),
+        )
+        .expect("consumer resolves against the task table");
+        assert_eq!(
+            read_word(&memory, consumer_base, consumer_base + 0x48),
+            provider_base + 0x1234
+        );
+
+        // The consumer's exports register into the same table, so a THIRD
+        // module can chain against both.
+        task_table
+            .register_export(b"consumer_fn", false, consumer_base + 0x2000)
+            .expect("consumer export registers");
+        assert_eq!(
+            task_table.lookup(b"consumer_fn"),
+            Some(consumer_base + 0x2000)
+        );
+    }
+
+    #[test]
+    fn runtime_stage_rejects_non_elf_and_flat_images() {
+        let flat = build_image_bytes_for_rejection();
+        let mut allocator = test_frame_allocator();
+        assert!(matches!(
+            stage_runtime_library(
+                &flat,
+                ElfMachine::X86_64,
+                VirtualAddress::new(TEST_BASE),
+                &mut allocator,
+            ),
+            Err(LoadError::UnsupportedFormat)
+        ));
+        // Magic present but far too short to carry an ELF header.
+        let mut short = alloc::vec![0u8; 40];
+        short[..7].copy_from_slice(&[0x7f, b'E', b'L', b'F', 2, 1, 1]);
+        assert!(matches!(
+            stage_runtime_library(
+                &short,
+                ElfMachine::X86_64,
+                VirtualAddress::new(TEST_BASE),
+                &mut allocator,
+            ),
+            Err(LoadError::Truncated)
+        ));
+    }
+
+    /// A minimal flat image (SOSUIMG\0 magic) — must never stage as a
+    /// runtime library: the flat format cannot express dynamic symbols.
+    fn build_image_bytes_for_rejection() -> Vec<u8> {
+        let mut image = Vec::new();
+        image.extend_from_slice(&flat_image_magic());
+        image.extend_from_slice(&1u32.to_le_bytes());
+        image.extend_from_slice(&(FLAT_IMAGE_HEADER_LEN as u32).to_le_bytes());
+        image.resize(FLAT_IMAGE_HEADER_LEN + 16, 0);
+        image
+    }
+
+    fn test_frame_allocator() -> EarlyFrameAllocator {
+        // Never dereferenced by these tests (staging writes to real frames
+        // only inside the kernel); the rejection paths above allocate
+        // nothing before failing.
+        let regions = [crate::bootstrap::BootMemoryRegion {
+            start: crate::memory::PhysicalAddress::new(0x1000),
+            end: crate::memory::PhysicalAddress::new(0x2000),
+            kind: crate::bootstrap::BootMemoryRegionKind::Usable,
+        }];
+        let context = crate::bootstrap::BootContext {
+            memory_regions: &regions,
+            memory_map_available: true,
+            memory_map_truncated: false,
+            physical_memory_offset: None,
+            rsdp_address: None,
+            framebuffer: None,
+            boot_store: None,
+        };
+        EarlyFrameAllocator::from_boot_context(&context).expect("allocator")
     }
 }

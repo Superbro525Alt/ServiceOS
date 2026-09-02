@@ -31,8 +31,9 @@ use handlers::{
     handle_packet_interface_ring_setup, handle_packet_interface_transmit,
     handle_packet_interface_tx_ring_flush, handle_packet_interface_tx_ring_setup,
     handle_pipe_create, handle_pipe_read, handle_pipe_write, handle_rng_request,
-    handle_service_spawn, handle_task_loaded_libraries, handle_task_spawn_image,
-    handle_task_status, handle_thread_exit, handle_yield_current,
+    handle_service_spawn, handle_task_load_library, handle_task_loaded_libraries,
+    handle_task_spawn_image, handle_task_status, handle_task_symbol_lookup, handle_thread_exit,
+    handle_yield_current,
 };
 pub fn register_debug_log_writer(writer: fn(&[u8])) {
     let _ = DEBUG_LOG_WRITER.call_once(|| writer);

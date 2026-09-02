@@ -184,6 +184,8 @@ pub enum SyscallKind {
     PacketInterfaceTxRingSetup = AbiSyscallNumber::PacketInterfaceTxRingSetup as isize,
     PacketInterfaceTxRingFlush = AbiSyscallNumber::PacketInterfaceTxRingFlush as isize,
     RngRequest = AbiSyscallNumber::RngRequest as isize,
+    TaskLoadLibrary = AbiSyscallNumber::TaskLoadLibrary as isize,
+    TaskSymbolLookup = AbiSyscallNumber::TaskSymbolLookup as isize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

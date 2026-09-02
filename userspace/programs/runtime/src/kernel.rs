@@ -243,3 +243,32 @@ pub fn wait_for_exit(task_handle: Handle) -> Result<TaskStatus> {
         }
     }
 }
+
+/// Runtime-load an ELF64 `ET_DYN` shared object held in a memory object
+/// into the calling task's address space. Returns the library handle (the
+/// kernel also records base + mapped bytes on the task's library list);
+/// symbols resolve through [`symbol_lookup`]. The `flags` word must be
+/// zero (v0).
+pub fn load_library(memory_object: Handle, flags: u64) -> Result<Handle> {
+    syscall4(
+        SyscallNumber::TaskLoadLibrary,
+        memory_object as u64,
+        flags,
+        0,
+        0,
+    )
+    .map(|value| value as Handle)
+}
+
+/// Resolve `name` against the calling task's load-scoped symbol table.
+/// `library_handle` must name a library this task runtime-loaded; the
+/// search covers the whole task-scoped namespace (spawn seed plus every
+/// loaded library) with the same override rules the loader applies.
+pub fn symbol_lookup(library_handle: Handle, name: &[u8]) -> Result<u64> {
+    syscall3(
+        SyscallNumber::TaskSymbolLookup,
+        library_handle as u64,
+        name.as_ptr() as u64,
+        name.len() as u64,
+    )
+}

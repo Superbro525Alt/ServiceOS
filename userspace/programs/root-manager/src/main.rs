@@ -6,6 +6,7 @@ mod bootmode;
 mod control;
 mod graph;
 mod recovery;
+mod selftest_dlopen;
 mod state;
 mod timing;
 mod util;
@@ -178,6 +179,10 @@ fn main() -> u64 {
         return 0xf606;
     }
     timing::emit_timing_summary(&timing);
+
+    // Gated dlopen-shaped e2e witness: silent (and never called) unless the
+    // image was built with SERVICEOS_E2E_DLOPEN=1.
+    selftest_dlopen::run_probe();
 
     let _ = emit_manager_event(
         &slots,

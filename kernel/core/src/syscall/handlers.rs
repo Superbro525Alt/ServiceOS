@@ -39,5 +39,6 @@ pub(crate) use system::{
     handle_monotonic_now, handle_rng_request, handle_thread_exit, handle_yield_current,
 };
 pub(crate) use task::{
-    handle_service_spawn, handle_task_loaded_libraries, handle_task_spawn_image, handle_task_status,
+    handle_service_spawn, handle_task_load_library, handle_task_loaded_libraries,
+    handle_task_spawn_image, handle_task_status, handle_task_symbol_lookup,
 };

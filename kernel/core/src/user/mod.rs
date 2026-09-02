@@ -3,10 +3,15 @@ mod runtime;
 mod spawn;
 mod types;
 
-pub use loader::{ElfMachine, load_flat_image, load_image, parse_flat_image};
+pub use loader::{
+    ElfMachine, HOST_ELF_MACHINE, MAX_EXPORT_NAME, TaskSymbolTable, build_task_export_seed,
+    collect_elf_exports, is_elf64_image, load_flat_image, load_image, parse_flat_image,
+    plan_elf_dependency, stage_runtime_library,
+};
 pub use runtime::{
     UserRuntime, arch_hooks, current_task_syscall_abi, image_resolver, initialize_runtime,
     loaded_image_for, record_loaded_image, register_arch_hooks, register_image_resolver, runtime,
+    seed_library_state,
 };
 pub use spawn::{
     SpawnImageAttributes, current_task, mark_current_thread_exited, mark_current_thread_faulted,

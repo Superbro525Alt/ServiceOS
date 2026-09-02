@@ -23,8 +23,9 @@ use super::{
     handle_packet_interface_ring_setup, handle_packet_interface_transmit,
     handle_packet_interface_tx_ring_flush, handle_packet_interface_tx_ring_setup,
     handle_pipe_create, handle_pipe_read, handle_pipe_write, handle_rng_request,
-    handle_service_spawn, handle_task_loaded_libraries, handle_task_spawn_image,
-    handle_task_status, handle_thread_exit, handle_yield_current,
+    handle_service_spawn, handle_task_load_library, handle_task_loaded_libraries,
+    handle_task_spawn_image, handle_task_status, handle_task_symbol_lookup, handle_thread_exit,
+    handle_yield_current,
 };
 
 type Handler = fn(&SyscallContext) -> SyscallReturn;
@@ -178,6 +179,8 @@ pub fn initialize() -> &'static DispatchTable {
         entries[53] = Some(handle_packet_interface_tx_ring_setup);
         entries[54] = Some(handle_packet_interface_tx_ring_flush);
         entries[55] = Some(handle_rng_request);
+        entries[56] = Some(handle_task_load_library);
+        entries[57] = Some(handle_task_symbol_lookup);
         DispatchTable::new(entries)
     })
 }

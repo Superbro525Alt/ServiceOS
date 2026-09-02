@@ -123,6 +123,12 @@ impl From<AddressSpacePreparationError> for SpawnError {
     }
 }
 
+impl From<LoadError> for SpawnError {
+    fn from(error: LoadError) -> Self {
+        Self::AddressSpace(AddressSpacePreparationError::Load(error))
+    }
+}
+
 impl From<CapabilityError> for SpawnError {
     fn from(error: CapabilityError) -> Self {
         Self::Capability(error)

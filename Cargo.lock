@@ -292,6 +292,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "serviceos-ssh"
+version = "0.1.0"
+dependencies = [
+ "serviceos-crypto",
+]
+
+[[package]]
 name = "serviceos-userspace-catalog"
 version = "0.1.0"
 dependencies = [

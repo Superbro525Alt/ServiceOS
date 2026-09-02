@@ -7,7 +7,7 @@ mod logging;
 
 use core::panic::PanicInfo;
 
-use bootstrap::{BootstrapError, launch_root_manager, resolve_boot_store_image};
+use bootstrap::{launch_root_manager, resolve_boot_store_image, BootstrapError};
 use logging::{debug_log_writer, log, log_line};
 use serviceos_kernel_arch_x86_64::{
     cpu,
@@ -16,11 +16,13 @@ use serviceos_kernel_arch_x86_64::{
     paging::ActivePageTable,
     smp, user,
 };
-use serviceos_kernel_core::{Kernel, syscall, task as kernel_task, user as kernel_user};
-use serviceos_platform_qemu_virtio::{audio, block, boot, display, input, network, serial, sound};
+use serviceos_kernel_core::{syscall, task as kernel_task, user as kernel_user, Kernel};
+use serviceos_platform_qemu_virtio::{
+    audio, block, boot, display, gpu, input, network, serial, sound,
+};
 use serviceos_platform_x86_pc as x86_pc;
 use spin::Once;
-use uefi::{Status, entry};
+use uefi::{entry, Status};
 
 static BOOT_STORE_IMAGE_SOURCE: Once<&'static [u8]> = Once::new();
 
@@ -72,10 +74,12 @@ fn kernel_main() -> Status {
     let bootstrap_block =
         block::initialize().map(|backend| kernel.objects().registry().create_block_device(backend));
     let bootstrap_display = kernel.boot_context().framebuffer.map(|framebuffer| {
-        kernel
-            .objects()
-            .registry()
-            .create_display_output(display::initialize(framebuffer))
+        // Prefer the virtio-gpu 2D backend when the PCI device is present
+        // and negotiates; any probe failure (or SERVICEOS_VGPU_DISABLE)
+        // falls back to the boot GOP linear framebuffer.
+        let backend =
+            gpu::initialize(&framebuffer).unwrap_or_else(|| display::initialize(framebuffer));
+        kernel.objects().registry().create_display_output(backend)
     });
     let bootstrap_input =
         input::initialize().map(|backend| kernel.objects().registry().create_input_source(backend));
@@ -238,6 +242,26 @@ fn kernel_main() -> Status {
         }
     } else {
         log_line("storage", "no writable block device detected");
+    }
+    if let Some(summary) = gpu::bringup_summary() {
+        log(
+            "display",
+            format_args!(
+                "backend=virtio-gpu resource={}x{} stride-bytes={} bytes={} scanout=1 damage-driven pci={:02x}:{:02x}.{}",
+                summary.width,
+                summary.height,
+                summary.stride_bytes,
+                summary.byte_len,
+                summary.pci_bus,
+                summary.pci_device,
+                summary.pci_function,
+            ),
+        );
+    } else if let Some(reason) = gpu::unavailable_reason() {
+        log(
+            "display",
+            format_args!("virtio-gpu unavailable reason={}", reason),
+        );
     }
     if let Some(framebuffer) = kernel.boot_context().framebuffer {
         log(

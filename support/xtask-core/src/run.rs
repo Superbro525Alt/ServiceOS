@@ -6,7 +6,7 @@ use std::{
 };
 
 use crate::{
-    build::{BuildArtifacts, ensure_success},
+    build::{ensure_success, BuildArtifacts},
     image::ensure_virt_kernel_image,
     platform::RunKind,
 };
@@ -374,6 +374,10 @@ pub fn qemu_virtio_command(
     command.args(["-device", "virtio-keyboard-pci"]);
     command.args(["-device", "virtio-mouse-pci"]);
     command.args(["-device", "virtio-tablet-pci"]);
+    // virtio-gpu-pci: the kernel's display backend probes for this device
+    // and prefers it over the UEFI GOP linear framebuffer (SERVICEOS_VGPU_DISABLE
+    // forces the GOP fallback at kernel build time).
+    command.args(["-device", "virtio-gpu-pci"]);
     command.args([
         "-drive",
         &format!(

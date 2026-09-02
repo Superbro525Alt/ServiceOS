@@ -458,6 +458,7 @@ pub(crate) fn run() -> u64 {
         match sshd::pump(
             &mut sshd_state,
             sshd_seeds,
+            bootstrap,
             log_handle,
             &mut listeners,
             &mut transports,

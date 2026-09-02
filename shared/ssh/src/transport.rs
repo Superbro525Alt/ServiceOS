@@ -46,17 +46,34 @@ pub enum State {
     Closed,
 }
 
-/// Outcome of `feed()`: progress, or a decrypted established-state payload
-/// (borrowed from the transport until the next `feed`).
+/// Outcome of `feed()`: progress, a decrypted established-state payload
+/// (borrowed from the transport until the next `feed`), a parked password
+/// authentication attempt (see `take_auth_request`/`auth_verdict`), or a
+/// channel-data batch for the session bridge.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Feed<'a> {
     Progress,
-    Packet { msg_type: u8, payload: &'a [u8] },
+    Packet {
+        msg_type: u8,
+        payload: &'a [u8],
+    },
+    /// Password credentials parked; the host verifies them through its own
+    /// authority and calls `auth_verdict`. Processing stalls until then.
+    AuthQuery,
+    /// Inbound session-channel data; the host consumes the batch and calls
+    /// `ack_channel_data` to re-grant the receive window.
+    ChannelData {
+        data: &'a [u8],
+    },
 }
 
 enum Dispatch {
     Handled,
     Passthrough,
+    /// Park a password authentication attempt.
+    Auth,
+    /// Deliver an inbound channel-data batch (length in the staging buffer).
+    DeliverData(usize),
 }
 
 /// Output capacity: one max data packet plus a small reply and slack.
@@ -84,7 +101,7 @@ pub struct SshTransport {
     out_len: usize,
     inbuf: [u8; IN_CAP],
     in_len: usize,
-    proc: [u8; STAGE_CAP],
+    pub(crate) proc: [u8; STAGE_CAP],
     len_scratch: [u8; 4],
     msg_scratch: [u8; MSG_SCRATCH_CAP],
     // Identity material (caller-supplied; the library has no RNG).
@@ -117,6 +134,10 @@ pub struct SshTransport {
     peer_desc: [u8; PEER_DESC_CAP],
     peer_desc_len: usize,
     peer_reason: Option<u32>,
+    // RFC 4252 server authentication state (shared/ssh/src/auth.rs).
+    pub(crate) auth: crate::auth::AuthState,
+    // RFC 4254 session-channel state (shared/ssh/src/channel.rs).
+    pub(crate) chan: crate::channel::ChannelState,
 }
 
 impl SshTransport {
@@ -201,6 +222,8 @@ impl SshTransport {
             peer_desc: [0; PEER_DESC_CAP],
             peer_desc_len: 0,
             peer_reason: None,
+            auth: crate::auth::AuthState::new(),
+            chan: crate::channel::ChannelState::new(),
         }
     }
 
@@ -232,6 +255,8 @@ impl SshTransport {
         self.tx_seq = 0;
         self.peer_desc_len = 0;
         self.peer_reason = None;
+        self.auth = crate::auth::AuthState::new();
+        self.chan = crate::channel::ChannelState::new();
     }
 
     // ------------------------------------------------------------------
@@ -302,6 +327,12 @@ impl SshTransport {
         }
         self.push_in(bytes)?;
         loop {
+            // A parked authentication attempt stalls all further processing
+            // until the host delivers the verdict (the verdict is I/O the
+            // pure library cannot perform).
+            if self.auth.phase == crate::auth::AuthPhase::Pending {
+                break;
+            }
             match self.state {
                 State::VersionExchange => {
                     if !self.try_version()? {
@@ -321,6 +352,17 @@ impl SshTransport {
                             return Ok(Feed::Packet {
                                 msg_type: msg,
                                 payload: &self.proc[start..start + len],
+                            });
+                        }
+                        Dispatch::Auth => {
+                            return Ok(Feed::AuthQuery);
+                        }
+                        Dispatch::DeliverData(len) => {
+                            // CHANNEL_DATA payload: type + recipient + len
+                            // prefix + bytes; the body starts at +9.
+                            let start = info.payload_start + 9;
+                            return Ok(Feed::ChannelData {
+                                data: &self.proc[start..start + len],
                             });
                         }
                     }
@@ -371,7 +413,7 @@ impl SshTransport {
 
     /// Encode + queue a packet under the current TX framing (plain
     /// pre-KEX, AEAD post-NEWKEYS) and advance the TX sequence number.
-    fn emit_packet(&mut self, payload: &[u8]) -> Result<(), Fail> {
+    pub(crate) fn emit_packet(&mut self, payload: &[u8]) -> Result<(), Fail> {
         let pad = if self.tx_keys.is_some() {
             packet::padding_len_aead(payload.len(), packet::BLOCK_SIZE)
         } else {
@@ -407,7 +449,11 @@ impl SshTransport {
 
     /// Queue an honest DISCONNECT and close. If the output buffer is full
     /// the DISCONNECT is dropped — the connection closes either way.
-    fn fail_disconnect(&mut self, reason: DisconnectReason, description: &'static str) -> Fail {
+    pub(crate) fn fail_disconnect(
+        &mut self,
+        reason: DisconnectReason,
+        description: &'static str,
+    ) -> Fail {
         let mut payload = [0u8; 5 + 4 + PEER_DESC_CAP + 4];
         payload[0] = 1; // SSH_MSG_DISCONNECT
         payload[1..5].copy_from_slice(&reason.code().to_be_bytes());
@@ -876,10 +922,66 @@ impl SshTransport {
         match msg {
             1 => Err(self.take_peer_disconnect(info)),
             2 | 3 | 4 => Ok(Dispatch::Handled),
-            5 => Err(self.fail_disconnect(
-                DisconnectReason::ServiceNotAvailable,
-                "service requests not implemented (no authentication this wave)",
-            )),
+            5 => {
+                self.handle_service_request(info.payload_start, info.payload_len)?;
+                Ok(Dispatch::Handled)
+            }
+            crate::auth::SSH_MSG_USERAUTH_REQUEST => {
+                self.handle_userauth_request(info.payload_start, info.payload_len)?;
+                Ok(if self.auth.phase == crate::auth::AuthPhase::Pending {
+                    Dispatch::Auth
+                } else {
+                    Dispatch::Handled
+                })
+            }
+            crate::channel::SSH_MSG_GLOBAL_REQUEST => {
+                self.handle_global_request(info.payload_start, info.payload_len)?;
+                Ok(Dispatch::Handled)
+            }
+            crate::channel::SSH_MSG_CHANNEL_OPEN
+            | crate::channel::SSH_MSG_CHANNEL_WINDOW_ADJUST
+            | crate::channel::SSH_MSG_CHANNEL_EOF
+            | crate::channel::SSH_MSG_CHANNEL_CLOSE
+            | crate::channel::SSH_MSG_CHANNEL_REQUEST => {
+                match msg {
+                    crate::channel::SSH_MSG_CHANNEL_OPEN => {
+                        self.handle_channel_open(info.payload_start, info.payload_len)?
+                    }
+                    crate::channel::SSH_MSG_CHANNEL_WINDOW_ADJUST => {
+                        match self.handle_window_adjust(info.payload_start, info.payload_len)? {
+                            crate::channel::ChanSimple::Handled => {}
+                            crate::channel::ChanSimple::Passthrough => {
+                                return Ok(Dispatch::Passthrough);
+                            }
+                        }
+                    }
+                    crate::channel::SSH_MSG_CHANNEL_EOF => {
+                        match self.handle_channel_eof(info.payload_start, info.payload_len)? {
+                            crate::channel::ChanSimple::Handled => {}
+                            crate::channel::ChanSimple::Passthrough => {
+                                return Ok(Dispatch::Passthrough);
+                            }
+                        }
+                    }
+                    crate::channel::SSH_MSG_CHANNEL_CLOSE => {
+                        match self.handle_channel_close(info.payload_start, info.payload_len)? {
+                            crate::channel::ChanSimple::Handled => {}
+                            crate::channel::ChanSimple::Passthrough => {
+                                return Ok(Dispatch::Passthrough);
+                            }
+                        }
+                    }
+                    _ => self.handle_channel_request(info.payload_start, info.payload_len)?,
+                }
+                Ok(Dispatch::Handled)
+            }
+            crate::channel::SSH_MSG_CHANNEL_DATA => {
+                match self.try_channel_data(info.payload_start, info.payload_len)? {
+                    crate::channel::ChannelOutcome::Data(len) => Ok(Dispatch::DeliverData(len)),
+                    crate::channel::ChannelOutcome::Passthrough => Ok(Dispatch::Passthrough),
+                    crate::channel::ChannelOutcome::Handled => Ok(Dispatch::Handled),
+                }
+            }
             20 => {
                 Err(self.fail_disconnect(DisconnectReason::ProtocolError, "rekeying not supported"))
             }
@@ -1119,12 +1221,14 @@ mod tests {
     #[test]
     fn encrypted_server_to_client_payload() {
         let (mut s, mut c) = handshake();
-        s.send_payload(&[94, b'o', b'k']).unwrap();
+        // Type 63 is unassigned: it exercises the raw established-state
+        // passthrough (94+ are the channel layer now).
+        s.send_payload(&[63, b'o', b'k']).unwrap();
         let out = drain(&mut s);
         match c.feed(&out).unwrap() {
             Feed::Packet { msg_type, payload } => {
-                assert_eq!(msg_type, 94);
-                assert_eq!(payload, &[94, b'o', b'k']);
+                assert_eq!(msg_type, 63);
+                assert_eq!(payload, &[63, b'o', b'k']);
             }
             other => panic!("expected payload, got {:?}", other),
         }
@@ -1192,30 +1296,26 @@ mod tests {
     }
 
     #[test]
-    fn service_request_answers_honest_disconnect() {
+    fn service_request_answers_service_accept() {
         let (mut s, mut c) = handshake();
-        // SSH_MSG_SERVICE_REQUEST "ssh-userauth": 5 | string | string
+        // SSH_MSG_SERVICE_REQUEST "ssh-userauth": 5 | string | string —
+        // answered with SERVICE_ACCEPT (auth layer active; see auth.rs for
+        // the full matrix including the rejected-service disconnect).
         let mut p = [0u8; 24];
         p[0] = 5;
         p[1..5].copy_from_slice(&12u32.to_be_bytes());
         p[5..17].copy_from_slice(b"ssh-userauth");
         c.send_payload(&p).unwrap();
         let out = drain(&mut c);
-        let err = s.feed(&out).unwrap_err();
-        assert_eq!(
-            err,
-            Fail::LocalDisconnect {
-                reason: DisconnectReason::ServiceNotAvailable,
-                description: "service requests not implemented (no authentication this wave)"
+        s.feed(&out).unwrap();
+        assert_eq!(s.state(), State::Established);
+        assert_eq!(s.auth_phase(), crate::auth::AuthPhase::ServiceAccepted);
+        let reply = drain(&mut s);
+        match c.feed(&reply).unwrap() {
+            Feed::Packet { msg_type, .. } => {
+                assert_eq!(msg_type, crate::auth::SSH_MSG_SERVICE_ACCEPT)
             }
-        );
-        assert_eq!(s.state(), State::Closed);
-        let disc = drain(&mut s);
-        match c.feed(&disc) {
-            Err(Fail::PeerDisconnect { reason_code }) => {
-                assert_eq!(reason_code, 7);
-            }
-            other => panic!("expected peer disconnect, got {:?}", other),
+            other => panic!("expected SERVICE_ACCEPT, got {:?}", other),
         }
     }
 
@@ -1451,8 +1551,10 @@ mod tests {
         for _ in 0..4000 {
             // 4-byte payload: each request's wire footprint (36) exceeds the
             // UNIMPLEMENTED reply's (32), so the client's queued replies can
-            // never outgrow the space the requests occupied.
-            match s.send_payload(&[94, 0, 0, 0]) {
+            // never outgrow the space the requests occupied. Type 63 is
+            // unassigned — it exercises the UNIMPLEMENTED passthrough path
+            // (types 90-100 are the channel layer now).
+            match s.send_payload(&[63, 0, 0, 0]) {
                 Ok(()) => sent += 1,
                 Err(Fail::OutOfCapacity) => {
                     hit_cap = true;
@@ -1469,10 +1571,11 @@ mod tests {
         loop {
             match c.feed(&[]).unwrap() {
                 Feed::Packet { msg_type, .. } => {
-                    assert_eq!(msg_type, 94);
+                    assert_eq!(msg_type, 63);
                     count += 1;
                 }
                 Feed::Progress => break,
+                other => panic!("unexpected feed outcome {:?}", other),
             }
         }
         assert_eq!(count, sent);

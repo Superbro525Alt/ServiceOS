@@ -1,4 +1,5 @@
 mod account;
+pub use account::verify_password;
 mod audio;
 mod backup;
 mod console;

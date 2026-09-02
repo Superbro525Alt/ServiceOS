@@ -69,7 +69,7 @@ fn main() -> u64 {
     let mut armed_read: Option<Handle> = None;
     let mut read_failures = 0usize;
     loop {
-        drain_public_channel(public.first);
+        drain_public_channel(bootstrap, public.first);
         drain_client_sessions(bootstrap);
         serviceos_shell_service::poll_background_jobs(bootstrap);
 
@@ -201,19 +201,86 @@ fn arm_console_read_line(session_handle: Handle) -> rt::Result<Handle> {
 
 /// Serve open requests on the shell public channel: each accepted client gets
 /// a dedicated endpoint whose server side becomes the operator-session key.
-fn drain_public_channel(public_server: Handle) {
+/// The additive VERIFY_PASSWORD request is served here too (sshd bridge).
+fn drain_public_channel(bootstrap: Handle, public_server: Handle) {
     loop {
         let mut message = RawMessage::empty(0);
         match rt::channel_receive_nonblocking(public_server, &mut message) {
             Ok(()) => {
                 if message.tag == shell_tag::SESSION_OPEN_REQUEST && message.handle_count >= 1 {
                     handle_session_open_request(&message);
+                } else if message.tag == shell_tag::VERIFY_PASSWORD_REQUEST
+                    && message.handle_count >= 1
+                {
+                    handle_verify_password_request(bootstrap, &message);
                 }
             }
             Err(rt::Error::QueueEmpty) => return,
             Err(_) => return,
         }
     }
+}
+
+/// VERIFY_PASSWORD_REQUEST relay: decode name + secret, run account-service's
+/// read-only verify through the shell's account channel, and answer
+/// [status=0][valid]. Denies (valid=0) on every transport failure — the
+/// caller fail-closes.
+fn handle_verify_password_request(bootstrap: Handle, message: &RawMessage) {
+    let reply_handle = message.handles[0];
+    let mut reply = RawMessage::empty(shell_tag::VERIFY_PASSWORD_REPLY);
+    reply.word_count = 2;
+    reply.words[0] = 0;
+    reply.words[1] = 0;
+
+    let mut name = [0u8; 64];
+    let mut secret = [0u8; 64];
+    if let Some((name_len, secret_len)) = decode_verify_request(message, &mut name, &mut secret) {
+        let name_str = core::str::from_utf8(&name[..name_len]).unwrap_or("");
+        let secret_str = core::str::from_utf8(&secret[..secret_len]).unwrap_or("");
+        match serviceos_shell_service::commands::verify_password(bootstrap, name_str, secret_str) {
+            Ok(valid) => reply.words[1] = if valid { 1 } else { 0 },
+            Err(_) => reply.words[1] = 0,
+        }
+    }
+    let _ = rt::channel_send(reply_handle, &reply);
+    let _ = rt::handle_close(reply_handle);
+}
+
+/// Decode [name_len][name][secret_len][secret] into the caller's scratch
+/// buffers; returns the two field lengths on success.
+fn decode_verify_request(
+    message: &RawMessage,
+    name: &mut [u8; 64],
+    secret: &mut [u8; 64],
+) -> Option<(usize, usize)> {
+    // words[0] carries the name length (network packs name at words[1..]).
+    let mut cursor = 0usize;
+    let name_len = (*message.words.get(cursor)?) as usize;
+    cursor += 1;
+    if name_len > name.len() {
+        return None;
+    }
+    let name_words = name_len.div_ceil(8);
+    rt::unpack_bytes(
+        message.words.get(cursor..cursor + name_words)?,
+        name_len,
+        &mut name[..name_len],
+    )
+    .ok()?;
+    cursor += name_words;
+    let secret_len = (*message.words.get(cursor)?) as usize;
+    cursor += 1;
+    if secret_len > secret.len() {
+        return None;
+    }
+    let secret_words = secret_len.div_ceil(8);
+    rt::unpack_bytes(
+        message.words.get(cursor..cursor + secret_words)?,
+        secret_len,
+        &mut secret[..secret_len],
+    )
+    .ok()?;
+    Some((name_len, secret_len))
 }
 
 fn handle_session_open_request(message: &RawMessage) {

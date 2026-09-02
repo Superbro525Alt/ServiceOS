@@ -9,11 +9,18 @@
 //! role is the operator surface; a minimal client role exists solely as a
 //! test helper for the in-process handshake harness.
 //!
-//! Explicitly NOT implemented (later waves): user authentication (RFC 4252),
-//! channels/sessions (RFC 4254), rekeying, compression, known_hosts host-key
-//! trust. Unimplemented packet types are answered with SSH_MSG_UNIMPLEMENTED
-//! or an honest DISCONNECT (e.g. SSH_MSG_SERVICE_REQUEST answers
-//! SERVICE_NOT_AVAILABLE, a rekey KEXINIT answers PROTOCOL_ERROR).
+//! Established-state services (server side): RFC 4252 user authentication
+//! with the `password` method only (`auth` — credentials are parked for the
+//! host's own verifier, three failures disconnect), and one RFC 4254
+//! interactive session channel (`channel` — pty-req + shell, windowed data
+//! both ways, EOF/close semantics). The session bridge to a real shell lives
+//! with the sshd pump in network-service.
+//!
+//! Explicitly NOT implemented (later waves): rekeying, compression,
+//! known_hosts host-key trust, publickey/keyboard-interactive auth, port
+//! forwarding, exec/subsystem channels. Unimplemented packet types are
+//! answered with SSH_MSG_UNIMPLEMENTED or an honest DISCONNECT (a rekey
+//! KEXINIT answers PROTOCOL_ERROR).
 //!
 //! Trust gap (documented, deliberate): the transport verifies the host-key
 //! signature over the exchange hash cryptographically, but performs no
@@ -30,6 +37,8 @@
 #![cfg_attr(not(test), no_std)]
 #![allow(dead_code)]
 
+pub mod auth;
+pub mod channel;
 pub mod error;
 pub mod hostkey;
 pub mod kex;
@@ -38,6 +47,9 @@ pub mod packet;
 pub mod transport;
 pub mod version;
 pub mod wire;
+
+#[cfg(test)]
+pub(crate) mod testkit;
 
 pub use error::{DisconnectReason, Fail};
 pub use transport::{Feed, Role, SshTransport, State};

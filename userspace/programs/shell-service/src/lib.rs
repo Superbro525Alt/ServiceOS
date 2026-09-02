@@ -32,6 +32,14 @@ pub mod shell_tag {
     pub const SESSION_OUTPUT_TEXT: u32 = 0x243;
     /// Client is done; releases the operator session row.
     pub const SESSION_CLOSE: u32 = 0x244;
+    /// Additive (sshd bridge): words[0] = name length, words[1..] = packed
+    /// name, then secret length + packed secret; handles[0] = reply channel.
+    /// The shell relays to account-service's VERIFY_PASSWORD contract using
+    /// its existing account-channel cache (launching the service on demand).
+    pub const VERIFY_PASSWORD_REQUEST: u32 = 0x245;
+    /// words[0] = status (0 ok), words[1] = 1 when the credentials verify,
+    /// 0 otherwise.
+    pub const VERIFY_PASSWORD_REPLY: u32 = 0x246;
 }
 
 pub fn execute_command_with_source(

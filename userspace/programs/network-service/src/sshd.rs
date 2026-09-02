@@ -30,11 +30,158 @@
 use crate::consts::SSHD_LISTEN_PORT;
 use crate::types::{TcpListenerSlot, TcpTransportSlot};
 use core::cell::UnsafeCell;
+use serviceos_ssh::auth::AuthPhase;
 use serviceos_ssh::transport::{Feed, SshTransport, State};
 use serviceos_userspace_runtime as rt;
 use smoltcp::iface::SocketHandle;
 use smoltcp::iface::SocketSet;
 use smoltcp::socket::tcp;
+
+/// Shell public-channel wire tags. Duplicated locally (not imported)
+/// following desktop-shell-service's precedent — the shell publishes these
+/// in its own crate range (0x240-0x244), and network-service avoids a
+/// dependency on the whole shell library for five constants.
+mod shell_tag {
+    pub const SESSION_OPEN_REQUEST: u32 = 0x240;
+    pub const SESSION_OPEN_REPLY: u32 = 0x241;
+    pub const SESSION_INPUT_LINE: u32 = 0x242;
+    pub const SESSION_OUTPUT_TEXT: u32 = 0x243;
+    pub const SESSION_CLOSE: u32 = 0x244;
+    /// Additive verify relay (sshd bridge); served by the shell public
+    /// channel with the same status-first reply convention.
+    pub const VERIFY_PASSWORD_REQUEST: u32 = 0x245;
+    pub const VERIFY_PASSWORD_REPLY: u32 = 0x246;
+}
+
+/// The prompt the shell echoes after each executed line; also emitted by
+/// this bridge when the session opens and on empty enters (the shell client
+/// path only prompts after output).
+const SHELL_PROMPT: &str = "serviceos> ";
+/// Line capacity: shell-service accepts MAX_LINE_BYTES (128) but its
+/// client path can only carry (IPC_MAX_WORDS-1)*8 = 120 payload bytes per
+/// SESSION_INPUT_LINE, so the honest cap for remote lines is 120.
+const LINE_CAP: usize = 120;
+/// Inbound channel-data chunks are copied here from the transport's staging
+/// buffer before line processing (interactive keystroke batches are tiny).
+const INPUT_CHUNK_CAP: usize = 256;
+/// Account-service VERIFY_PASSWORD scratch (bounds mirror account-service).
+const AUTH_USER_CAP: usize = 32;
+const AUTH_PASS_CAP: usize = 64;
+/// Bounded polls for the shell session open reply (one per main-loop pass).
+const OPEN_WAIT_PASSES: u16 = 1000;
+/// Cooldown passes before retrying an unreachable shell service.
+const VERIFY_COOLDOWN_PASSES: u16 = 512;
+/// Passes between a peer EOF and our channel close (output drain grace).
+const EOF_GRACE_PASSES: u16 = 16;
+
+/// Shell-mediated verify lifecycle. The shell owns the account-service
+/// relationship (its manifest grants the storage lookup and the stored-image
+/// launch, and it caches the account channel); this side only resolves the
+/// shell service and exchanges the additive VERIFY_PASSWORD round trip.
+enum AccountPhase {
+    /// Nothing in flight.
+    Idle,
+    /// Shell service resolved; no verify in flight.
+    Ready { channel: rt::Handle },
+    /// VERIFY_PASSWORD sent; polling the reply channel.
+    VerifyPending {
+        channel: rt::Handle,
+        reply: rt::Handle,
+    },
+    /// Shell unreachable; retry after a cooldown.
+    Unavailable { cooldown: u16 },
+}
+
+/// Bridge from the SSH session channel to a shell operator session.
+enum BridgePhase {
+    /// No shell session yet (or the last one is gone).
+    Closed,
+    /// SESSION_OPEN_REQUEST sent; awaiting the reply on `carrier`.
+    Opening { carrier: rt::Handle, budget: u16 },
+    /// Operator session live; `endpoint` receives input lines and serves
+    /// output text.
+    Open { endpoint: rt::Handle },
+}
+
+/// Per-session bridge state (bounded storage in `.bss` via SshdSlot).
+struct SessionBridge {
+    account: AccountPhase,
+    bridge: BridgePhase,
+    shell_handle: Option<rt::Handle>,
+    prompt_sent: bool,
+    /// Credentials copied out of the transport while verification runs;
+    /// zeroed once the verdict lands.
+    auth_user: [u8; AUTH_USER_CAP],
+    auth_user_len: usize,
+    auth_pass: [u8; AUTH_PASS_CAP],
+    auth_pass_len: usize,
+    verify_in_flight: bool,
+    /// Interactive line assembly.
+    line: [u8; LINE_CAP],
+    line_len: usize,
+    /// Line completed before the shell operator session opened (the client
+    /// can type faster than the bridge opens); submitted on open.
+    pending_line: [u8; LINE_CAP],
+    pending_len: usize,
+    /// Passes remaining before a peer EOF closes the channel (grace so the
+    /// shell's pending output drains first).
+    eof_grace: u16,
+}
+
+impl SessionBridge {
+    const fn new() -> SessionBridge {
+        SessionBridge {
+            account: AccountPhase::Idle,
+            bridge: BridgePhase::Closed,
+            shell_handle: None,
+            prompt_sent: false,
+            auth_user: [0; AUTH_USER_CAP],
+            auth_user_len: 0,
+            auth_pass: [0; AUTH_PASS_CAP],
+            auth_pass_len: 0,
+            verify_in_flight: false,
+            line: [0; LINE_CAP],
+            line_len: 0,
+            pending_line: [0; LINE_CAP],
+            pending_len: 0,
+            eof_grace: 0,
+        }
+    }
+
+    fn zero_credentials(&mut self) {
+        self.auth_user.fill(0);
+        self.auth_user_len = 0;
+        self.auth_pass.fill(0);
+        self.auth_pass_len = 0;
+        self.verify_in_flight = false;
+    }
+
+    fn reset(&mut self) {
+        self.zero_credentials();
+        self.line_len = 0;
+        self.pending_len = 0;
+        self.eof_grace = 0;
+        self.prompt_sent = false;
+        // Account channel stays cached across sessions (the service keeps
+        // running); the shell session endpoint does not. SESSION_CLOSE lets
+        // the shell release the operator-session row cleanly.
+        if let BridgePhase::Open { endpoint } = self.bridge {
+            let mut close = rt::RawMessage::empty(shell_tag::SESSION_CLOSE);
+            let _ = rt::channel_send(endpoint, &close);
+            let _ = rt::handle_close(endpoint);
+        }
+        if let BridgePhase::Opening { carrier, .. } = self.bridge {
+            let _ = rt::handle_close(carrier);
+        }
+        if let AccountPhase::VerifyPending { reply, .. } = self.account {
+            let _ = rt::handle_close(reply);
+        }
+        self.bridge = BridgePhase::Closed;
+        if let AccountPhase::VerifyPending { channel, .. } = self.account {
+            self.account = AccountPhase::Ready { channel };
+        }
+    }
+}
 
 /// SSH listener state. Flat on purpose: the transport's ~139 KiB of fixed
 /// buffers are embedded directly so the whole struct lives in `.bss` (via
@@ -53,6 +200,7 @@ pub(crate) struct SshdState {
     pending_close: Option<usize>,
     close_grace: u32,
     transport: SshTransport,
+    bridge: SessionBridge,
 }
 
 /// Main-loop iterations granted to flush the disconnect before aborting.
@@ -69,6 +217,7 @@ impl SshdState {
             pending_close: None,
             close_grace: 0,
             transport: SshTransport::placeholder(),
+            bridge: SessionBridge::new(),
         }
     }
 
@@ -79,6 +228,7 @@ impl SshdState {
         self.session_active = true;
         self.transport_index = transport_index;
         self.established_logged = false;
+        self.bridge = SessionBridge::new();
         self.transport.init_server(seeds.0, seeds.1, seeds.2);
     }
 }
@@ -150,6 +300,7 @@ pub(crate) fn derive_host_seeds(source: &[u8], mac: &[u8; 6], tick: u64) -> Seed
 pub(crate) fn pump(
     state: &mut SshdState,
     seeds: Seeds,
+    bootstrap: rt::Handle,
     log_handle: rt::Handle,
     listeners: &mut [TcpListenerSlot; crate::consts::MAX_TCP_LISTENERS],
     transports: &mut [TcpTransportSlot; crate::consts::MAX_TCP_SOCKETS],
@@ -214,8 +365,49 @@ pub(crate) fn pump(
             return PumpNote::Ended("network: sshd session ended (peer closed)");
         }
         let mut stream = SmolStream(socket);
-        drive_session(&mut stream, &mut state.transport)
+        drive_session(&mut stream, &mut state.transport, &mut state.bridge)
     };
+    // Established-state service pumps: the verifier and the shell bridge
+    // advance once per pass and may queue replies that need a second TX
+    // flush. Both are honest no-ops until the transport reaches
+    // Established — which is also the outcome drive_session reports on
+    // every pass after KEX, so this must not live inside one match arm.
+    if state.transport.state() == State::Established {
+        pump_auth(
+            &mut state.bridge,
+            &mut state.transport,
+            bootstrap,
+            log_handle,
+        );
+        pump_shell(
+            &mut state.bridge,
+            &mut state.transport,
+            bootstrap,
+            log_handle,
+        );
+        // Peer half-close (EOF): complete our half honestly (EOF + CLOSE)
+        // and release the shell session; the TCP teardown follows the
+        // client's full close.
+        if state.transport.channel_eof_in() && !state.transport.channel_closed() {
+            let _ = state.transport.send_channel_eof();
+            let _ = state.transport.send_channel_close();
+            state.bridge.reset();
+            let _ = rt::write_logf(
+                "network",
+                format_args!("sshd channel eof (client half-close)"),
+            );
+        }
+        if transport_queued(&state.transport) {
+            if let Some(socket_handle) = transports
+                .get(state.transport_index)
+                .and_then(|slot| slot.socket_handle)
+            {
+                let socket = sockets.get_mut::<tcp::Socket>(socket_handle);
+                let mut stream = SmolStream(socket);
+                flush_tx(&mut stream, &mut state.transport);
+            }
+        }
+    }
     match outcome {
         SessionOutcome::Progress => PumpNote::Quiet,
         SessionOutcome::Established => {
@@ -227,6 +419,9 @@ pub(crate) fn pump(
             }
         }
         SessionOutcome::Ended(reason) => {
+            // Release the session's IPC surface (shell endpoint, verify
+            // reply channel, parked credentials) before the slot teardown.
+            state.bridge.reset();
             // Keep the slot alive for a few iterations so smoltcp can
             // transmit the queued DISCONNECT before the teardown aborts
             // the socket; aborting immediately turns the protocol-level
@@ -352,9 +547,15 @@ impl StreamLike for SmolStream<'_, '_> {
 }
 
 /// Core transport pump: recv -> feed, then drain queued output into the
-/// stream (partial writes retry on later loop iterations). This is the exact
-/// driving model the host tests exercise with a mock duplex.
-fn drive_session(stream: &mut dyn StreamLike, transport: &mut SshTransport) -> SessionOutcome {
+/// stream (partial writes retry on later loop iterations). Channel-data
+/// batches are copied out of the staging buffer and fed through the bridge's
+/// line discipline (echo + line assembly); parked authentication attempts
+/// are surfaced to `pump_auth` via the transport's pending state.
+fn drive_session(
+    stream: &mut dyn StreamLike,
+    transport: &mut SshTransport,
+    bridge: &mut SessionBridge,
+) -> SessionOutcome {
     let mut buffer = [0u8; 256];
     let mut protocol_failed = false;
     // RX: hand everything available to the state machine.
@@ -370,9 +571,24 @@ fn drive_session(stream: &mut dyn StreamLike, transport: &mut SshTransport) -> S
         }
         match transport.feed(&buffer[..received]) {
             Ok(Feed::Progress) => {}
+            Ok(Feed::AuthQuery) => {
+                // Processing stalls until the verifier delivers a verdict;
+                // pump_auth advances it after the TX drain below.
+            }
+            Ok(Feed::ChannelData { data }) => {
+                // Copy out of the staging buffer so the line discipline can
+                // push echo bytes back through the transport.
+                let mut chunk = [0u8; INPUT_CHUNK_CAP];
+                let n = data.len().min(chunk.len());
+                chunk[..n].copy_from_slice(&data[..n]);
+                let consumed = data.len().min(chunk.len());
+                transport.ack_channel_data(consumed).ok();
+                feed_line_input(bridge, transport, &chunk[..n]);
+            }
             Ok(Feed::Packet { .. }) => {
-                // Library already queued SSH_MSG_UNIMPLEMENTED; no session
-                // surface exists this wave, so close honestly.
+                // Unknown established-state message: the library already
+                // queued SSH_MSG_UNIMPLEMENTED; keep the v0 policy of one
+                // polite passthrough then close.
                 protocol_failed = true;
                 break;
             }
@@ -385,20 +601,7 @@ fn drive_session(stream: &mut dyn StreamLike, transport: &mut SshTransport) -> S
         }
     }
     // TX: drain queued wire bytes into the stream.
-    loop {
-        let pending = transport.pending_output();
-        if pending.is_empty() {
-            break;
-        }
-        let copied = match stream.send(pending) {
-            Ok(written) => written,
-            Err(()) => return SessionOutcome::Ended("network: sshd session closed (send failed)"),
-        };
-        if copied == 0 {
-            break;
-        }
-        transport.consume_output(copied);
-    }
+    flush_tx(stream, transport);
     match transport.state() {
         State::Closed => {
             if protocol_failed {
@@ -410,6 +613,468 @@ fn drive_session(stream: &mut dyn StreamLike, transport: &mut SshTransport) -> S
         State::Established => SessionOutcome::Established,
         _ => SessionOutcome::Progress,
     }
+}
+
+/// Drain the transport's queued wire bytes into the stream (partial writes
+/// retry on later iterations).
+fn flush_tx(stream: &mut dyn StreamLike, transport: &mut SshTransport) {
+    loop {
+        let pending = transport.pending_output();
+        if pending.is_empty() {
+            break;
+        }
+        let copied = match stream.send(pending) {
+            Ok(written) => written,
+            Err(()) => return,
+        };
+        if copied == 0 {
+            break;
+        }
+        transport.consume_output(copied);
+    }
+}
+
+fn transport_queued(transport: &SshTransport) -> bool {
+    !transport.pending_output().is_empty()
+}
+
+// ----------------------------------------------------------------------
+// Authentication bridge: account-service VERIFY_PASSWORD
+// ----------------------------------------------------------------------
+
+/// Advance the account-service verifier one step per pump pass. The pure
+/// SSH library parks password attempts (Feed::AuthQuery); this side performs
+/// the actual credential check over IPC and feeds the verdict back.
+fn pump_auth(
+    bridge: &mut SessionBridge,
+    transport: &mut SshTransport,
+    bootstrap: rt::Handle,
+    log_handle: rt::Handle,
+) {
+    if transport.auth_phase() != AuthPhase::Pending {
+        return;
+    }
+    // Take freshly parked credentials once.
+    if !bridge.verify_in_flight && bridge.auth_user_len == 0 {
+        let mut user = [0u8; AUTH_USER_CAP];
+        let mut pass = [0u8; AUTH_PASS_CAP];
+        if let Some((u, p)) = transport.take_auth_request(&mut user, &mut pass) {
+            bridge.auth_user[..u].copy_from_slice(&user[..u]);
+            bridge.auth_user_len = u;
+            bridge.auth_pass[..p].copy_from_slice(&pass[..p]);
+            bridge.auth_pass_len = p;
+            let user_text = core::str::from_utf8(&bridge.auth_user[..u]).unwrap_or("?");
+            let _ = rt::write_logf(
+                "network",
+                format_args!("sshd auth attempt user={user_text}"),
+            );
+        }
+    }
+    // Advance the account channel lifecycle one step.
+    advance_account_phase(bridge, bootstrap, log_handle);
+    // Parked credentials + reachable account service -> send the verify RPC.
+    if bridge.auth_user_len > 0 && !bridge.verify_in_flight {
+        if let AccountPhase::Ready { channel } = bridge.account {
+            send_verify_request(bridge, channel);
+        }
+    }
+    // Verify in flight -> poll for the reply and deliver the verdict.
+    if bridge.verify_in_flight {
+        if let AccountPhase::VerifyPending { channel, reply } = bridge.account {
+            let mut response = rt::RawMessage::empty(0);
+            match rt::channel_receive_nonblocking(reply, &mut response) {
+                Ok(()) => {
+                    let _ = rt::handle_close(reply);
+                    let valid = response.tag == shell_tag::VERIFY_PASSWORD_REPLY
+                        && response.word_count >= 2
+                        && response.words[0] == 0
+                        && response.words[1] == 1;
+                    bridge.account = AccountPhase::Ready { channel };
+                    deliver_verdict(bridge, transport, valid, log_handle);
+                }
+                Err(rt::Error::QueueEmpty) => {}
+                Err(_) => {
+                    let _ = rt::handle_close(reply);
+                    bridge.account = AccountPhase::Unavailable {
+                        cooldown: VERIFY_COOLDOWN_PASSES,
+                    };
+                    deliver_verdict(bridge, transport, false, log_handle);
+                }
+            }
+        }
+    }
+    // Account service unavailable while credentials are parked: deny after a
+    // bounded number of passes so the client never hangs forever.
+    if bridge.auth_user_len > 0 && !bridge.verify_in_flight {
+        if let AccountPhase::Unavailable { cooldown } = bridge.account {
+            if cooldown == 0 {
+                let _ = rt::write_logf(
+                    "network",
+                    format_args!("sshd auth denied (verifier unavailable)"),
+                );
+                deliver_verdict(bridge, transport, false, log_handle);
+            }
+        }
+    }
+}
+
+fn advance_account_phase(
+    bridge: &mut SessionBridge,
+    bootstrap: rt::Handle,
+    log_handle: rt::Handle,
+) {
+    match bridge.account {
+        AccountPhase::Idle => match rt::lookup_service(bootstrap, rt::ServiceId::Shell) {
+            Ok(channel) => {
+                bridge.account = AccountPhase::Ready { channel };
+            }
+            Err(_) => {
+                let _ = rt::write_logf(
+                    "network",
+                    format_args!("sshd: shell service unreachable for verify"),
+                );
+                bridge.account = AccountPhase::Unavailable {
+                    cooldown: VERIFY_COOLDOWN_PASSES,
+                };
+            }
+        },
+        AccountPhase::Unavailable { cooldown } => {
+            bridge.account = if cooldown > 0 {
+                AccountPhase::Unavailable {
+                    cooldown: cooldown - 1,
+                }
+            } else {
+                AccountPhase::Idle
+            };
+        }
+        AccountPhase::Ready { .. } | AccountPhase::VerifyPending { .. } => {}
+    }
+    let _ = log_handle;
+}
+
+/// Send VERIFY_PASSWORD_REQUEST to the shell public channel (name length
+/// word + packed name, secret length word + packed secret). The shell
+/// relays to account-service's read-only verify and answers
+/// [status=0][valid].
+fn send_verify_request(bridge: &mut SessionBridge, channel: rt::Handle) {
+    let pair = match rt::channel_create() {
+        Ok(pair) => pair,
+        Err(_) => return,
+    };
+    let mut request = rt::RawMessage::empty(shell_tag::VERIFY_PASSWORD_REQUEST);
+    request.words[0] = bridge.auth_user_len as u64;
+    let name_words = match rt::pack_bytes(
+        &bridge.auth_user[..bridge.auth_user_len],
+        &mut request.words[1..],
+    ) {
+        Ok(words) => words as usize,
+        Err(_) => {
+            let _ = rt::handle_close(pair.first);
+            let _ = rt::handle_close(pair.second);
+            return;
+        }
+    };
+    let mut cursor = 1 + name_words;
+    request.words[cursor] = bridge.auth_pass_len as u64;
+    cursor += 1;
+    let pass_words = match rt::pack_bytes(
+        &bridge.auth_pass[..bridge.auth_pass_len],
+        &mut request.words[cursor..],
+    ) {
+        Ok(words) => words as usize,
+        Err(_) => {
+            let _ = rt::handle_close(pair.first);
+            let _ = rt::handle_close(pair.second);
+            return;
+        }
+    };
+    cursor += pass_words;
+    request.word_count = cursor as u32;
+    request.handle_count = 1;
+    request.handles[0] = pair.second;
+    request.handle_rights[0] = rt::rights::SEND;
+    match rt::channel_send(channel, &request) {
+        Ok(()) => {
+            let _ = rt::handle_close(pair.second);
+            bridge.account = AccountPhase::VerifyPending {
+                channel,
+                reply: pair.first,
+            };
+            bridge.verify_in_flight = true;
+        }
+        Err(_) => {
+            let _ = rt::handle_close(pair.first);
+            let _ = rt::handle_close(pair.second);
+            bridge.account = AccountPhase::Idle;
+        }
+    }
+}
+
+/// Deliver the host's verdict into the transport (SUCCESS / FAILURE /
+/// bounded lockout) and clean the parked credentials.
+fn deliver_verdict(
+    bridge: &mut SessionBridge,
+    transport: &mut SshTransport,
+    valid: bool,
+    log_handle: rt::Handle,
+) {
+    let user_text = core::str::from_utf8(&bridge.auth_user[..bridge.auth_user_len]).unwrap_or("?");
+    let outcome = transport.auth_verdict(valid);
+    match &outcome {
+        Ok(()) => {
+            let _ = rt::write_logf(
+                "network",
+                format_args!(
+                    "sshd auth {} user={user_text}",
+                    if valid { "ok" } else { "fail" }
+                ),
+            );
+        }
+        Err(_) => {
+            // Lockout disconnect (or NotReady); the DISCONNECT is queued.
+            let _ = rt::write_logf(
+                "network",
+                format_args!("sshd auth lockout user={user_text}"),
+            );
+        }
+    }
+    bridge.zero_credentials();
+    let _ = log_handle;
+}
+
+// ----------------------------------------------------------------------
+// Shell bridge: remote channel <-> shell operator session
+// ----------------------------------------------------------------------
+
+/// Advance the shell operator-session bridge one step per pump pass. The
+/// remote connection becomes a plain client session on the shell public
+/// channel: SESSION_INPUT_LINE in, SESSION_OUTPUT_TEXT out — the same wire
+/// contract the desktop login uses.
+fn pump_shell(
+    bridge: &mut SessionBridge,
+    transport: &mut SshTransport,
+    bootstrap: rt::Handle,
+    log_handle: rt::Handle,
+) {
+    if !transport.channel_ready() || transport.channel_closed() {
+        return;
+    }
+    if bridge.shell_handle.is_none() {
+        bridge.shell_handle = rt::lookup_service(bootstrap, rt::ServiceId::Shell).ok();
+        if bridge.shell_handle.is_none() {
+            return;
+        }
+    }
+    let Some(shell) = bridge.shell_handle else {
+        return;
+    };
+    match bridge.bridge {
+        BridgePhase::Closed => {
+            let pair = match rt::channel_create() {
+                Ok(pair) => pair,
+                Err(_) => return,
+            };
+            let mut request = rt::RawMessage::empty(shell_tag::SESSION_OPEN_REQUEST);
+            request.handle_count = 1;
+            request.handles[0] = pair.second;
+            request.handle_rights[0] = rt::rights::SEND;
+            if rt::channel_send(shell, &request).is_err() {
+                let _ = rt::handle_close(pair.first);
+                let _ = rt::handle_close(pair.second);
+                return;
+            }
+            let _ = rt::handle_close(pair.second);
+            bridge.bridge = BridgePhase::Opening {
+                carrier: pair.first,
+                budget: OPEN_WAIT_PASSES,
+            };
+        }
+        BridgePhase::Opening { carrier, budget } => {
+            let mut reply = rt::RawMessage::empty(0);
+            match rt::channel_receive_nonblocking(carrier, &mut reply) {
+                Ok(()) => {
+                    let _ = rt::handle_close(carrier);
+                    if reply.tag == shell_tag::SESSION_OPEN_REPLY
+                        && reply.word_count >= 1
+                        && reply.words[0] == 0
+                        && reply.handle_count >= 1
+                    {
+                        let endpoint = reply.handles[0];
+                        bridge.bridge = BridgePhase::Open { endpoint };
+                        let _ =
+                            rt::write_logf("network", format_args!("sshd shell session opened"));
+                        // Lines typed before the bridge opened are submitted
+                        // now (the first one; later early lines were dropped
+                        // with a log).
+                        if bridge.pending_len > 0 {
+                            let pending_len = bridge.pending_len;
+                            let mut pending = [0u8; LINE_CAP];
+                            pending[..pending_len]
+                                .copy_from_slice(&bridge.pending_line[..pending_len]);
+                            bridge.pending_len = 0;
+                            send_input_line(endpoint, &pending[..pending_len]);
+                        }
+                    } else {
+                        // Busy/unavailable: stay Closed and retry next pass.
+                        bridge.bridge = BridgePhase::Closed;
+                    }
+                }
+                Err(rt::Error::QueueEmpty) => {
+                    if budget > 0 {
+                        bridge.bridge = BridgePhase::Opening {
+                            carrier,
+                            budget: budget - 1,
+                        };
+                    } else {
+                        let _ = rt::handle_close(carrier);
+                        bridge.bridge = BridgePhase::Closed;
+                        let _ = rt::write_logf(
+                            "network",
+                            format_args!("sshd: shell session open timed out"),
+                        );
+                    }
+                }
+                Err(_) => {
+                    let _ = rt::handle_close(carrier);
+                    bridge.bridge = BridgePhase::Closed;
+                }
+            }
+        }
+        BridgePhase::Open { endpoint } => {
+            // Initial prompt (the shell client path only prompts after
+            // executing a line).
+            if !bridge.prompt_sent {
+                bridge.prompt_sent = true;
+                let _ = transport.send_channel_data(SHELL_PROMPT.as_bytes());
+            }
+            // Drain shell output into the channel.
+            loop {
+                let mut message = rt::RawMessage::empty(0);
+                match rt::channel_receive_nonblocking(endpoint, &mut message) {
+                    Ok(()) => {
+                        if message.tag == shell_tag::SESSION_CLOSE {
+                            // Shell released the session (logout command).
+                            let _ = rt::handle_close(endpoint);
+                            bridge.bridge = BridgePhase::Closed;
+                            bridge.prompt_sent = false;
+                            let _ = transport.send_channel_eof();
+                            let _ = transport.send_channel_close();
+                            break;
+                        }
+                        if message.tag != shell_tag::SESSION_OUTPUT_TEXT || message.word_count < 1 {
+                            continue;
+                        }
+                        let len =
+                            (message.words[0] as usize).min((message.word_count as usize - 1) * 8);
+                        let mut text = [0u8; 128];
+                        let len = len.min(text.len());
+                        if rt::unpack_bytes(
+                            &message.words[1..message.word_count as usize],
+                            len,
+                            &mut text,
+                        )
+                        .is_err()
+                        {
+                            continue;
+                        }
+                        let accepted = transport.send_channel_data(&text[..len]).unwrap_or(0);
+                        if accepted < len {
+                            let _ = rt::write_logf(
+                                "network",
+                                format_args!(
+                                    "sshd: channel output truncated ({}/{})",
+                                    accepted, len
+                                ),
+                            );
+                        }
+                    }
+                    Err(rt::Error::QueueEmpty) => break,
+                    Err(_) => {
+                        // Endpoint gone: tear the channel down honestly.
+                        let _ = rt::handle_close(endpoint);
+                        bridge.bridge = BridgePhase::Closed;
+                        bridge.prompt_sent = false;
+                        let _ = transport.send_channel_close();
+                        let _ = rt::write_logf("network", format_args!("sshd shell session lost"));
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    let _ = log_handle;
+}
+
+/// Line discipline for interactive input: local echo, backspace erase,
+/// CR/LF submits the assembled line to the shell operator session. The
+/// remote connection is the console; the shell does no echoing of its own
+/// over the client path.
+fn feed_line_input(bridge: &mut SessionBridge, transport: &mut SshTransport, bytes: &[u8]) {
+    for &byte in bytes {
+        match byte {
+            b'\r' | b'\n' => {
+                let _ = transport.send_channel_data(b"\r\n");
+                let line_len = bridge.line_len;
+                bridge.line_len = 0;
+                if line_len == 0 {
+                    // Empty enter: re-prompt locally.
+                    let _ = transport.send_channel_data(SHELL_PROMPT.as_bytes());
+                    continue;
+                }
+                let mut line = [0u8; LINE_CAP];
+                line[..line_len].copy_from_slice(&bridge.line[..line_len]);
+                match bridge.bridge {
+                    BridgePhase::Open { endpoint } => {
+                        send_input_line(endpoint, &line[..line_len]);
+                    }
+                    _ => {
+                        // The shell session is not open yet: park the first
+                        // early line for the open transition.
+                        if bridge.pending_len == 0 {
+                            bridge.pending_line[..line_len].copy_from_slice(&line[..line_len]);
+                            bridge.pending_len = line_len;
+                        } else {
+                            let _ = rt::write_logf(
+                                "network",
+                                format_args!("sshd: early line dropped (bridge not open)"),
+                            );
+                        }
+                    }
+                }
+            }
+            0x08 | 0x7f => {
+                if bridge.line_len > 0 {
+                    bridge.line_len -= 1;
+                    let _ = transport.send_channel_data(b"\x08 \x08");
+                }
+            }
+            0x03 => {
+                // ^C: abandon the assembled line.
+                bridge.line_len = 0;
+                let _ = transport.send_channel_data(b"^C\r\n");
+            }
+            b if b.is_ascii_graphic() || b == b' ' => {
+                if bridge.line_len < LINE_CAP {
+                    bridge.line[bridge.line_len] = byte;
+                    bridge.line_len += 1;
+                    let _ = transport.send_channel_data(&[byte]);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Submit one assembled line to the shell operator session.
+fn send_input_line(endpoint: rt::Handle, line: &[u8]) {
+    let mut message = rt::RawMessage::empty(shell_tag::SESSION_INPUT_LINE);
+    message.words[0] = line.len() as u64;
+    let packed = match rt::pack_bytes(line, &mut message.words[1..]) {
+        Ok(words) => words,
+        Err(_) => return,
+    };
+    message.word_count = 1 + packed as u32;
+    let _ = rt::channel_send(endpoint, &message);
 }
 
 #[cfg(test)]
@@ -462,7 +1127,7 @@ mod tests {
     /// TCP sockets, driven by the same recv->feed / drain-output loop that
     /// `drive_session` runs per main-loop iteration.
     #[test]
-    fn kex_completes_over_mock_duplex_then_service_request_disconnects() {
+    fn kex_completes_over_mock_duplex_then_service_request_is_accepted() {
         let mut wire_server_to_client: Vec<u8> = Vec::new();
         let mut wire_client_to_server: std::collections::VecDeque<u8> =
             std::collections::VecDeque::new();
@@ -490,12 +1155,13 @@ mod tests {
 
         // Run the server pump until Established.
         let mut established = false;
+        let mut test_bridge = SessionBridge::new();
         for _ in 0..64 {
             let mut server_stream = MockStream {
                 from_peer: &mut wire_client_to_server,
                 to_peer: &mut wire_server_to_client,
             };
-            let note = drive_session(&mut server_stream, &mut server_transport);
+            let note = drive_session(&mut server_stream, &mut server_transport, &mut test_bridge);
             drop(server_stream);
             // Client RX: feed what the server emitted, drain client output.
             {
@@ -512,32 +1178,147 @@ mod tests {
         assert_eq!(server_transport.state(), State::Established);
 
         // Post-establishment: emulate an operator client asking for
-        // ssh-userauth. The library's honest v0 policy disconnects.
+        // ssh-userauth. The auth layer answers SERVICE_ACCEPT and parks the
+        // transport in ServiceAccepted (see shared/ssh auth tests for the
+        // full matrix; the in-guest verifier flow is exercised live).
         let mut request = Vec::new();
         request.push(5u8); // SSH_MSG_SERVICE_REQUEST
-        request.extend_from_slice(&11u32.to_be_bytes());
+        request.extend_from_slice(&12u32.to_be_bytes());
         request.extend_from_slice(b"ssh-userauth");
         client.send_payload(&request).expect("client payload send");
         client_pump!();
 
-        let mut disconnected = false;
+        let mut accepted = false;
         for _ in 0..64 {
             let mut server_stream = MockStream {
                 from_peer: &mut wire_client_to_server,
                 to_peer: &mut wire_server_to_client,
             };
-            let _note = drive_session(&mut server_stream, &mut server_transport);
+            let _note = drive_session(&mut server_stream, &mut server_transport, &mut test_bridge);
             drop(server_stream);
             {
                 let rx: Vec<u8> = wire_server_to_client.drain(..).collect();
-                let _ = client.feed(&rx);
+                if client.feed(&rx).is_ok() {
+                    // SERVICE_ACCEPT is an unknown established-state type on
+                    // the client helper, so it surfaces as a passthrough.
+                    accepted = true;
+                    break;
+                }
             }
             if matches!(client.state(), State::Closed) {
-                disconnected = true;
                 break;
             }
         }
-        assert!(disconnected, "server never disconnected on service request");
-        assert_eq!(server_transport.state(), State::Closed);
+        assert!(accepted, "client never observed the SERVICE_ACCEPT reply");
+        assert_eq!(server_transport.state(), State::Established);
+        assert_eq!(
+            server_transport.auth_phase(),
+            serviceos_ssh::auth::AuthPhase::ServiceAccepted
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Bridge line discipline (host-testable pure state)
+    // ------------------------------------------------------------------
+
+    struct LineBench {
+        transport: SshTransport,
+        bridge: SessionBridge,
+    }
+
+    fn line_bench() -> LineBench {
+        let (host_seed, kex_seed, cookie) = test_seeds();
+        let mut transport = SshTransport::server(host_seed, kex_seed, cookie);
+        transport.init_server(host_seed, kex_seed, cookie);
+        // Channel-open + shell requests are handled by the library even
+        // before auth for the purposes of state, but send_channel_data is
+        // gated on chan.open; drive a minimal real handshake here.
+        let mut client = {
+            let (_, client_kex_seed, client_cookie) = test_seeds();
+            SshTransport::client(client_kex_seed, client_cookie)
+        };
+        // Handshake to established.
+        for _ in 0..64 {
+            let server_out = transport.pending_output().to_vec();
+            transport.consume_output(server_out.len());
+            let _ = client.feed(&server_out);
+            let client_out = client.pending_output().to_vec();
+            client.consume_output(client_out.len());
+            let _ = transport.feed(&client_out);
+            if transport.state() == State::Established && client.state() == State::Established {
+                break;
+            }
+        }
+        assert_eq!(transport.state(), State::Established);
+        // Open the session channel so the echo path is active.
+        let mut open = Vec::new();
+        open.push(90u8);
+        open.extend_from_slice(&7u32.to_be_bytes());
+        open.extend_from_slice(b"session");
+        open.extend_from_slice(&7u32.to_be_bytes());
+        open.extend_from_slice(&65536u32.to_be_bytes());
+        open.extend_from_slice(&32768u32.to_be_bytes());
+        client.send_payload(&open).unwrap();
+        {
+            let out = client.pending_output().to_vec();
+            client.consume_output(out.len());
+            transport.feed(&out).unwrap();
+        }
+        let reply = transport.pending_output().to_vec();
+        transport.consume_output(reply.len());
+        let _ = client.feed(&reply);
+        LineBench {
+            transport,
+            bridge: SessionBridge::new(),
+        }
+    }
+
+    #[test]
+    fn line_editor_assembles_echoes_and_submits() {
+        let mut bench = line_bench();
+        // Typing assembles the line and echoes each byte (queued output
+        // grows; the echo content rides the encrypted channel).
+        let queued_before = bench.transport.pending_output().len();
+        feed_line_input(&mut bench.bridge, &mut bench.transport, b"he");
+        assert_eq!(bench.bridge.line_len, 2);
+        assert_eq!(&bench.bridge.line[..2], b"he");
+        assert!(bench.transport.pending_output().len() > queued_before);
+        // Backspace erases with echo.
+        feed_line_input(&mut bench.bridge, &mut bench.transport, &[0x7f]);
+        assert_eq!(bench.bridge.line_len, 1);
+        // New bytes land after the erased one.
+        feed_line_input(
+            &mut bench.bridge,
+            &mut bench.transport,
+            b"i
+",
+        );
+        assert_eq!(bench.bridge.line_len, 0, "CR must clear the line");
+        // The assembled line is intact in the bridge's submit path: bridge
+        // Closed means send_input_line was a no-op (no shell session yet),
+        // which is the honest behavior pre-open.
+    }
+
+    #[test]
+    fn line_editor_handles_control_bytes_and_cap() {
+        let mut bench = line_bench();
+        // Ctrl bytes other than BS/CR/LF/^C are ignored.
+        feed_line_input(&mut bench.bridge, &mut bench.transport, &[0x01, 0x1b]);
+        assert_eq!(bench.bridge.line_len, 0);
+        // ^C abandons the line.
+        feed_line_input(&mut bench.bridge, &mut bench.transport, b"ab");
+        feed_line_input(&mut bench.bridge, &mut bench.transport, &[0x03]);
+        assert_eq!(bench.bridge.line_len, 0);
+        // Line cap: overlong input stops appending without wedging.
+        let long = [b'a'; INPUT_CHUNK_CAP];
+        feed_line_input(&mut bench.bridge, &mut bench.transport, &long);
+        assert_eq!(bench.bridge.line_len, LINE_CAP);
+        feed_line_input(
+            &mut bench.bridge,
+            &mut bench.transport,
+            b"
+",
+        );
+        assert_eq!(bench.bridge.line_len, 0);
     }
 }

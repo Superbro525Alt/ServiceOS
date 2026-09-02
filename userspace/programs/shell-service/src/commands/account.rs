@@ -73,15 +73,85 @@ fn cache() -> &'static mut AccountChannel {
 /// Fetch (launching on demand) the account-service public channel, caching
 /// successes. Failures are not cached so later logins can succeed once the
 /// image exists.
+///
+/// Handle order matters: account-service's positional startup contract is
+/// handles[0] = launcher handshake (the announce target), handles[1] =
+/// storage. The shared launch_with_announce orders storage first (the
+/// backup-service convention), so account-service gets its own sequence.
 fn ensure_account_channel(bootstrap: rt::Handle) -> Option<Handle> {
     let slot = cache();
     if slot.reachable && slot.handle != rt::INVALID_HANDLE {
         return Some(slot.handle);
     }
-    let handle = launch_with_announce(bootstrap, ACCOUNT_PROGRAM_PATH, true)?;
+    let handle = launch_account_service(bootstrap)?;
     slot.handle = handle;
     slot.reachable = true;
     Some(handle)
+}
+
+/// Launch account-service with its own positional contract: the announcer
+/// carry must sit at handles[0] (account-service announces its public
+/// send-half there) and the storage grant at handles[1].
+fn launch_account_service(bootstrap: rt::Handle) -> Option<Handle> {
+    const ANNOUNCE_WAIT_ITERATIONS: usize = 5000;
+
+    let storage = match rt::lookup_service(bootstrap, rt::ServiceId::Storage) {
+        Ok(handle) => handle,
+        Err(_) => return None,
+    };
+    let announcer = match rt::channel_create() {
+        Ok(pair) => pair,
+        Err(_) => {
+            let _ = rt::handle_close(storage);
+            return None;
+        }
+    };
+    let startup_handles: [rt::StartupHandle; 2] = [
+        rt::StartupHandle {
+            handle: announcer.second,
+            // Relay hops (shell -> manager -> child) need a re-forwardable
+            // copy; a send-only mask dies at the first hop.
+            rights: rt::rights::SEND | rt::rights::DUPLICATE | rt::rights::TRANSFER,
+        },
+        rt::StartupHandle {
+            handle: storage,
+            rights: rt::rights::SEND | rt::rights::DUPLICATE | rt::rights::TRANSFER,
+        },
+    ];
+    let launched = rt::manager_launch_stored_program_with_payload(
+        bootstrap,
+        ACCOUNT_PROGRAM_PATH,
+        &[],
+        &startup_handles,
+    );
+    let _ = rt::handle_close(announcer.second);
+    let _ = rt::handle_close(storage);
+    if launched.is_err() {
+        let _ = rt::handle_close(announcer.first);
+        return None;
+    }
+
+    // Await the child's announce carrying its public send-half.
+    for _ in 0..ANNOUNCE_WAIT_ITERATIONS {
+        let mut message = RawMessage::empty(0);
+        match rt::channel_receive_nonblocking(announcer.first, &mut message) {
+            Ok(()) => {
+                let _ = rt::handle_close(announcer.first);
+                if message.handle_count >= 1 {
+                    return Some(message.handles[0]);
+                }
+                return None;
+            }
+            Err(rt::Error::QueueEmpty) => {
+                if rt::yield_current().is_err() {
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    let _ = rt::handle_close(announcer.first);
+    None
 }
 
 /// Launch a stored program and await its public-channel announcement.
@@ -197,7 +267,9 @@ pub fn login(
     }
 
     let mut request = RawMessage::empty(account_tag::LOGIN_REQUEST);
-    let mut word_count = 1usize;
+    // Account-service decodes LOGIN name_len at words[0] (protocol.rs
+    // decode_str(request, 0, ..)) — pack the fields from the first word.
+    let mut word_count = 0usize;
     word_count += pack_field(name_bytes, &mut request.words[word_count..])?;
     word_count += pack_field(secret_bytes, &mut request.words[word_count..])?;
     *request
@@ -215,6 +287,39 @@ pub fn login(
     let account_id = *response.words.get(1).ok_or(AccountFlow::Transport)? as u32;
     let capabilities = *response.words.get(3).unwrap_or(&0);
     Ok((account_id, capabilities))
+}
+
+/// VERIFY_PASSWORD_REQUEST for the sshd bridge: [name_len][name]
+/// [secret_len][secret]. Read-only credential check — no claim is created
+/// and no record is upgraded (that stays on the interactive login path).
+/// Returns Ok(true/false) from account-service; transport loss is
+/// AccountFlow::Unavailable.
+pub fn verify_password(
+    bootstrap: rt::Handle,
+    name: &str,
+    secret: &str,
+) -> Result<bool, AccountFlow> {
+    let Some(account_handle) = ensure_account_channel(bootstrap) else {
+        return Err(AccountFlow::Unavailable);
+    };
+    let name_bytes = name.as_bytes();
+    let secret_bytes = secret.as_bytes();
+    if name_bytes.len() > MAX_NAME || secret_bytes.len() > MAX_SECRET {
+        return Ok(false);
+    }
+
+    let mut request = RawMessage::empty(account_tag::VERIFY_PASSWORD_REQUEST);
+    // Same layout as LOGIN minus the session word: name_len at words[0].
+    let mut word_count = 0usize;
+    word_count += pack_field(name_bytes, &mut request.words[word_count..])?;
+    word_count += pack_field(secret_bytes, &mut request.words[word_count..])?;
+    request.word_count = word_count as u32;
+
+    let response = account_call(account_handle, request)?;
+    if response.word_count < 2 || response.words[0] != 0 {
+        return Err(AccountFlow::Transport);
+    }
+    Ok(response.words[1] == 1)
 }
 
 /// LOGOUT_REQUEST for the bound operator-session id. Best effort: callers
@@ -242,8 +347,11 @@ fn pack_field(bytes: &[u8], words: &mut [u64]) -> Result<usize, AccountFlow> {
         return Err(AccountFlow::Rejected(1));
     }
     words[0] = bytes.len() as u64;
-    let packed = rt::pack_bytes(bytes, &mut words[1..]).map_err(|_| AccountFlow::Transport)?;
-    Ok(packed as usize + 1)
+    // Account-service's string codec is BIG-endian per word (its own
+    // pack_bytes/unpack_bytes pair); rt::pack_bytes is little-endian and
+    // would scramble every byte field on the account wire.
+    let packed = serviceos_account_service::pack_bytes(&mut words[1..], bytes);
+    Ok(packed + 1)
 }
 
 #[cfg(test)]
@@ -255,8 +363,9 @@ mod tests {
         let mut words = [0u64; 8];
         assert_eq!(pack_field(b"paul", &mut words).unwrap(), 2);
         assert_eq!(words[0], 4);
-        // 'paul' little-endian in the next word.
-        assert_eq!(words[1], 0x6c_75_61_70);
+        // 'paul' big-endian in the next word (account-service's string
+        // codec packs bytes from the top of each word).
+        assert_eq!(words[1], 0x7061_756c_0000_0000);
 
         let mut tight = [0u64; 2];
         assert_eq!(

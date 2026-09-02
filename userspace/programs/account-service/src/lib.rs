@@ -73,6 +73,13 @@ pub mod account_tag {
     /// account id on success.
     pub const SET_PASSWORD_REQUEST: u32 = 0x21D;
     pub const SET_PASSWORD_REPLY: u32 = 0x21E;
+    /// Verify-password contract (additive, used by network-service's sshd):
+    /// name + secret (LOGIN layout minus the session id), answer words[0] =
+    /// status code (0 = Ok) and words[1] = 1 when the credentials verify,
+    /// 0 otherwise. Read-only: no claim is created, no record is upgraded —
+    /// upgrades happen on the interactive LOGIN path.
+    pub const VERIFY_PASSWORD_REQUEST: u32 = 0x21F;
+    pub const VERIFY_PASSWORD_REPLY: u32 = 0x220;
 }
 
 /// Per-account default capability grant bits recorded for future enforcement

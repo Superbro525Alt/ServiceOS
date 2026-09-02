@@ -240,6 +240,39 @@ pub fn handle_request(
             }
             false
         }
+        x if x == account_tag::VERIFY_PASSWORD_REQUEST => {
+            response.tag = account_tag::VERIFY_PASSWORD_REPLY;
+            let name_len = match decode_str(request, 0, MAX_NAME, &mut scratch.name) {
+                Ok(l) => l,
+                Err(e) => return fail(response, e),
+            };
+            let secret_offset = 1 + name_len.div_ceil(8);
+            let secret_len =
+                match decode_str(request, secret_offset, MAX_SECRET, &mut scratch.secret) {
+                    Ok(l) => l,
+                    Err(e) => return fail(response, e),
+                };
+            match store.check_credentials(
+                str_field(&scratch.name, name_len),
+                &scratch.secret[..secret_len],
+            ) {
+                Ok(_index) => {
+                    response.word_count = 2;
+                    response.words[0] = 0;
+                    response.words[1] = 1;
+                }
+                // Unknown account / wrong password are business answers, not
+                // transport failures: a clean "no" keeps the caller's denial
+                // path uniform.
+                Err(AccountError::BadCredentials) | Err(AccountError::UnknownAccount) => {
+                    response.word_count = 2;
+                    response.words[0] = 0;
+                    response.words[1] = 0;
+                }
+                Err(error) => return fail(response, error),
+            }
+            false
+        }
         _ => false,
     }
 }
@@ -250,4 +283,84 @@ fn fail(response: &mut RawMessage, error: AccountError) -> bool {
     response.word_count = 1;
     response.words[0] = error.to_code() as u64;
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rt::RawMessage;
+    use serviceos_account_service::pack_bytes;
+    use serviceos_userspace_runtime as rt;
+
+    fn pack_str(message: &mut RawMessage, offset: usize, bytes: &[u8]) -> usize {
+        message.words[offset] = bytes.len() as u64;
+        1 + pack_bytes(&mut message.words[offset + 1..], bytes)
+    }
+
+    fn verify_request(name: &[u8], secret: &[u8]) -> RawMessage {
+        let mut request = RawMessage::empty(account_tag::VERIFY_PASSWORD_REQUEST);
+        let mut cursor = pack_str(&mut request, 0, name);
+        cursor += pack_str(&mut request, cursor, secret);
+        request.word_count = cursor as u32;
+        request
+    }
+
+    #[test]
+    fn verify_password_contract_roundtrip() {
+        let mut store = AccountStore::seed_defaults();
+        let mut scratch = RequestScratch::new();
+
+        // Correct placeholder credential -> valid.
+        let mut response = RawMessage::empty(0);
+        let request = verify_request(b"admin", b"admin");
+        assert!(!handle_request(
+            &mut store,
+            &request,
+            &mut response,
+            &mut scratch
+        ));
+        assert_eq!(response.tag, account_tag::VERIFY_PASSWORD_REPLY);
+        assert_eq!(response.words[0], 0);
+        assert_eq!(response.words[1], 1);
+
+        // Wrong credential -> clean "no" (status Ok, valid flag 0).
+        let mut response = RawMessage::empty(0);
+        let request = verify_request(b"admin", b"wrong");
+        handle_request(&mut store, &request, &mut response, &mut scratch);
+        assert_eq!(response.tag, account_tag::VERIFY_PASSWORD_REPLY);
+        assert_eq!(response.words[0], 0);
+        assert_eq!(response.words[1], 0);
+
+        // Unknown account -> same clean "no".
+        let mut response = RawMessage::empty(0);
+        let request = verify_request(b"nobody", b"admin");
+        handle_request(&mut store, &request, &mut response, &mut scratch);
+        assert_eq!(response.tag, account_tag::VERIFY_PASSWORD_REPLY);
+        assert_eq!(response.words[0], 0);
+        assert_eq!(response.words[1], 0);
+    }
+
+    #[test]
+    fn verify_password_is_read_only() {
+        // Verify must not claim a login session nor upgrade the legacy
+        // seeded record — upgrades belong to the interactive LOGIN path.
+        let mut store = AccountStore::seed_defaults();
+        let mut scratch = RequestScratch::new();
+        let kdf_before = store.find_by_name("admin").unwrap().kdf;
+        let salt_before = store.find_by_name("admin").unwrap().pbkdf2_salt;
+        let request = verify_request(b"admin", b"admin");
+        let mut response = RawMessage::empty(0);
+        assert!(!handle_request(
+            &mut store,
+            &request,
+            &mut response,
+            &mut scratch
+        ));
+        assert!(store.active.is_none());
+        assert_eq!(store.find_by_name("admin").unwrap().kdf, kdf_before);
+        assert_eq!(
+            store.find_by_name("admin").unwrap().pbkdf2_salt,
+            salt_before
+        );
+    }
 }

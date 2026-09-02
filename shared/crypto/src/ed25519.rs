@@ -8,7 +8,7 @@
 //! (no Montgomery ladder); verification early-rejects on malformed public
 //! inputs. No secret-dependent branches exist outside signing.
 
-use crate::point::{Point, decompress};
+use crate::point::{decompress, Point};
 use crate::scalar::Scalar;
 use crate::sha512;
 

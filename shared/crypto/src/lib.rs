@@ -13,13 +13,18 @@
 //! but selects via masked moves rather than a Montgomery ladder; verification
 //! early-rejects on malformed (public) inputs.
 
+pub mod chacha20;
+pub mod chacha20poly1305;
 pub mod ed25519;
 mod field;
+pub mod hkdf;
 pub mod hmac;
 #[cfg(feature = "std-helper")]
 pub mod host;
 pub mod pbkdf2;
 mod point;
+pub mod poly1305;
 mod scalar;
 pub mod sha256;
 pub mod sha512;
+pub mod x25519;

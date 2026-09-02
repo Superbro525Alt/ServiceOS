@@ -11,10 +11,11 @@
 //! (`derive_auth_hash`, honestly non-cryptographic) for backwards
 //! compatibility; they are transparently UPGRADED to PBKDF2 on the next
 //! successful login. Per-account 128-bit salts are stored alongside the
-//! derived hash, shadow-file style. Salt honesty: no kernel RNG exists yet,
-//! so salts are boot-local substitutes (SHA-512 over the account name, a
-//! boot tick captured at startup, and a per-creation counter) — unique-ish,
-//! NOT cryptographically random; see `pbkdf2_salt`.
+//! derived hash, shadow-file style. Salt honesty: salts prefer the kernel
+//! entropy contract (RngRequest — hardware-seeded DRBG); when the contract
+//! is unavailable the fallback is the boot-local substitute (SHA-512 over
+//! the account name, a boot tick captured at startup, and a per-creation
+//! counter) — unique-ish, NOT cryptographically random; see `pbkdf2_salt`.
 
 #![cfg_attr(not(test), no_std)]
 
@@ -256,6 +257,23 @@ pub fn pbkdf2_salt(name: &[u8], tick: u64, counter: u64, id: u32) -> [u8; PBKDF2
     salt
 }
 
+/// Fresh PBKDF2 salt for a new or re-derived credential record. Prefers
+/// the kernel entropy contract (RngRequest, syscall 55): a full-length
+/// fill means real DRBG bytes. When the contract is unavailable (host
+/// tests, or a kernel that never seeded its DRBG), fall back to
+/// `pbkdf2_salt` and its documented boot-local-substitute limits. Host
+/// tests skip the kernel attempt entirely so behavior stays deterministic.
+pub fn fresh_salt(name: &[u8], tick: u64, counter: u64, id: u32) -> [u8; PBKDF2_SALT_BYTES] {
+    #[cfg(not(test))]
+    {
+        let mut kernel_salt = [0u8; PBKDF2_SALT_BYTES];
+        if serviceos_userspace_runtime::entropy(&mut kernel_salt) == Ok(PBKDF2_SALT_BYTES) {
+            return kernel_salt;
+        }
+    }
+    pbkdf2_salt(name, tick, counter, id)
+}
+
 /// PBKDF2-HMAC-SHA-512 verification digest for a record's (salt, iterations).
 pub fn pbkdf2_derive(
     salt: &[u8; PBKDF2_SALT_BYTES],
@@ -348,7 +366,7 @@ impl AccountStore {
         let id = self.next_id;
         // Distinct accounts never share a salt: name, id, boot tick, and a
         // per-creation counter all mix into the salt derivation.
-        let salt = pbkdf2_salt(name.as_bytes(), self.salt_tick, self.salt_counter, id);
+        let salt = fresh_salt(name.as_bytes(), self.salt_tick, self.salt_counter, id);
         self.salt_counter += 1;
         self.accounts[slot] = Account {
             id,
@@ -439,7 +457,7 @@ impl AccountStore {
         let name_len = self.accounts[index].name_len;
         let mut name = [0u8; MAX_NAME];
         name[..name_len].copy_from_slice(&self.accounts[index].name[..name_len]);
-        let salt = pbkdf2_salt(&name[..name_len], self.salt_tick, self.salt_counter, id);
+        let salt = fresh_salt(&name[..name_len], self.salt_tick, self.salt_counter, id);
         self.salt_counter += 1;
         let account = &mut self.accounts[index];
         account.salt = 0;

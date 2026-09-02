@@ -962,10 +962,10 @@ impl GeneratedKey {
 /// Build one fresh Ed25519 identity from guest-local entropy substitutes:
 /// SHA-512 over (source, monotonic tick, per-call counter, store fingerprint).
 ///
-/// HONEST LIMITS: this kernel exposes no hardware RNG yet and its monotonic
-/// tick may stand still on some builds, so the seed is UNIQUE-ISH, not
-/// cryptographically random. Suitable for test/tooling flows; production
-/// keys should be generated on the host and enrolled with their hex pubkey.
+/// HONEST LIMITS: the monotonic tick may stand still on some builds, so the
+/// seed is UNIQUE-ISH, not cryptographically random. This is the FALLBACK
+/// behind [`fresh_generated_identity`], kept for tests and platforms where
+/// the kernel entropy contract is unreachable.
 pub fn derive_generated_identity(
     source: &[u8],
     tick: u64,
@@ -989,6 +989,43 @@ pub fn derive_generated_identity(
         id_bytes,
         id_len,
     }
+}
+
+/// Ed25519 identity from an explicit 32-byte seed (the kernel-contract
+/// path: callers draw real DRBG bytes via RngRequest and hand them here).
+pub fn generated_identity_from_seed(seed: [u8; 32]) -> GeneratedKey {
+    let public = serviceos_crypto::ed25519::public_key(&seed);
+    let (id_bytes, id_len) = auto_key_id(&public);
+    GeneratedKey {
+        seed,
+        public,
+        id_bytes,
+        id_len,
+    }
+}
+
+/// Fresh generated key, entropy-honest: prefer the kernel entropy contract
+/// (RngRequest, syscall 55 — hardware-seeded DRBG); fall back to
+/// `derive_generated_identity`'s boot-local substitute when the contract is
+/// unavailable. Returns `(identity, kernel_entropy)` so callers can log
+/// which seed class they got. Host tests compile the contract attempt out.
+pub fn fresh_generated_identity(
+    source: &[u8],
+    tick: u64,
+    counter: u64,
+    store_fingerprint: u64,
+) -> (GeneratedKey, bool) {
+    #[cfg(not(test))]
+    {
+        let mut seed = [0u8; 32];
+        if serviceos_userspace_runtime::entropy(&mut seed) == Ok(32) {
+            return (generated_identity_from_seed(seed), true);
+        }
+    }
+    (
+        derive_generated_identity(source, tick, counter, store_fingerprint),
+        false,
+    )
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

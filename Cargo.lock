@@ -166,6 +166,7 @@ name = "serviceos-kernel-core"
 version = "0.1.0"
 dependencies = [
  "serviceos-abi",
+ "serviceos-crypto",
  "spin",
 ]
 

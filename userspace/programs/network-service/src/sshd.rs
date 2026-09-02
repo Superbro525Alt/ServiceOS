@@ -20,12 +20,16 @@
 //! + KEX + NEWKEYS against a real client, then a protocol-level disconnect
 //! (docs/roadmap.md, SSH transport row).
 //!
-//! Host key: Ed25519 seed derived from guest-local entropy substitutes
-//! (SHA-512 over a source label, MAC, monotonic tick — package-service's
-//! honest-unique-ish substitute; no hardware RNG). Boot-local this wave:
-//! network-service holds no storage handle at startup, so the key changes
-//! across boots and host-side known_hosts pinning is meaningless here. Same
-//! honest limits as backup-service's signing identity.
+//! Host key: Ed25519 seed drawn from the kernel entropy contract when it
+//! is reachable (RngRequest — hardware-seeded DRBG), falling back to the
+//! guest-local entropy substitutes (SHA-512 over a source label, MAC,
+//! monotonic tick — package-service's honest-unique-ish substitute). The
+//! substitute fallback keeps the old honest limits: the tick may stand
+//! still and the seeds are UNIQUE-ISH, not cryptographically random.
+//! Boot-local this wave: network-service holds no storage handle at
+//! startup, so the key changes across boots and host-side known_hosts
+//! pinning is meaningless here. Same honest limits as backup-service's
+//! signing identity.
 
 use crate::consts::SSHD_LISTEN_PORT;
 use crate::types::{TcpListenerSlot, TcpTransportSlot};
@@ -291,6 +295,29 @@ pub(crate) fn derive_host_seeds(source: &[u8], mac: &[u8; 6], tick: u64) -> Seed
     let mut cookie = [0u8; 16];
     cookie.copy_from_slice(&cookie_digest[..16]);
     (host_seed, kex_seed, cookie)
+}
+
+/// Host-key material, entropy-honest: prefer the kernel entropy contract
+/// (RngRequest, syscall 55 — one 80-byte draw split into host seed, KEX
+/// seed and KEXINIT cookie); fall back to `derive_host_seeds`'s boot-local
+/// substitute when the contract is unreachable. Returns
+/// `(seeds, kernel_entropy)` so the caller can log the seed class. Host
+/// tests compile the contract attempt out and stay deterministic.
+pub(crate) fn fresh_host_seeds(source: &[u8], mac: &[u8; 6], tick: u64) -> (Seeds, bool) {
+    #[cfg(not(test))]
+    {
+        let mut draw = [0u8; 80];
+        if serviceos_userspace_runtime::entropy(&mut draw) == Ok(80) {
+            let mut host_seed = [0u8; 32];
+            host_seed.copy_from_slice(&draw[..32]);
+            let mut kex_seed = [0u8; 32];
+            kex_seed.copy_from_slice(&draw[32..64]);
+            let mut cookie = [0u8; 16];
+            cookie.copy_from_slice(&draw[64..80]);
+            return ((host_seed, kex_seed, cookie), true);
+        }
+    }
+    (derive_host_seeds(source, mac, tick), false)
 }
 
 /// One pump pass for the gated SSH listener. Called from the main loop with

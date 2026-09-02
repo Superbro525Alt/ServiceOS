@@ -168,15 +168,21 @@ mod tests {
 
     #[test]
     fn clamp_reports_fully_offscreen_as_empty() {
-        assert!(DamageRect::new(200, 0, 10, 10)
-            .clamped_to(100, 100)
-            .is_empty());
-        assert!(DamageRect::new(0, 200, 10, 10)
-            .clamped_to(100, 100)
-            .is_empty());
-        assert!(DamageRect::new(-20, 0, 10, 10)
-            .clamped_to(100, 100)
-            .is_empty());
+        assert!(
+            DamageRect::new(200, 0, 10, 10)
+                .clamped_to(100, 100)
+                .is_empty()
+        );
+        assert!(
+            DamageRect::new(0, 200, 10, 10)
+                .clamped_to(100, 100)
+                .is_empty()
+        );
+        assert!(
+            DamageRect::new(-20, 0, 10, 10)
+                .clamped_to(100, 100)
+                .is_empty()
+        );
         assert!(DamageRect::new(0, 0, 0, 10).clamped_to(100, 100).is_empty());
     }
 

@@ -37,10 +37,10 @@ use rt::{ControlTag, LifecycleEvent, RawMessage};
 use serviceos_backup_service::{
     ACCOUNTS_PATH, BACKUPS_DIR, BackupError, BlobView, BlobWriter, CONFIG_DIR, LIST_SCAN_CAP,
     MAX_BACKUP_NAME, MAX_SIGNING_TEXT_BYTES, RestoreReport, SIGNATURE_SUFFIX, SIGNING_CONFIG_PATH,
-    SigningIdentity, backup_tag, derive_signing_identity, format_backup_name,
-    format_signature_file, format_signing_config, is_signature_name, parse_backup_name,
-    parse_signature_file, parse_signing_config, plan_restore, record_storage_path, scope,
-    signature_path, verify_blob_signature,
+    SigningIdentity, backup_tag, format_backup_name, format_signature_file, format_signing_config,
+    fresh_signing_identity, is_signature_name, parse_backup_name, parse_signature_file,
+    parse_signing_config, plan_restore, record_storage_path, scope, signature_path,
+    verify_blob_signature,
 };
 
 use crate::protocol::RequestScratch;
@@ -207,7 +207,13 @@ fn load_or_create_identity(storage_handle: rt::Handle) -> SigningIdentity {
         Ok(loaded) => serviceos_backup_service::fnv1a64(&accounts[..loaded]),
         Err(_) => 0,
     };
-    let identity = derive_signing_identity(b"backup-service-signing", tick, 0, fingerprint);
+    let (identity, kernel_entropy) =
+        fresh_signing_identity(b"backup-service-signing", tick, 0, fingerprint);
+    if !kernel_entropy {
+        let _ = rt::debug_log(
+            b"backup-service: kernel entropy unavailable; signing identity seed is the documented boot-local substitute",
+        );
+    }
     let mut config = [0u8; MAX_SIGNING_TEXT_BYTES];
     match format_signing_config(&identity, &mut config)
         .ok()

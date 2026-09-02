@@ -14,4 +14,5 @@ ipc-trace = []
 
 [dependencies]
 serviceos-abi = { path = "../../shared/abi" }
+serviceos-crypto = { path = "../../shared/crypto" }
 spin = "0.9"

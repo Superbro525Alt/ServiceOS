@@ -386,6 +386,9 @@ pub fn qemu_virtio_command(
     // and prefers it over the UEFI GOP linear framebuffer (SERVICEOS_VGPU_DISABLE
     // forces the GOP fallback at kernel build time).
     command.args(["-device", "virtio-gpu-pci"]);
+    // virtio-rng-pci: hardware entropy for the kernel DRBG's primary seed
+    // (the kernel probe skips gracefully when the device is absent).
+    command.args(["-device", "virtio-rng-pci"]);
     command.args([
         "-drive",
         &format!(

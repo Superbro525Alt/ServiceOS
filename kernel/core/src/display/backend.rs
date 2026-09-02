@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use serviceos_abi::DisplayOutputInfo;
 
-use super::mode::{find_mode, DisplayModeInfo};
+use super::mode::{DisplayModeInfo, find_mode};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DisplayOutputError {

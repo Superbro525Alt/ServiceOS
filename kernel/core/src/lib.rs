@@ -16,6 +16,7 @@ pub mod memory;
 pub mod msi;
 pub mod network;
 pub mod object;
+pub mod rng;
 pub mod syscall;
 pub mod task;
 pub mod time;

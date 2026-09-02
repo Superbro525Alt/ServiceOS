@@ -11,6 +11,7 @@ pub mod gpu;
 pub mod input;
 pub mod msix;
 pub mod network;
+pub mod rng;
 pub mod serial;
 pub mod sound;
 pub mod wireless;

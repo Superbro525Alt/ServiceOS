@@ -1253,10 +1253,9 @@ fn handle_keys_rotate_request(storage_handle: rt::Handle, message: &RawMessage) 
 /// the operator can record it; with bit0 set it carries the SECRET SEED —
 /// shown once, never stored anywhere in the guest.
 ///
-/// HONEST LIMITS (see signing::derive_generated_identity): the kernel has
-/// no RNG yet, so this seed is entropy-substituted, not CSPRNG output. It
-/// varies across calls and boots but is predictable given complete host
-/// timing knowledge; treat it as tooling-grade until an RNG lands.
+/// Seed honesty: `signing::fresh_generated_identity` prefers the kernel
+/// entropy contract (RngRequest — hardware-seeded DRBG) and falls back to
+/// the documented boot-local substitute when the contract is unreachable.
 /// Reply: [status][state_word][field0_len][field1_len] + packed(id, field).
 fn handle_keys_gen_request(storage_handle: rt::Handle, message: &RawMessage) -> rt::Result<()> {
     const HEADER_WORDS: u32 = 2; // flags + length word
@@ -1280,14 +1279,19 @@ fn handle_keys_gen_request(storage_handle: rt::Handle, message: &RawMessage) -> 
 
     let tick = rt::monotonic_now().unwrap_or(0);
     let counter = KEYS_GEN_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed) + 1;
-    let identity = unsafe {
-        crate::signing::derive_generated_identity(
+    let (identity, kernel_entropy) = unsafe {
+        crate::signing::fresh_generated_identity(
             source.as_bytes(),
             tick,
             counter,
             keys_store_fingerprint(),
         )
     };
+    if !kernel_entropy {
+        let _ = rt::debug_log(
+            b"package-service: kernel entropy unavailable; generated key seed is the documented boot-local substitute",
+        );
+    }
     let Some(id_text) = identity.id_str() else {
         keys_reject(
             reply_handle,

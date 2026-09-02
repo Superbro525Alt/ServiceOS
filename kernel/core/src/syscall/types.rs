@@ -183,6 +183,7 @@ pub enum SyscallKind {
     PacketInterfaceRingSetup = AbiSyscallNumber::PacketInterfaceRingSetup as isize,
     PacketInterfaceTxRingSetup = AbiSyscallNumber::PacketInterfaceTxRingSetup as isize,
     PacketInterfaceTxRingFlush = AbiSyscallNumber::PacketInterfaceTxRingFlush as isize,
+    RngRequest = AbiSyscallNumber::RngRequest as isize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

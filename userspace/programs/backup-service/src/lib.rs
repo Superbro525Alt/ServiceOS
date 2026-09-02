@@ -29,9 +29,10 @@
 //! Signing identity: loaded from / persisted to
 //! `state/backup/signing.cfg` in the service's own namespace (outside every
 //! backup scope, so a restore can never rewrite the verifier's key).
-//! First-boot generation mirrors package-service's guest entropy
-//! substitute and carries the same honest limits: the kernel exposes no
-//! hardware RNG and the tick may stand still, so the seed is UNIQUE-ISH,
+//! First-boot generation prefers the kernel entropy contract (RngRequest —
+//! hardware-seeded DRBG); when that is unavailable it mirrors
+//! package-service's guest entropy substitute and carries the same honest
+//! limits: the tick may stand still, so the fallback seed is UNIQUE-ISH,
 //! not cryptographically random. v0 keeps one fixed identity per store; key
 //! rotation is out of scope (regenerating the config invalidates every
 //! existing signature by design).
@@ -452,11 +453,11 @@ pub fn key_id_for(public: &[u8; 32]) -> u64 {
 }
 
 /// Derive one Ed25519 identity from guest-local entropy substitutes: SHA-512
-/// over (source, monotonic tick, counter, store fingerprint). HONEST LIMITS
-/// mirror package-service's `derive_generated_identity`: no hardware RNG,
-/// tick may stand still - the seed is UNIQUE-ISH, not cryptographically
+/// over (source, monotonic tick, counter, store fingerprint). HONEST LIMITS:
+/// the tick may stand still - the seed is UNIQUE-ISH, not cryptographically
 /// random. Fine for a boot-local signing identity on a test OS; production
-/// keys would be enrolled from the host.
+/// keys would be enrolled from the host. This is the FALLBACK behind
+/// `fresh_signing_identity`, kept for tests and contract-less platforms.
 pub fn derive_signing_identity(
     source: &[u8],
     tick: u64,
@@ -482,6 +483,31 @@ pub fn identity_from_seed(seed: [u8; 32]) -> SigningIdentity {
         public,
         key_id: key_id_for(&public),
     }
+}
+
+/// Signing identity for first-boot generation, entropy-honest: draw the
+/// Ed25519 seed from the kernel entropy contract (RngRequest, syscall 55)
+/// when it is reachable, and only fall back to `derive_signing_identity`'s
+/// boot-local substitute otherwise. Returns `(identity, kernel_entropy)` so
+/// the caller can log which class of seed it got. Host tests compile the
+/// contract attempt out and stay deterministic.
+pub fn fresh_signing_identity(
+    source: &[u8],
+    tick: u64,
+    counter: u64,
+    store_fingerprint: u64,
+) -> (SigningIdentity, bool) {
+    #[cfg(not(test))]
+    {
+        let mut seed = [0u8; 32];
+        if serviceos_userspace_runtime::entropy(&mut seed) == Ok(32) {
+            return (identity_from_seed(seed), true);
+        }
+    }
+    (
+        derive_signing_identity(source, tick, counter, store_fingerprint),
+        false,
+    )
 }
 
 // ---- hex helpers (fixed-capacity, lowercase) ----

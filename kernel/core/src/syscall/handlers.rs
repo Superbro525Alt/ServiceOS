@@ -36,7 +36,7 @@ pub(crate) use pipe::{handle_pipe_create, handle_pipe_read, handle_pipe_write};
 pub(crate) use system::{
     handle_abi_version, handle_debug_console_read, handle_debug_console_write,
     handle_debug_log_write, handle_kernel_event_query_info, handle_kernel_event_query_record,
-    handle_monotonic_now, handle_thread_exit, handle_yield_current,
+    handle_monotonic_now, handle_rng_request, handle_thread_exit, handle_yield_current,
 };
 pub(crate) use task::{
     handle_service_spawn, handle_task_loaded_libraries, handle_task_spawn_image, handle_task_status,

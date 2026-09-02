@@ -373,13 +373,18 @@ pub(crate) fn run() -> u64 {
     }
 
     // Build-gated SSH listener state (no-op unless SERVICEOS_SSHD=1 was set
-    // at build time). Host-key seeds come from guest-local entropy
-    // substitutes; see sshd.rs for the honest limits.
-    let sshd_seeds = sshd::derive_host_seeds(
+    // at build time). Host-key seeds prefer the kernel entropy contract;
+    // see sshd.rs for the honest limits of the substitute fallback.
+    let (sshd_seeds, sshd_kernel_entropy) = sshd::fresh_host_seeds(
         b"network-service-sshd-hostkey",
         &device.info.mac,
         rt::monotonic_now().unwrap_or(0),
     );
+    if !sshd_kernel_entropy {
+        let _ = rt::debug_log(
+            b"network-service: kernel entropy unavailable; sshd host-key seeds are the documented boot-local substitutes",
+        );
+    }
     static SSHD_STATE: SshdSlot = SshdSlot::new();
     // SAFETY: single-task ownership; see SshdSlot.
     let mut sshd_state = SSHD_STATE.get();

@@ -25,7 +25,7 @@ use serviceos_kernel_core::{
     capability::{CapabilityError, CapabilityRights, TransferMode},
     ipc::{self, IpcError, MessageTag, OutgoingMessage},
     object::{KernelObjectRef, ObjectId},
-    syscall,
+    rng as kernel_rng, syscall,
     task::{self, ExecutionState, SchedulerError, TaskRole, ThreadId, ThreadMode},
     user::{self as kernel_user, SpawnError, TaskExitStatus},
 };
@@ -357,6 +357,18 @@ extern "C" fn serviceos_virt_entry(dtb_ptr: usize) -> ! {
             .objects()
             .registry()
             .create_audio_endpoint(audio::initialize()),
+    );
+    // No virtio-rng MMIO device on this platform today: the kernel DRBG
+    // seeds from jitter-only conditioning and the RngRequest contract
+    // still comes up (consumers see the honest source name in boot logs).
+    let rng_summary = kernel_rng::initialize(None);
+    log(
+        "rng",
+        format_args!(
+            "seeded drbg source={} bytes={}",
+            rng_summary.source.as_str(),
+            rng_summary.hardware_bytes,
+        ),
     );
 
     if let Some(summary) = block::bringup_summary() {

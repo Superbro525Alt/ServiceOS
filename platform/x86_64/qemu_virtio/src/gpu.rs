@@ -31,20 +31,21 @@ use serviceos_abi::{
 };
 use serviceos_kernel_arch_x86_64::paging::ActivePageTable;
 use serviceos_kernel_core::{
-    display::{dirty_row_span, DamageRect, DisplayBackend, DisplayOutputError},
+    display::{DamageRect, DisplayBackend, DisplayOutputError, dirty_row_span},
     memory::{self, PageMapper, PhysicalAddress, VirtualAddress},
 };
 use spin::{Mutex, Once};
 use virtio_drivers::{
+    BufferDirection, Hal, PAGE_SIZE,
     device::gpu::VirtIOGpu,
     transport::{
-        pci::{
-            bus::{Command, HeaderType, PciRoot},
-            virtio_device_type, PciTransport,
-        },
         DeviceType,
+        pci::{
+            PciTransport,
+            bus::{Command, HeaderType, PciRoot},
+            virtio_device_type,
+        },
     },
-    BufferDirection, Hal, PAGE_SIZE,
 };
 
 use crate::msix::IoPortPciConfigAccess;

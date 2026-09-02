@@ -7,7 +7,7 @@ mod logging;
 
 use core::panic::PanicInfo;
 
-use bootstrap::{launch_root_manager, resolve_boot_store_image, BootstrapError};
+use bootstrap::{BootstrapError, launch_root_manager, resolve_boot_store_image};
 use logging::{debug_log_writer, log, log_line};
 use serviceos_kernel_arch_x86_64::{
     cpu,
@@ -16,13 +16,15 @@ use serviceos_kernel_arch_x86_64::{
     paging::ActivePageTable,
     smp, user,
 };
-use serviceos_kernel_core::{syscall, task as kernel_task, user as kernel_user, Kernel};
+use serviceos_kernel_core::{
+    Kernel, rng as kernel_rng, syscall, task as kernel_task, user as kernel_user,
+};
 use serviceos_platform_qemu_virtio::{
-    audio, block, boot, display, gpu, input, network, serial, sound,
+    audio, block, boot, display, gpu, input, network, rng, serial, sound,
 };
 use serviceos_platform_x86_pc as x86_pc;
 use spin::Once;
-use uefi::{entry, Status};
+use uefi::{Status, entry};
 
 static BOOT_STORE_IMAGE_SOURCE: Once<&'static [u8]> = Once::new();
 
@@ -88,6 +90,15 @@ fn kernel_main() -> Status {
             .objects()
             .registry()
             .create_audio_endpoint(audio::initialize()),
+    );
+    let rng_summary = kernel_rng::initialize(rng::initialize());
+    log(
+        "rng",
+        format_args!(
+            "seeded drbg source={} bytes={}",
+            rng_summary.source.as_str(),
+            rng_summary.hardware_bytes,
+        ),
     );
 
     log(

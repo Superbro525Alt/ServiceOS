@@ -3,7 +3,10 @@ use serviceos_abi::KernelEventRecord as AbiKernelEventRecord;
 use super::super::SYSCALL_ABI_VERSION;
 
 use super::{
-    super::{SyscallAction, SyscallContext, SyscallError, SyscallReturn, user_mut, user_slice},
+    super::{
+        SyscallAction, SyscallContext, SyscallError, SyscallReturn, user_mut, user_slice,
+        user_slice_mut,
+    },
     common::{DEBUG_CONSOLE_READER, DEBUG_CONSOLE_WRITER, DEBUG_LOG_WRITER},
 };
 use crate::{interrupts, time};
@@ -70,6 +73,26 @@ pub(crate) fn handle_kernel_event_query_info(_context: &SyscallContext) -> Sysca
     let (oldest, next) = interrupts::kernel_event_info();
     let value = (next << 32) | (oldest & 0xffff_ffff);
     SyscallReturn::success(value)
+}
+
+/// RngRequest: fill the caller's buffer from the kernel DRBG. Arguments:
+/// (buffer pointer, max length). Returns the number of bytes written;
+/// NotInitialized when the kernel RNG was never seeded (platforms without
+/// any seed path), so callers keep their documented substitutes.
+pub(crate) fn handle_rng_request(context: &SyscallContext) -> SyscallReturn {
+    let Ok(length) = usize::try_from(context.arguments[1]) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    if length > crate::rng::MAX_REQUEST_BYTES {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    }
+    let Ok(bytes) = (unsafe { user_slice_mut(context.arguments[0], length) }) else {
+        return SyscallReturn::error(SyscallError::InvalidArgument);
+    };
+    if !crate::rng::fill(bytes) {
+        return SyscallReturn::error(SyscallError::NotInitialized);
+    }
+    SyscallReturn::success(length as u64)
 }
 
 pub(crate) fn handle_kernel_event_query_record(context: &SyscallContext) -> SyscallReturn {

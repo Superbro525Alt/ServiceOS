@@ -95,6 +95,11 @@ pub enum SyscallNumber {
     PacketInterfaceRingSetup = 52,
     PacketInterfaceTxRingSetup = 53,
     PacketInterfaceTxRingFlush = 54,
+    /// Fill a caller buffer with kernel-DRBG bytes: args are (buffer
+    /// pointer, max length); returns the number of bytes written. Errors
+    /// with NotInitialized when the kernel RNG subsystem has not been
+    /// seeded (callers keep their documented entropy substitutes).
+    RngRequest = 55,
 }
 
 #[repr(u32)]

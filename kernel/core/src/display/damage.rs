@@ -14,8 +14,9 @@ use core::cmp::{max, min};
 /// opcodes from the virtio-gpu specification).
 pub mod vgpu_wire {
     /// Fixed resource id for the framebuffer 2D resource (single-resource
-    /// v0: one resource, one scanout, recreated only on teardown).
-    pub const RESOURCE_ID_FB: u32 = 0;
+    /// v0: one resource, one scanout, recreated only on teardown). Matches
+    /// the vendored driver's proven-on-device value; id 0 is reserved.
+    pub const RESOURCE_ID_FB: u32 = 0xbabe;
     /// Single scanout the v0 backend drives.
     pub const SCANOUT_ID: u32 = 0;
     /// `VIRTIO_GPU_FORMAT_B8G8R8A8UNORM` — byte layout B,G,R,A in memory,
@@ -237,7 +238,7 @@ mod tests {
         use vgpu_wire::*;
         // Spec values the vendored driver sends; goldens pin our parameters
         // against accidental drift.
-        assert_eq!(RESOURCE_ID_FB, 0);
+        assert_eq!(RESOURCE_ID_FB, 0xbabe); // id 0 is reserved per spec
         assert_eq!(SCANOUT_ID, 0);
         assert_eq!(FORMAT_B8G8R8A8UNORM, 1); // B8G8R8A8UNORM == GOP Xrgb8888
         assert_eq!(BYTES_PER_PIXEL, 4);

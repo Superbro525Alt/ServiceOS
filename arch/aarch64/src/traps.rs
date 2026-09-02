@@ -203,7 +203,7 @@ serviceos_aarch64_fatal_vector:
         if !timer_tick {
             return 0;
         }
-        let regs = unsafe { &*(saved_regs as *const [u64; 31]) };
+        let regs = unsafe { &*(saved_regs as *const [u64; 32]) };
         let (sp_el0, elr_el1, spsr_el1, esr_el1, far_el1): (u64, u64, u64, u64, u64);
         unsafe {
             core::arch::asm!(
@@ -229,54 +229,66 @@ serviceos_aarch64_fatal_vector:
         if spsr_el1 & 0xf != 0 {
             return 0;
         }
-        // The bootstrap root thread's user stack aliases the kernel boot
-        // stack (its image-declared stack top coincides with the stack the
-        // executor runs on, so sp_el0 == SP_EL1 while it executes). An
-        // IRQ-preempt window there would let kernel frames — the resumed
-        // successor's sync handling, resume_user's callee-saved pushes, the
-        // stub frames themselves — stomp the preempted thread's user-stack
-        // contents (its raw_syscall result slot and saved registers), so
-        // such frames keep the baseline cooperative schedule instead. The
-        // IRQ frame base sits 256 bytes below SP_EL1; a user sp at or above
-        // it means the user stack reaches into the kernel stack region.
-        // Spawned services declare stack tops well below and preempt
-        // normally; x86 needs no equivalent guard because its user stacks
-        // never alias the kernel stack.
-        if sp_el0 as usize >= saved_regs as usize {
+        // Frame sanity: a healthy interrupted user frame lives inside the
+        // declared user-stack window (see crate::user::USER_STACK_TOP — every
+        // image's stack is 1 MiB below that top). The kernel image and its
+        // boot stack are identity-mapped far below the window, so no user
+        // stack can alias kernel stack memory; a sp outside the window is
+        // not a healthy user context (stale or corrupted) and keeps the
+        // cooperative schedule instead of snapshotting garbage. This
+        // narrows the 20bbc32 guard, which compared sp against the IRQ
+        // frame base: because user VAs (0x7fff_…) always sit above the
+        // identity-mapped kernel frame base (0x414B_…), that check rejected
+        // every user thread — not just root — and silently disabled IRQ
+        // preemption entirely.
+        if !(sp_el0 >= crate::user::USER_STACK_WINDOW_BOTTOM
+            && sp_el0 < crate::user::USER_STACK_TOP)
+        {
             return 0;
         }
+        // The IRQ stub pushes register pairs from (x0, x1) up to (x30, xzr),
+        // so the frame at saved_regs is in REVERSE register order: slot 0
+        // holds x30, slot 30 holds x0, and slot 31 holds x1 (x30's pair
+        // partner is xzr and is discarded). Map register i onto its slot:
+        // even i -> 30 - i, odd i -> 32 - i. The 20bbc32 snapshot mapped
+        // regs[i] -> x[i] identity-style, which swapped x0/x30 (a preempted
+        // thread resumed with x30 = the live x0 — e.g. a spawn result — and
+        // took a PC-alignment fault jumping to it).
+        fn saved_reg(regs: &[u64; 32], i: usize) -> u64 {
+            regs[30 - i + 2 * (i & 1)]
+        }
         let context = SavedUserContext {
-            x0: regs[0],
-            x1: regs[1],
-            x2: regs[2],
-            x3: regs[3],
-            x4: regs[4],
-            x5: regs[5],
-            x6: regs[6],
-            x7: regs[7],
-            x8: regs[8],
-            x9: regs[9],
-            x10: regs[10],
-            x11: regs[11],
-            x12: regs[12],
-            x13: regs[13],
-            x14: regs[14],
-            x15: regs[15],
-            x16: regs[16],
-            x17: regs[17],
-            x18: regs[18],
-            x19: regs[19],
-            x20: regs[20],
-            x21: regs[21],
-            x22: regs[22],
-            x23: regs[23],
-            x24: regs[24],
-            x25: regs[25],
-            x26: regs[26],
-            x27: regs[27],
-            x28: regs[28],
-            x29: regs[29],
-            x30: regs[30],
+            x0: saved_reg(regs, 0),
+            x1: saved_reg(regs, 1),
+            x2: saved_reg(regs, 2),
+            x3: saved_reg(regs, 3),
+            x4: saved_reg(regs, 4),
+            x5: saved_reg(regs, 5),
+            x6: saved_reg(regs, 6),
+            x7: saved_reg(regs, 7),
+            x8: saved_reg(regs, 8),
+            x9: saved_reg(regs, 9),
+            x10: saved_reg(regs, 10),
+            x11: saved_reg(regs, 11),
+            x12: saved_reg(regs, 12),
+            x13: saved_reg(regs, 13),
+            x14: saved_reg(regs, 14),
+            x15: saved_reg(regs, 15),
+            x16: saved_reg(regs, 16),
+            x17: saved_reg(regs, 17),
+            x18: saved_reg(regs, 18),
+            x19: saved_reg(regs, 19),
+            x20: saved_reg(regs, 20),
+            x21: saved_reg(regs, 21),
+            x22: saved_reg(regs, 22),
+            x23: saved_reg(regs, 23),
+            x24: saved_reg(regs, 24),
+            x25: saved_reg(regs, 25),
+            x26: saved_reg(regs, 26),
+            x27: saved_reg(regs, 27),
+            x28: saved_reg(regs, 28),
+            x29: saved_reg(regs, 29),
+            x30: saved_reg(regs, 30),
             sp_el0,
             elr_el1,
             spsr_el1,

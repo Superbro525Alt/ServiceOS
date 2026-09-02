@@ -20,6 +20,18 @@ mod imp {
     const MAX_USER_THREADS: usize = 32;
     const MAX_USER_ADDRESS_SPACES: usize = 32;
 
+    /// Stack window handed to every user image. The flat-image builder
+    /// (userspace/catalog/build_support/image.rs) and the ELF loader path
+    /// both place the stack directly below this top, with kernel-core's
+    /// USER_STACK_PAGES (256 x 4 KiB = 1 MiB) mapped under it. The kernel
+    /// image and its boot stack are identity-mapped at [0x4008_0000,
+    /// ~0x414C_0000) — far below this window — so user stacks can never
+    /// alias kernel stack memory. The IRQ preemption path relies on this
+    /// invariant (traps.rs frame sanity check).
+    pub const USER_STACK_TOP: u64 = 0x0000_7fff_ffff_0000;
+    pub const USER_STACK_WINDOW_BYTES: u64 = 256 * 4096;
+    pub const USER_STACK_WINDOW_BOTTOM: u64 = USER_STACK_TOP - USER_STACK_WINDOW_BYTES;
+
     global_asm!(
         r#"
 .global serviceos_aarch64_resume_user
@@ -456,7 +468,7 @@ serviceos_aarch64_lower_el_sync:
             &mut user_page_table,
             &mut frame_allocator,
             ElfMachine::Aarch64,
-            VirtualAddress::new(0x0000_7fff_ffff_0000),
+            VirtualAddress::new(USER_STACK_TOP),
         )?;
 
         Ok(PreparedUserAddressSpace {
@@ -717,3 +729,5 @@ pub use imp::{
     run_thread, save_thread_context, translate_address, unmap_memory_range,
     update_memory_protection,
 };
+#[cfg(target_arch = "aarch64")]
+pub use imp::{USER_STACK_TOP, USER_STACK_WINDOW_BOTTOM, USER_STACK_WINDOW_BYTES};

@@ -123,12 +123,20 @@ sink. With fewer than two registered CPUs (`register_balancing_cpu_count`)
 steal/balance passes are disabled entirely so single-core boots stay
 byte-deterministic. Preemption is timer-driven with a `preemption_pending`
 flag drained at safe points; deadline wakeups ride the monotonic clock. On
-aarch64 the timer tick preempts only when it interrupted user mode
+aarch64 the timer tick preempts when it interrupted user mode with a
+stack pointer inside the user-stack window
 (`arch/aarch64/src/traps.rs` IRQ-return path calls
 `preempt_current_if_needed()`); result-slot publishes are armed only by
 sync-stub suspension (an IRQ preemption save leaves a pending result slot
-untouched), and the bootstrap root thread stays cooperative behind a
-stack-alias guard until root-stack relocation lands (§7).
+untouched). Static analysis proved there is no stack aliasing: the kernel
+boot stack ends far below the `0x7fff_ffef_0000`–`0x7fff_ffff_0000` window
+every user image's stack occupies, so the guard is a window-membership
+check and preemption applies to all user threads including the bootstrap
+root; no relocation is needed. Two defects made the IRQ-preempt path
+unsafe before it was ever exercised (the old aliasing guard disabled it
+outright): stale result-slot republish, fixed by the arming gate, and a
+reversed IRQ-frame register mapping (the snapshot read x0 as x30 and lost
+x1), fixed by mapping register i onto the stub's reversed push order (§7).
 
 ### 3.2 Memory
 
@@ -614,9 +622,11 @@ Honest, current gaps (details in `docs/roadmap.md` unless noted):
   SLAAC/DHCPv6/DAD, v6 inbound TCP listeners, name-target ping6, or v6-aware
   firewall policy), mDNS subset without multicast group operation/conflict
   resolution, summary deny counters stay global (IPC budget)
-- **aarch64 root-stack relocation**: IRQ-return preemption landed, but the
-  bootstrap root thread stays cooperative behind a stack-alias guard; proper
-  root-stack relocation is the open follow-up
+- **aarch64 root-stack relocation**: closed as not-needed — static analysis
+  proved no user stack aliases the kernel boot stack (all user stacks live in
+  the `0x7fff_ffef_0000`–`0x7fff_ffff_0000` window), so the IRQ-return guard
+  is a user-window membership check and preemption covers root too; the
+  IRQ-frame snapshot's reversed register mapping is corrected alongside
 - **Platform follow-ons**: raspi5 has an opt-in graphical graph over honest
   null transports, but real Pi peripherals remain open (USB/network/writable
   boot-store/audio hardware, roadmap §6); riscv64 remains a parked skeleton
